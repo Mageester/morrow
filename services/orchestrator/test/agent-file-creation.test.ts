@@ -83,7 +83,7 @@ describe("agent file creation under YOLO", () => {
     expect(JSON.parse(call!.resultJson!).kind).toBe("context_placeholder_rejected");
   });
 
-  it("refuses auxiliary placeholder files used only to manufacture progress", async () => {
+  it("lets the model create ordinary scratch and placeholder files", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -100,9 +100,9 @@ describe("agent file creation under YOLO", () => {
     runner.run("t");
     await runner.waitFor("t");
 
-    expect(existsSync(join(ws, "test", "placeholder.txt"))).toBe(false);
+    expect(existsSync(join(ws, "test", "placeholder.txt"))).toBe(true);
     const call = conversationsRepository(db).listToolCallsForTask("t").find((row: any) => row.id === "probe");
-    expect(JSON.parse(call!.resultJson!).kind).toBe("auxiliary_progress_probe_rejected");
+    expect(call?.status).toBe("completed");
   });
 
   it("creates directories and files, runs a command, and reflects them in change sets — no human, no crash", async () => {
@@ -143,10 +143,9 @@ describe("agent file creation under YOLO", () => {
     const listResult = JSON.parse(list!.resultJson!);
     expect(listResult.entries.map((e: any) => e.path)).toContain("package.json");
 
-    // Approvals were all auto-approved; nothing was ever surfaced to a human.
+    // Trusted workspace actions run directly; no fake approvals are inserted.
     const approvals = approvalsRepository(db).listByTask("t");
-    expect(approvals.length).toBeGreaterThanOrEqual(3); // 1 dir + 2 files
-    expect(approvals.every((a) => a.status === "approved")).toBe(true);
+    expect(approvals).toHaveLength(0);
     const events = taskRecordsRepository(db).listEvents("t");
     expect(events.some((e: any) => e.type === "approval.requested")).toBe(false);
 
@@ -247,7 +246,7 @@ describe("agent file creation under YOLO", () => {
     expect(editChange, "the overwrite should be captured as a backed-up change set").toBeTruthy();
   });
 
-  it("rejects repeated whole-file rewrites of one target instead of counting fake progress", async () => {
+  it("lets the model rewrite the same target as many times as the task needs", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -263,15 +262,37 @@ describe("agent file creation under YOLO", () => {
     runner.run("t");
     await runner.waitFor("t");
 
-    expect(readFileSync(join(ws, "package.json"), "utf8")).toBe('{"name":"second"}\n');
+    expect(readFileSync(join(ws, "package.json"), "utf8")).toBe('{"name":"third"}\n');
     expect(readFileSync(join(ws, "src/index.ts"), "utf8")).toBe("export const ready = true;\n");
     const calls = conversationsRepository(db).listToolCallsForTask("t").filter((c: any) => c.toolName === "create_file");
-    expect(calls.map((call: any) => call.status)).toEqual(["completed", "completed", "failed", "completed"]);
-    expect(JSON.parse(calls[2]!.resultJson!)).toMatchObject({
-      kind: "repeated_file_overwrite_rejected",
-      targetFile: "package.json",
-      successfulWritesThisTask: 2,
+    expect(calls.map((call: any) => call.status)).toEqual(["completed", "completed", "completed", "completed"]);
+  });
+
+  it("assembles a large file through offset-fenced append_file calls", async () => {
+    seedYolo(db, ws);
+    const chunk = "abcdefgh".repeat(32_768); // 256 KiB
+    const chunkBytes = Buffer.byteLength(chunk);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("f1", "create_file", { path: "large.txt", content: "head\n" }), done],
+        [tool("a1", "append_file", { path: "large.txt", content: chunk, expectedOffset: 5 }), done],
+        [tool("a2", "append_file", { path: "large.txt", content: chunk, expectedOffset: 5 + chunkBytes }), done],
+        [tool("a3", "append_file", { path: "large.txt", content: chunk, expectedOffset: 5 + chunkBytes * 2 }), done],
+        [tool("a4", "append_file", { path: "large.txt", content: chunk, expectedOffset: 5 + chunkBytes * 3 }), done],
+        [text("large file complete"), done],
+      ],
+      delayMs: 1,
     });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 10 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(readFileSync(join(ws, "large.txt"), "utf8")).toBe(`head\n${chunk.repeat(4)}`);
+    const appendCalls = conversationsRepository(db).listToolCallsForTask("t").filter((call: any) => call.toolName === "append_file");
+    expect(appendCalls).toHaveLength(4);
+    expect(appendCalls.every((call: any) => call.status === "completed")).toBe(true);
+    expect(JSON.parse(appendCalls[3]!.resultJson!)).toMatchObject({ totalBytes: 5 + chunkBytes * 4, appendedBytes: chunkBytes });
+    expect(approvalsRepository(db).listByTask("t")).toHaveLength(0);
   });
 
   it("reports patch_no_effect when an edit would leave an existing file unchanged", async () => {

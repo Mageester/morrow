@@ -31,6 +31,7 @@ import { missionRuntimeRepository } from "../repositories/mission-runtime.js";
 import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs } from "../tools/command-policy.js";
 import { IMPLEMENTED_TOOL_NAMES, PERMISSION_PROFILE } from "../tools/catalog.js";
 import { runProcessSafe } from "../tools/command-executor.js";
+import { appendWorkspaceFileAtomic, AtomicAppendError } from "../tools/atomic-file-writer.js";
 import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath, buildCreationDiff, buildReplacementDiff, PatchApplicationError, type PatchFile } from "../tools/diff-applier.js";
 import { repairAndParseToolArguments, normalizeCommandDialect, normalizeToolArguments, validateToolArguments, describeToolSchema, type ToolArgFailureReason } from "../tools/tool-argument-repair.js";
 import { resolveMorrowHome } from "../home.js";
@@ -207,10 +208,10 @@ export function runCommandStartedBackgroundProcess(resultJson: string | null | u
  * idempotent success instead of a fatal argument error.
  */
 export function isEchoedAppliedWrite(toolName: string, args: Record<string, unknown>): boolean {
-  if (toolName !== "create_file" && toolName !== "propose_patch") return false;
+  if (toolName !== "create_file" && toolName !== "append_file" && toolName !== "propose_patch") return false;
   const marker = (args as any)?._morrowAppliedWrite;
   if (!marker || typeof marker !== "object") return false;
-  const bodyField = toolName === "create_file" ? args.content : args.patch;
+  const bodyField = toolName === "propose_patch" ? args.patch : args.content;
   const bodyPresent = typeof bodyField === "string" && bodyField.trim() !== "";
   return !bodyPresent;
 }
@@ -524,16 +525,18 @@ export function capToolArgumentsForContext(toolName: string, rawArguments: strin
     // content in a later provider turn is pure context debt: a single batch
     // can create many ordinary-sized files whose combined arguments exceed a
     // small route even though no individual argument crosses the byte cap.
-    if (toolName === "create_file" && typeof parsed.content === "string") {
+    if ((toolName === "create_file" || toolName === "append_file") && typeof parsed.content === "string") {
       const content = parsed.content;
       const { content: _content, ...rest } = parsed;
       return JSON.stringify({
         ...rest,
         _morrowAppliedWrite: {
-          kind: "create_file",
+          kind: toolName,
           contentBytes: Buffer.byteLength(content, "utf8"),
           contentSha256: createHash("sha256").update(content).digest("hex"),
-          instruction: "Historical applied write. Read workspace file for current content.",
+          instruction: toolName === "append_file"
+            ? "Historical applied append. Read workspace file for current content and byte offset."
+            : "Historical applied write. Read workspace file for current content.",
         },
         truncatedForContext: true,
         originalArgumentBytes: bytes,
@@ -908,18 +911,6 @@ export async function executeAgentChatTask({
       }));
       throw err;
     }
-  };
-
-  // YOLO / auto-approve: resolve a freshly-created approval as approved without
-  // blocking on a human. The approval record is still created and persisted so
-  // the audit trail shows exactly what ran; we annotate the decision note so it
-  // is never mistaken for an explicit human grant. The categorical `denied`
-  // classification runs *before* any approval is created, so this can never run
-  // a denied command or apply a denied patch.
-  const autoResolveApproval = (approvalId: string): boolean => {
-    approvals.resolve(approvalId, { decision: "allow_once", note: "auto-approved (yolo mode)", resolvedAt: now() });
-    event("approval.resolved", { approvalId, decision: "allow_once", auto: true });
-    return approvals.get(approvalId)?.status === "approved";
   };
 
   if (!records.getAgentState(taskId)) transitionAgentState("idle");
@@ -1300,11 +1291,12 @@ export async function executeAgentChatTask({
     },
     {
       name: "read_file",
-      description: "Reads the content of a specific source or text file in the workspace. Rejects secret files, binary formats, or files exceeding 100 KB.",
+      description: "Reads a byte page of a source or text file in the workspace. Large files return offset/nextOffset/eof metadata; pass nextOffset back as offset to continue. Rejects secret and binary files.",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Relative file path (e.g. 'package.json')" }
+          path: { type: "string", description: "Relative file path (e.g. 'package.json')" },
+          offset: { type: "number", description: "UTF-8 byte offset to resume from (default 0)" }
         },
         required: ["path"]
       }
@@ -1405,7 +1397,7 @@ export async function executeAgentChatTask({
     },
     {
       name: "create_file",
-      description: "Create a NEW file in the workspace from plain text content. This is the reliable way to add new files â€” prefer it over propose_patch for creation (no diff hunks to author). Parent directories are created automatically. Rejects absolute paths, traversal, secret names, and overwriting an existing file (edit those with propose_patch instead).",
+      description: "Create or completely replace one workspace text file. Parent directories are created automatically; existing content is backed up for undo. For a file too large for one tool call, create its first chunk here and continue with append_file.",
       parameters: {
         type: "object",
         properties: {
@@ -1414,6 +1406,20 @@ export async function executeAgentChatTask({
           purpose: { type: "string", description: "Optional reason for creating this file" }
         },
         required: ["path", "content"]
+      }
+    },
+    {
+      name: "append_file",
+      description: "Append one bounded text chunk to a workspace file. Pass expectedOffset equal to the current UTF-8 byte length returned by create_file, append_file, or a paged read. A stale/replayed offset fails without duplicating content. Existing bytes are backed up and each append is undoable.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative file path to append" },
+          content: { type: "string", description: "Next text chunk, up to 1 MiB" },
+          expectedOffset: { type: "number", description: "Exact current UTF-8 byte length; 0 creates a new file" },
+          purpose: { type: "string", description: "Optional reason for this chunk" }
+        },
+        required: ["path", "content", "expectedOffset"]
       }
     },
     {
@@ -1620,16 +1626,10 @@ export async function executeAgentChatTask({
   // and is told plainly to act on a clear request.
   const writeToolInstructions = `
 File & directory operations â€” use the dedicated tools, NOT the shell:
-- Create a new file: call create_file with a relative path and full content. Parent directories are created automatically.
-- Create an empty directory: call create_directory. (Not needed before create_file â€” that already makes parents.)
-- Edit an existing file: call propose_patch with a unified diff.
-- Do NOT try to create files/directories with run_command. Shell built-ins and shells (mkdir, md, cmd, powershell/pwsh with New-Item, bash, sh) are unavailable and will be denied â€” creating a file or directory that way will fail. Use create_file / create_directory instead.
+- create_file writes or replaces text; append_file continues large files using the prior totalBytes as expectedOffset.
+- create_directory makes an empty directory; propose_patch edits with a unified diff. File tools stay inside the workspace and preserve undo data.
 
-Running commands with run_command (each argument is a separate array element; the shell does NOT interpret them):
-- Do NOT chain commands with && or ; or pipes, and do NOT wrap them in a shell. Issue one command per run_command call.
-- Package managers work directly: run_command executable "npm" args ["install"]; executable "npm" args ["run","build"]; executable "npm" args ["test"]. Same for pnpm/yarn/node/git.
-- Avoid interactive scaffolders (e.g. "npm create vite") â€” they hang waiting for input. Instead write the project files yourself with create_file and install dependencies with npm install.
-- If a command is denied, do not repeat it. Switch to the allowed equivalent (a file tool, or a non-shell command) described in the error.
+run_command executes one program with an argv array; shell operators are not interpreted. Package installs, scripts, builds, tests, and ordinary git run directly. Avoid interactive commands. If an action is denied, change strategy instead of repeating it.
 `;
 
   // Kept deliberately short. This block ships on every request, and the
@@ -2149,6 +2149,96 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
       finishAttempt("succeeded", { exitStatus: result.exitCode, terminationReason: result.terminationReason ?? null, failureCategory: null });
       return resultStr;
+    } else if (toolName === "append_file") {
+      const relPath = args.path;
+      const content = args.content;
+      const expectedOffset = args.expectedOffset;
+      const changeSetId = args.changeSetId;
+      if (typeof relPath !== "string" || !relPath.trim()) throw new Error("Missing required argument: path");
+      if (typeof content !== "string") throw new Error("Missing required argument: content");
+      if (!Number.isSafeInteger(expectedOffset) || expectedOffset < 0) {
+        throw new Error("expectedOffset must be a non-negative safe integer");
+      }
+      if (typeof changeSetId !== "string" || !changeSetId) {
+        throw new Error("Append change set record is missing");
+      }
+
+      assertWriteAllowedByFileContract(relPath, allowedWriteFiles);
+      const changeSet = changeSets.get(changeSetId);
+      if (!changeSet || changeSet.taskId !== taskId || changeSet.projectId !== projectId) {
+        throw new Error(`Append change set record not found: ${changeSetId}`);
+      }
+      const currentPath = assertContainedRealPath(workspacePath, relPath);
+      const currentHash = existsSync(currentPath)
+        ? createHash("sha256").update(readFileSync(currentPath)).digest("hex")
+        : "";
+      if (currentHash !== changeSet.originalHashes[relPath]) {
+        changeSets.updateState(changeSet.id, "failed");
+        throw new AgentToolFailure(
+          `File changed before append_file could apply ${relPath}`,
+          {
+            error: "File changed before append_file could apply",
+            kind: "append_file_rejected",
+            code: "CONCURRENT_MODIFICATION",
+            path: relPath,
+            instruction: "Inspect the current file size and retry append_file with that byte size as expectedOffset.",
+          },
+        );
+      }
+
+      transitionAgentState("applying_changes");
+      changeSets.updateState(changeSet.id, "applying");
+      try {
+        const result = appendWorkspaceFileAtomic({
+          workspaceRoot: workspacePath,
+          relativePath: relPath,
+          content,
+          expectedOffset,
+          backupDir: join(resolveMorrowHome(process.env), "backups"),
+        });
+        changeSets.updateApplied(
+          changeSet.id,
+          { [result.path]: result.sha256 },
+          result.backupHash ? { [result.path]: result.backupHash } : {},
+        );
+        records.appendEvidence({
+          id: randomUUID(),
+          taskId,
+          type: "file",
+          path: result.path,
+          metadata: {
+            action: "append_file",
+            created: result.created,
+            appendedBytes: result.appendedBytes,
+            totalBytes: result.totalBytes,
+            sha256: result.sha256,
+          },
+          createdAt: now(),
+        });
+        event("evidence.persisted", {
+          path: result.path,
+          size: result.totalBytes,
+          appendedBytes: result.appendedBytes,
+          action: "append_file",
+        });
+        return JSON.stringify({ status: "success", ...result, changeSetId: changeSet.id });
+      } catch (error) {
+        changeSets.updateState(changeSet.id, "failed");
+        if (error instanceof AtomicAppendError) {
+          throw new AgentToolFailure(error.message, {
+            error: error.message,
+            kind: "append_file_rejected",
+            code: error.code,
+            path: relPath,
+            expectedOffset: error.expectedOffset ?? expectedOffset,
+            actualOffset: error.actualOffset,
+            instruction: error.actualOffset !== undefined
+              ? `Read the latest append_file result or file page, then retry with expectedOffset ${error.actualOffset}. Never resend a chunk at an old offset.`
+              : "Correct the append_file arguments and retry with a chunk no larger than 1 MiB.",
+          });
+        }
+        throw error;
+      }
     } else if (toolName === "propose_patch") {
       const patch = args.patch;
       const explanation = args.explanation;
@@ -2519,9 +2609,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // on the same file). Keyed by target so a repeated no-op on one file escalates
   // to a full-file create_file rewrite instead of looping.
   const patchNoEffectCountsByFile = new Map<string, number>();
-  // create_file may repair one target once, but repeated whole-file rewrites
-  // are not meaningful delivery progress.
-  const createFileWritesByPath = new Map<string, number>();
   // Bounded correction budget for malformed / schema-invalid tool arguments,
   // keyed by tool name so a provider that keeps emitting broken JSON for the
   // same tool is stopped after one corrective retry instead of looping.
@@ -2584,7 +2671,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const incompleteTc = messageToolCalls.find(tc => tc.id === continuation.toolCallId);
     if (incompleteTc) {
       const approvalRecord = approvals.listByTask(taskId).find(a =>
-        a.kind === (continuation.toolName === "propose_patch" ? "change_set" : "command")
+        a.kind === (continuation.toolName === "propose_patch" || continuation.toolName === "append_file" ? "change_set" : "command")
         && a.details.toolCallId === continuation.toolCallId
         && (a.status === "pending" || a.status === "approved" || a.status === "denied")
       );
@@ -2652,7 +2739,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         } else {
           isSuccess = false;
           errorType = "tool_failed";
-          errorMessage = continuation.toolName === "propose_patch" ? "Patch application denied by user." : "Command execution denied by user.";
+          errorMessage = continuation.toolName === "propose_patch" || continuation.toolName === "append_file"
+            ? "Workspace change denied by user."
+            : "Command execution denied by user.";
           resultStr = JSON.stringify({ error: errorMessage });
           event("tool.failed", { toolName: continuation.toolName, message: errorMessage });
           missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
@@ -2686,10 +2775,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
   }
 
-  const VERIFY_OR_WRITE_TOOLS = new Set(["run_command", "propose_patch", "create_file", "create_directory"]);
+  const VERIFY_OR_WRITE_TOOLS = new Set(["run_command", "propose_patch", "create_file", "append_file", "create_directory"]);
   // Distinct from VERIFY_OR_WRITE_TOOLS: run_command can verify without ever
   // changing the workspace, so it is not durable delivery evidence on its own.
-  const WORKSPACE_WRITE_TOOLS = new Set(["propose_patch", "create_file", "create_directory"]);
+  const WORKSPACE_WRITE_TOOLS = new Set(["propose_patch", "create_file", "append_file", "create_directory"]);
   // Completed browser-validation steps are evidence work the frontend
   // completion gate explicitly demands. Keeping them out of progress
   // accounting let the stagnation clock incorrectly classify healthy frontend
@@ -4786,7 +4875,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // full content.
           echoedAppliedWrite = false;
           if (isEchoedAppliedWrite(tc.name, args)) {
-            const echoTargets = tc.name === "create_file"
+            const echoTargets = tc.name === "create_file" || tc.name === "append_file"
               ? (typeof args.path === "string" ? [args.path] : [])
               : (Array.isArray(args.files) ? args.files.filter((f: unknown): f is string => typeof f === "string") : []);
             echoedAppliedWrite = echoTargets.length > 0 && echoTargets.every((rel: string) => {
@@ -4798,15 +4887,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // workspace-mutating tools BEFORE dispatch, so a malformed patch/file
           // argument can never reach the applying_changes state. One bounded
           // correction is offered; the second failure stops cleanly.
-          if (!echoedAppliedWrite && toolDef && (tc.name === "create_file" || tc.name === "propose_patch" || tc.name === "create_directory")) {
+          if (!echoedAppliedWrite && toolDef && (tc.name === "create_file" || tc.name === "append_file" || tc.name === "propose_patch" || tc.name === "create_directory")) {
             // Curated load-bearing fields only â€” the executor tolerates omitted
             // explanation/files on propose_patch, so we don't newly reject them.
             const criticalRequired: Record<string, string[]> = {
               create_file: ["path", "content"],
+              append_file: ["path", "content", "expectedOffset"],
               create_directory: ["path"],
               propose_patch: ["patch"],
             };
-            const problem = validateToolArguments(toolDef, args, criticalRequired[tc.name]);
+            const problem = validateToolArguments(
+              toolDef,
+              args,
+              criticalRequired[tc.name],
+              tc.name === "create_file" ? ["content"] : [],
+            );
             if (problem) {
               const attemptKey = toolArgumentAttemptKey(tc.name, tc.arguments, problem.field, args);
               const priorAttempts = malformedArgAttemptsByTool.get(attemptKey) ?? 0;
@@ -4832,7 +4927,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               const echoedPlaceholderMissingBody =
                 !!(args as any)._morrowAppliedWrite
                 && problem.problem === "missing"
-                && ((tc.name === "create_file" && problem.field === "content")
+                && (((tc.name === "create_file" || tc.name === "append_file") && problem.field === "content")
                   || (tc.name === "propose_patch" && problem.field === "patch"));
               // Do NOT let this self-inflicted confusion spend the whole-task
               // correction budget: killing the entire run because the model
@@ -4899,7 +4994,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // verification) â€” it must not block an otherwise-complete read-only
           // or plan-only task from reporting `completed` (see
           // `tool_not_permitted_in_mode` handling in the completion gate).
-          if ((tc.name === "run_command" || tc.name === "propose_patch" || tc.name === "create_file" || tc.name === "create_directory" || tc.name === "stop_process" || BROWSER_TOOL_NAMES.has(tc.name)) && activeToolProfile !== "agent") {
+          if ((tc.name === "run_command" || tc.name === "propose_patch" || tc.name === "create_file" || tc.name === "append_file" || tc.name === "create_directory" || tc.name === "stop_process" || BROWSER_TOOL_NAMES.has(tc.name)) && activeToolProfile !== "agent") {
             throw new AgentToolFailure(
               `Tool "${tc.name}" is not permitted in ${agentMode} mode`,
               { error: `Tool "${tc.name}" is not permitted in ${agentMode} mode`, kind: "tool_not_permitted_in_mode" },
@@ -4975,15 +5070,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           } else if (tc.name === "read_file") {
             const relPath = args.path;
             if (!relPath) throw new Error("Missing required argument: path");
-            
-            const fileData = readWorkspaceFile(project.workspacePath, relPath, fileBytesLimit);
-            totalBytesRead += fileData.size;
+
+            const offset = typeof args.offset === "number" && Number.isSafeInteger(args.offset) ? args.offset : 0;
+            const fileData = readWorkspaceFile(project.workspacePath, relPath, fileBytesLimit, offset);
+            totalBytesRead += Buffer.byteLength(fileData.content, "utf8");
 
             if (totalBytesRead > contextBytesLimit) {
               throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
             }
 
-            resultStr = fileData.content;
+            resultStr = fileData.truncated || offset > 0 ? JSON.stringify(fileData) : fileData.content;
             
             // Record task evidence for right inspector
             records.appendEvidence({
@@ -4991,11 +5087,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               taskId,
               type: "file",
               path: fileData.path,
-              metadata: { size: fileData.size },
+              metadata: { size: fileData.size, offset: fileData.offset, nextOffset: fileData.nextOffset, eof: fileData.eof },
               createdAt: now()
             });
 
-            event("evidence.persisted", { path: fileData.path, size: fileData.size, action: "read" });
+            event("evidence.persisted", { path: fileData.path, size: Buffer.byteLength(fileData.content, "utf8"), totalSize: fileData.size, offset: fileData.offset, nextOffset: fileData.nextOffset, action: "read" });
           } else if (tc.name === "search_text") {
             if (typeof args.query !== "string") throw new Error("Missing required argument: query");
             const result = searchText(project.workspacePath, args.query, {
@@ -5115,11 +5211,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             event("workspace.inspected", { kind: "stop_process", processId, ok: outcome.ok });
           } else if (tc.name === "browser_open") {
             const target = parseBrowserTarget(args.url);
-            const existingApprovals = approvals.listByTask(taskId);
+            const existingApprovals = autoApprove ? [] : approvals.listByTask(taskId);
             let approvalRecord = existingApprovals.find((approval) => approval.kind === "command"
               && approval.details.tool === "browser_session"
               && approval.details.origin === target.origin);
-            let isApproved = false;
+            let isApproved = autoApprove;
             if (approvalRecord?.status === "approved") isApproved = true;
             else if (approvalRecord?.status === "denied") throw new Error("Browser session denied by user.");
             else if (!approvalRecord && autoApprove) {
@@ -5325,17 +5421,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               const relPath = args.path;
               if (typeof relPath !== "string" || !relPath.trim()) throw new Error("Missing required argument: path");
               if (typeof args.content !== "string") throw new Error("Missing required argument: content");
-              const auxiliaryProbe = /(^|[\\/])(?:placeholder|scratch|temp(?:orary)?)(?:[._-]|$)/i.test(relPath)
-                && /\b(?:placeholder|scratch|temp(?:orary)?|verify|test)\b/i.test(`${args.purpose ?? ""}\n${args.content.slice(0, 500)}`)
-                && !latestUserPrompt.toLowerCase().includes(relPath.toLowerCase());
-              if (auxiliaryProbe) {
-                throw new AgentToolFailure(`Refusing auxiliary progress-probe file ${relPath}`, {
-                  error: `Refusing auxiliary progress-probe file ${relPath}`,
-                  kind: "auxiliary_progress_probe_rejected",
-                  targetFile: relPath,
-                  instruction: "Create or repair a deliverable required by original request, or run required verification. Do not create placeholder/scratch/temp files to test tools or manufacture progress.",
-                });
-              }
               if (/^\[omitted \d+ bytes already provided to create_file\]$/.test(args.content.trim())) {
                 throw new AgentToolFailure(`Refusing to write Morrow context placeholder to ${relPath}`, {
                   error: `Refusing to write Morrow context placeholder to ${relPath}`,
@@ -5356,16 +5441,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               // as patch_no_effect at apply time, which is the honest signal.)
               const createDest = assertContainedRealPath(project.workspacePath, relPath);
               if (existsSync(createDest)) {
-                const priorWrites = createFileWritesByPath.get(relPath) ?? 0;
-                if (priorWrites >= 2) {
-                  throw new AgentToolFailure(`Refusing repeated create_file overwrite of ${relPath}`, {
-                    error: `Refusing repeated create_file overwrite of ${relPath}`,
-                    kind: "repeated_file_overwrite_rejected",
-                    targetFile: relPath,
-                    successfulWritesThisTask: priorWrites,
-                    instruction: `Stop rewriting ${relPath}. Continue with another deliverable required by the original request. Use propose_patch only if a later verification failure proves ${relPath} needs another edit.`,
-                  });
-                }
                 // Only a *regular file* may be auto-overwritten. A directory (or
                 // other special node) at the path is a hard error, never a
                 // silent clobber.
@@ -5374,24 +5449,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                   throw new Error(`Cannot create ${relPath}: a non-file already exists at that path.`);
                 }
                 const existingContent = readFileSync(createDest, "utf8");
-                // Destructive-overwrite guard: refuse to replace a NON-empty file
-                // with empty or whitespace-only content. create_file's contract is
-                // "full intended content", so an empty body against real content is
-                // almost certainly a mistake, and there is nothing to justify
-                // destroying the file. The model must use an explicit propose_patch
-                // (or create_directory + delete) if emptying is truly intended.
-                const existingIsNonEmpty = existingContent.trim().length > 0;
-                const replacementIsEmpty = args.content.trim().length === 0;
-                if (existingIsNonEmpty && replacementIsEmpty) {
-                  event("tool.strategy_switch", { tool: "create_file", from: "create", to: "rejected", path: relPath, reason: "empty_overwrite" });
-                  throw new AgentToolFailure(`Refusing to overwrite non-empty ${relPath} with empty content`, {
-                    error: `Refusing to overwrite non-empty ${relPath} with empty content`,
-                    kind: "unsafe_overwrite_rejected",
-                    targetFile: relPath,
-                    existingBytes: Buffer.byteLength(existingContent, "utf8"),
-                    instruction: "The file already has content. If you intend to change it, call create_file with the complete new content, or propose_patch with an explicit diff. An empty replacement of a non-empty file is not applied automatically.",
-                  });
-                }
                 patch = buildReplacementDiff(relPath, existingContent, args.content);
                 explanation = typeof args.purpose === "string" && args.purpose.trim() ? args.purpose.trim() : `Overwrite existing ${relPath}`;
                 createConvertedToEdit = true;
@@ -5506,21 +5563,33 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             }
 
             // 4. Check if there is already an approval decision for this change set in this task
-            const existingApprovals = approvals.listByTask(taskId);
-            let approvalRecord = existingApprovals.find(a => 
+            const existingApprovals = autoApprove ? [] : approvals.listByTask(taskId);
+            let approvalRecord = existingApprovals.find(a =>
               a.kind === "change_set" &&
-              a.details.diffHash === diffHash
+              a.details.diffHash === diffHash &&
+              a.details.toolCallId === tc.id
             );
+            const existingChangeSet = changeSets.listByTask(taskId).find((candidate) => candidate.diffHash === diffHash);
+            let isApproved = autoApprove;
+            if (autoApprove && !existingChangeSet) {
+              changeSets.create({
+                id: randomUUID(),
+                taskId,
+                projectId: project.id,
+                approvalId: null,
+                diff: patch,
+                diffHash,
+                originalHashes,
+              });
+            }
 
-            let isApproved = false;
-
-            if (approvalRecord) {
+            if (!autoApprove && approvalRecord) {
               if (approvalRecord.status === "approved" && approvalRecord.details.toolCallId === tc.id) {
                 isApproved = true;
               } else if (approvalRecord.status === "denied") {
                 throw new Error(`Patch application denied by user.`);
               }
-            } else {
+            } else if (!autoApprove) {
               // Transition through proposing_changes -> waiting_for_approval
               // We must request approval!
               const approvalId = randomUUID();
@@ -5552,14 +5621,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 originalHashes,
               });
 
-              if (autoApprove) {
-                // YOLO: resolve immediately, no continuation/human wait. We do
-                // NOT emit approval.requested (the CLI would prompt on it).
-                isApproved = autoResolveApproval(approvalRecord.id);
-                if (!isApproved) {
-                  throw new Error(`Patch application denied by user.`);
-                }
-              } else {
+              {
                 // Persist continuation state. Always resume as propose_patch
                 // with the normalized diff args â€” a create_file is a change_set
                 // and executeApprovedTool only knows how to replay propose_patch.
@@ -5598,9 +5660,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 createdAt: toolCallRecord.createdAt, startedAt: now(),
               });
               resultStr = await executeApprovedTool("propose_patch", patchArgs, tc.id);
-              if (tc.name === "create_file" && typeof files[0] === "string") {
-                createFileWritesByPath.set(files[0], (createFileWritesByPath.get(files[0]) ?? 0) + 1);
-              }
               // Report the createâ†’edit conversion in the tool result so the model
               // (and /output) see that create_file landed as a backed-up edit of
               // an existing file rather than a fresh creation.
@@ -5614,6 +5673,126 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 } catch { /* non-JSON result â€” leave as-is */ }
               }
             }
+          } else if (tc.name === "append_file") {
+            const relPath = args.path;
+            const content = args.content;
+            const expectedOffset = args.expectedOffset;
+            if (typeof relPath !== "string" || !relPath.trim()) throw new Error("Missing required argument: path");
+            if (typeof content !== "string") throw new Error("Missing required argument: content");
+            if (!Number.isSafeInteger(expectedOffset) || expectedOffset < 0) {
+              throw new AgentToolFailure("Invalid expectedOffset for append_file", {
+                error: "Invalid expectedOffset for append_file",
+                kind: "invalid_tool_arguments",
+                invalidField: "expectedOffset",
+                expected: "non-negative safe integer byte offset",
+              }, "invalid_tool_arguments");
+            }
+            assertWriteAllowedByFileContract(relPath, allowedWriteFiles);
+            validatePatchPaths(
+              project.workspacePath,
+              [{ oldPath: relPath, newPath: relPath, chunks: [] }],
+              PERMISSION_PROFILE.deniedNamePatterns,
+            );
+
+            const destination = assertContainedRealPath(project.workspacePath, relPath);
+            const existed = existsSync(destination);
+            if (existed && !statSync(destination).isFile()) {
+              throw new Error(`Cannot append to non-file path: ${relPath}`);
+            }
+            const originalBytes = existed ? readFileSync(destination) : Buffer.alloc(0);
+            if (originalBytes.length !== expectedOffset) {
+              throw new AgentToolFailure(
+                `append_file offset mismatch for ${relPath}: expected ${expectedOffset}, actual ${originalBytes.length}`,
+                {
+                  error: "append_file offset mismatch",
+                  kind: "append_file_rejected",
+                  code: "OFFSET_MISMATCH",
+                  path: relPath,
+                  expectedOffset,
+                  actualOffset: originalBytes.length,
+                  instruction: `Retry append_file with expectedOffset ${originalBytes.length}. Never resend a successful chunk at an old offset.`,
+                },
+              );
+            }
+
+            const contentBytes = Buffer.byteLength(content, "utf8");
+            const chunkSha256 = createHash("sha256").update(content).digest("hex");
+            const originalHash = existed ? createHash("sha256").update(originalBytes).digest("hex") : "";
+            const changeSetId = randomUUID();
+            const diffHash = hashString(JSON.stringify({
+              tool: "append_file",
+              path: relPath,
+              expectedOffset,
+              contentBytes,
+              chunkSha256,
+              toolCallId: tc.id,
+            }));
+            const appendDescriptor = [
+              `--- a/${relPath}`,
+              `+++ b/${relPath}`,
+              `@@ append bytes ${expectedOffset}..${expectedOffset + contentBytes} @@`,
+              `+[append_file chunk: ${contentBytes} bytes, sha256 ${chunkSha256}]`,
+              "",
+            ].join("\n");
+            const appendArgs = { path: relPath, content, expectedOffset, changeSetId };
+            transitionAgentState("proposing_changes");
+
+            let isApproved = autoApprove;
+            if (autoApprove) {
+              changeSets.create({
+                id: changeSetId,
+                taskId,
+                projectId: project.id,
+                approvalId: null,
+                diff: appendDescriptor,
+                diffHash,
+                originalHashes: { [relPath]: originalHash },
+              });
+            } else {
+              const approvalRecord = approvals.create({
+                id: randomUUID(),
+                taskId,
+                projectId: project.id,
+                kind: "change_set",
+                summary: `Append ${contentBytes} bytes to ${relPath}`,
+                createdAt: now(),
+                details: {
+                  tool: "append_file",
+                  path: relPath,
+                  expectedOffset,
+                  contentBytes,
+                  chunkSha256,
+                  diffHash,
+                  toolCallId: tc.id,
+                },
+              });
+              changeSets.create({
+                id: changeSetId,
+                taskId,
+                projectId: project.id,
+                approvalId: approvalRecord.id,
+                diff: appendDescriptor,
+                diffHash,
+                originalHashes: { [relPath]: originalHash },
+              });
+              continuationsRepo.save({ taskId, toolCallId: tc.id, toolName: "append_file", args: appendArgs });
+              transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
+              event("approval.requested", { approvalId: approvalRecord.id, kind: "change_set" });
+              await persistExecutionCheckpoint("waiting_for_approval");
+              await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
+              continuationsRepo.delete(taskId);
+              isApproved = approvals.get(approvalRecord.id)?.status === "approved";
+              if (!isApproved) throw new Error("Workspace change denied by user.");
+            }
+
+            if (isApproved) {
+              convs.upsertToolCall({
+                id: tc.id, messageId: assistantMessageRow.id, taskId,
+                toolName: tc.name, argsJson: tc.arguments, status: "running",
+                createdAt: toolCallRecord.createdAt, startedAt: now(),
+              });
+              resultStr = await executeApprovedTool("append_file", appendArgs, tc.id);
+            }
           } else if (tc.name === "create_directory") {
             const relPath = args.path;
             if (typeof relPath !== "string" || !relPath.trim()) throw new Error("Missing required argument: path");
@@ -5623,11 +5802,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             assertContainedRealPath(project.workspacePath, relPath);
             const dirArgs = { path: relPath };
 
-            const existingApprovals = approvals.listByTask(taskId);
+            const existingApprovals = autoApprove ? [] : approvals.listByTask(taskId);
             let approvalRecord = existingApprovals.find(a =>
               a.kind === "command" && a.details.tool === "create_directory" && a.details.path === relPath
             );
-            let isApproved = false;
+            let isApproved = autoApprove;
             if (approvalRecord) {
               if (approvalRecord.status === "approved" && (approvalRecord.decision === "trust_project" || approvalRecord.details.toolCallId === tc.id)) {
                 isApproved = true;
@@ -5635,7 +5814,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 throw new Error(`Directory creation denied by user.`);
               }
             }
-            if (!isApproved && !approvalRecord) {
+            if (!autoApprove && !isApproved && !approvalRecord) {
               approvalRecord = approvals.create({
                 id: randomUUID(),
                 taskId,
@@ -5645,19 +5824,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 createdAt: now(),
                 details: { tool: "create_directory", path: relPath, risk: "low", toolCallId: tc.id },
               });
-              if (autoApprove) {
-                isApproved = autoResolveApproval(approvalRecord.id);
-                if (!isApproved) throw new Error(`Directory creation denied by user.`);
-              } else {
-                continuationsRepo.save({ taskId, toolCallId: tc.id, toolName: "create_directory", args: dirArgs });
-                transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
-                event("approval.requested", { approvalId: approvalRecord.id, kind: "command" });
-                await persistExecutionCheckpoint("waiting_for_approval");
-                await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
-                continuationsRepo.delete(taskId);
-                if (approvals.get(approvalRecord.id)!.status === "approved") isApproved = true;
-                else throw new Error(`Directory creation denied by user.`);
-              }
+              continuationsRepo.save({ taskId, toolCallId: tc.id, toolName: "create_directory", args: dirArgs });
+              transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
+              event("approval.requested", { approvalId: approvalRecord.id, kind: "command" });
+              await persistExecutionCheckpoint("waiting_for_approval");
+              await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
+              continuationsRepo.delete(taskId);
+              if (approvals.get(approvalRecord.id)!.status === "approved") isApproved = true;
+              else throw new Error(`Directory creation denied by user.`);
             }
             if (isApproved) {
               convs.upsertToolCall({

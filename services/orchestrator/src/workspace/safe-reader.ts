@@ -113,14 +113,19 @@ export function validateSafeReadPath(root: string, requested: string): string {
   return target;
 }
 
-export function readWorkspaceFile(root: string, requested: string, maxBytes = 102400): { content: string; size: number; path: string } {
+export function readWorkspaceFile(root: string, requested: string, maxBytes = 102400, offset = 0): {
+  content: string;
+  size: number;
+  path: string;
+  offset: number;
+  nextOffset: number;
+  eof: boolean;
+  truncated: boolean;
+} {
   const validatedPath = validateSafeReadPath(root, requested);
   const stat = statSync(validatedPath);
-  
-  if (stat.size > maxBytes) {
-    throw new SafeReadError(`File size exceeds limit of ${maxBytes / 1024} KB`);
-  }
-
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new SafeReadError("Read byte limit must be a positive integer");
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > stat.size) throw new SafeReadError(`Read offset must be between 0 and ${stat.size}`);
   const buf = readFileSync(validatedPath);
   
   // Check for binary content (null bytes)
@@ -130,9 +135,19 @@ export function readWorkspaceFile(root: string, requested: string, maxBytes = 10
     }
   }
 
+  let end = Math.min(buf.length, offset + maxBytes);
+  // Never split a UTF-8 sequence. If the byte immediately after the proposed
+  // page boundary is a continuation byte, move the boundary back to the lead
+  // byte and let the next page begin there.
+  while (end < buf.length && end > offset && (buf[end]! & 0xc0) === 0x80) end--;
+  const page = buf.subarray(offset, end);
   return {
-    content: buf.toString("utf-8"),
+    content: page.toString("utf-8"),
     size: stat.size,
-    path: relative(root, validatedPath).split(sep).join("/")
+    path: relative(root, validatedPath).split(sep).join("/"),
+    offset,
+    nextOffset: end,
+    eof: end >= stat.size,
+    truncated: end < stat.size,
   };
 }

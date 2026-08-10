@@ -323,7 +323,11 @@ function deterministicSummary(groups: ChatMessage[][], startIndex: number, endIn
     ...(commands.length ? ["Commands:", ...commands.map((command) => `- ${concise(command)}`)] : []),
     ...(errors.length ? ["Errors:", ...errors.map((error) => `- ${concise(error)}`)] : []),
   ];
-  if (lines.length === 1) lines.push(redacted.replace(/\s+/g, " ").slice(0, 800));
+  // A history block with no decisions, paths, commands, or errors has no
+  // actionable text to preserve. Keep the summary cursor, but never copy the
+  // old first-800-character fallback: repeated filler otherwise becomes a
+  // durable system message and teaches the model irrelevant noise.
+  if (lines.length === 1) lines.push("No actionable facts extracted.");
   return {
     method: "deterministic",
     content: lines.join("\n"),

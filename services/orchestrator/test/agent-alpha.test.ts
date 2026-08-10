@@ -223,13 +223,16 @@ describe("Agent Alpha", () => {
       }).toThrow(SafeReadError);
     });
 
-    it("enforces raw byte limits (100 KB per file)", () => {
+    it("pages through files larger than the per-call byte limit", () => {
       const largeData = "x".repeat(1024 * 105); // 105 KB
       writeFileSync(join(tempDir, "large.txt"), largeData);
 
-      expect(() => {
-        readWorkspaceFile(tempDir, "large.txt", 102400);
-      }).toThrow(SafeReadError);
+      const first = readWorkspaceFile(tempDir, "large.txt", 102400);
+      expect(first).toMatchObject({ size: largeData.length, offset: 0, nextOffset: 102400, eof: false, truncated: true });
+      expect(first.content).toHaveLength(102400);
+      const second = readWorkspaceFile(tempDir, "large.txt", 102400, first.nextOffset);
+      expect(second).toMatchObject({ size: largeData.length, offset: 102400, nextOffset: largeData.length, eof: true, truncated: false });
+      expect(first.content + second.content).toBe(largeData);
     });
   });
 
