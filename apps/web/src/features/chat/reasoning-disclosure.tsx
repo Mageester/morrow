@@ -10,6 +10,12 @@ export interface ReasoningDisclosureProps {
   taskId: string;
 }
 
+const timeFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
 /** Opt-in projection of reasoning text explicitly supplied by the provider.
  * The component is mounted only while the chat-level toggle is enabled, so an
  * ordinary conversation view performs no reasoning request. */
@@ -24,6 +30,10 @@ export function ReasoningDisclosure({
     refetchInterval: active ? 1_000 : false,
   });
 
+  const sortedEntries = reasoning.data?.entries
+    ? [...reasoning.data.entries].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+    : [];
+
   return (
     <section aria-label="Model reasoning" className="morrow-reasoning" role="region">
       <header className="morrow-reasoning__header">
@@ -34,23 +44,33 @@ export function ReasoningDisclosure({
         <p className="morrow-reasoning__status">Loading reasoning…</p>
       ) : reasoning.isError ? (
         <p className="morrow-reasoning__status" role="status">Reasoning is unavailable right now.</p>
-      ) : reasoning.data.entries.length === 0 ? (
+      ) : sortedEntries.length === 0 ? (
         <p className="morrow-reasoning__status">
           {active ? "Waiting for provider reasoning…" : "This provider did not expose reasoning for this response."}
         </p>
       ) : (
         <div className="morrow-reasoning__entries">
-          {reasoning.data.entries.map((entry) => (
-            <details key={entry.turnKey} className="morrow-reasoning__entry-details" open>
-              <summary className="morrow-reasoning__entry-summary">
-                <span className="morrow-reasoning__provider">{entry.providerId}</span>
-                <span className="morrow-reasoning__summary-hint">Click to toggle reasoning</span>
-              </summary>
-              <div className="morrow-reasoning__content">
-                <Markdown remarkPlugins={[remarkGfm]}>{entry.content}</Markdown>
-              </div>
-            </details>
-          ))}
+          {sortedEntries.map((entry, index) => {
+            const time = timeFormatter.format(new Date(entry.createdAt));
+            const isLast = index === sortedEntries.length - 1;
+            return (
+              <details key={entry.turnKey} className="morrow-reasoning__entry-details" open={isLast ? true : undefined}>
+                <summary className="morrow-reasoning__entry-summary">
+                  <div className="morrow-reasoning__turn-info">
+                    <span className="morrow-reasoning__turn-label">Turn {index + 1}</span>
+                    <span className="morrow-reasoning__provider">{entry.providerId}</span>
+                  </div>
+                  <div className="morrow-reasoning__turn-meta">
+                    <span className="morrow-reasoning__time">{time}</span>
+                    <span className="morrow-reasoning__summary-hint">Click to toggle reasoning</span>
+                  </div>
+                </summary>
+                <div className="morrow-reasoning__content">
+                  <Markdown remarkPlugins={[remarkGfm]}>{entry.content}</Markdown>
+                </div>
+              </details>
+            );
+          })}
         </div>
       )}
     </section>
