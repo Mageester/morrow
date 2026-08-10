@@ -18,6 +18,25 @@ afterEach(() => {
 });
 
 describe("conversation API", () => {
+  it("loads provider reasoning through the owning project, conversation, and task path", async () => {
+    const fetchMock = vi.fn(async () => Response.json({
+      version: 1,
+      taskId: "task-1",
+      providerSupplied: true,
+      entries: [{ turnKey: "turn-1", providerId: "deepseek", content: "Inspect first.", createdAt: now }],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(conversationApi.reasoning("project-1", "conversation-1", "task-1")).resolves.toMatchObject({
+      providerSupplied: true,
+      entries: [{ content: "Inspect first." }],
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-1/conversations/conversation-1/tasks/task-1/reasoning",
+      expect.any(Object),
+    );
+  });
+
   it("uses project-scoped paths for create, list, get, messages, rename, archive, and confirmed delete", async () => {
     const calls: Array<{ path: string; init?: RequestInit }> = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

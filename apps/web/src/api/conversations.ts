@@ -5,10 +5,12 @@ import {
   WebConversationActivitySchema,
   WebSendMessageResultSchema,
   WebConversationMessageSchema,
+  WebTaskReasoningSchema,
   type SendMessageInput,
   type WebConversationRouting,
   type WebSendMessageResult,
   type WebConversationMessage,
+  type WebTaskReasoning,
 } from "@morrow/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "./client.js";
@@ -32,6 +34,9 @@ export const conversationKeys = {
   },
   activity(projectId: string, conversationId: string) {
     return [...this.all, "activity", projectId, conversationId] as const;
+  },
+  reasoning(projectId: string, conversationId: string, taskId: string) {
+    return [...this.all, "reasoning", projectId, conversationId, taskId] as const;
   },
 };
 
@@ -58,6 +63,12 @@ export const conversationQueries = {
     return queryOptions({
       queryKey: conversationKeys.activity(projectId, conversationId),
       queryFn: () => conversationApi.activity(projectId, conversationId),
+    });
+  },
+  reasoning(projectId: string, conversationId: string, taskId: string) {
+    return queryOptions<WebTaskReasoning>({
+      queryKey: conversationKeys.reasoning(projectId, conversationId, taskId),
+      queryFn: () => conversationApi.reasoning(projectId, conversationId, taskId),
     });
   },
 };
@@ -109,6 +120,13 @@ export const conversationApi = {
     return api.get(
       `${conversationPath(projectId, conversationId)}/activity`,
       WebConversationActivitySchema,
+    );
+  },
+
+  reasoning(projectId: string, conversationId: string, taskId: string) {
+    return api.get(
+      `${conversationPath(projectId, conversationId)}/tasks/${encodeURIComponent(taskId)}/reasoning`,
+      WebTaskReasoningSchema,
     );
   },
 

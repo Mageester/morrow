@@ -448,4 +448,38 @@ describe("ConversationPage interleaved transcript", () => {
     expect(await screen.findByText("Plain answer.")).toBeInTheDocument();
     expect(screen.queryByTestId("conversation-transcript")).toBeNull();
   });
+
+  it("fetches and shows provider reasoning only after the chat-bar toggle is enabled", async () => {
+    const reasoning = {
+      version: 1,
+      taskId: "task-1",
+      providerSupplied: true,
+      entries: [{
+        turnKey: "turn-1",
+        providerId: "deepseek",
+        content: "Inspect the repository, then make the smallest coherent change.",
+        createdAt: now,
+      }],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/reasoning")) return json(reasoning);
+      if (path.endsWith("/activity")) return json({ version: 1, projectId: "project-1", conversationId: conversation.id, entries: [] });
+      if (path.includes("/approvals")) return json([]);
+      if (path.endsWith("/messages")) return json([message({ provider: "deepseek", model: "deepseek-reasoner" })]);
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      throw new Error(`Unexpected request ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByText("Saved answer");
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/reasoning"))).toBe(false);
+
+    await user.click(screen.getByRole("checkbox", { name: "Reasoning" }));
+    const disclosure = await screen.findByRole("region", { name: "Model reasoning" });
+    expect(within(disclosure).getByText(/smallest coherent change/)).toBeVisible();
+    expect(localStorage.getItem("morrow.chat.show-reasoning.v1")).toBe("true");
+  });
 });

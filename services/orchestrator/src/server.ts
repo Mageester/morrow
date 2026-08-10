@@ -9,6 +9,7 @@ import {
   CreateConversationSchema,
   DeleteConversationSchema,
   ChatStreamEnvelopeSchema,
+  WebTaskReasoningSchema,
   CreateMemoryEntrySchema,
   UpdateMemoryEntrySchema,
   UpdateConversationSchema,
@@ -967,6 +968,18 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
     ownedConversation(projectId, conversationId);
     return webMessages(conversationId);
+  });
+
+  app.get("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/reasoning", async (request, reply) => {
+    const { projectId, conversationId, taskId } = request.params as { projectId: string; conversationId: string; taskId: string };
+    ownedConversationTask(projectId, conversationId, taskId);
+    reply.header("cache-control", "no-store");
+    return WebTaskReasoningSchema.parse({
+      version: 1,
+      taskId,
+      providerSupplied: true,
+      entries: executionContinuityRepo.listProviderReasoning(taskId),
+    });
   });
 
   app.get("/api/projects/:projectId/conversations/:conversationId/activity", async (request) => {

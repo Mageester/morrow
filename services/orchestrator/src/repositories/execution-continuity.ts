@@ -23,6 +23,13 @@ export interface ExecutionSegment {
   closedAt: string | null;
 }
 
+export interface ProviderReasoningEntry {
+  turnKey: string;
+  providerId: string;
+  content: string;
+  createdAt: string;
+}
+
 export interface ExecutionLeaseFence {
   ownerId: string;
   generation: number;
@@ -330,6 +337,28 @@ export function executionContinuityRepository(db: Database.Database) {
     },
     listProviderContinuationRefs(taskId: string): string[] {
       return (db.prepare("SELECT id FROM agent_provider_continuations WHERE task_id=? ORDER BY created_at,id").all(taskId) as { id: string }[]).map((row) => row.id);
+    },
+    listProviderReasoning(taskId: string): ProviderReasoningEntry[] {
+      const rows = db.prepare(
+        "SELECT provider_id,turn_key,state_json,created_at FROM agent_provider_continuations WHERE task_id=? ORDER BY created_at,id"
+      ).all(taskId) as Array<{ provider_id: string; turn_key: string; state_json: string; created_at: string }>;
+      return rows.flatMap((row) => {
+        try {
+          const state = redactSecretsDeep(JSON.parse(row.state_json)) as ProviderContinuationState;
+          const content = state.reasoningContent;
+          if (typeof content !== "string" || !content.trim()) return [];
+          return [{
+            turnKey: row.turn_key,
+            providerId: row.provider_id,
+            content: redactSecrets(content),
+            createdAt: row.created_at,
+          }];
+        } catch {
+          // A malformed legacy continuation must not break the conversation;
+          // skip it rather than exposing raw state or returning a partial shape.
+          return [];
+        }
+      });
     },
     createCanonicalAnswer(input: { id: string; taskId: string; missionId: string | null; segmentId: string; content: string; evidenceJson: Record<string, unknown>; ownerId: string; generation: number; now: string }) {
       assertFence(input.segmentId, input);

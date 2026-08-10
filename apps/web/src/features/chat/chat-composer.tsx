@@ -97,6 +97,8 @@ export interface ChatComposerProps {
    * to know how much of the window that turn consumed. */
   contextTaskId?: string | undefined;
   onStop?: ((taskId: string) => Promise<void>) | undefined;
+  showReasoning?: boolean | undefined;
+  onShowReasoningChange?: ((show: boolean) => void) | undefined;
 }
 
 const DEFAULT_ROUTE: ChatComposerModelRoute = {
@@ -155,6 +157,8 @@ export function ChatComposer({
   activeTaskId,
   contextTaskId,
   onStop,
+  showReasoning = false,
+  onShowReasoningChange,
 }: ChatComposerProps) {
   const id = useId();
   const inputId = `morrow-chat-message-${id}`;
@@ -463,6 +467,21 @@ export function ChatComposer({
         )}
 
         <ContextMeter taskId={contextTaskId ?? activeTaskId} />
+
+        {onShowReasoningChange ? (
+          <label
+            className="morrow-chat-composer__reasoning-toggle"
+            title="Show reasoning text supplied by the model provider"
+          >
+            <input
+              checked={showReasoning}
+              disabled={disabled}
+              onChange={(event) => onShowReasoningChange(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Reasoning</span>
+          </label>
+        ) : null}
 
         {activeTaskId && onStop ? (
           <button

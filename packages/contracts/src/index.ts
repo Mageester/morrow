@@ -373,6 +373,22 @@ export const WebConversationMessageSchema=ConversationMessageSchema.extend({
   toolActivity:z.array(ConversationToolActivitySchema),
 }).strict();
 
+export const WebTaskReasoningEntrySchema=z.object({
+  turnKey:z.string().min(1),
+  providerId:z.string().min(1),
+  content:z.string(),
+  createdAt:z.string().datetime(),
+}).strict();
+
+/** Opt-in browser projection of the reasoning text a provider explicitly
+ * supplied. Opaque continuation fields never cross this contract. */
+export const WebTaskReasoningSchema=z.object({
+  version:SchemaVersionSchema,
+  taskId:z.string().min(1),
+  providerSupplied:z.literal(true),
+  entries:z.array(WebTaskReasoningEntrySchema),
+}).strict();
+
 export const SendMessageSchema=z.object({
   content:z.string().trim().min(1).max(32000),
   preset:PresetIdSchema.optional(),
@@ -683,6 +699,8 @@ export type SendMessageInput=z.infer<typeof SendMessageSchema>;
 export type SendMessageResult=z.infer<typeof SendMessageResultSchema>;
 export type WebSendMessageResult=z.infer<typeof WebSendMessageResultSchema>;
 export type WebConversationMessage=z.infer<typeof WebConversationMessageSchema>;
+export type WebTaskReasoningEntry=z.infer<typeof WebTaskReasoningEntrySchema>;
+export type WebTaskReasoning=z.infer<typeof WebTaskReasoningSchema>;
 export type MemoryEntry=z.infer<typeof MemoryEntrySchema>;
 export type MemoryScope=z.infer<typeof MemoryScopeSchema>;
 export type MemoryType=z.infer<typeof MemoryTypeSchema>;

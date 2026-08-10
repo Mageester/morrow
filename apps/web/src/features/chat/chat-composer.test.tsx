@@ -46,6 +46,29 @@ describe("ChatComposer", () => {
     expect(screen.getByText("Morrow can edit files and run ordinary workspace commands without stopping.")).toBeVisible();
   });
 
+  it("keeps the controlled reasoning toggle available while a task is running", async () => {
+    const user = userEvent.setup();
+    function Parent() {
+      const [showReasoning, setShowReasoning] = useState(false);
+      return (
+        <ChatComposer
+          activeTaskId="task-1"
+          draftScope={scope}
+          onShowReasoningChange={setShowReasoning}
+          onSubmit={vi.fn()}
+          showReasoning={showReasoning}
+        />
+      );
+    }
+    render(<Parent />);
+
+    const toggle = screen.getByRole("checkbox", { name: "Reasoning" });
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toBeEnabled();
+    await user.click(toggle);
+    expect(toggle).toBeChecked();
+  });
+
   it("supports native fast typing, editing, selection, clipboard-shaped input, and stable parent rerenders", async () => {
     const user = userEvent.setup();
     let rerenderParent!: () => void;

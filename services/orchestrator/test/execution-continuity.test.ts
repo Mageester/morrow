@@ -267,6 +267,12 @@ describe("execution continuity repository", () => {
     });
     expect(repo.loadProviderContinuation("t", "turn-redacted", routeFingerprint)).toEqual(JSON.parse(raw.state_json));
     expect(repo.loadProviderContinuation("t", "turn-redacted", "different-route")).toBeNull();
+    expect(repo.listProviderReasoning("t")).toEqual([{
+      turnKey: "turn-redacted",
+      providerId: "deepseek",
+      content: "credential ***redacted***",
+      createdAt: at,
+    }]);
     db.close();
   });
 

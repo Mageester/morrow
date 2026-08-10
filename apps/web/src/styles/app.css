@@ -789,6 +789,32 @@ a {
   font-size: 0.8125rem;
 }
 
+.morrow-chat-composer__reasoning-toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 var(--morrow-space-3);
+  gap: var(--morrow-space-2);
+  color: var(--morrow-text-muted);
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.morrow-chat-composer__reasoning-toggle:has(input:checked) {
+  color: var(--morrow-text);
+  border-color: color-mix(in srgb, var(--morrow-accent) 55%, var(--morrow-border));
+}
+
+.morrow-chat-composer__reasoning-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--morrow-accent);
+}
+
 .morrow-chat-composer__send {
   display: grid;
   flex: 0 0 44px;
@@ -1006,6 +1032,60 @@ a {
 .morrow-conversation-message__content--markdown {
   white-space: normal;
   overflow-wrap: break-word;
+}
+
+.morrow-reasoning {
+  display: grid;
+  padding: var(--morrow-space-3) var(--morrow-space-4);
+  gap: var(--morrow-space-3);
+  background: color-mix(in srgb, var(--morrow-surface-subtle) 82%, transparent);
+  border: 1px solid var(--morrow-border);
+  border-left: 3px solid color-mix(in srgb, var(--morrow-accent) 65%, var(--morrow-border));
+  border-radius: var(--morrow-radius-sm);
+}
+
+.morrow-reasoning__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-reasoning__header p {
+  color: var(--morrow-text);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.morrow-reasoning__header span,
+.morrow-reasoning__provider,
+.morrow-reasoning__status {
+  color: var(--morrow-text-muted);
+  font-size: 0.75rem;
+}
+
+.morrow-reasoning__entries {
+  display: grid;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-reasoning__entries article {
+  display: grid;
+  gap: var(--morrow-space-1);
+}
+
+.morrow-reasoning__entries pre {
+  max-height: 24rem;
+  padding: 0;
+  margin: 0;
+  overflow: auto;
+  color: var(--morrow-text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .morrow-conversation-message__route,
