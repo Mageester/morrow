@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
  * `selectCanonicalFinalAnswer` in apps/cli/src/terminal/output-report.ts,
  * fed by the real `MorrowApi` HTTP client against a real orchestrator server
  * — agrees with those same durable repositories, for both a genuine
- * completion and the interrupted failure-class cases. This is the exact
+ * completion and model-owned finals with incomplete delivery evidence. This is the exact
  * code path `/output full` runs (see apps/cli/src/commands/chat.ts's
  * "output" case), not a reimplementation of it.
  */
@@ -90,8 +90,8 @@ describe("Journey G — /output full consistency with durable repositories", () 
     return { aggregate, report, selected };
   }
 
-  function canonicalAnswerRow(taskId: string): { content: string } | undefined {
-    return db.prepare("SELECT content FROM canonical_task_answers WHERE task_id=?").get(taskId) as { content: string } | undefined;
+  function canonicalAnswerRow(taskId: string): { content: string; evidence_json: string } | undefined {
+    return db.prepare("SELECT content,evidence_json FROM canonical_task_answers WHERE task_id=?").get(taskId) as { content: string; evidence_json: string } | undefined;
   }
 
   it("reports the same task id, completed status, and canonical answer as the durable repositories", async () => {
@@ -141,7 +141,7 @@ describe("Journey G — /output full consistency with durable repositories", () 
     expect(finalAnswerSection).not.toContain(REPEATED_NARRATION);
   }, 20000);
 
-  it("reports the same task id and truthful interrupted status when delivery evidence is missing (no fabricated canonical answer)", async () => {
+  it("reports the model final as completed while preserving truthful missing-delivery evidence", async () => {
     provider = new MockProvider({
       delayMs: 1,
       chunks: [
@@ -157,18 +157,22 @@ describe("Journey G — /output full consistency with durable repositories", () 
     const taskId = sent.task.id;
 
     const status = await waitForTerminal(api, taskId);
-    expect(status).toBe("interrupted");
-    expect(canonicalAnswerRow(taskId)).toBeUndefined();
+    expect(status).toBe("completed");
+    const canonical = canonicalAnswerRow(taskId);
+    expect(canonical?.content).toBe("The add() function looks fine to me on inspection; no change appears necessary.");
+    expect(JSON.parse(canonical!.evidence_json)).toMatchObject({ completion: { complete: false } });
 
     const { aggregate, report } = await outputFullReport(taskId, conversation.id);
     expect(aggregate.task.id).toBe(taskId);
-    expect(aggregate.task.status).toBe("interrupted");
+    expect(aggregate.task.status).toBe("completed");
+    expect(aggregate.events.some((event) => event.payload?.signal === "missing_delivery")).toBe(true);
     expect(report).toContain(`Task: ${taskId.slice(0, 8)} (${taskId})`);
-    expect(report).toContain("Status: interrupted");
-    expect(report).not.toContain("Status: completed");
+    expect(report).toContain("Status: completed");
+    expect(report).toContain(canonical!.content);
+    expect(report).not.toContain("Status: interrupted");
   }, 20000);
 
-  it("reports the same task id and truthful interrupted status when the final turn duplicates earlier narration", async () => {
+  it("reports a repeated model final without converting soft duplicate evidence into interruption", async () => {
     provider = new MockProvider({
       delayMs: 1,
       chunks: [
@@ -185,14 +189,18 @@ describe("Journey G — /output full consistency with durable repositories", () 
     const taskId = sent.task.id;
 
     const status = await waitForTerminal(api, taskId);
-    expect(status).toBe("interrupted");
-    expect(canonicalAnswerRow(taskId)).toBeUndefined();
+    expect(status).toBe("completed");
+    const canonical = canonicalAnswerRow(taskId);
+    expect(canonical?.content).toBe(REPEATED_NARRATION);
+    expect(JSON.parse(canonical!.evidence_json)).toMatchObject({ completion: { complete: false } });
 
     const { aggregate, report } = await outputFullReport(taskId, conversation.id);
     expect(aggregate.task.id).toBe(taskId);
-    expect(aggregate.task.status).toBe("interrupted");
+    expect(aggregate.task.status).toBe("completed");
+    expect(aggregate.events.some((event) => event.payload?.signal === "duplicate_narration")).toBe(true);
     expect(report).toContain(`Task: ${taskId.slice(0, 8)} (${taskId})`);
-    expect(report).toContain("Status: interrupted");
-    expect(report).not.toContain("Status: completed");
+    expect(report).toContain("Status: completed");
+    expect(report).toContain(REPEATED_NARRATION);
+    expect(report).not.toContain("Status: interrupted");
   }, 20000);
 });
