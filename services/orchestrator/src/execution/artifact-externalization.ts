@@ -157,7 +157,12 @@ export function readArtifactRange(
   const rawLength = typeof input.length === "number" ? input.length : MAX_ARTIFACT_READ_BYTES;
   if (!Number.isFinite(rawLength) || rawLength <= 0) return { ok: false, error: "\"length\" must be a positive byte count." };
   const length = Math.min(Math.floor(rawLength), MAX_ARTIFACT_READ_BYTES);
-  const end = Math.min(offset + length, totalBytes);
+  let end = Math.min(offset + length, totalBytes);
+
+  // Never split a UTF-8 sequence. If the byte immediately after the proposed
+  // page boundary is a continuation byte, move the boundary back to the lead
+  // byte and let the next page begin there.
+  while (end < totalBytes && end > offset && (content[end]! & 0xc0) === 0x80) end--;
 
   return {
     ok: true,
