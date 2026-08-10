@@ -6,6 +6,47 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.40] - 2026-08-09
+
+### Added - trusted workspace agents can finish real builds without being babysat
+
+- **Build mode now starts in Trusted workspace by default.** Ordinary structured
+  file, directory, browser, package, script, and non-destructive Git actions run
+  without an approval stop. A user can still turn Trusted workspace off in the
+  chat bar for the older supervised behavior, and that explicit choice persists.
+- **Large outputs have a resumable delivery path.** `append_file` writes chunks
+  atomically, checks the expected byte offset before every append, records undo
+  metadata, and safely accepts files larger than a single model tool call.
+  `read_file` pages large files instead of truncating them at 100 KB. Complete
+  file replacement no longer rejects legitimate empty content, scratch files,
+  or a model's third coherent rewrite.
+- **The chat bar has an opt-in Reasoning toggle.** When enabled, each assistant
+  response can show reasoning text explicitly supplied by its model provider.
+  The browser makes no reasoning request while the toggle is off, and the
+  preference remains available while a task is running.
+- **Long builds get realistic execution time.** The normal command timeout is
+  five minutes and recognized install, build, and test commands can run for up
+  to thirty minutes instead of being killed while still making progress.
+
+### Security and privacy impact
+
+- Trusted workspace freedom is bounded to the selected project workspace.
+  Privilege escalation, destructive host deletion, force-push/history rewrite,
+  credential-bearing or opaque shell payloads, publishing/deployment, purchases,
+  and destructive browser interactions still require approval or remain denied.
+- The reasoning endpoint returns only a strict provider-supplied text projection.
+  It re-applies secret redaction, sends `Cache-Control: no-store`, verifies task
+  ownership, skips malformed legacy rows, and never exposes opaque continuation
+  state to the browser. It does not manufacture or reveal hidden reasoning that
+  the provider did not supply.
+
+### Rollback
+
+- Turn off **Trusted workspace** in the chat bar to restore supervised approvals
+  for ordinary actions. Turn off **Reasoning** to stop reasoning requests and
+  hide the panel. Reinstall `v0.1.0-beta.39` to roll back the complete release;
+  Morrow's installer preserves user data across that replacement.
+
 ### Fixed - the beta.39 stdin/CI fix had reached one caller, not the boundary
 
 beta.39 fixed "a command that reads stdin or checks CI can hang the task" in the
