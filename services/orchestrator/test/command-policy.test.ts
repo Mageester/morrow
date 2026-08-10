@@ -2,17 +2,27 @@ import { describe, expect, it } from "vitest";
 import { classifyCommand, longRunningCommandTimeoutMs } from "../src/tools/command-policy.js";
 
 describe("command policy", () => {
-  it("marks status, diff, and project verification commands as trustable after project approval", () => {
+  it("automatically permits ordinary workspace development commands", () => {
     expect(classifyCommand("git", ["status", "--short"])).toMatchObject({ risk: "auto_approvable", pattern: "git status" });
     expect(classifyCommand("git", ["diff", "--stat"])).toMatchObject({ risk: "auto_approvable", pattern: "git diff" });
     expect(classifyCommand("pnpm", ["test"])).toMatchObject({ risk: "auto_approvable", pattern: "pnpm test" });
     expect(classifyCommand("pnpm", ["run", "typecheck"])).toMatchObject({ risk: "auto_approvable", pattern: "pnpm typecheck" });
+    expect(classifyCommand("pnpm", ["install"])).toMatchObject({ risk: "auto_approvable", pattern: "pnpm install" });
+    expect(classifyCommand("git", ["add", "."])).toMatchObject({ risk: "auto_approvable", pattern: "git add" });
+    expect(classifyCommand("git", ["commit", "-m", "feat: done"])).toMatchObject({ risk: "auto_approvable", pattern: "git commit" });
+    expect(classifyCommand("git", ["push", "origin", "feature"])).toMatchObject({ risk: "auto_approvable", pattern: "git push" });
+    expect(classifyCommand("node", ["script.mjs"])).toMatchObject({ risk: "auto_approvable" });
+    expect(classifyCommand("python", ["-m", "pytest"])).toMatchObject({ risk: "auto_approvable" });
+    expect(classifyCommand("cargo", ["build"])).toMatchObject({ risk: "auto_approvable" });
   });
 
-  it("requires approval for mutations and unknown commands", () => {
-    expect(classifyCommand("pnpm", ["install"])).toMatchObject({ risk: "approval_required" });
-    expect(classifyCommand("git", ["push"])).toMatchObject({ risk: "approval_required" });
-    expect(classifyCommand("node", ["script.mjs"])).toMatchObject({ risk: "approval_required" });
+  it("requires explicit approval only for material external effects and ambiguous host actions", () => {
+    expect(classifyCommand("npm", ["publish"])).toMatchObject({ risk: "approval_required", pattern: "npm publish" });
+    expect(classifyCommand("gh", ["release", "create", "v1.0.0"])).toMatchObject({ risk: "approval_required", pattern: "gh release" });
+    expect(classifyCommand("vercel", ["deploy", "--prod"])).toMatchObject({ risk: "approval_required" });
+    expect(classifyCommand("docker", ["push", "example/app:latest"])).toMatchObject({ risk: "approval_required" });
+    expect(classifyCommand("curl", ["https://example.com/data.json"])).toMatchObject({ risk: "approval_required" });
+    expect(classifyCommand("powershell", ["-Command", "Get-ChildItem"])).toMatchObject({ risk: "approval_required" });
   });
 
   it("denies privilege escalation, history rewrites, and broad deletion", () => {
@@ -28,13 +38,15 @@ describe("command policy", () => {
     expect(classifyCommand("git", ["push", "-f"])).toMatchObject({ risk: "denied", pattern: "git force-push" });
     expect(classifyCommand("git", ["push", "--force"])).toMatchObject({ risk: "denied", pattern: "git force-push" });
     expect(classifyCommand("git", ["push", "origin", "main", "--force-with-lease"])).toMatchObject({ risk: "denied", pattern: "git force-push" });
-    // A plain push is still a reviewable mutation, not an outright denial.
-    expect(classifyCommand("git", ["push", "origin", "main"])).toMatchObject({ risk: "approval_required" });
+    // A plain non-force push is normal trusted-workspace work.
+    expect(classifyCommand("git", ["push", "origin", "main"])).toMatchObject({ risk: "auto_approvable" });
+    // Remote deletion still crosses a material external-effects boundary.
+    expect(classifyCommand("git", ["push", "origin", "--delete", "old-branch"])).toMatchObject({ risk: "approval_required" });
   });
 
-  it("denies direct network-transfer tools as an exfiltration vector", () => {
+  it("keeps direct network-transfer tools behind explicit approval", () => {
     for (const cmd of ["curl", "wget", "nc", "ncat", "netcat", "scp", "sftp", "ftp", "ssh", "rsync", "socat", "telnet"]) {
-      expect(classifyCommand(cmd, ["https://evil.example/x"])).toMatchObject({ risk: "denied" });
+      expect(classifyCommand(cmd, ["https://example.com/x"])).toMatchObject({ risk: "approval_required" });
     }
   });
 
@@ -69,17 +81,16 @@ describe("command policy", () => {
   it("allows the narrow, safe PowerShell New-Item form for workspace paths", () => {
     for (const exec of ["powershell", "pwsh", "powershell.exe"]) {
       expect(classifyCommand(exec, ["-NoProfile", "-Command", "New-Item -ItemType Directory -Force -Path 'src'"]))
-        .toMatchObject({ risk: "approval_required", pattern: expect.stringMatching(/New-Item/) });
+        .toMatchObject({ risk: "auto_approvable", pattern: expect.stringMatching(/New-Item/) });
     }
     // File creation and double quotes and nested relative paths are also fine.
     expect(classifyCommand("powershell", ["-NoProfile", "-NonInteractive", "-Command", 'New-Item -ItemType File -Path "src/app/index.ts"']))
-      .toMatchObject({ risk: "approval_required" });
+      .toMatchObject({ risk: "auto_approvable" });
     expect(classifyCommand("powershell", ["-Command", "New-Item -ItemType Directory -Path 'src/components'"]))
-      .toMatchObject({ risk: "approval_required" });
+      .toMatchObject({ risk: "auto_approvable" });
   });
 
-  it("still denies general PowerShell and any New-Item smuggling attempt", () => {
-    // Arbitrary command payloads remain denied.
+  it("denies dangerous shell payloads while allowing ordinary shells through explicit approval", () => {
     expect(classifyCommand("powershell", ["-Command", "Remove-Item -Recurse -Force C:\\"]))
       .toMatchObject({ risk: "denied" });
     expect(classifyCommand("powershell", ["-Command", "Get-Content secrets.txt"]))
@@ -96,20 +107,21 @@ describe("command policy", () => {
       .toMatchObject({ risk: "denied" });
     expect(classifyCommand("pwsh", ["-Command", "New-Item -ItemType Directory -Path 'src'", "-Command", "iex 'bad'"]))
       .toMatchObject({ risk: "denied" });
-    // A plain interactive shell is still denied.
-    expect(classifyCommand("powershell", [])).toMatchObject({ risk: "denied" });
-    expect(classifyCommand("bash", ["-c", "ls"])).toMatchObject({ risk: "denied" });
+    // General shells are available, but never auto-approved because their
+    // payload can address the whole host.
+    expect(classifyCommand("powershell", [])).toMatchObject({ risk: "approval_required" });
+    expect(classifyCommand("bash", ["-c", "ls"])).toMatchObject({ risk: "approval_required" });
   });
 
   it("grants installs, builds, and test runs a long timeout but keeps one-offs short", () => {
-    expect(longRunningCommandTimeoutMs("npm", ["install"])).toBe(300_000);
-    expect(longRunningCommandTimeoutMs("npm", ["run", "build"])).toBe(300_000);
-    expect(longRunningCommandTimeoutMs("pnpm", ["test"])).toBe(300_000);
-    expect(longRunningCommandTimeoutMs("npm", [])).toBe(300_000); // bare npm ~ install
-    expect(longRunningCommandTimeoutMs("node", ["build.mjs"])).toBe(300_000);
-    // Short-lived / unknown commands keep the tight default.
-    expect(longRunningCommandTimeoutMs("git", ["status"])).toBe(30_000);
-    expect(longRunningCommandTimeoutMs("npm", ["run", "start"])).toBe(30_000);
+    expect(longRunningCommandTimeoutMs("npm", ["install"])).toBe(1_800_000);
+    expect(longRunningCommandTimeoutMs("npm", ["run", "build"])).toBe(1_800_000);
+    expect(longRunningCommandTimeoutMs("pnpm", ["test"])).toBe(1_800_000);
+    expect(longRunningCommandTimeoutMs("npm", [])).toBe(1_800_000); // bare npm ~ install
+    expect(longRunningCommandTimeoutMs("node", ["build.mjs"])).toBe(1_800_000);
+    // One-offs still get enough time for real developer tooling.
+    expect(longRunningCommandTimeoutMs("git", ["status"])).toBe(300_000);
+    expect(longRunningCommandTimeoutMs("npm", ["run", "start"])).toBe(300_000);
   });
 });
 

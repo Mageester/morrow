@@ -5235,64 +5235,43 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               // exact (executable, argv, cwd), not the broad risk pattern.
               const trustKey = canonicalCommandTrustKey(exec, cmdArgs, cmdCwd);
               const isTrusted = approvals.getCommandTrust(project.id, trustKey) !== undefined;
-              if (isTrusted) {
+              const trustedWorkspaceAction = autoApprove && policy.risk === "auto_approvable";
+              if (isTrusted || trustedWorkspaceAction) {
                 isApproved = true;
               } else {
-                // We must request approval!
-                const approvalId = randomUUID();
-                approvalRecord = approvals.create({
-                  id: approvalId,
-                  taskId,
-                  projectId: project.id,
-                  kind: "command",
-                  summary: `Run command: ${exec} ${cmdArgs.join(" ")}`,
-                  createdAt: now(),
-                  details: {
-                    executable: exec,
-                    args: cmdArgs,
-                    cwd: cmdCwd,
-                    risk: policy.risk,
-                    purpose,
-                    pattern: policy.pattern,
-                    toolCallId: tc.id,
-                  }
-                });
-
-                if (autoApprove) {
-                  // YOLO: resolve immediately, no continuation/human wait. We do
-                  // NOT emit approval.requested (the CLI would prompt on it).
-                  isApproved = autoResolveApproval(approvalRecord.id);
-                  if (!isApproved) {
-                    throw new Error(`Command execution denied by user.`);
-                  }
-                } else {
-                  // Persist continuation state
-                  continuationsRepo.save({
+                // Trusted-workspace mode may auto-run only the classifier's
+                // auto_approvable category. A material external effect always
+                // reaches this real human boundary and cannot resolve itself.
+                if (!approvalRecord || approvalRecord.status !== "pending") {
+                  approvalRecord = approvals.create({
+                    id: randomUUID(),
                     taskId,
-                    toolCallId: tc.id,
-                    toolName: tc.name,
-                    args: args
+                    projectId: project.id,
+                    kind: "command",
+                    summary: `Run command: ${exec} ${cmdArgs.join(" ")}`,
+                    createdAt: now(),
+                    details: {
+                      executable: exec,
+                      args: cmdArgs,
+                      cwd: cmdCwd,
+                      risk: policy.risk,
+                      purpose,
+                      pattern: policy.pattern,
+                      toolCallId: tc.id,
+                    }
                   });
-
-                  // Transition state
-                  transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
-                  event("approval.requested", { approvalId: approvalRecord.id, kind: "command" });
-                  await persistExecutionCheckpoint("waiting_for_approval");
-
-                  // Block in-process
-                  const decision = await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
-
-                  // Clean up continuation record
-                  continuationsRepo.delete(taskId);
-
-                  // Reload approval record
-                  const updatedApproval = approvals.get(approvalRecord.id)!;
-                  if (updatedApproval.status === "approved") {
-                    isApproved = true;
-                  } else {
-                    throw new Error(`Command execution denied by user.`);
-                  }
                 }
+
+                continuationsRepo.save({ taskId, toolCallId: tc.id, toolName: tc.name, args });
+                transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
+                event("approval.requested", { approvalId: approvalRecord.id, kind: "command" });
+                await persistExecutionCheckpoint("waiting_for_approval");
+                await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
+                continuationsRepo.delete(taskId);
+
+                const updatedApproval = approvals.get(approvalRecord.id)!;
+                if (updatedApproval.status === "approved") isApproved = true;
+                else throw new Error(`Command execution denied by user.`);
               }
             }
 
