@@ -568,7 +568,7 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(queryPlan.map((row) => row.detail).join(" ")).toMatch(/task_events_task_id_sequence_idx|USING INDEX|USING COVERING INDEX/i);
   });
 
-  it("bounds an artifact-only provider loop to twelve turns even when observations interleave", async () => {
+  it("does not inject a semantic artifact stop into a model-owned observation loop", async () => {
     workspacePath = mkdtempSync(join(tmpdir(), "morrow-task-2-loop-"));
     writeFileSync(join(workspacePath, "README.md"), "fixture\n");
     db = openDatabase(":memory:");
@@ -580,15 +580,13 @@ describe("Task 2 live-loop performance conformance", () => {
     const records = taskRecordsRepository(db);
     const events = records.listEvents("task-1") as Array<{ type: string; payload: Record<string, unknown> }>;
     const providerTurns = events.filter((event) => event.type === "assistant.turn_started");
-    const recovery = events.find((event) => event.payload.reason === "artifact_delivery_recovery");
-    const termination = events.find((event) => event.payload.reason === "artifact_delivery_stalled");
-    expect(providerTurns.length).toBeLessThanOrEqual(ARTIFACT_DELIVERY_STOP_TURN);
-    expect(recovery?.payload.turn).toBeLessThanOrEqual(ARTIFACT_DELIVERY_RECOVERY_TURN);
-    expect(termination?.payload.turn).toBeLessThanOrEqual(ARTIFACT_DELIVERY_STOP_TURN);
+    expect(providerTurns.length).toBeGreaterThan(ARTIFACT_DELIVERY_STOP_TURN);
+    expect(events.some((event) => event.payload.reason === "artifact_delivery_recovery")).toBe(false);
+    expect(events.some((event) => event.payload.reason === "artifact_delivery_stalled")).toBe(false);
     expect(conversationsRepository(db).listToolCallsForTask("task-1").some((call) => ["propose_patch", "create_file", "create_directory"].includes(call.toolName) && call.status === "completed")).toBe(false);
   });
 
-  it("routes repeated no-tool artifact narration through recovery before stopping", async () => {
+  it("treats the model's first tool-free narration as authoritative without controller recovery", async () => {
     workspacePath = mkdtempSync(join(tmpdir(), "morrow-task-2-narration-"));
     writeFileSync(join(workspacePath, "README.md"), "fixture\n");
     db = openDatabase(":memory:");
@@ -600,17 +598,18 @@ describe("Task 2 live-loop performance conformance", () => {
     const records = taskRecordsRepository(db);
     const events = records.listEvents("task-1") as Array<{ type: string; payload: Record<string, unknown> }>;
     const providerTurns = events.filter((event) => event.type === "assistant.turn_started");
-    const recovery = events.find((event) => event.payload.reason === "artifact_delivery_recovery");
-    const termination = events.find((event) => event.payload.reason === "artifact_delivery_stalled");
-    expect(provider.requests.length).toBeLessThanOrEqual(ARTIFACT_DELIVERY_STOP_TURN);
-    expect(providerTurns.length).toBeLessThanOrEqual(ARTIFACT_DELIVERY_STOP_TURN);
-    expect(recovery?.payload.turn).toBe(ARTIFACT_DELIVERY_RECOVERY_TURN);
-    expect(termination?.payload.turn).toBe(ARTIFACT_DELIVERY_STOP_TURN);
-    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
+    expect(provider.requests).toHaveLength(1);
+    expect(providerTurns).toHaveLength(1);
+    expect(events.some((event) => event.payload.reason === "artifact_delivery_recovery")).toBe(false);
+    expect(events.some((event) => event.payload.reason === "artifact_delivery_stalled")).toBe(false);
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    expect(executionContinuityRepository(db).getCanonicalAnswer("task-1")?.evidenceJson).toMatchObject({
+      completion: { complete: false },
+    });
     expect(conversationsRepository(db).listToolCallsForTask("task-1")).toHaveLength(0);
   });
 
-  it("rebuilds a trusted artifact-delivery request after poisoned inspection narration", async () => {
+  it("does not replace a model final with a synthetic fresh-context recovery", async () => {
     workspacePath = mkdtempSync(join(tmpdir(), "morrow-artifact-fresh-context-"));
     db = openDatabase(":memory:");
     const missionObjective = "Create the requested artifact in the workspace and verify it.";
@@ -671,29 +670,19 @@ describe("Task 2 live-loop performance conformance", () => {
     await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 10 });
 
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
-    expect(readFileSync(join(workspacePath, "recovered.txt"), "utf8")).toBe("recovered\n");
-    const freshRequest = provider.requests[6]!;
-    expect(freshRequest.filter((message) => message.role === "system").some((message) => message.content.includes("You are Morrow"))).toBe(true);
-    expect(freshRequest.filter((message) => message.role === "user")).toHaveLength(1);
-    expect(freshRequest.find((message) => message.role === "user")?.content).toContain(missionObjective);
-    expect(JSON.stringify(freshRequest)).not.toContain(controllerPrompt);
-    expect(JSON.stringify(freshRequest)).not.toContain("MEMORY_ONLY_SHOULD_NOT_REPLAY");
-    expect(JSON.stringify(freshRequest)).not.toContain("COMPACTION_ONLY_SHOULD_NOT_REPLAY");
-    expect(freshRequest.some((message) => message.role === "assistant" || message.role === "tool")).toBe(false);
-    expect(JSON.stringify(freshRequest)).not.toContain("POISONED_PROVIDER_NARRATION");
-    expect(JSON.stringify(freshRequest)).not.toContain("PRIVATE_PROVIDER_REASONING");
-    expect(freshRequest.some((message) => message.providerContinuation || message.providerContinuationRouteFingerprint)).toBe(false);
+    expect(provider.requests).toHaveLength(4);
+    expect(conversationsRepository(db).getMessage("assistant-1")?.content).toContain("POISONED_PROVIDER_NARRATION");
     const durableTurns = executionContinuityRepository(db).listProviderTurns("task-1");
     expect(durableTurns.slice(0, 3).map((turn) => turn.toolCalls.map((call) => (call as { name?: string }).name))).toEqual([
       ["inspect_workspace"],
       ["list_files"],
       ["git_status"],
     ]);
-    const recoveryEvents = taskRecordsRepository(db)
-      .listEvents("task-1")
-      .filter((event) => event.payload.reason === "artifact_delivery_recovery");
-    expect(recoveryEvents).toHaveLength(1);
-    expect(recoveryEvents[0]?.payload.recoveryTurnKey).toBe(durableTurns[5]?.turnKey);
+    expect(durableTurns).toHaveLength(4);
+    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.reason === "artifact_delivery_recovery")).toBe(false);
+    expect(executionContinuityRepository(db).getCanonicalAnswer("task-1")?.evidenceJson).toMatchObject({
+      completion: { complete: false },
+    });
   });
 
   it("does not fresh-reset after a successful run_command that may mutate the workspace", async () => {
@@ -743,7 +732,7 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(postCommandRequest.some((message) => message.role === "user" && message.content.includes("MORROW DELIVERY RECOVERY"))).toBe(false);
   });
 
-  it("reconstructs one pending fresh recovery after restart at the durable marker", async () => {
+  it("does not create a restart recovery marker after the model emits a final", async () => {
     workspacePath = mkdtempSync(join(tmpdir(), "morrow-artifact-restart-marker-"));
     db = openDatabase(":memory:");
     seedArtifactTask(db, workspacePath);
@@ -771,52 +760,15 @@ describe("Task 2 live-loop performance conformance", () => {
 
     const records = taskRecordsRepository(db);
     const continuity = executionContinuityRepository(db);
-    const preRecoveryProviderTurns = continuity.listProviderTurns("task-1");
-    const preRecoveryToolCalls = conversationsRepository(db).listToolCallsForTask("task-1");
-    const preRecoveryContinuationRefs = continuity.listProviderContinuationRefs("task-1");
-    const preRecoveryEvents = records.listEvents("task-1");
-    const preRecoveryMarkerEvents = preRecoveryEvents.filter((event) => event.payload.reason === "artifact_delivery_recovery");
-    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("failed");
-    expect(preRecoveryProviderTurns).toHaveLength(ARTIFACT_DELIVERY_RECOVERY_TURN);
-    expect(preRecoveryToolCalls).toHaveLength(3);
-    expect(preRecoveryContinuationRefs).toHaveLength(1);
-    expect(preRecoveryMarkerEvents).toHaveLength(1);
-
-    records.retryTask("task-1");
-    const resumedProvider = new MockProvider({
-      chunks: [
-        [
-          { type: "tool_call", toolCalls: [{ id: "deliver", index: 0, type: "function", function: { name: "create_file", arguments: JSON.stringify({ path: "restarted.txt", content: "restarted\n" }) } }] },
-          { type: "done" },
-        ],
-        [
-          { type: "tool_call", toolCalls: [{ id: "verify", index: 0, type: "function", function: { name: "run_command", arguments: JSON.stringify({ executable: "node", args: ["-e", "process.exit(0)"], purpose: "Verify restarted artifact" }) } }] },
-          { type: "done" },
-        ],
-        [{ type: "text", text: "The requested artifact is delivered after restart." }, { type: "done" }],
-      ],
-    });
-
-    await executeAgentChatTask({ db, taskId: "task-1", provider: resumedProvider, maxTurns: 10 });
-
-    const resumedRequest = resumedProvider.requests[0]!;
-    expect(resumedRequest.filter((message) => message.role === "system").some((message) => message.content.includes("You are Morrow"))).toBe(true);
-    expect(resumedRequest.filter((message) => message.role === "user")).toHaveLength(1);
-    expect(resumedRequest.find((message) => message.role === "user")?.content).toContain("Implement the requested artifact in the workspace and verify it.");
-    expect(resumedRequest.some((message) => message.role === "assistant" || message.role === "tool")).toBe(false);
-    expect(JSON.stringify(resumedRequest)).not.toContain("POISONED_PROVIDER_NARRATION");
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
-    const postRecoveryProviderTurns = continuity.listProviderTurns("task-1");
-    const postRecoveryToolCalls = conversationsRepository(db).listToolCallsForTask("task-1");
-    const postRecoveryContinuationRefs = continuity.listProviderContinuationRefs("task-1");
-    const postRecoveryEvents = records.listEvents("task-1");
-    const postRecoveryMarkerEvents = postRecoveryEvents.filter((event) => event.payload.reason === "artifact_delivery_recovery");
-    expect(postRecoveryProviderTurns.slice(0, preRecoveryProviderTurns.length)).toEqual(preRecoveryProviderTurns);
-    expect(postRecoveryToolCalls.slice(0, preRecoveryToolCalls.length)).toEqual(preRecoveryToolCalls);
-    expect(postRecoveryContinuationRefs.slice(0, preRecoveryContinuationRefs.length)).toEqual(preRecoveryContinuationRefs);
-    expect(postRecoveryEvents.slice(0, preRecoveryEvents.length)).toEqual(preRecoveryEvents);
-    expect(postRecoveryMarkerEvents).toHaveLength(1);
-    expect(postRecoveryMarkerEvents[0]).toEqual(preRecoveryMarkerEvents[0]);
+    expect(firstProvider.requests).toHaveLength(4);
+    expect(continuity.listProviderTurns("task-1")).toHaveLength(4);
+    expect(conversationsRepository(db).listToolCallsForTask("task-1")).toHaveLength(3);
+    expect(continuity.listProviderContinuationRefs("task-1")).toHaveLength(1);
+    expect(records.listEvents("task-1").some((event) => event.payload.reason === "artifact_delivery_recovery")).toBe(false);
+    expect(continuity.getCanonicalAnswer("task-1")?.evidenceJson).toMatchObject({
+      completion: { complete: false },
+    });
   });
 
   it("reconstructs a trusted recovery after a multi-segment rollover using the exact durable turn key", async () => {
@@ -908,7 +860,7 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(recoveryEvents[0]?.payload.recoveryTurnKey).toBe(markerTurn.turnKey);
   });
 
-  it("does not reset or emit a second recovery after a fresh attempt is durable", async () => {
+  it("does not reset history after a model final even when a later scripted turn contains reasoning", async () => {
     workspacePath = mkdtempSync(join(tmpdir(), "morrow-artifact-restart-after-fresh-"));
     db = openDatabase(":memory:");
     seedArtifactTask(db, workspacePath);
@@ -936,32 +888,10 @@ describe("Task 2 live-loop performance conformance", () => {
     await executeAgentChatTask({ db, taskId: "task-1", provider: firstProvider, maxTurns: 12 });
 
     const records = taskRecordsRepository(db);
-    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
-    expect(executionContinuityRepository(db).listProviderTurns("task-1")).toHaveLength(ARTIFACT_DELIVERY_RECOVERY_TURN + 1);
-    expect(records.listEvents("task-1").filter((event) => event.payload.reason === "artifact_delivery_recovery")).toHaveLength(1);
-    records.resumeInterruptedTask("task-1", { id: "resume-after-fresh", createdAt: NOW, payload: {} });
-
-    const resumedProvider = new MockProvider({
-      chunks: [
-        [
-          { type: "tool_call", toolCalls: [{ id: "deliver", index: 0, type: "function", function: { name: "create_file", arguments: JSON.stringify({ path: "after-fresh-restart.txt", content: "restarted\n" }) } }] },
-          { type: "done" },
-        ],
-        [
-          { type: "tool_call", toolCalls: [{ id: "verify", index: 0, type: "function", function: { name: "run_command", arguments: JSON.stringify({ executable: "node", args: ["-e", "process.exit(0)"], purpose: "Verify restarted artifact" }) } }] },
-          { type: "done" },
-        ],
-        [{ type: "text", text: "The requested artifact is delivered after the fresh attempt." }, { type: "done" }],
-      ],
-    });
-
-    await executeAgentChatTask({ db, taskId: "task-1", provider: resumedProvider, maxTurns: 12 });
-
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
-    const resumedRequest = resumedProvider.requests[0]!;
-    expect(resumedRequest.some((message) => message.role === "assistant" || message.role === "tool")).toBe(true);
-    expect(resumedRequest.some((message) => message.role === "user" && message.content.includes("MORROW DELIVERY RECOVERY"))).toBe(false);
-    expect(records.listEvents("task-1").filter((event) => event.payload.reason === "artifact_delivery_recovery")).toHaveLength(1);
+    expect(firstProvider.requests).toHaveLength(4);
+    expect(executionContinuityRepository(db).listProviderTurns("task-1")).toHaveLength(4);
+    expect(records.listEvents("task-1").filter((event) => event.payload.reason === "artifact_delivery_recovery")).toHaveLength(0);
   });
 
   it("fails safe for a malformed legacy recovery marker", async () => {
@@ -997,7 +927,7 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(records.listEvents("task-1").filter((event) => event.payload.reason === "artifact_delivery_recovery")).toHaveLength(1);
   });
 
-  it("interrupts a reasoning-only fresh artifact recovery without generic empty retries", async () => {
+  it("does not reach a later reasoning-only script after the model has already emitted a final", async () => {
     workspacePath = mkdtempSync(join(tmpdir(), "morrow-artifact-fresh-empty-"));
     db = openDatabase(":memory:");
     seedArtifactTask(db, workspacePath);
@@ -1024,10 +954,10 @@ describe("Task 2 live-loop performance conformance", () => {
 
     await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 12 });
 
-    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
-    expect(provider.requests).toHaveLength(7);
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    expect(provider.requests).toHaveLength(4);
     const events = taskRecordsRepository(db).listEvents("task-1");
-    expect(events.some((event) => event.payload.reason === "artifact_delivery_recovery_reasoning_only")).toBe(true);
+    expect(events.some((event) => event.payload.reason === "artifact_delivery_recovery_reasoning_only")).toBe(false);
     expect(events.filter((event) => event.payload.reason === "empty_provider_response")).toHaveLength(0);
     expect(events.some((event) => event.payload.reason === "artifact_delivery_stalled")).toBe(false);
     expect(conversationsRepository(db).listToolCallsForTask("task-1").some((call) => call.toolName === "create_file")).toBe(false);
