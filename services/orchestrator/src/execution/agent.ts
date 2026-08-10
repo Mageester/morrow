@@ -489,7 +489,7 @@ export const READ_ONLY_TOOL_NAMES = new Set([
 // read/list/inspect interleaving is the primary case, while search and artifact
 // reads receive the same bound so a provider cannot evade it by changing the
 // observation tool name.
-const OBSERVATION_TOOL_NAMES = new Set(READ_ONLY_TOOL_NAMES);
+const OBSERVATION_TOOL_NAMES = new Set([...READ_ONLY_TOOL_NAMES, "read_process_output"]);
 
 function capToolResult(toolName: string, result: string, externalizer?: (text: string, kind: string) => string): string {
   const bytes = Buffer.byteLength(result, "utf8");
@@ -4717,21 +4717,22 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
         const toolSignature = `${tc.name}:${tc.arguments}`;
         // These browser reads observe mutable page state. Repeating one after
         // a click, repair, or navigation is fresh evidence, not duplicate work.
-        // The interaction tools (click/type/key/select) are never duplicate
-        // work either: each is a state MUTATION whose effect depends on the
-        // page's current state, so repeating one with identical arguments is a
-        // genuine distinct action, not a re-observation. Live bug (Pomodoro
-        // build, deepseek-v4-flash): a Start/Pause toggle is the same DOM ref
-        // clicked twice with opposite intent; the second click (Pause) matched
-        // the first click's signature, was deduplicated into a
-        // `{ duplicate: true }` placeholder, and never executed — the timer
-        // kept running and the model had to notice and retry. The loop
-        // detector (below) still catches a genuine repeated-action stall.
-        const dynamicBrowserCall = [
-          "browser_open", "browser_snapshot", "browser_console", "browser_screenshot",
-          "browser_click", "browser_type", "browser_key", "browser_select",
-        ].includes(tc.name);
-        const repeatedTool = !dynamicBrowserCall && seenToolSignatures.has(toolSignature);
+        // Only safe read-only observations (OBSERVATION_TOOL_NAMES) are ever
+        // deduplicated. State-mutating commands (run_command, browser
+        // interactions) must execute every time even if arguments match
+        // exactly, since their effect depends on external state. No
+        // browser_* tool is a member of OBSERVATION_TOOL_NAMES, so this
+        // condition is false for all of them unconditionally — that is load
+        // bearing, not incidental: a prior version of this check special-cased
+        // browser calls by name (`dynamicBrowserCall`) after a live regression
+        // (Pomodoro build, deepseek-v4-flash) where a Start/Pause toggle click
+        // — the same DOM ref, opposite intent — matched an earlier click's
+        // signature, was deduplicated into a `{duplicate:true}` stub, and
+        // never executed; the timer kept running and the model had to notice
+        // and retry. If OBSERVATION_TOOL_NAMES is ever changed to include a
+        // browser_* tool, re-verify this exact scenario before shipping. The
+        // loop detector (below) still catches a genuine repeated-action stall.
+        const repeatedTool = OBSERVATION_TOOL_NAMES.has(tc.name) && seenToolSignatures.has(toolSignature);
         if (!repeatedTool) seenToolSignatures.add(toolSignature);
         const loopSignature = toolCallSignature(tc.name, tc.arguments);
         // A dynamic browser OBSERVATION (snapshot/console/screenshot/reload)
