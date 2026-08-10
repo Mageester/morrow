@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { conversationQueries } from "../../api/conversations.js";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 export interface ReasoningDisclosureProps {
   active: boolean;
@@ -39,10 +41,15 @@ export function ReasoningDisclosure({
       ) : (
         <div className="morrow-reasoning__entries">
           {reasoning.data.entries.map((entry) => (
-            <article key={entry.turnKey}>
-              <p className="morrow-reasoning__provider">{entry.providerId}</p>
-              <pre>{entry.content}</pre>
-            </article>
+            <details key={entry.turnKey} className="morrow-reasoning__entry-details" open>
+              <summary className="morrow-reasoning__entry-summary">
+                <span className="morrow-reasoning__provider">{entry.providerId}</span>
+                <span className="morrow-reasoning__summary-hint">Click to toggle reasoning</span>
+              </summary>
+              <div className="morrow-reasoning__content">
+                <Markdown remarkPlugins={[remarkGfm]}>{entry.content}</Markdown>
+              </div>
+            </details>
           ))}
         </div>
       )}

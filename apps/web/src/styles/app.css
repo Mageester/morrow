@@ -1069,23 +1069,79 @@ a {
   gap: var(--morrow-space-3);
 }
 
-.morrow-reasoning__entries article {
+.morrow-reasoning__entry-details {
   display: grid;
   gap: var(--morrow-space-1);
+  border: 1px solid color-mix(in srgb, var(--morrow-border) 50%, transparent);
+  border-radius: var(--morrow-radius-sm);
+  padding: var(--morrow-space-2);
+  background: color-mix(in srgb, var(--morrow-surface) 50%, transparent);
 }
 
-.morrow-reasoning__entries pre {
-  max-height: 24rem;
-  padding: 0;
-  margin: 0;
-  overflow: auto;
-  color: var(--morrow-text);
-  background: transparent;
-  font: inherit;
+.morrow-reasoning__entry-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 500;
+  user-select: none;
+}
+
+.morrow-reasoning__entry-summary::-webkit-details-marker {
+  display: none;
+}
+
+.morrow-reasoning__summary-hint {
+  font-size: 0.75rem;
+  color: var(--morrow-text-muted);
+  opacity: 0.5;
+  transition: opacity 0.2s ease;
+}
+
+.morrow-reasoning__entry-summary:hover .morrow-reasoning__summary-hint {
+  opacity: 1;
+}
+
+.morrow-reasoning__content {
+  max-height: 32rem;
+  overflow-y: auto;
+  padding-top: var(--morrow-space-2);
+  border-top: 1px solid color-mix(in srgb, var(--morrow-border) 50%, transparent);
+  margin-top: var(--morrow-space-2);
+  color: var(--morrow-text-muted);
   font-size: 0.8125rem;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.morrow-reasoning__content p {
+  margin-bottom: var(--morrow-space-2);
+}
+
+.morrow-reasoning__content p:last-child {
+  margin-bottom: 0;
+}
+
+.morrow-reasoning__content pre {
+  background: var(--morrow-surface-subtle);
+  padding: var(--morrow-space-2);
+  border-radius: var(--morrow-radius-sm);
+  overflow-x: auto;
+  font-family: inherit;
+  margin-bottom: var(--morrow-space-2);
+}
+
+.morrow-reasoning__content code {
+  font-family: inherit;
+  background: var(--morrow-surface-subtle);
+  padding: 0.1em 0.3em;
+  border-radius: 2px;
+}
+
+.morrow-reasoning__content ul, 
+.morrow-reasoning__content ol {
+  margin-bottom: var(--morrow-space-2);
+  padding-left: var(--morrow-space-4);
 }
 
 .morrow-conversation-message__route,
