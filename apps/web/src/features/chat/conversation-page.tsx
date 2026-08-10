@@ -160,6 +160,7 @@ export function ConversationPageContent({
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
   const [showReasoning, setShowReasoning] = useState(loadReasoningVisibility);
+  const [reasoningConfig, setReasoningConfig] = useState<import("@morrow/contracts").ReasoningConfiguration>({ mode: "auto" });
   const activityButtonRef = useRef<HTMLButtonElement>(null);
   const renameButtonRef = useRef<HTMLButtonElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -558,6 +559,8 @@ export function ConversationPageContent({
           modelCatalogue={modelCatalogue}
           onStop={stop}
           onShowReasoningChange={setShowReasoning}
+          onReasoningConfigChange={setReasoningConfig}
+          reasoningConfig={reasoningConfig}
           onSubmit={submit}
           showReasoning={showReasoning}
           placeholder="Reply to Morrow…"

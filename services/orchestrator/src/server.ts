@@ -564,6 +564,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return project;
   });
 
+  app.delete("/api/projects/:projectId", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    projects.deleteProject(projectId);
+    return { ok: true, deletedId: projectId };
+  });
+
   // Dedicated status endpoint (rather than adding these fields to the project
   // list/get responses) so the browser only pays for a git spawn + realpath
   // check when a surface actually needs to show workspace health, not on every

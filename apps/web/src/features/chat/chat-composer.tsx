@@ -99,6 +99,8 @@ export interface ChatComposerProps {
   onStop?: ((taskId: string) => Promise<void>) | undefined;
   showReasoning?: boolean | undefined;
   onShowReasoningChange?: ((show: boolean) => void) | undefined;
+  reasoningConfig?: import("@morrow/contracts").ReasoningConfiguration | undefined;
+  onReasoningConfigChange?: ((config: import("@morrow/contracts").ReasoningConfiguration) => void) | undefined;
 }
 
 const DEFAULT_ROUTE: ChatComposerModelRoute = {
@@ -159,6 +161,8 @@ export function ChatComposer({
   onStop,
   showReasoning = false,
   onShowReasoningChange,
+  reasoningConfig,
+  onReasoningConfigChange,
 }: ChatComposerProps) {
   const id = useId();
   const inputId = `morrow-chat-message-${id}`;
@@ -467,6 +471,36 @@ export function ChatComposer({
         )}
 
         <ContextMeter taskId={contextTaskId ?? activeTaskId} />
+
+        {onReasoningConfigChange ? (
+          <label className="morrow-chat-composer__select" title="Set reasoning effort / thinking depth for the model">
+            <span>Reasoning effort</span>
+            <select
+              disabled={interactionDisabled}
+              onChange={(event) => {
+                const val = event.target.value;
+                if (val === "auto") onReasoningConfigChange({ mode: "auto" });
+                else if (val === "off") onReasoningConfigChange({ mode: "off" });
+                else onReasoningConfigChange({ mode: "effort", effort: val as any });
+              }}
+              value={
+                reasoningConfig
+                  ? reasoningConfig.mode === "effort"
+                    ? reasoningConfig.effort
+                    : reasoningConfig.mode
+                  : "auto"
+              }
+            >
+              <option value="auto">Auto</option>
+              <option value="off">Off</option>
+              <option value="low">Low effort</option>
+              <option value="medium">Medium effort</option>
+              <option value="high">High effort</option>
+              <option value="xhigh">xHigh effort</option>
+              <option value="max">Max effort</option>
+            </select>
+          </label>
+        ) : null}
 
         {onShowReasoningChange ? (
           <label

@@ -1,6 +1,7 @@
 import { Button, Surface } from "@morrow/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { Trash2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { ApiClientError } from "../../api/client.js";
 import { projectApi, projectQueries, type ProjectSelection } from "../../api/projects.js";
@@ -15,6 +16,7 @@ export function ProjectsPage() {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
+  const [projectToDelete, setProjectToDelete] = useState<ProjectSelection | null>(null);
 
   const createProject = useMutation({
     mutationFn: () => projectApi.create({ name: name.trim(), workspacePath: workspacePath.trim() }),
@@ -22,6 +24,22 @@ export function ProjectsPage() {
       setName("");
       setWorkspacePath("");
       selectProject(created.id);
+      void queryClient.invalidateQueries({ queryKey: ["projects", "available"] });
+    },
+  });
+
+  const deleteProject = useMutation({
+    mutationFn: (id: string) => projectApi.delete(id),
+    onSuccess: (_, deletedId) => {
+      setProjectToDelete(null);
+      if (activeProject?.id === deletedId) {
+        const remaining = projects.filter((p) => p.id !== deletedId);
+        if (remaining.length > 0) {
+          selectProject(remaining[0]!.id);
+        } else {
+          localStorage.removeItem("morrow-active-project");
+        }
+      }
       void queryClient.invalidateQueries({ queryKey: ["projects", "available"] });
     },
   });
@@ -106,22 +124,58 @@ export function ProjectsPage() {
             <ProjectRow
               isActive={project.id === activeProject?.id}
               key={project.id}
+              onDelete={() => setProjectToDelete(project)}
               onSelect={() => selectProject(project.id)}
               project={project}
             />
           ))}
         </ul>
       )}
+
+      {projectToDelete ? (
+        <div className="morrow-conversation-dialog-backdrop">
+          <div aria-labelledby="delete-dialog-title" role="dialog" className="morrow-dialog">
+            <h2 id="delete-dialog-title">Remove {projectToDelete.name}?</h2>
+            <p>
+              This will remove <strong>{projectToDelete.name}</strong> from Morrow’s project list.
+              Your local files on disk will stay untouched.
+            </p>
+            {deleteProject.isError ? (
+              <p role="alert" style={{ color: "var(--morrow-danger)" }}>
+                {safeError(deleteProject.error, "Failed to delete project.")}
+              </p>
+            ) : null}
+            <div className="morrow-dialog__actions" style={{ display: "flex", gap: "var(--morrow-space-2)", justifyContent: "flex-end", marginTop: "var(--morrow-space-4)" }}>
+              <Button
+                disabled={deleteProject.isPending}
+                onClick={() => setProjectToDelete(null)}
+                variant="secondary"
+              >
+                Cancel
+              </Button>
+              <Button
+                disabled={deleteProject.isPending}
+                onClick={() => deleteProject.mutate(projectToDelete.id)}
+                variant="primary"
+              >
+                {deleteProject.isPending ? "Removing…" : "Remove Project"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
 
 function ProjectRow({
   isActive,
+  onDelete,
   onSelect,
   project,
 }: {
   isActive: boolean;
+  onDelete: () => void;
   onSelect: () => void;
   project: ProjectSelection;
 }) {
@@ -161,11 +215,31 @@ function ProjectRow({
           </>
         )}
       </div>
-      {isActive ? null : (
-        <Button onClick={onSelect} size="compact" variant="secondary">
-          Use this project
-        </Button>
-      )}
+      <div style={{ display: "flex", gap: "var(--morrow-space-2)", alignItems: "center" }}>
+        {!isActive ? (
+          <Button onClick={onSelect} size="compact" variant="secondary">
+            Use this project
+          </Button>
+        ) : null}
+        <button
+          aria-label={`Delete ${project.name}`}
+          className="morrow-icon-button"
+          onClick={onDelete}
+          style={{
+            background: "transparent",
+            border: "none",
+            color: "var(--morrow-text-muted)",
+            cursor: "pointer",
+            padding: "var(--morrow-space-1)",
+            borderRadius: "var(--morrow-radius-sm)",
+          }}
+          title="Remove project"
+          type="button"
+        >
+          <Trash2 size={16} />
+        </button>
+      </div>
     </li>
   );
 }
+
