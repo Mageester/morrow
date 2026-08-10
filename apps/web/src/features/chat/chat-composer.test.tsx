@@ -38,6 +38,14 @@ const routes = [
 beforeEach(() => localStorage.clear());
 
 describe("ChatComposer", () => {
+  it("defaults a fresh install to Build with a trusted workspace", () => {
+    render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("checkbox", { name: "Trusted workspace" })).toBeChecked();
+    expect(screen.getByText("Morrow can edit files and run ordinary workspace commands without stopping.")).toBeVisible();
+  });
+
   it("supports native fast typing, editing, selection, clipboard-shaped input, and stable parent rerenders", async () => {
     const user = userEvent.setup();
     let rerenderParent!: () => void;
@@ -140,10 +148,6 @@ describe("ChatComposer", () => {
       />,
     );
 
-    // Build plus the approval switch is what "Build Auto" used to mean; the
-    // wire payload it produces must be identical.
-    await user.click(screen.getByRole("button", { name: "Build" }));
-    await user.click(screen.getByRole("checkbox", { name: "Approve changes automatically" }));
     await user.selectOptions(screen.getByLabelText("Model route"), "openrouter:model-a");
     await user.selectOptions(screen.getByLabelText("Project"), "project-2");
     expect(onProjectChange).toHaveBeenCalledWith("project-2");
@@ -161,19 +165,29 @@ describe("ChatComposer", () => {
     } satisfies ChatComposerSubmission);
   });
 
-  it("keeps Build supervision selected across composer remounts", async () => {
+  it("preserves an explicit supervised Build preference across composer remounts", async () => {
     const user = userEvent.setup();
     const first = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
 
-    await user.click(screen.getByRole("button", { name: "Build" }));
-    await user.click(screen.getByRole("checkbox", { name: "Approve changes automatically" }));
+    await user.click(screen.getByRole("checkbox", { name: "Trusted workspace" }));
     first.unmount();
 
     render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
 
     expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("checkbox", { name: "Approve changes automatically" })).toBeChecked();
-    expect(screen.getByText("Morrow will edit files and run commands without stopping to ask.")).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: "Trusted workspace" })).not.toBeChecked();
+    expect(screen.getByText("Morrow will ask before workspace changes and commands.")).toBeVisible();
+  });
+
+  it("preserves an explicit Chat preference across composer remounts", async () => {
+    const user = userEvent.setup();
+    const first = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Chat" }));
+    first.unmount();
+
+    render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Chat" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("checkbox", { name: "Trusted workspace" })).not.toBeInTheDocument();
   });
 
   it("clears draft only after acceptance and blocks rapid duplicate sends", async () => {

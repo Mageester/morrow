@@ -33,13 +33,16 @@ interface ComposerModePreference {
 function loadComposerModePreference(): ComposerModePreference {
   try {
     const saved = JSON.parse(localStorage.getItem(COMPOSER_MODE_STORAGE_KEY) ?? "null") as Partial<ComposerModePreference> | null;
+    if (saved?.mode === "chat") {
+      return { mode: "chat", autoApprove: false };
+    }
     if (saved?.mode === "build") {
       return { mode: "build", autoApprove: saved.autoApprove === true };
     }
   } catch {
     // Corrupt or unavailable browser storage must not block chat.
   }
-  return { mode: "chat", autoApprove: false };
+  return { mode: "build", autoApprove: true };
 }
 
 function saveComposerModePreference(preference: ComposerModePreference): void {
@@ -110,7 +113,7 @@ const DEFAULT_ROUTE: ChatComposerModelRoute = {
  * mode differing only by `autoApprove`, which is a question about supervision,
  * not about what Morrow should do; and Plan sat between them describing an
  * output format rather than a capability. What is left is the one real choice
- * (may Morrow change my files?) with approval as its own visible switch.
+ * (may Morrow change my files?) with workspace trust as its own visible switch.
  *
  * The wire contract is unchanged: the orchestrator still receives
  * read-only / plan-only / agent plus autoApprove.
@@ -408,15 +411,15 @@ export function ChatComposer({
               onChange={(event) => setAutoApprove(event.target.checked)}
               type="checkbox"
             />
-            <span>Approve changes automatically</span>
+            <span>Trusted workspace</span>
           </label>
         ) : null}
       </div>
       <p className="morrow-chat-composer__mode-hint">
         {mode === "build"
           ? autoApprove
-            ? "Morrow will edit files and run commands without stopping to ask."
-            : "Morrow will ask before it applies changes."
+            ? "Morrow can edit files and run ordinary workspace commands without stopping."
+            : "Morrow will ask before workspace changes and commands."
           : "Morrow will answer and read your project, but will not change anything."}
       </p>
 
