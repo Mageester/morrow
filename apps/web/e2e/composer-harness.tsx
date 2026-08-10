@@ -1,5 +1,6 @@
 import type { ChatComposerSubmission } from "../src/features/chat/chat-composer.js";
 import { ChatComposer } from "../src/features/chat/chat-composer.js";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@morrow/ui/styles.css";
@@ -89,4 +90,11 @@ function ComposerHarness() {
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Composer harness root was not found.");
-createRoot(root).render(<StrictMode><ComposerHarness /></StrictMode>);
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+createRoot(root).render(
+  <StrictMode>
+    <QueryClientProvider client={queryClient}>
+      <ComposerHarness />
+    </QueryClientProvider>
+  </StrictMode>,
+);
