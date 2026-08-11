@@ -1771,6 +1771,98 @@ a {
   place-items: center;
 }
 
+.morrow-cost-panel {
+  display: grid;
+  width: min(100%, 900px);
+  padding: var(--morrow-space-3) var(--morrow-space-4);
+  gap: var(--morrow-space-2);
+  color: var(--morrow-text);
+  background: color-mix(in srgb, var(--morrow-surface-elevated) 94%, transparent);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-md);
+  box-shadow: var(--morrow-shadow-sm);
+}
+
+.morrow-cost-panel__header,
+.morrow-cost-panel__meta,
+.morrow-cost-panel__lines li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-cost-panel__eyebrow,
+.morrow-cost-panel__total,
+.morrow-cost-panel__basis,
+.morrow-cost-panel__disclosure,
+.morrow-cost-panel__calculating,
+.morrow-cost-panel__meta,
+.morrow-cost-panel__details p {
+  margin: 0;
+}
+
+.morrow-cost-panel__eyebrow,
+.morrow-cost-panel__meta,
+.morrow-cost-panel__basis,
+.morrow-cost-panel__disclosure,
+.morrow-cost-panel__details,
+.morrow-cost-panel__lines {
+  color: var(--morrow-text-muted);
+  font-size: 0.75rem;
+}
+
+.morrow-cost-panel__total {
+  font-size: 1.125rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 760;
+}
+
+.morrow-cost-panel__accuracy {
+  padding: 0.2rem 0.45rem;
+  color: var(--morrow-text-muted);
+  background: var(--morrow-surface-subtle);
+  border-radius: var(--morrow-radius-sm);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.morrow-cost-panel__accuracy--exact_usage_pricing {
+  color: var(--morrow-success, var(--morrow-accent));
+}
+
+.morrow-cost-panel__calculating {
+  color: var(--morrow-accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.morrow-cost-panel__details {
+  display: grid;
+  padding-top: var(--morrow-space-2);
+  gap: var(--morrow-space-1);
+  border-top: 1px solid var(--morrow-border);
+}
+
+.morrow-cost-panel__lines summary {
+  cursor: pointer;
+  color: var(--morrow-text);
+  font-weight: 650;
+}
+
+.morrow-cost-panel__lines ul {
+  display: grid;
+  margin: var(--morrow-space-2) 0 0;
+  padding: 0;
+  gap: var(--morrow-space-1);
+  list-style: none;
+}
+
+.morrow-cost-panel__lines li span:last-child {
+  font-variant-numeric: tabular-nums;
+}
+
 .morrow-conversation-dialog-backdrop {
   position: fixed;
   z-index: 30;

@@ -25,6 +25,7 @@ import { ActivityPanel, ConversationActivity, ConversationTranscript } from "./a
 import { PendingApprovals } from "./pending-approvals.js";
 import { useConversationAutoscroll } from "./use-conversation-autoscroll.js";
 import { ReasoningDisclosure } from "./reasoning-disclosure.js";
+import { CostPanel } from "./cost-panel.js";
 
 const ACTIVE_STATES = new Set(["queued", "streaming"]);
 const RETRYABLE_STATES = new Set(["failed", "interrupted"]);
@@ -558,6 +559,7 @@ export function ConversationPageContent({
       />
 
       <div className="morrow-conversation-composer">
+        {latestTaskId ? <CostPanel compact taskId={latestTaskId} /> : null}
         <ChatComposer
           activeTaskId={activeTaskId}
           autoFocus

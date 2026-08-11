@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import {
   CreateProjectSchema,
   CreateTaskSchema,
+  TaskCostSummarySchema,
   StructuredApiErrorSchema,
   SendMessageSchema,
   CreateConversationSchema,
@@ -45,6 +46,7 @@ import { delegationsRepository } from "./repositories/delegations.js";
 import { handoffsRepository } from "./repositories/handoffs.js";
 import { assistantProfileRepository } from "./repositories/assistant-profile.js";
 import { taskRepository } from "./repositories/tasks.js";
+import { taskCostsRepository } from "./repositories/task-costs.js";
 import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
 import { taskRoutingRepository } from "./repositories/task-routing.js";
@@ -288,6 +290,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const handoffs = handoffsRepository(deps.db);
   const assistantProfile = assistantProfileRepository(deps.db);
   const tasks = taskRepository(deps.db);
+  const taskCosts = taskCostsRepository(deps.db);
   const records = taskRecordsRepository(deps.db);
   const convs = conversationsRepository(deps.db);
   const routingRepo = taskRoutingRepository(deps.db);
@@ -1000,6 +1003,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const latestSummary = contextSummariesRepo.latestForTask(taskId);
     const context = contextUsageFromEvents(agg.events, latestSummary);
     return { ...agg, toolCalls, approvals: approvals.listByTask(taskId), integrations: integrationsRepo.listByTask(taskId), context, routing };
+  });
+
+  app.get("/api/tasks/:taskId/cost", async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const task = tasks.getTaskById(taskId);
+    if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    return TaskCostSummarySchema.parse(taskCosts.summaryByTask(taskId));
   });
 
   app.get("/api/tasks/:taskId/events", async (request, reply) => {
