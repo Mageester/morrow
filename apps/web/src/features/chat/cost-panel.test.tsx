@@ -83,7 +83,7 @@ const unknownSummary: TaskCostSummary = {
   cacheBreakdownComplete: false,
 };
 
-function renderPanel(summary: TaskCostSummary, taskId = summary.taskId, compact = false) {
+function renderPanel(summary: TaskCostSummary, taskId = summary.taskId, compact = false, active = false) {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     expect(String(input)).toBe(`/api/tasks/${encodeURIComponent(taskId)}/cost`);
     return Response.json(summary);
@@ -91,7 +91,7 @@ function renderPanel(summary: TaskCostSummary, taskId = summary.taskId, compact 
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <CostPanel compact={compact} taskId={taskId} />
+      <CostPanel active={active} compact={compact} taskId={taskId} />
     </QueryClientProvider>,
   );
 }
@@ -102,6 +102,25 @@ afterEach(() => {
 });
 
 describe("CostPanel", () => {
+  it("keeps the compact default but exposes an accessible expandable breakdown", async () => {
+    renderPanel(exactSummary, "task-1", true);
+
+    const panel = await screen.findByRole("region", { name: "Task cost" });
+    expect(within(panel).queryByText("Input: 12,000 tokens")).not.toBeInTheDocument();
+    const showDetails = within(panel).getByRole("button", { name: "Show cost details" });
+    expect(showDetails).toHaveAttribute("aria-expanded", "false");
+
+    const user = userEvent.setup();
+    await user.click(showDetails);
+    expect(within(panel).getByText("Input: 12,000 tokens")).toBeVisible();
+    expect(within(panel).getByText("fallback / fallback-model")).toBeVisible();
+    const hideDetails = within(panel).getByRole("button", { name: "Hide cost details" });
+    expect(hideDetails).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(hideDetails);
+    expect(within(panel).queryByText("Input: 12,000 tokens")).not.toBeInTheDocument();
+  });
+
   it("shows exact totals, token breakdown, provider models, and expandable fallback lines", async () => {
     renderPanel(exactSummary);
 
@@ -142,11 +161,30 @@ describe("CostPanel", () => {
 
     render(
       <QueryClientProvider client={client}>
-        <CostPanel taskId="task-live" />
+        <CostPanel active taskId="task-live" />
       </QueryClientProvider>,
     );
 
     expect(await screen.findByText("$0.0100")).toBeVisible();
     expect(screen.getByText("Calculating…")).toBeVisible();
+  });
+
+  it("keeps a terminal task's cached total while a revalidation is in flight", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(taskCostQueries.forTask("task-terminal").queryKey, {
+      ...exactSummary,
+      taskId: "task-terminal",
+      total: { currency: "USD", micros: 10_000 },
+    });
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+
+    render(
+      <QueryClientProvider client={client}>
+        <CostPanel active={false} taskId="task-terminal" />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("$0.0100")).toBeVisible();
+    expect(screen.queryByText("Calculating…")).not.toBeInTheDocument();
   });
 });

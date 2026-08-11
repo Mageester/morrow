@@ -60,4 +60,9 @@ describe("task cost browser API", () => {
     await expect(new QueryClient().fetchQuery(query)).resolves.toEqual(summary);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("polls only while the owning task is active", () => {
+    expect(taskCostQueries.forTask("terminal-task", false).refetchInterval).toBe(false);
+    expect(taskCostQueries.forTask("active-task", true).refetchInterval).toBe(1_000);
+  });
 });

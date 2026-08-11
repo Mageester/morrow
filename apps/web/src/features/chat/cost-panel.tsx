@@ -1,5 +1,6 @@
 import type { CostAccuracy, TaskCostSummary } from "@morrow/contracts";
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useId, useState } from "react";
 import { taskCostQueries, formatUsdMicros } from "../../api/task-cost.js";
 
 function accuracyLabel(accuracy: CostAccuracy): string {
@@ -40,17 +41,24 @@ function providerModels(summary: TaskCostSummary): string[] {
 export interface CostPanelProps {
   taskId: string;
   compact?: boolean;
+  active?: boolean;
 }
 
-export function CostPanel({ taskId, compact = false }: CostPanelProps) {
-  const query = useQuery({ ...taskCostQueries.forTask(taskId), enabled: Boolean(taskId) });
+export function CostPanel({ taskId, compact = false, active = false }: CostPanelProps) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const detailsId = useId();
+  const query = useQuery({ ...taskCostQueries.forTask(taskId, active), enabled: Boolean(taskId) });
   const summary = query.data;
-  const calculating = query.isFetching;
+  const calculating = active && query.isFetching;
   const totalLabel = formatUsdMicros(summary?.total);
   const accuracy = summary?.accuracy ?? "unknown";
   const models = summary ? providerModels(summary) : [];
   const modelLabel = models[0] ?? "Unknown provider/model";
   const disclosure = costDisclosure(summary, totalLabel);
+
+  useEffect(() => {
+    setDetailsOpen(false);
+  }, [compact, taskId]);
 
   return (
     <section aria-label="Task cost" className="morrow-cost-panel">
@@ -74,9 +82,21 @@ export function CostPanel({ taskId, compact = false }: CostPanelProps) {
         <span>Provider requests: {summary?.requestCount ?? 0}</span>
       </div>
 
-      {!compact && summary ? (
+      {compact ? (
+        <button
+          aria-controls={detailsId}
+          aria-expanded={detailsOpen}
+          className="morrow-cost-panel__toggle"
+          onClick={() => setDetailsOpen((open) => !open)}
+          type="button"
+        >
+          {detailsOpen ? "Hide cost details" : "Show cost details"}
+        </button>
+      ) : null}
+
+      {(!compact || detailsOpen) && summary ? (
         <>
-          <div className="morrow-cost-panel__details">
+          <div className="morrow-cost-panel__details" id={compact ? detailsId : undefined}>
             <p>Basis: {basisLabel(summary.accuracy)}</p>
             <p>Input: {formatTokens(summary.totalInputTokens)}</p>
             <p>Cached input: {formatTokens(summary.knownCachedInputTokens)}</p>
@@ -85,7 +105,7 @@ export function CostPanel({ taskId, compact = false }: CostPanelProps) {
           </div>
 
           {summary.lines.length > 0 ? (
-            <details className="morrow-cost-panel__lines">
+            <details className="morrow-cost-panel__lines" open={compact ? detailsOpen : undefined}>
               <summary>Show provider requests</summary>
               <ul>
                 {summary.lines.map((line) => (

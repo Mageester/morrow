@@ -18,12 +18,12 @@ export function formatUsdMicros(amount: MoneyAmount | null | undefined, fraction
 }
 
 export const taskCostQueries = {
-  forTask(taskId: string) {
+  forTask(taskId: string, active = false) {
     return queryOptions({
       queryKey: ["task", taskId, "cost"] as const,
       queryFn: () => api.get(`/api/tasks/${encodeURIComponent(taskId)}/cost`, TaskCostSummarySchema),
       staleTime: 0,
-      refetchInterval: 1_000,
+      refetchInterval: active ? 1_000 : false,
     });
   },
 };

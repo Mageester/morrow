@@ -559,7 +559,7 @@ export function ConversationPageContent({
       />
 
       <div className="morrow-conversation-composer">
-        {latestTaskId ? <CostPanel compact taskId={latestTaskId} /> : null}
+        {latestTaskId ? <CostPanel active={activeTaskId === latestTaskId} compact taskId={latestTaskId} /> : null}
         <ChatComposer
           activeTaskId={activeTaskId}
           autoFocus

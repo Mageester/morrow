@@ -1863,6 +1863,25 @@ a {
   font-variant-numeric: tabular-nums;
 }
 
+.morrow-cost-panel__toggle {
+  justify-self: start;
+  min-height: 32px;
+  padding: 0 var(--morrow-space-2);
+  color: var(--morrow-text);
+  background: transparent;
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.morrow-cost-panel__toggle:hover,
+.morrow-cost-panel__toggle:focus-visible {
+  border-color: var(--morrow-accent);
+}
+
 .morrow-conversation-dialog-backdrop {
   position: fixed;
   z-index: 30;
