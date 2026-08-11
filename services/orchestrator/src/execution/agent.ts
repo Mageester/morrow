@@ -91,6 +91,8 @@ import { playwrightController, type PlaywrightControllerOptions } from "../brows
 import type { BrowserController, BrowserViewport, PageSnapshot } from "../browser/types.js";
 import { isSafeSkillInstructionDirectory, verifySkillDirectory, SKILL_MATCH_STOPWORDS, SKILL_MATCH_MIN_SCORE } from "../skills/registry.js";
 import { createExecutionPolicy, type ExecutionPolicy } from "./execution-policy.js";
+import { BudgetGovernor, budgetLimitsFromEnvironment } from "../optimization/budget-governor.js";
+import { ToolProfileSelector, type ToolTaskClassification } from "../optimization/tool-profile-selector.js";
 
 /**
  * Best-effort human-readable target for a tool call, included in the
@@ -487,6 +489,19 @@ export const READ_ONLY_TOOL_NAMES = new Set([
   "git_status", "git_diff", "git_log", "read_artifact", "find_skill", "load_skill",
 ]);
 
+/** Select an optimization classification only when the request makes the
+ * required capability clear. Ambiguous agent work deliberately keeps the
+ * complete catalog so efficiency controls can never become a hidden safety or
+ * capability regression. */
+export function classifyOptimizationTask(prompt: string, agentMode: AgentMode): ToolTaskClassification {
+  if (agentMode !== "agent") return "workspace_read";
+  if (/\b(?:build|implement|code|write|edit|patch|create|fix|refactor|test|develop)\b/i.test(prompt)) return "coding";
+  if (/\b(?:research|sources?|citations?|current|latest|news|web\s+search)\b/i.test(prompt)) return "research";
+  if (/\b(?:browser|webpage|web\s+page|dom|screenshot|viewport|console\s+error|url)\b/i.test(prompt)) return "browser";
+  if (/\b(?:inspect|list|read|search|review|analy[sz]e)\b/i.test(prompt)) return "workspace_read";
+  return "full_agent";
+}
+
 // Read-only observations share the same epoch-wide guard. The measured
 // read/list/inspect interleaving is the primary case, while search and artifact
 // reads receive the same bound so a provider cannot evade it by changing the
@@ -801,6 +816,8 @@ export async function executeAgentChatTask({
   const tasks = taskRepository(db);
   const records = taskRecordsRepository(db);
   const costs = taskCostsRepository(db);
+  const budgetGovernor = new BudgetGovernor(budgetLimitsFromEnvironment());
+  const executionStartedAtMs = Date.now();
   type ProviderCostAttempt = {
     requestId: string;
     providerId: string;
@@ -811,6 +828,7 @@ export async function executeAgentChatTask({
   };
   const providerAttemptQueues = new Map<string, ProviderCostAttempt[]>();
   let providerAttemptsThisTurn: ProviderCostAttempt[] = [];
+  let latestToolSchemaTokens: number | null = null;
   const applyFrozenPricing = (usage: RequestUsage, pricingSnapshot: PricingSnapshot | null): RequestUsage => {
     const cost = calculateUsageCostMicros({
       inputTokens: usage.totalInputTokens,
@@ -1710,11 +1728,25 @@ export async function executeAgentChatTask({
   const allowedWriteFiles = extractOnlyFileContract(latestUserPrompt);
   const browserToolsRequested = requestsFrontendBrowserValidation(latestUserPrompt)
     || /\b(?:browser|webpage|web\s+page|site|dom|screenshot|viewport|console\s+error|url)\b/i.test(latestUserPrompt);
+  const optimizationClassification = classifyOptimizationTask(latestUserPrompt, agentMode);
+  const optimizationToolSelection = new ToolProfileSelector().select({
+    classification: optimizationClassification,
+    ...(browserToolsRequested ? { requiredTools: ["browser_open"] } : {}),
+  });
   const exposedTools: ToolDefinition[] = activeToolProfile === "none"
     ? []
     : activeToolProfile === "agent"
-      ? tools.filter((tool) => !BROWSER_TOOL_NAMES.has(tool.name) || browserToolsRequested)
-      : tools.filter((tool) => READ_ONLY_TOOL_NAMES.has(tool.name));
+      ? tools.filter((tool) => optimizationToolSelection.tools.includes(tool.name)
+        && (!BROWSER_TOOL_NAMES.has(tool.name) || browserToolsRequested))
+      : tools.filter((tool) => READ_ONLY_TOOL_NAMES.has(tool.name) && optimizationToolSelection.tools.includes(tool.name));
+  event("optimization.tool_profile_selected", {
+    classification: optimizationClassification,
+    profile: activeToolProfile === "none" ? "none" : optimizationToolSelection.profile,
+    toolCount: exposedTools.length,
+    tools: exposedTools.map((tool) => tool.name),
+    reason: optimizationToolSelection.reason,
+    fallbackPath: optimizationToolSelection.fallbackPath,
+  });
   
   // System instructions.
   //
@@ -4386,6 +4418,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       });
       const admittedCandidates = projectedCandidates.flatMap(({ candidate, candidateModel, resolution, routeFingerprint, candidateOptions, projection }) => {
         const admission = projection.admission;
+        latestToolSchemaTokens = admission.measurement.components.toolSchemas;
         event("context.budget_calculated", {
           provider: candidate.id,
           model: candidateModel,
@@ -4434,6 +4467,36 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         );
       }
       providerAttemptsThisTurn = [];
+      const projectedTokenUsage = cumulativeUsage.totalInputTokens + cumulativeUsage.outputTokens;
+      const providerCallCount = records.listEvents(taskId).filter((taskEvent) => taskEvent.type === "provider.request_started").length;
+      const predictableFreeProvider = providerType === "mock" || providerType === "ollama";
+      const budgetDecision = budgetGovernor.beforeProviderCall({
+        providerCalls: providerCallCount,
+        tokens: projectedTokenUsage,
+        wallClockMs: Date.now() - executionStartedAtMs,
+        knownCostMicros: cumulativeUsage.totalCostMicros,
+        nextCall: {
+          tokens: effectiveOutputBudget() ?? outputReserveTokens,
+          costMicros: predictableFreeProvider ? 0 : null,
+          fallbackAvailable: streamCandidates.length > 1,
+        },
+      });
+      event("optimization.budget_decision", {
+        action: budgetDecision.action,
+        reason: budgetDecision.reason,
+        projected: budgetDecision.projected,
+        preCall: true,
+      });
+      if (budgetDecision.action !== "continue") {
+        if (budgetDecision.action === "ask") {
+          event("approval.requested", {
+            kind: "optimization_budget",
+            summary: "Provider-call budget approval is required before continuing.",
+            reason: budgetDecision.reason,
+          });
+        }
+        throw new Error(`Provider call blocked by budget governor: ${budgetDecision.reason}`);
+      }
       const opened = await openStreamWithFallback(
         admittedCandidates,
         preparedContext.messages,
@@ -4644,6 +4707,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             cumulativeKnownCachedInputTokens: cumulativeUsage.knownCachedInputTokens,
             cumulativeCacheBreakdownComplete: cumulativeUsage.cacheBreakdownComplete,
             cumulativeCostUsd: cumulativeUsage.totalCostUsd,
+          });
+          const taskEvents = records.listEvents(taskId);
+          event("optimization.metrics", {
+            providerAttempts: taskEvents.filter((taskEvent) => taskEvent.type === "provider.request_started").length,
+            duplicateObservations: null,
+            retries: null,
+            compactions: taskEvents.filter((taskEvent) => taskEvent.type === "context.compaction_completed").length,
+            toolSchemaTokens: latestToolSchemaTokens,
+            wallClockMs: Date.now() - executionStartedAtMs,
+            interventionCount: null,
+            costMicros: cumulativeUsage.totalCostMicros,
+            costAccuracy: frozenRequestUsage.cost?.accuracy ?? "unknown",
+            privacyOutcome: "unknown",
+            reliabilityOutcome: "unknown",
+            verificationOutcome: "unknown",
           });
         }
 

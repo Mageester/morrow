@@ -1504,6 +1504,34 @@ export const migrations:Migration[]=[
     CREATE INDEX skill_drafts_project_created_idx ON skill_drafts(project_id, created_at, id);
     CREATE INDEX skill_drafts_source_task_idx ON skill_drafts(source_task_id);
   `}
+  ,{id:54,name:"improvement_proposals",sql:`
+    CREATE TABLE improvement_proposals (
+      id TEXT PRIMARY KEY,
+      version INTEGER NOT NULL CHECK(version > 0),
+      observed_problem TEXT NOT NULL,
+      proposed_change_json TEXT NOT NULL,
+      evidence_task_ids_json TEXT NOT NULL,
+      benchmark_fixture_ids_json TEXT NOT NULL,
+      expected_effect_json TEXT NOT NULL,
+      privacy_impact_json TEXT NOT NULL,
+      rollout_state TEXT NOT NULL CHECK(rollout_state IN ('proposed','evaluated','approved','rejected','rolled_back')),
+      rollback_reference TEXT,
+      evaluation_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX improvement_proposals_state_updated_idx ON improvement_proposals(rollout_state, updated_at DESC, id);
+    CREATE TABLE improvement_proposal_versions (
+      id TEXT PRIMARY KEY,
+      proposal_id TEXT NOT NULL REFERENCES improvement_proposals(id) ON DELETE CASCADE,
+      version INTEGER NOT NULL CHECK(version > 0),
+      action TEXT NOT NULL CHECK(action IN ('created','evaluated','approved','rejected','rolled_back')),
+      actor TEXT NOT NULL,
+      details_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX improvement_proposal_versions_proposal_idx ON improvement_proposal_versions(proposal_id, version, created_at, id);
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

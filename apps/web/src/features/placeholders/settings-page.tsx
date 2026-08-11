@@ -6,6 +6,7 @@ import { ApiClientError } from "../../api/client.js";
 import { useTheme, type ThemePreference } from "../../state/theme.js";
 import { useUserSettings } from "../../state/settings-store.js";
 import { Palette, Sliders, ShieldCheck, Trash2, Check, UserCircle, Lock } from "lucide-react";
+import { ImprovementProposals } from "../settings/improvement-proposals.js";
 
 function safeError(error: unknown, fallback: string): string {
   return error instanceof ApiClientError ? error.message : fallback;
@@ -237,6 +238,8 @@ export function SettingsPage() {
 
       {/* Default privacy mode */}
       <AssistantPrivacySection />
+
+      <ImprovementProposals />
 
       {/* Section 1: Appearance */}
       <Surface aria-labelledby="theme-heading" padding="large" style={{ display: "grid", gap: "var(--morrow-space-4)" }}>
