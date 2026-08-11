@@ -68,6 +68,23 @@ describe("agent live provider fallback", () => {
     ]);
   });
 
+  it("records every provider start attempt, including a failed fallback candidate", async () => {
+    const secondary = new MockProvider({ chunks: [[{ type: "text", text: "answer via fallback" }, { type: "done" }]] });
+    (secondary as unknown as { id: string }).id = "secondary";
+
+    await executeAgentChatTask({
+      db,
+      taskId: "t1",
+      provider: throwingProvider("ECONNREFUSED"),
+      fallbackProviders: [secondary],
+    });
+
+    const events = taskRecordsRepository(db).listEvents("t1") as Array<{ type: string; payload: any }>;
+    const attempts = events.filter((event) => event.type === "provider.request_started");
+    expect(attempts).toHaveLength(2);
+    expect(attempts.map((event) => event.payload.provider)).toEqual(["mock", "secondary"]);
+  });
+
   it("treats a provider console upstream failure as transient and recovers", async () => {
     const secondary = new MockProvider({ chunks: [[{ type: "text", text: "recovered after upstream failure" }, { type: "done" }]] });
     (secondary as unknown as { id: string }).id = "secondary";

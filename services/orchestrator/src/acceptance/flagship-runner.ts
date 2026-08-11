@@ -36,9 +36,24 @@ export interface FlagshipRun {
   toolCalls: number;
   promptTokens: number;
   completionTokens: number;
+  providerCalls: number;
+  cachedPromptTokens: number | null;
+  duplicateObservations: number;
+  contextCompactions: number;
+  recoveryAttempts: number;
+  interventions: number;
   wallClockMs: number;
   artifactSha256: string | null;
   taskId?: string;
+}
+
+export interface FlagshipEfficiencyCounters {
+  providerCalls: number;
+  cachedPromptTokens: number | null;
+  duplicateObservations: number;
+  contextCompactions: number;
+  recoveryAttempts: number;
+  interventions: number;
 }
 
 export interface FlagshipRunInput {
@@ -62,6 +77,35 @@ export function isPreGenerationHarnessFailure(
   completionTokens: number,
 ): boolean {
   return taskStatus === "failed" && toolCalls === 0 && completionTokens === 0;
+}
+
+export function projectFlagshipEfficiency(
+  events: ReadonlyArray<{ type: string; payload: Record<string, unknown> }>,
+): FlagshipEfficiencyCounters {
+  const attemptEvents = events.filter((event) => event.type === "provider.request_started");
+  const usageEvents = events.filter((event) => event.type === "provider.usage");
+  const recoveryAttempts = events.filter((event) => event.type === "provider_recovery_required").length
+    + events.filter((event) => event.type === "provider.fallback" && typeof event.payload.recoveryAttempt === "number" && event.payload.recoveryAttempt > 0).length;
+  const cachedPromptTokens = usageEvents
+    .map((event) => event.payload.cachedInputTokens)
+    .filter((value): value is number => typeof value === "number")
+    .reduce((total, value) => total + value, 0);
+  const hasCachedPromptTokens = usageEvents.some((event) => typeof event.payload.cachedInputTokens === "number");
+
+  return {
+    // Usage is response accounting, not attempt accounting: a provider can
+    // fail before it emits a usage chunk (especially during fallback). New
+    // runs persist one request_started event per actual stream attempt; retain
+    // the usage fallback for older append-only evidence rows.
+    providerCalls: attemptEvents.length > 0 ? attemptEvents.length : usageEvents.length,
+    cachedPromptTokens: hasCachedPromptTokens ? cachedPromptTokens : null,
+    duplicateObservations: events.filter(
+      (event) => event.type === "workspace.inspected" && event.payload.duplicate === true,
+    ).length,
+    contextCompactions: events.filter((event) => event.type === "context.compaction_completed").length,
+    recoveryAttempts,
+    interventions: events.filter((event) => event.type === "approval.requested").length,
+  };
 }
 
 export async function runFlagshipScenario(input: FlagshipRunInput & {
@@ -101,6 +145,12 @@ export async function runFlagshipScenario(input: FlagshipRunInput & {
     toolCalls: 0,
     promptTokens: 0,
     completionTokens: 0,
+    providerCalls: 0,
+    cachedPromptTokens: null,
+    duplicateObservations: 0,
+    contextCompactions: 0,
+    recoveryAttempts: 0,
+    interventions: 0,
     wallClockMs: 0,
     artifactSha256: null,
     taskId,
@@ -140,18 +190,21 @@ export async function runFlagshipScenario(input: FlagshipRunInput & {
 
     const task = taskRepository(db).getTaskById(taskId);
     const toolCalls = conversationsRepository(db).listToolCallsForTask(taskId);
-    const usage = (taskRecordsRepository(db).listEvents(taskId) as Array<{ type: string; payload: Record<string, unknown> }>)
+    const events = taskRecordsRepository(db).listEvents(taskId) as Array<{ type: string; payload: Record<string, unknown> }>;
+    const usage = events
       .filter((event) => event.type === "provider.usage")
       .reduce((totals, event) => ({
         promptTokens: totals.promptTokens + (typeof event.payload.totalInputTokens === "number" ? event.payload.totalInputTokens : 0),
         completionTokens: totals.completionTokens + (typeof event.payload.outputTokens === "number" ? event.payload.outputTokens : 0),
       }), { promptTokens: 0, completionTokens: 0 });
+    const efficiency = projectFlagshipEfficiency(events);
     const measured: FlagshipRun = {
       ...base,
       taskStatus: task?.status ?? null,
       toolCalls: toolCalls.length,
       promptTokens: usage.promptTokens,
       completionTokens: usage.completionTokens,
+      ...efficiency,
       wallClockMs: Date.now() - started,
     };
 

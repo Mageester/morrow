@@ -106,7 +106,8 @@ export async function openStreamWithFallback(
   candidates: FallbackCandidate[],
   messages: ChatMessage[],
   options: StreamOptions,
-  rateGuard?: RateGuard
+  rateGuard?: RateGuard,
+  onAttempt?: (candidate: FallbackCandidate) => void,
 ): Promise<OpenStreamResult> {
   if (candidates.length === 0) throw new Error("No providers available to stream");
   const { ordered, deprioritized } = orderByRateGuard(candidates, rateGuard);
@@ -117,6 +118,7 @@ export async function openStreamWithFallback(
     const candidateMessages = candidate.request?.messages ?? messages;
     const candidateOptions = candidate.request?.options ?? options;
     if (candidateOptions.abortSignal?.aborted) throw new Error("AbortError");
+    onAttempt?.(candidate);
     try {
       const iterator = candidate.provider.streamChat(candidateMessages, candidateOptions)[Symbol.asyncIterator]();
       const first = await iterator.next();

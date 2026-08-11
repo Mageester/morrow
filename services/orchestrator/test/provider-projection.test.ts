@@ -160,6 +160,40 @@ describe("durable provider projection", () => {
     expect(serialized).toContain("historical record, not a tool request");
   });
 
+  it("projects an applied append_file marker as non-executable history", () => {
+    const messages = providerProjectionModule.buildProviderProjection({
+      prefixMessages: [{ role: "user", content: "mission" }],
+      turns: [{
+        turnKey: "turn-append",
+        assistantText: "Appended the next chunk.",
+        toolCalls: [{ id: "append", name: "append_file", arguments: JSON.stringify({ path: "src/app.ts", content: "export const ready = true;\n", expectedOffset: 0 }) }],
+      }],
+      toolResults: [{
+        id: "append",
+        toolName: "append_file",
+        result: JSON.stringify({ appended: true, totalBytes: 28 }),
+        status: "completed",
+      }],
+      normalizeToolArguments: (name) => name === "append_file"
+        ? JSON.stringify({
+          path: "src/app.ts",
+          expectedOffset: 0,
+          _morrowAppliedWrite: { kind: "append_file", contentBytes: 28, contentSha256: "abc" },
+          truncatedForContext: true,
+        })
+        : JSON.stringify({}),
+    });
+
+    const serialized = JSON.stringify(messages);
+    const calls = messages.flatMap((message) => message.toolCalls ?? []);
+    expect(calls).toHaveLength(0);
+    expect(messages.filter((message) => message.role === "tool")).toHaveLength(0);
+    expect(serialized).not.toContain("_morrowAppliedWrite");
+    expect(serialized).not.toContain('"appended":true');
+    expect(serialized).toContain("append_file completed for src/app.ts");
+    expect(serialized).toContain("historical record, not a tool request");
+  });
+
   it("compacts from the structured checkpoint when the complete envelope crosses the threshold", () => {
     const result = projectProviderRequest({
       checkpoint: snapshot,

@@ -171,6 +171,38 @@ describe("agent loop detection", () => {
       .toBe(false);
   });
 
+  it("reuses a read observation when only JSON key order changes", async () => {
+    seed();
+    const provider = new MockProvider({
+      chunks: [
+        [{
+          type: "tool_call",
+          toolCalls: [{
+            id: "search-a",
+            index: 0,
+            type: "function",
+            function: { name: "search_text", arguments: '{"query":"Morrow","path":".","caseSensitive":false}' },
+          }],
+        }, { type: "done" }],
+        [{
+          type: "tool_call",
+          toolCalls: [{
+            id: "search-b",
+            index: 0,
+            type: "function",
+            function: { name: "search_text", arguments: '{"caseSensitive":false,"path":".","query":"Morrow"}' },
+          }],
+        }, { type: "done" }],
+        [{ type: "text", text: "Search complete." }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider });
+
+    const events = taskRecordsRepository(db).listEvents("task-1") as Array<{ type: string; payload: any }>;
+    expect(events.filter((event) => event.type === "workspace.inspected" && event.payload?.duplicate === true)).toHaveLength(1);
+  });
+
   it("keeps a mission loop in the observation ledger until the model answers", async () => {
     seed(true);
     const provider = new MockProvider({ chunks: [repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), [{ type: "text", text: "Mission inspection complete." }, { type: "done" }]] });

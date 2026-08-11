@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { evaluateFlagshipGate } from "../src/acceptance/flagship-gate.js";
 import type { FlagshipBuildRun, FlagshipFailureReason } from "../src/acceptance/flagship-build.js";
-import { isPreGenerationHarnessFailure } from "../src/acceptance/flagship-runner.js";
+import { isPreGenerationHarnessFailure, projectFlagshipEfficiency } from "../src/acceptance/flagship-runner.js";
 
 /**
  * Reproduced live on 2026-08-03: a DeepSeek account with no balance returned
@@ -41,6 +41,34 @@ function runs(count: number, overrides: Partial<FlagshipBuildRun>): FlagshipBuil
 }
 
 describe("environment failures are not evidence about the model", () => {
+  it("projects provider and harness-efficiency counters from authoritative events", () => {
+    expect(projectFlagshipEfficiency([
+      { type: "provider.usage", payload: { cachedInputTokens: 12 } },
+      { type: "provider.usage", payload: {} },
+      { type: "workspace.inspected", payload: { duplicate: true } },
+      { type: "context.compaction_completed", payload: {} },
+      { type: "provider_recovery_required", payload: {} },
+      { type: "approval.requested", payload: {} },
+    ])).toEqual({
+      providerCalls: 2,
+      cachedPromptTokens: 12,
+      duplicateObservations: 1,
+      contextCompactions: 1,
+      recoveryAttempts: 1,
+      interventions: 1,
+    });
+
+    expect(projectFlagshipEfficiency([{ type: "provider.usage", payload: {} }]).cachedPromptTokens).toBeNull();
+    expect(projectFlagshipEfficiency([
+      { type: "provider.request_started", payload: { provider: "primary" } },
+      { type: "provider.request_started", payload: { provider: "secondary" } },
+      { type: "provider.usage", payload: {} },
+    ]).providerCalls).toBe(2);
+    expect(projectFlagshipEfficiency([
+      { type: "provider.fallback", payload: { recoveryAttempt: 1 } },
+    ]).recoveryAttempts).toBe(1);
+  });
+
   it("classifies only a failed task with zero tool calls and zero completion tokens as pre-generation", () => {
     expect(isPreGenerationHarnessFailure("failed", 0, 0)).toBe(true);
     expect(isPreGenerationHarnessFailure("failed", 1, 0)).toBe(false);

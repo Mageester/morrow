@@ -41,7 +41,7 @@ const COMPACTED_BATCH_PREFIX = "Morrow compacted the latest completed execution 
 const APPLIED_WRITE_PREFIX = "Morrow durable write record.";
 
 function appliedWriteRecord(toolName: string, argumentsJson: string): string | undefined {
-  if (toolName !== "create_file" && toolName !== "propose_patch") return undefined;
+  if (toolName !== "create_file" && toolName !== "append_file" && toolName !== "propose_patch") return undefined;
   try {
     const args = JSON.parse(argumentsJson) as Record<string, unknown>;
     if (!args._morrowAppliedWrite) return undefined;

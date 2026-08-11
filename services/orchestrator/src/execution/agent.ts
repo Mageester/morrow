@@ -4344,7 +4344,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // outright (live evidence: DeepSeek's "Thinking mode does not
           // support this tool_choice").
         },
-        globalRateGuard
+        globalRateGuard,
+        (candidate) => event("provider.request_started", {
+          provider: candidate.id,
+          model: candidate.request?.options.model ?? null,
+          routeFingerprint: candidate.request?.routeFingerprint ?? null,
+        }),
       );
       const selectedCandidate = projectedCandidates.find(({ candidate }) => candidate.id === opened.servedBy);
       if (!selectedCandidate) throw new Error(`Selected provider route ${opened.servedBy} was not preflighted`);
@@ -4714,7 +4719,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           createdAt: now(),
           startedAt: now()
         });
-        const toolSignature = `${tc.name}:${tc.arguments}`;
+        // Observation replay is semantic, not byte-oriented: providers may
+        // serialize equivalent JSON with different key order or whitespace.
+        // The loop detector already owns this canonicalization boundary; use
+        // the same identity for safe read-result reuse so equivalent reads do
+        // not execute twice against the workspace.
+        const toolSignature = toolCallSignature(tc.name, tc.arguments);
         // These browser reads observe mutable page state. Repeating one after
         // a click, repair, or navigation is fresh evidence, not duplicate work.
         // Only safe read-only observations (OBSERVATION_TOOL_NAMES) are ever
