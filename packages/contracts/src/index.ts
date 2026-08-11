@@ -20,7 +20,12 @@ export const ProjectSchema=z.object({version:SchemaVersionSchema,id:z.string(),n
 export const CreateProjectSchema=z.object({name:z.string().trim().min(1).max(120),workspacePath:z.string().min(1)});
 export const PlanStepSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),position:z.number().int().positive(),title:z.string(),description:z.string(),status:PlanStepStatusSchema}).strict();
 export const TaskSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),kind:z.enum(["inspect_workspace","agent_chat"]),status:TaskStatusSchema,parentTaskId:z.string().nullable().default(null),agentId:z.string().nullable().optional(),worktreeId:z.string().nullable().optional(),missionId:z.string().nullable().optional(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
-export const SpawnSubagentSchema=z.object({kind:z.enum(["inspect_workspace"]).default("inspect_workspace"),label:z.string().trim().max(120).optional()}).strict();
+export const SpawnSubagentSchema=z.object({kind:z.enum(["inspect_workspace","agent_chat"]).default("inspect_workspace"),label:z.string().trim().max(120).optional(),
+  // Required only for kind:"agent_chat" (validated at the route, not here,
+  // so kind:"inspect_workspace" keeps its exact existing shape). Identifies
+  // which persistent named agent this delegated child runs as.
+  agentId:z.string().trim().min(1).optional(),
+}).strict();
 export type SpawnSubagentInput=z.infer<typeof SpawnSubagentSchema>;
 export const CreateCheckpointSchema=z.object({name:z.string().trim().min(1).max(100),files:z.array(z.string().min(1).max(1024)).min(1).max(500).optional(),taskId:z.string().optional()}).strict();
 export type CreateCheckpointInput=z.infer<typeof CreateCheckpointSchema>;
@@ -36,7 +41,13 @@ export const ApprovalSchema=z.object({version:SchemaVersionSchema,id:z.string(),
 export const ResolveApprovalSchema=z.object({projectId:z.string().min(1),decision:ApprovalDecisionSchema,trustPattern:z.string().trim().min(1).max(240).optional(),note:z.string().trim().max(500).optional()}).strict().refine((value)=>value.decision!=="trust_project"||value.trustPattern!==undefined,{message:"trustPattern is required when trusting a command pattern",path:["trustPattern"]});
 export const CommandTrustSchema=z.object({version:SchemaVersionSchema,projectId:z.string(),pattern:z.string().min(1).max(240),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const TaskEvidenceSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),type:z.literal("file"),path:z.string(),metadata:z.record(z.string(),z.unknown()),createdAt:z.string().datetime()}).strict();
-export const ExecutionDisclosureSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),executionMode:z.enum(["deterministic-local","agent-interactive"]),provider:ProviderIdSchema,networkAccess:z.enum(["disabled","enabled"]),filesystemAccess:z.enum(["read-only","workspace-write"]),shellExecution:z.boolean(),modelInvocation:z.boolean(),workspaceScope:z.string().min(1),estimatedCostUsd:z.string(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+export const ExecutionDisclosureSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),executionMode:z.enum(["deterministic-local","agent-interactive"]),provider:ProviderIdSchema,networkAccess:z.enum(["disabled","enabled"]),filesystemAccess:z.enum(["read-only","workspace-write"]),shellExecution:z.boolean(),modelInvocation:z.boolean(),workspaceScope:z.string().min(1),estimatedCostUsd:z.string(),
+  // Pre-request data-sharing preview fields: memory records included, by
+  // label/source rather than raw content, and the tool profile available to
+  // this request. Populated before the request leaves the machine.
+  memoryRecordLabels:z.array(z.string().max(200)).default([]),
+  toolsAvailable:z.array(z.string().max(120)).default([]),
+  createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const VerificationResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:z.literal("verified"),summary:z.string(),details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const StructuredApiErrorSchema=z.object({version:SchemaVersionSchema,error:z.object({code:z.string(),message:z.string()}).strict()}).strict();
 
@@ -437,6 +448,11 @@ export const MemoryScopeSchema=z.enum([
   "project","conversation","user","episodic","procedural","knowledge",
   "user_global","machine_environment","workspace","repository","subtree",
   "branch_worktree","mission","provider_model","temporary_context",
+  // Added for agent-team delegation: "agent" is a specialist's own working
+  // knowledge; "team" is knowledge explicitly shared across a team's members.
+  // Deliberately NOT added: an "ephemeral" scope — request-only context must
+  // never be persisted, so it has no MemoryScope value at all.
+  "agent","team",
 ]);
 export const MemorySourceSchema=z.enum(["user","summary","cortex"]);
 export const MemoryTypeSchema=z.enum([
@@ -491,6 +507,13 @@ export const CreateMemoryEntrySchema=z.object({
   conversationId:z.string().optional(),
   pinned:z.boolean().optional(),
 }).strict();
+// Imports are full exported memory records, not arbitrary JSON. Keeping this
+// contract strict prevents malformed or caller-invented provenance fields from
+// reaching the repository, where they could otherwise be partially persisted.
+export const MemoryImportSchema=z.object({
+  entries:z.array(MemoryEntrySchema).max(2000),
+}).strict();
+export type MemoryImportInput=z.infer<typeof MemoryImportSchema>;
 export const UpdateMemoryEntrySchema=z.object({
   projectId:z.string().min(1),
   enabled:z.boolean().optional(),
@@ -513,6 +536,22 @@ export const AgentSchema=z.object({
   providerOverride:z.string().nullable(),
   modelOverride:z.string().nullable(),
   enabled:z.boolean(),
+  // Team delegation fields (all optional/nullable so a standalone agent with
+  // no team keeps working exactly as before). Budgets are the agent's own
+  // ceiling; a delegation's *effective* budget is the intersection of this,
+  // the team default, and the parent task's own authority — computed
+  // server-side, never widened by the agent or its output.
+  teamId:z.string().nullable().default(null),
+  memoryReadScopes:z.array(MemoryScopeSchema).default([]),
+  memoryWriteScopes:z.array(MemoryScopeSchema).default([]),
+  maxProviderCalls:z.number().int().positive().nullable().default(null),
+  maxTokenBudget:z.number().int().positive().nullable().default(null),
+  maxWallClockMs:z.number().int().positive().nullable().default(null),
+  maxChildTasks:z.number().int().nonnegative().nullable().default(null),
+  approvalRequired:z.boolean().default(false),
+  // Provenance of who created/changed this definition — never client-set on
+  // create; the server always stamps "user" or a specific task/mission id.
+  createdBy:z.string().min(1).max(60).default("user"),
   createdAt:z.string().datetime(),
   updatedAt:z.string().datetime(),
 }).strict();
@@ -522,6 +561,14 @@ export const CreateAgentSchema=z.object({
   instructions:z.string().max(8000).nullable().optional(),
   providerOverride:z.string().nullable().optional(),
   modelOverride:z.string().nullable().optional(),
+  teamId:z.string().nullable().optional(),
+  memoryReadScopes:z.array(MemoryScopeSchema).optional(),
+  memoryWriteScopes:z.array(MemoryScopeSchema).optional(),
+  maxProviderCalls:z.number().int().positive().nullable().optional(),
+  maxTokenBudget:z.number().int().positive().nullable().optional(),
+  maxWallClockMs:z.number().int().positive().nullable().optional(),
+  maxChildTasks:z.number().int().nonnegative().nullable().optional(),
+  approvalRequired:z.boolean().optional(),
 }).strict();
 export const UpdateAgentSchema=z.object({
   name:z.string().trim().min(1).max(100).optional(),
@@ -530,6 +577,14 @@ export const UpdateAgentSchema=z.object({
   providerOverride:z.string().nullable().optional(),
   modelOverride:z.string().nullable().optional(),
   enabled:z.boolean().optional(),
+  teamId:z.string().nullable().optional(),
+  memoryReadScopes:z.array(MemoryScopeSchema).optional(),
+  memoryWriteScopes:z.array(MemoryScopeSchema).optional(),
+  maxProviderCalls:z.number().int().positive().nullable().optional(),
+  maxTokenBudget:z.number().int().positive().nullable().optional(),
+  maxWallClockMs:z.number().int().positive().nullable().optional(),
+  maxChildTasks:z.number().int().nonnegative().nullable().optional(),
+  approvalRequired:z.boolean().optional(),
 }).strict();
 
 // Per-agent tool permission: each entry allows or denies a specific tool.
@@ -1344,3 +1399,4 @@ export * from "./mission-runtime.js";
 export { isReasoningCompatible, normalizeReasoningForRoute } from "./reasoning.js";
 
 export * from "./web.js";
+export * from "./teams.js";

@@ -14,13 +14,14 @@ const NAV_ORDER = [
   "Chats",
   "Projects",
   "Missions",
+  "Teams",
   "Library",
   "Memory",
   "Connections",
   "Settings",
 ];
-const IMPLEMENTED = ["Home", "Chats", "Projects", "Missions", "Library", "Connections", "Settings"];
-const UPCOMING = ["Memory"];
+const IMPLEMENTED = ["Home", "Chats", "Projects", "Missions", "Teams", "Library", "Memory", "Connections", "Settings"];
+const UPCOMING: string[] = [];
 
 function stubFetch() {
   vi.stubGlobal(
@@ -213,10 +214,9 @@ describe("Morrow application shell", () => {
 
 describe("unknown addresses", () => {
   /**
-   * A stale bookmark, a mistyped path, or an area that exists in the product
-   * map but is not built yet (Memory) used to render the shell around an empty
-   * content region: no heading, no explanation, no way back — and no landmark
-   * for a screen reader to find.
+   * A stale bookmark or a mistyped path used to render the shell around an
+   * empty content region: no heading, no explanation, no way back — and no
+   * landmark for a screen reader to find.
    */
   beforeEach(() => {
     localStorage.clear();
@@ -224,7 +224,7 @@ describe("unknown addresses", () => {
   });
 
   it("explains an unrecognised address and offers a way back", async () => {
-    renderAt("/memory");
+    renderAt("/nonexistent-page");
 
     expect(await screen.findByRole("heading", { level: 1, name: /isn’t here/i })).toBeVisible();
     expect(screen.getByRole("link", { name: "Go to Home" })).toBeVisible();

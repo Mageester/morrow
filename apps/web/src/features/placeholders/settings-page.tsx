@@ -1,8 +1,204 @@
 import { Button, Surface } from "@morrow/ui";
-import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState, type FormEvent } from "react";
+import { assistantProfileApi, assistantProfileQueries } from "../../api/assistant-profile.js";
+import { ApiClientError } from "../../api/client.js";
 import { useTheme, type ThemePreference } from "../../state/theme.js";
 import { useUserSettings } from "../../state/settings-store.js";
-import { Palette, Sliders, ShieldCheck, Trash2, Check } from "lucide-react";
+import { Palette, Sliders, ShieldCheck, Trash2, Check, UserCircle, Lock } from "lucide-react";
+
+function safeError(error: unknown, fallback: string): string {
+  return error instanceof ApiClientError ? error.message : fallback;
+}
+
+const PRIVACY_MODE_COPY: Record<string, { label: string; hint: string }> = {
+  local_only: { label: "Local only", hint: "No external model providers, no external tools, no telemetry. Network-deny by default." },
+  controlled_cloud: { label: "Controlled cloud", hint: "User-approved providers, with request-by-request context disclosure before anything leaves this machine." },
+  custom: { label: "Custom", hint: "Per-project and per-agent rules — domain allowlists, model restrictions, retention controls." },
+};
+
+function AssistantProfileSection() {
+  const queryClient = useQueryClient();
+  const profile = useQuery(assistantProfileQueries.get());
+  const [goalText, setGoalText] = useState("");
+
+  const update = useMutation({
+    mutationFn: assistantProfileApi.update,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["assistant-profile"] }),
+  });
+  const addGoal = useMutation({
+    mutationFn: (text: string) => assistantProfileApi.addGoal(text),
+    onSuccess: () => {
+      setGoalText("");
+      void queryClient.invalidateQueries({ queryKey: ["assistant-profile"] });
+    },
+  });
+  const toggleGoal = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => assistantProfileApi.setGoalEnabled(id, enabled),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["assistant-profile"] }),
+  });
+
+  function submitGoal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!goalText.trim()) return;
+    addGoal.mutate(goalText.trim());
+  }
+
+  if (profile.isPending) {
+    return (
+      <Surface aria-labelledby="assistant-heading" padding="large">
+        <p aria-live="polite" role="status">Loading your assistant profile…</p>
+      </Surface>
+    );
+  }
+  if (profile.isError || !profile.data) {
+    return (
+      <Surface aria-labelledby="assistant-heading" padding="large">
+        <p role="alert">Your assistant profile could not be loaded.</p>
+      </Surface>
+    );
+  }
+  const data = profile.data;
+
+  return (
+    <Surface aria-labelledby="assistant-heading" padding="large" style={{ display: "grid", gap: "var(--morrow-space-4)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--morrow-space-2)" }}>
+        <UserCircle size={20} color="var(--morrow-accent)" />
+        <h2 id="assistant-heading" style={{ margin: 0 }}>Assistant profile</h2>
+      </div>
+      <p style={{ margin: 0, color: "var(--morrow-text-muted)", fontSize: "0.875rem" }}>
+        One local, cross-project profile. Facts you write here are always yours; anything Morrow
+        suggests appears in Memory for your approval first — never written here automatically.
+      </p>
+
+      <div style={{ display: "grid", gap: "var(--morrow-space-3)", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+        <label style={{ display: "grid", gap: "var(--morrow-space-1)", fontSize: "0.875rem" }}>
+          <span style={{ fontWeight: 500 }}>Your display name</span>
+          <input
+            defaultValue={data.displayName ?? ""}
+            onBlur={(event) => update.mutate({ displayName: event.target.value || null })}
+            style={{ padding: "var(--morrow-space-2)", borderRadius: "var(--morrow-radius-sm)", border: "1px solid var(--morrow-border)" }}
+          />
+        </label>
+        <label style={{ display: "grid", gap: "var(--morrow-space-1)", fontSize: "0.875rem" }}>
+          <span style={{ fontWeight: 500 }}>Assistant name (optional)</span>
+          <input
+            defaultValue={data.assistantName ?? ""}
+            onBlur={(event) => update.mutate({ assistantName: event.target.value || null })}
+            placeholder="Morrow"
+            style={{ padding: "var(--morrow-space-2)", borderRadius: "var(--morrow-radius-sm)", border: "1px solid var(--morrow-border)" }}
+          />
+        </label>
+        <label style={{ display: "grid", gap: "var(--morrow-space-1)", fontSize: "0.875rem" }}>
+          <span style={{ fontWeight: 500 }}>Communication style</span>
+          <select
+            onChange={(event) => update.mutate({ commsVerbosity: event.target.value as "concise" | "detailed" })}
+            style={{ padding: "var(--morrow-space-2)", borderRadius: "var(--morrow-radius-sm)", border: "1px solid var(--morrow-border)" }}
+            value={data.commsVerbosity}
+          >
+            <option value="concise">Concise</option>
+            <option value="detailed">Detailed</option>
+          </select>
+        </label>
+        <label style={{ display: "grid", gap: "var(--morrow-space-1)", fontSize: "0.875rem" }}>
+          <span style={{ fontWeight: 500 }}>Technical level</span>
+          <select
+            onChange={(event) => update.mutate({ commsTone: event.target.value as "technical" | "nontechnical" })}
+            style={{ padding: "var(--morrow-space-2)", borderRadius: "var(--morrow-radius-sm)", border: "1px solid var(--morrow-border)" }}
+            value={data.commsTone}
+          >
+            <option value="nontechnical">Plain language</option>
+            <option value="technical">Technical</option>
+          </select>
+        </label>
+      </div>
+
+      <div style={{ borderTop: "1px solid var(--morrow-border-subtle)", paddingTop: "var(--morrow-space-3)", display: "grid", gap: "var(--morrow-space-2)" }}>
+        <span style={{ fontWeight: 500, fontSize: "0.875rem" }}>Goals</span>
+        <form onSubmit={submitGoal} style={{ display: "flex", gap: "var(--morrow-space-2)" }}>
+          <input
+            aria-label="New goal"
+            onChange={(event) => setGoalText(event.target.value)}
+            placeholder="e.g. Ping me about open PRs"
+            style={{ flex: 1, padding: "var(--morrow-space-2)", borderRadius: "var(--morrow-radius-sm)", border: "1px solid var(--morrow-border)" }}
+            value={goalText}
+          />
+          <Button disabled={!goalText.trim() || addGoal.isPending} size="compact" type="submit">
+            Add
+          </Button>
+        </form>
+        {data.goals.length === 0 ? (
+          <p style={{ fontSize: "0.8125rem", color: "var(--morrow-text-muted)", margin: 0 }}>No goals yet — these are definitions only in this slice, not scheduled or automated.</p>
+        ) : (
+          <ul style={{ display: "grid", gap: "var(--morrow-space-1)", margin: 0, padding: 0, listStyle: "none" }}>
+            {data.goals.map((goal) => (
+              <li key={goal.id} style={{ display: "flex", alignItems: "center", gap: "var(--morrow-space-2)", fontSize: "0.875rem" }}>
+                <input
+                  aria-label={`Enable goal: ${goal.text}`}
+                  checked={goal.enabled}
+                  onChange={(event) => toggleGoal.mutate({ id: goal.id, enabled: event.target.checked })}
+                  type="checkbox"
+                />
+                <span style={{ opacity: goal.enabled ? 1 : 0.55 }}>{goal.text}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {update.isError || addGoal.isError ? (
+        <p role="alert">{safeError(update.error ?? addGoal.error, "That change could not be saved.")}</p>
+      ) : null}
+    </Surface>
+  );
+}
+
+function AssistantPrivacySection() {
+  const queryClient = useQueryClient();
+  const profile = useQuery(assistantProfileQueries.get());
+  const update = useMutation({
+    mutationFn: assistantProfileApi.update,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["assistant-profile"] }),
+  });
+  if (profile.isPending || !profile.data) return null;
+
+  return (
+    <Surface aria-labelledby="assistant-privacy-heading" padding="large" style={{ display: "grid", gap: "var(--morrow-space-3)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--morrow-space-2)" }}>
+        <Lock size={20} color="var(--morrow-accent)" />
+        <h2 id="assistant-privacy-heading" style={{ margin: 0 }}>Default privacy mode</h2>
+      </div>
+      <p style={{ margin: 0, color: "var(--morrow-text-muted)", fontSize: "0.875rem" }}>
+        This is the default new tasks start with. Before any request leaves the machine, Morrow shows
+        which provider, which memory records (by label, never raw content), and which tools are
+        involved — you can always change the mode for one request.
+      </p>
+      <div role="radiogroup" aria-label="Default privacy mode" style={{ display: "grid", gap: "var(--morrow-space-2)" }}>
+        {Object.entries(PRIVACY_MODE_COPY).map(([mode, copy]) => (
+          <label
+            key={mode}
+            style={{
+              display: "flex", gap: "var(--morrow-space-2)", alignItems: "flex-start",
+              padding: "var(--morrow-space-2)", borderRadius: "var(--morrow-radius-sm)",
+              border: `1px solid ${profile.data.defaultPrivacyMode === mode ? "var(--morrow-accent)" : "var(--morrow-border-subtle)"}`,
+              cursor: "pointer",
+            }}
+          >
+            <input
+              checked={profile.data.defaultPrivacyMode === mode}
+              name="default-privacy-mode"
+              onChange={() => update.mutate({ defaultPrivacyMode: mode as "local_only" | "controlled_cloud" | "custom" })}
+              type="radio"
+            />
+            <span>
+              <strong style={{ display: "block", fontSize: "0.875rem" }}>{copy.label}</strong>
+              <span style={{ fontSize: "0.8125rem", color: "var(--morrow-text-muted)" }}>{copy.hint}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </Surface>
+  );
+}
 
 const THEME_OPTIONS: ReadonlyArray<{ value: ThemePreference; label: string; hint: string }> = [
   { value: "light", label: "Light", hint: "Always use the light theme." },
@@ -35,6 +231,12 @@ export function SettingsPage() {
         <h1 id="settings-heading">Settings</h1>
         <p>Customize Morrow’s interface, model reasoning defaults, and privacy preferences across all projects.</p>
       </div>
+
+      {/* Assistant profile */}
+      <AssistantProfileSection />
+
+      {/* Default privacy mode */}
+      <AssistantPrivacySection />
 
       {/* Section 1: Appearance */}
       <Surface aria-labelledby="theme-heading" padding="large" style={{ display: "grid", gap: "var(--morrow-space-4)" }}>

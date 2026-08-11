@@ -354,7 +354,6 @@ const BUILTIN_DESCRIPTORS: ProviderDescriptor[] = [
           protocol: "openai-chat",
           endpointKind: c.endpointType,
           endpointHost: c.host,
-          defaultEndpointLimitTokens: 131_072,
         }),
       });
     },

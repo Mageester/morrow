@@ -10,6 +10,8 @@ import type { ProviderRouteMetadata } from "../provider/base.js";
 import { createProvider } from "../provider/registry.js";
 import { translateReasoning } from "../provider/reasoning.js";
 import { conversationsRepository } from "../repositories/conversations.js";
+import { agentsRepository } from "../repositories/agents.js";
+import { delegationsRepository } from "../repositories/delegations.js";
 import { missionsRepository } from "../repositories/missions.js";
 import { taskRecordsRepository } from "../repositories/task-records.js";
 import { taskRoutingRepository } from "../repositories/task-routing.js";
@@ -32,6 +34,16 @@ export class AgentTaskDispatchError extends Error {
 
 export interface AgentTaskRequest extends SendMessageInput {
   conversationId: string;
+  /** Set when this task is a delegated child of another task (subagent
+   * delegation) — threaded straight through to tasks.createTask so the
+   * child gets real provider routing, conversation linkage, and agent-state
+   * events instead of the bare runner.run shortcut. Optional and additive:
+   * every existing caller keeps working with no parent relationship. */
+  parentTaskId?: string;
+  /** Internal only: approval persists the delegation before the runner starts. */
+  deferRun?: boolean;
+  /** Internal only: binds a team-agent dispatch to one durable delegation. */
+  delegationId?: string;
 }
 
 export interface AgentTaskDispatcherDependencies {
@@ -198,7 +210,7 @@ export function dispatchAgentTask(
   dependencies: AgentTaskDispatcherDependencies,
   request: AgentTaskRequest,
 ) {
-  const { conversationId, ...rawBody } = request;
+  const { conversationId, parentTaskId, deferRun, delegationId, ...rawBody } = request;
   const body = SendMessageSchema.parse(rawBody);
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date());
@@ -207,8 +219,28 @@ export function dispatchAgentTask(
   const conversations = conversationsRepository(dependencies.db);
   const routing = taskRoutingRepository(dependencies.db);
   const records = taskRecordsRepository(dependencies.db);
+  const agents = agentsRepository(dependencies.db);
+  const delegations = delegationsRepository(dependencies.db);
   const conversation = conversations.getConversation(conversationId);
   if (!conversation) throw new AgentTaskDispatchError(404, "Conversation not found", "NOT_FOUND");
+
+  if (body.agentId) {
+    const agent = agents.get(body.agentId);
+    if (!agent || agent.projectId !== conversation.projectId) {
+      throw new AgentTaskDispatchError(404, "Agent not found in this project", "NOT_FOUND");
+    }
+    if (!agent.enabled) throw new AgentTaskDispatchError(409, "Agent is disabled", "AGENT_DISABLED");
+    const delegation = delegationId ? delegations.get(delegationId) : undefined;
+    if (delegationId && (!delegation
+      || delegation.parentTaskId !== parentTaskId
+      || delegation.agentId !== agent.id
+      || delegation.status !== (deferRun ? "pending_approval" : "running"))) {
+      throw new AgentTaskDispatchError(409, "Agent dispatch is not authorized by the delegation", "DELEGATION_POLICY_REQUIRED");
+    }
+    if (agent.teamId && (!delegation || delegation.parentTaskId !== parentTaskId)) {
+      throw new AgentTaskDispatchError(409, "Team agents must be started through an approved delegation", "TEAM_AGENT_REQUIRES_DELEGATION");
+    }
+  }
   const idempotencyFingerprint = requestFingerprint(conversationId, body);
 
   if (body.idempotencyKey) {
@@ -254,6 +286,7 @@ export function dispatchAgentTask(
         ...(body.agentId ? { agentId: body.agentId } : {}),
         ...(body.worktreeId ? { worktreeId: body.worktreeId } : {}),
         ...(body.missionId ? { missionId: body.missionId } : {}),
+        ...(parentTaskId ? { parentTaskId } : {}),
         createdAt: timestampIso,
       });
       const userMessage = conversations.appendMessage({
@@ -302,7 +335,7 @@ export function dispatchAgentTask(
     assertReplayMatches(dependencies.db, winner, idempotencyFingerprint);
     return replayResult(dependencies.db, conversationId, winner);
   }
-  dependencies.runner.run(bundle.task.id);
+  if (!deferRun) dependencies.runner.run(bundle.task.id);
 
   return {
     task: bundle.task,

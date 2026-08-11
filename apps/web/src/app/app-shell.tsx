@@ -11,6 +11,7 @@ import {
   MoreHorizontal,
   Settings,
   Sparkles,
+  Users,
   Workflow,
   X,
   type LucideIcon,
@@ -30,7 +31,9 @@ type ImplementedRoute =
   | "/connections"
   | "/settings"
   | "/projects"
-  | "/pair";
+  | "/pair"
+  | "/memory"
+  | "/teams";
 
 interface NavItem {
   icon: LucideIcon;
@@ -46,8 +49,9 @@ const NAVIGATION: NavItem[] = [
   { icon: MessageSquare, label: "Chats", to: "/chats" },
   { icon: Folder, label: "Projects", to: "/projects" },
   { icon: Workflow, label: "Missions", to: "/missions" },
+  { icon: Users, label: "Teams", to: "/teams" },
   { icon: Library, label: "Library", to: "/library" },
-  { icon: Sparkles, label: "Memory", upcoming: true },
+  { icon: Sparkles, label: "Memory", to: "/memory" },
   { icon: Cable, label: "Connections", to: "/connections" },
   { icon: Settings, label: "Settings", to: "/settings" },
 ];
@@ -87,10 +91,12 @@ function getRouteTitle(pathname: string): string {
     "/chats": "Chats",
     "/connections": "Connections",
     "/library": "Library",
+    "/memory": "Memory",
     "/missions": "Missions",
     "/pair": "Pair this install",
     "/projects": "Projects",
     "/settings": "Settings",
+    "/teams": "Teams",
   };
   return routeTitles[routePath] ?? "Morrow";
 }

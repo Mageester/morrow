@@ -5,6 +5,8 @@ import { buildServer } from "../src/server.js";
 import { TaskRunner } from "../src/runner.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
+import { agentsRepository } from "../src/repositories/agents.js";
+import { teamsRepository } from "../src/repositories/teams.js";
 
 describe("task graph repository", () => {
   let db: Database.Database;
@@ -74,5 +76,90 @@ describe("subagent API", () => {
   it("404s spawning under or fetching the tree of an unknown task", async () => {
     expect((await app.inject({ method: "POST", url: "/api/tasks/nope/subagents", payload: {} })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: "/api/tasks/nope/tree" })).statusCode).toBe(404);
+  });
+});
+
+describe("subagent API — kind:\"agent_chat\" real delegation", () => {
+  let db: any;
+  let app: any;
+  let previousMockProvider: string | undefined;
+  beforeEach(() => {
+    // Real dispatch (dispatchAgentTask) needs a provider route decision. Force
+    // the deterministic in-memory "mock" provider rather than depending on
+    // whatever real provider credentials happen to be in the ambient shell
+    // environment — this must pass identically in CI and in a clean checkout.
+    previousMockProvider = process.env.MOCK_PROVIDER;
+    process.env.MOCK_PROVIDER = "true";
+    db = openDatabase(":memory:");
+    app = buildServer({ db, runner: new TaskRunner(db, async () => {}) });
+    projectRepository(db).createProject({ id: "p1", name: "P1", workspacePath: process.cwd(), createdAt: new Date().toISOString() });
+    taskRepository(db).createTask({ id: "parent", projectId: "p1", kind: "agent_chat", status: "running", createdAt: new Date().toISOString() });
+    agentsRepository(db).create({ id: "agent-researcher", projectId: "p1", name: "Researcher", role: "researcher" });
+  });
+  afterEach(() => {
+    app.close();
+    db.close();
+    if (previousMockProvider === undefined) delete process.env.MOCK_PROVIDER;
+    else process.env.MOCK_PROVIDER = previousMockProvider;
+  });
+
+  it("requires an agentId for kind:\"agent_chat\"", async () => {
+    const spawn = await app.inject({ method: "POST", url: "/api/tasks/parent/subagents", payload: { kind: "agent_chat" } });
+    expect(spawn.statusCode).toBe(400);
+  });
+
+  it("404s when the agentId does not belong to the parent task's project", async () => {
+    const spawn = await app.inject({
+      method: "POST", url: "/api/tasks/parent/subagents",
+      payload: { kind: "agent_chat", agentId: "does-not-exist" },
+    });
+    expect(spawn.statusCode).toBe(404);
+  });
+
+  it("routes agent_chat through dispatchAgentTask: real provider routing, conversation linkage, and agent-state events — not the bare runner.run shortcut", async () => {
+    const spawn = await app.inject({
+      method: "POST", url: "/api/tasks/parent/subagents",
+      payload: { kind: "agent_chat", agentId: "agent-researcher", label: "Summarize this project's README" },
+    });
+    expect(spawn.statusCode).toBe(202);
+    const childId = spawn.json().taskId;
+    expect(spawn.json().parentTaskId).toBe("parent");
+
+    const child = taskRepository(db).getTaskById(childId);
+    expect(child?.parentTaskId).toBe("parent");
+    expect(child?.kind).toBe("agent_chat");
+    expect(child?.agentId).toBe("agent-researcher");
+
+    // Real dispatch means a routing decision and an initial agent-state
+    // transition were recorded — the bare runner.run shortcut never wrote
+    // these, which is exactly the gap this fixes.
+    const { taskRoutingRepository } = await import("../src/repositories/task-routing.js");
+    expect(taskRoutingRepository(db).get(childId)).toBeDefined();
+    const { taskRecordsRepository } = await import("../src/repositories/task-records.js");
+    expect(taskRecordsRepository(db).getAgentState(childId)?.state).toBe("idle");
+
+    const tree = await app.inject({ method: "GET", url: "/api/tasks/parent/tree" });
+    expect(tree.json().children.map((c: any) => c.task.id)).toEqual([childId]);
+  });
+
+  it("requires the delegation API before a team agent can be spawned directly", async () => {
+    const team = teamsRepository(db).create({ id: "team-1", projectId: "p1", name: "Team", createdAt: new Date().toISOString() });
+    const teamAgent = agentsRepository(db).create({ id: "team-agent", projectId: "p1", name: "Team agent", role: "researcher", teamId: team.id });
+    teamsRepository(db).addMember(team.id, teamAgent.id, 0, new Date().toISOString());
+    teamsRepository(db).setStatus(team.id, "active", new Date().toISOString());
+
+    const spawn = await app.inject({
+      method: "POST", url: "/api/tasks/parent/subagents",
+      payload: { kind: "agent_chat", agentId: teamAgent.id, label: "Must be delegated" },
+    });
+    expect(spawn.statusCode).toBe(409);
+  });
+
+  it("still handles kind:\"inspect_workspace\" on its exact prior code path (no agentId required, no conversation created)", async () => {
+    const spawn = await app.inject({ method: "POST", url: "/api/tasks/parent/subagents", payload: {} });
+    expect(spawn.statusCode).toBe(202);
+    const child = taskRepository(db).getTaskById(spawn.json().taskId);
+    expect(child?.kind).toBe("inspect_workspace");
+    expect(child?.agentId).toBeNull();
   });
 });

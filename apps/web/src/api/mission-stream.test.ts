@@ -260,4 +260,22 @@ describe("useMissionStream", () => {
     act(() => vi.advanceTimersByTime(15_000));
     expect(FakeEventSource.instances).toHaveLength(2);
   });
+
+  /**
+   * Same class of bug as chat-stream.ts: a backgrounded tab can silently
+   * stall an EventSource without ever firing "error", and there is no
+   * refetchOnWindowFocus safety net. Coming back to the tab must reconcile.
+   */
+  it("reconciles when the tab becomes visible again, even if the stream connection went silent", () => {
+    const { queryClient } = renderStream();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect(invalidate).not.toHaveBeenCalled();
+
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: missionKeys.detail("mission-42") });
+  });
 });

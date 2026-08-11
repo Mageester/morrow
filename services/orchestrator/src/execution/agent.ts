@@ -8,6 +8,8 @@ import { createGitignoreMatcher, isBuiltInIgnoredName } from "../workspace/ignor
 import { searchFiles, searchText, WorkspaceSearchError } from "../workspace/search.js";
 import { gitDiff, gitLog, gitStatus, GitInspectionError } from "../tools/git.js";
 import { projectRepository } from "../repositories/projects.js";
+import { agentsRepository } from "../repositories/agents.js";
+import { delegationsRepository } from "../repositories/delegations.js";
 import { intelligenceRepository } from "../repositories/intelligence.js";
 import { taskRepository } from "../repositories/tasks.js";
 import { taskRecordsRepository } from "../repositories/task-records.js";
@@ -89,6 +91,7 @@ import { playwrightController, type PlaywrightControllerOptions } from "../brows
 import type { BrowserController, BrowserViewport, PageSnapshot } from "../browser/types.js";
 import { isSafeSkillInstructionDirectory, verifySkillDirectory, SKILL_MATCH_STOPWORDS, SKILL_MATCH_MIN_SCORE } from "../skills/registry.js";
 import { createExecutionPolicy, type ExecutionPolicy } from "./execution-policy.js";
+import { buildAgentExecutionPolicy, type AgentExecutionPolicy } from "../security/agent-execution-policy.js";
 
 /**
  * Best-effort human-readable target for a tool call, included in the
@@ -824,6 +827,24 @@ export async function executeAgentChatTask({
     throw new Error("Project not found");
   }
   const projectId = project.id;
+  const assignedAgentId = (task as { agentId?: string | null }).agentId ?? null;
+  const agentRepo = agentsRepository(db);
+  const delegationRepo = delegationsRepository(db);
+  const assignedAgent = assignedAgentId ? agentRepo.get(assignedAgentId) : undefined;
+  if (assignedAgentId && (!assignedAgent || assignedAgent.projectId !== projectId)) {
+    throw new Error("Assigned agent is not available in this project");
+  }
+  if (assignedAgent && !assignedAgent.enabled) throw new Error("Assigned agent is disabled");
+  const assignedDelegation = assignedAgent ? delegationRepo.getByChildTask(taskId) : undefined;
+  if (assignedAgent?.teamId && (!assignedDelegation || assignedDelegation.status !== "running")) {
+    throw new Error("Team agent execution requires a running delegation");
+  }
+  if (assignedDelegation && (assignedDelegation.agentId !== assignedAgent?.id || assignedDelegation.parentTaskId !== task.parentTaskId)) {
+    throw new Error("Delegation does not match the assigned child task");
+  }
+  const agentExecutionPolicy: AgentExecutionPolicy | null = assignedAgent
+    ? buildAgentExecutionPolicy(assignedAgent, agentRepo.listToolPermissions(assignedAgent.id), assignedDelegation)
+    : null;
   const learnedById = new Map(learnedSkills.listByProject(projectId).map((skill) => [skill.id, skill]));
   const projectName = project.name;
   // A task assigned to a worktree executes entirely inside it: reads, writes,
@@ -959,7 +980,9 @@ export async function executeAgentChatTask({
   const routing = routingRepo.get(taskId);
   // Auto-approve is only ever honored in agent mode (double guard: the server
   // already refuses to set it otherwise).
-  const autoApprove = agentMode === "agent" && (routing?.decision.autoApprove ?? false);
+  const autoApprove = agentMode === "agent"
+    && (routing?.decision.autoApprove ?? false)
+    && !(agentExecutionPolicy?.approvalRequired ?? false);
   const presetId = routing?.presetId ?? DEFAULT_PRESET_ID;
   const preset = getPreset(presetId as any) ?? getPreset(DEFAULT_PRESET_ID)!;
   const providerId = (routing?.providerId ?? (assistantMessageRow.provider as ProviderId | null) ?? "openai") as ProviderId;
@@ -1610,8 +1633,10 @@ export async function executeAgentChatTask({
   const exposedTools: ToolDefinition[] = activeToolProfile === "none"
     ? []
     : activeToolProfile === "agent"
-      ? tools.filter((tool) => !BROWSER_TOOL_NAMES.has(tool.name) || browserToolsRequested)
-      : tools.filter((tool) => READ_ONLY_TOOL_NAMES.has(tool.name));
+      ? tools.filter((tool) => (!BROWSER_TOOL_NAMES.has(tool.name) || browserToolsRequested)
+        && (agentExecutionPolicy === null || agentExecutionPolicy.canUseTool(tool.name)))
+      : tools.filter((tool) => READ_ONLY_TOOL_NAMES.has(tool.name)
+        && (agentExecutionPolicy === null || agentExecutionPolicy.canUseTool(tool.name)));
   
   // System instructions.
   //
@@ -1698,7 +1723,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   // Inject user-controlled memory (bounded, deterministic, project-isolated).
   if (useMemory) {
-    const entries = memoryRepo.retrieveRelevant(projectId, conversationId, latestUserPrompt, now());
+    const entries = memoryRepo.retrieveRelevant(
+      projectId,
+      conversationId,
+      latestUserPrompt,
+      now(),
+      20,
+      agentExecutionPolicy?.readScopes,
+    );
     const lines: string[] = [];
     let used = 0;
     const memoryCap = 4000;
@@ -3998,7 +4030,72 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       return usage ? accumulateUsage(acc, usage) : acc;
     }, EMPTY_CUMULATIVE_USAGE);
 
+  // Agent/team ceilings are an execution boundary, not advisory metadata.
+  // Provider attempts and known token usage survive a restart through the
+  // durable task event log; the wall-clock ceiling covers this active worker
+  // invocation and is intentionally measured with a local monotonic clock.
+  const agentBudget = agentExecutionPolicy?.budget ?? null;
+  let agentProviderCallCount = agentExecutionPolicy
+    ? records.listEventsByType(taskId, "provider.request_started").length
+    : 0;
+  const agentBudgetStartedAtMs = Date.now();
+  const currentAgentBudgetViolation = (): { reason: "provider_calls" | "tokens" | "wall_clock"; actual: number; limit: number } | null => {
+    if (!agentBudget) return null;
+    if (agentBudget.maxProviderCalls !== null && agentProviderCallCount >= agentBudget.maxProviderCalls) {
+      return { reason: "provider_calls", actual: agentProviderCallCount, limit: agentBudget.maxProviderCalls };
+    }
+    const knownTokenTotal = cumulativeUsage.totalInputTokens + cumulativeUsage.outputTokens;
+    if (agentBudget.maxTokenBudget !== null && knownTokenTotal >= agentBudget.maxTokenBudget) {
+      return { reason: "tokens", actual: knownTokenTotal, limit: agentBudget.maxTokenBudget };
+    }
+    const elapsedMs = Date.now() - agentBudgetStartedAtMs;
+    if (agentBudget.maxWallClockMs !== null && elapsedMs >= agentBudget.maxWallClockMs) {
+      return { reason: "wall_clock", actual: elapsedMs, limit: agentBudget.maxWallClockMs };
+    }
+    return null;
+  };
+  const completedTurnAgentBudgetViolation = (): { reason: "tokens" | "wall_clock"; actual: number; limit: number } | null => {
+    if (!agentBudget) return null;
+    const knownTokenTotal = cumulativeUsage.totalInputTokens + cumulativeUsage.outputTokens;
+    if (agentBudget.maxTokenBudget !== null && knownTokenTotal > agentBudget.maxTokenBudget) {
+      return { reason: "tokens", actual: knownTokenTotal, limit: agentBudget.maxTokenBudget };
+    }
+    const elapsedMs = Date.now() - agentBudgetStartedAtMs;
+    if (agentBudget.maxWallClockMs !== null && elapsedMs >= agentBudget.maxWallClockMs) {
+      return { reason: "wall_clock", actual: elapsedMs, limit: agentBudget.maxWallClockMs };
+    }
+    return null;
+  };
+  const effectiveAgentOutputBudget = (): number | null => {
+    const base = effectiveOutputBudget();
+    if (!agentBudget || agentBudget.maxTokenBudget === null) return base;
+    const remaining = agentBudget.maxTokenBudget - (cumulativeUsage.totalInputTokens + cumulativeUsage.outputTokens);
+    if (remaining <= 0) return 0;
+    return base === null ? remaining : Math.min(base, remaining);
+  };
+  const interruptForAgentBudget = (violation: { reason: string; actual: number; limit: number }): void => {
+    const message = `Assigned agent budget exhausted (${violation.reason}: ${violation.actual}/${violation.limit}).`;
+    observePolicy("explicit_budget_exhausted", {
+      scope: "assigned_agent",
+      budget: violation.reason,
+      actual: violation.actual,
+      limit: violation.limit,
+    });
+    closeCurrentTurn({ final: false, aborted: true });
+    failCurrentSegment("agent_budget_exhausted");
+    transitionAgentState("interrupted", { reason: "agent_budget_exhausted", message, budget: violation.reason, actual: violation.actual, limit: violation.limit, turns: absoluteTurn });
+    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "agent_budget_exhausted", message, budget: violation.reason, actual: violation.actual, limit: violation.limit } });
+    convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Paused: ${message}]`, "interrupted", now());
+    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+  };
+
   while (true) {
+    const budgetViolation = currentAgentBudgetViolation();
+    if (budgetViolation) {
+      interruptForAgentBudget(budgetViolation);
+      return;
+    }
+
     if (checkCancelled()) {
       handleCancellation();
       return;
@@ -4012,6 +4109,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const requireToolCallThisTurn = forceNextTurnToolChoice;
     forceNextTurnToolChoice = false;
     artifactDeliveryRecoveryPending = false;
+    const agentMaxOutputTokens = effectiveAgentOutputBudget();
 
     turn++;
     absoluteTurn++;
@@ -4215,7 +4313,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           model: candidateModel,
           ...(effectiveTimeoutMs() !== undefined ? { timeoutMs: effectiveTimeoutMs()! } : {}),
           temperature: preset.temperature,
-          maxOutputTokens: effectiveOutputBudget(),
+          maxOutputTokens: agentMaxOutputTokens,
           ...(candidateReasoning ? { reasoning: candidateReasoning, reasoningCapability: resolution.reasoning } : {}),
           // A reasoning/"thinking" route rejects a forced tool_choice outright
           // (live evidence: DeepSeek returned "Thinking mode does not support
@@ -4322,8 +4420,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           `This request is larger than every configured route accepts, even after automatic compaction (${detail}). One message or tool result is too large to send â€” start a new chat, or connect a model with a larger context window.`,
         );
       }
+      const providerCallsRemaining = agentBudget?.maxProviderCalls === null || agentBudget?.maxProviderCalls === undefined
+        ? null
+        : agentBudget.maxProviderCalls - agentProviderCallCount;
+      const candidatesWithinBudget = providerCallsRemaining === null
+        ? admittedCandidates
+        : admittedCandidates.slice(0, providerCallsRemaining);
       const opened = await openStreamWithFallback(
-        admittedCandidates,
+        candidatesWithinBudget,
         preparedContext.messages,
         {
           ...(abortSignal ? { abortSignal } : {}),
@@ -4331,7 +4435,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           model: resolvedModel || assistantMessageRow.model || undefined,
           ...(effectiveTimeoutMs() !== undefined ? { timeoutMs: effectiveTimeoutMs()! } : {}),
           temperature: preset.temperature,
-          maxOutputTokens: effectiveOutputBudget(),
+          maxOutputTokens: agentMaxOutputTokens,
           // Reasoning â€” and, for the same reason, the forced tool_choice
           // recovery â€” intentionally omitted here: this object is only a
           // fallback default fallback.ts uses when a candidate lacks its own
@@ -4345,11 +4449,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // support this tool_choice").
         },
         globalRateGuard,
-        (candidate) => event("provider.request_started", {
-          provider: candidate.id,
-          model: candidate.request?.options.model ?? null,
-          routeFingerprint: candidate.request?.routeFingerprint ?? null,
-        }),
+        (candidate) => {
+          agentProviderCallCount += 1;
+          return event("provider.request_started", {
+            provider: candidate.id,
+            model: candidate.request?.options.model ?? null,
+            routeFingerprint: candidate.request?.routeFingerprint ?? null,
+          });
+        },
       );
       const selectedCandidate = projectedCandidates.find(({ candidate }) => candidate.id === opened.servedBy);
       if (!selectedCandidate) throw new Error(`Selected provider route ${opened.servedBy} was not preflighted`);
@@ -4662,6 +4769,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       });
     }
 
+    const completedBudgetViolation = completedTurnAgentBudgetViolation();
+    if (completedBudgetViolation) {
+      interruptForAgentBudget(completedBudgetViolation);
+      return;
+    }
+
     if (checkCancelled()) {
       handleCancellation();
       return;
@@ -4811,6 +4924,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         let observationRecord: ObservationRecord | null = null;
 
         try {
+          // Enforce the durable agent/delegation tool policy before parsing,
+          // approval creation, or any tool side effect. The model may still
+          // hallucinate a hidden/denied tool name; that call is recorded as a
+          // bounded policy observation and never reaches a host executor.
+          if (agentExecutionPolicy && !agentExecutionPolicy.canUseTool(tc.name)) {
+            throw new AgentToolFailure(
+              `Tool "${tc.name}" is denied by the assigned agent policy`,
+              { error: `Tool "${tc.name}" is denied by the assigned agent policy`, kind: "agent_policy_denied", toolName: tc.name },
+              "tool_not_permitted_in_mode",
+            );
+          }
           const toolDef = tools.find((t) => t.name === tc.name);
           const parsedArgs = repairAndParseToolArguments(tc.arguments);
           if (!parsedArgs.ok) {

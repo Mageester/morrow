@@ -141,8 +141,8 @@ describe("Provider registry", () => {
       endpointKind: "default",
       endpointHost: "api.deepseek.com",
       protocol: "openai-chat",
-      endpointLimitTokens: 131_072,
-      endpointLimitSource: "provider-metadata",
+      endpointLimitTokens: null,
+      endpointLimitSource: "unknown",
     });
     expect(defaultRoute?.endpointIdentityHash).toMatch(/^[a-f0-9]{64}$/);
 

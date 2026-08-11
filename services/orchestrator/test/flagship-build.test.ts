@@ -231,6 +231,12 @@ describe("flagship release gate", () => {
     toolCalls: 3,
     promptTokens: 100,
     completionTokens: 200,
+    providerCalls: 1,
+    cachedPromptTokens: null,
+    duplicateObservations: 0,
+    contextCompactions: 0,
+    recoveryAttempts: 0,
+    interventions: 0,
     wallClockMs: 1000,
     artifactSha256: null,
   });

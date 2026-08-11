@@ -11,7 +11,9 @@ import {
   ChatStreamEnvelopeSchema,
   WebTaskReasoningSchema,
   CreateMemoryEntrySchema,
+  MemoryImportSchema,
   UpdateMemoryEntrySchema,
+  MemoryScopeSchema,
   UpdateConversationSchema,
   ApprovalStatusSchema,
   ResolveApprovalSchema,
@@ -22,6 +24,13 @@ import {
   UpsertSkillAccessSchema,
   CreateProjectRuleSchema,
   PatchConventionSchema,
+  CreateTeamFromPresetSchema,
+  CreateDelegationSchema,
+  DelegationAccessContextSchema,
+  ResolveDelegationSchema,
+  CreateHandoffSchema,
+  UpdateAssistantProfileSchema,
+  CreateAssistantGoalSchema,
   type PresetId,
   type ProviderId,
   type ProviderAuthMode,
@@ -33,6 +42,10 @@ import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { projectRepository } from "./repositories/projects.js";
 import { agentsRepository } from "./repositories/agents.js";
+import { teamsRepository } from "./repositories/teams.js";
+import { delegationsRepository } from "./repositories/delegations.js";
+import { handoffsRepository } from "./repositories/handoffs.js";
+import { assistantProfileRepository } from "./repositories/assistant-profile.js";
 import { taskRepository } from "./repositories/tasks.js";
 import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
@@ -162,6 +175,8 @@ import { countChatTokens, prepareContextForProvider, admitProviderRequest } from
 import { buildProviderProjection } from "./execution/provider-projection.js";
 import { resolveModelBudget } from "./routing/model-budget.js";
 import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
+import { createResearchAndVerifyTeam } from "./mission/research-and-verify-preset.js";
+import { runReadmeSummarySample, ReadmeSummarySampleError } from "./mission/readme-summary-sample.js";
 import { registerWebMissionRoutes } from "./web/mission-routes.js";
 import { registerWebMissionStreamRoutes } from "./web/mission-stream.js";
 import { projectConversationActivity } from "./web/activity-projection.js";
@@ -270,6 +285,10 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   const projects = projectRepository(deps.db);
   const agents = agentsRepository(deps.db);
+  const teams = teamsRepository(deps.db);
+  const delegations = delegationsRepository(deps.db);
+  const handoffs = handoffsRepository(deps.db);
+  const assistantProfile = assistantProfileRepository(deps.db);
   const tasks = taskRepository(deps.db);
   const records = taskRecordsRepository(deps.db);
   const convs = conversationsRepository(deps.db);
@@ -282,6 +301,34 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const approvals = approvalsRepository(deps.db);
   const changeSets = changeSetsRepository(deps.db);
   const checkpoints = checkpointsRepository(deps.db);
+
+  /**
+   * Delegation ids are opaque database identifiers, not authorization. The
+   * parent task context is required on every detail/mutation route and is
+   * re-checked against the team, agent, membership, and child task relations.
+   */
+  function requireDelegationContext(delegationId: string, parentTaskId: string) {
+    const delegation = delegations.get(delegationId);
+    if (!delegation) throw new ApiError(404, "Delegation not found", "NOT_FOUND");
+    if (delegation.parentTaskId !== parentTaskId) {
+      throw new ApiError(404, "Delegation not found for this parent task", "NOT_FOUND");
+    }
+    const parent = tasks.getTaskById(parentTaskId);
+    if (!parent) throw new ApiError(404, "Parent task not found", "NOT_FOUND");
+    const project = projects.getProjectById(parent.projectId);
+    if (!project) throw new ApiError(404, "Parent project not found", "NOT_FOUND");
+    const team = teams.get(delegation.teamId);
+    const agent = agents.get(delegation.agentId);
+    const isMember = teams.listMembers(delegation.teamId).some((member) => member.agentId === delegation.agentId);
+    if (!team || team.projectId !== parent.projectId || !agent || agent.projectId !== parent.projectId || !isMember) {
+      throw new ApiError(404, "Delegation objects are not in the parent project", "NOT_FOUND");
+    }
+    const child = delegation.childTaskId ? tasks.getTaskById(delegation.childTaskId) : undefined;
+    if (delegation.childTaskId && (!child || child.projectId !== parent.projectId || child.parentTaskId !== parent.id || child.agentId !== delegation.agentId)) {
+      throw new ApiError(409, "Delegation child task relation is invalid", "INTEGRITY_ERROR");
+    }
+    return { delegation, parent, project, team, agent, child };
+  }
   const missions = missionsRepository(deps.db);
   const missionRuntime = missionRuntimeRepository(deps.db);
   const providerModelDiscovery = providerModelDiscoveryRepository(deps.db);
@@ -628,6 +675,12 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { projectId } = request.params as { projectId: string };
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
     const body = CreateAgentSchema.parse(request.body);
+    if (body.teamId) {
+      const team = teams.get(body.teamId);
+      if (!team || team.projectId !== projectId) {
+        throw new ApiError(400, "Agent team must belong to the same project", "TEAM_PROJECT_MISMATCH");
+      }
+    }
     const agent = agents.create({ id: crypto.randomUUID(), projectId, ...body, role: body.role ?? "assistant" });
     reply.status(201);
     return agent;
@@ -646,6 +699,12 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!agent) throw new ApiError(404, "Agent not found", "NOT_FOUND");
     // Read projectId from body to authorize the update.
     const body = z.object({ projectId: z.string().min(1), ...UpdateAgentSchema.shape }).parse(request.body);
+    if (body.teamId) {
+      const team = teams.get(body.teamId);
+      if (!team || team.projectId !== body.projectId) {
+        throw new ApiError(400, "Agent team must belong to the same project", "TEAM_PROJECT_MISMATCH");
+      }
+    }
     const updated = agents.update(agentId, body.projectId, body);
     if (!updated) throw new ApiError(404, "Agent not found in project", "NOT_FOUND");
     return updated;
@@ -702,6 +761,273 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
     if (!agents.deleteSkillAccess(agentId, skillId)) throw new ApiError(404, "Skill access not found", "NOT_FOUND");
     reply.status(204).send();
+  });
+
+  // ── Teams ────────────────────────────────────────────────────────────────
+  // Only one preset is offered in this slice: "research_and_verify" — a
+  // Researcher (read-only, bounded sources) and a Verifier (inspects the
+  // Researcher's output, writes only approved artifacts). Instantiating a
+  // team means materializing this preset's two agents with their policy,
+  // not free-form team authoring.
+
+  app.post("/api/projects/:projectId/teams", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = CreateTeamFromPresetSchema.parse(request.body);
+    const { team, researcher, verifier } = createResearchAndVerifyTeam(deps.db, projectId, body.name);
+    reply.status(201);
+    return { team, members: [researcher, verifier] };
+  });
+
+  app.get("/api/projects/:projectId/teams", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return teams.listByProject(projectId);
+  });
+
+  app.get("/api/projects/:projectId/teams/:teamId", async (request) => {
+    const { projectId, teamId } = request.params as { projectId: string; teamId: string };
+    const team = teams.get(teamId);
+    if (!team || team.projectId !== projectId) throw new ApiError(404, "Team not found", "NOT_FOUND");
+    const members = teams.listMembers(teamId).map((m) => agents.get(m.agentId)).filter(Boolean);
+    return { team, members };
+  });
+
+  app.post("/api/projects/:projectId/teams/:teamId/archive", async (request) => {
+    const { projectId, teamId } = request.params as { projectId: string; teamId: string };
+    const team = teams.get(teamId);
+    if (!team || team.projectId !== projectId) throw new ApiError(404, "Team not found", "NOT_FOUND");
+    return teams.setStatus(teamId, "archived", new Date().toISOString());
+  });
+
+  // ── Delegation & handoff ─────────────────────────────────────────────────
+  // Every field that could widen authority (status, budget, allowedTools,
+  // allowedMemoryScopes, approvalRequired) is computed here from the
+  // team/agent policy — CreateDelegationSchema has no such fields, so a
+  // client cannot submit them even by accident.
+
+  app.post("/api/tasks/:taskId/delegations", async (request, reply) => {
+    const { taskId } = request.params as { taskId: string };
+    const parent = tasks.getTaskById(taskId);
+    if (!parent) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    const body = CreateDelegationSchema.parse(request.body);
+
+    const team = teams.get(body.teamId);
+    if (!team || team.projectId !== parent.projectId) throw new ApiError(404, "Team not found in this project", "NOT_FOUND");
+    if (team.status !== "active") {
+      throw new ApiError(409, `Team is ${team.status}; activate it before delegating work`, "TEAM_NOT_ACTIVE");
+    }
+    const agent = agents.get(body.agentId);
+    const isMember = teams.listMembers(body.teamId).some((m) => m.agentId === body.agentId);
+    if (!agent || agent.projectId !== parent.projectId || !isMember) {
+      throw new ApiError(404, "Agent not found on this team", "NOT_FOUND");
+    }
+    if (!agent.enabled) {
+      throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
+    }
+
+    // Effective policy = intersection of team defaults and the agent's own
+    // ceiling — never wider than either. Numeric budgets take the tighter
+    // (non-null) bound; a null on either side means "no ceiling from that
+    // side", not "unlimited" (the other side's bound still applies).
+    const tighter = (a: number | null, b: number | null) =>
+      a === null ? b : b === null ? a : Math.min(a, b);
+    const allowedMemoryScopes = team.sharedMemoryPolicy === "none"
+      ? agent.memoryReadScopes.filter((s) => s !== "team")
+      : agent.memoryReadScopes;
+    const allowedTools = agents.listToolPermissions(agent.id).filter((p) => p.effect === "allow").map((p) => p.toolName);
+
+    const now = new Date().toISOString();
+    const delegation = delegations.create({
+      id: crypto.randomUUID(),
+      parentTaskId: parent.id,
+      teamId: team.id,
+      agentId: agent.id,
+      objective: body.objective,
+      acceptanceCriteria: body.acceptanceCriteria,
+      contextSnapshotRef: `task:${parent.id}`,
+      allowedTools,
+      allowedMemoryScopes,
+      providerId: agent.providerOverride ?? null,
+      model: agent.modelOverride ?? null,
+      budget: {
+        maxProviderCalls: tighter(agent.maxProviderCalls, team.defaultMaxProviderCalls),
+        maxTokenBudget: tighter(agent.maxTokenBudget, team.defaultMaxTokenBudget),
+        maxWallClockMs: tighter(agent.maxWallClockMs, team.defaultMaxWallClockMs),
+      },
+      approvalRequired: agent.approvalRequired || team.defaultApprovalRequired,
+      deadlineAt: body.deadlineAt ?? null,
+      correlationId: crypto.randomUUID(),
+      createdAt: now,
+    });
+    reply.status(201);
+    return delegation;
+  });
+
+  app.get("/api/tasks/:taskId/delegations", async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    if (!tasks.getTaskById(taskId)) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    return delegations.listByParentTask(taskId);
+  });
+
+  app.get("/api/delegations/:delegationId", async (request) => {
+    const { delegationId } = request.params as { delegationId: string };
+    const { parentTaskId } = DelegationAccessContextSchema.parse(request.query);
+    const { delegation } = requireDelegationContext(delegationId, parentTaskId);
+    return { delegation, handoff: handoffs.getByDelegation(delegationId) ?? null };
+  });
+
+  app.post("/api/delegations/:delegationId/resolve", async (request, reply) => {
+    const { delegationId } = request.params as { delegationId: string };
+    const body = ResolveDelegationSchema.parse(request.body);
+    const { delegation, parent } = requireDelegationContext(delegationId, body.parentTaskId);
+    // Idempotency guard: a replayed/duplicate resolve (e.g. after a crash and
+    // restart retrying the same request) must never spawn a second child or
+    // silently re-resolve an already-decided delegation.
+    if (delegation.status !== "pending_approval") {
+      throw new ApiError(409, `Delegation is already ${delegation.status}`, "ALREADY_RESOLVED");
+    }
+    const now = new Date().toISOString();
+
+    if (body.decision === "reject") {
+      return delegations.reject(delegationId, now);
+    }
+    // Persist the running delegation before starting the child. This closes the
+    // race where execution could observe an unscoped team agent between spawn
+    // and approval, and makes restart/recovery resolve the same policy row.
+    const result = spawnAgentChatSubagent(parent, delegation.agentId, delegation.objective, {
+      deferRun: true,
+      delegationId,
+    });
+    const started = delegations.approveAndStart(delegationId, result.task.id, now);
+    if (!started || started.status !== "running" || started.childTaskId !== result.task.id) {
+      throw new ApiError(409, "Delegation could not be started", "START_CONFLICT");
+    }
+    deps.runner.run(result.task.id);
+    return started;
+  });
+
+  // Parent cancellation propagates to the actual child task, not just the
+  // delegation row — the child stops or parks safely and both sides leave
+  // an inspectable final state.
+  app.post("/api/delegations/:delegationId/cancel", async (request) => {
+    const { delegationId } = request.params as { delegationId: string };
+    const { parentTaskId } = DelegationAccessContextSchema.parse(request.body);
+    const { delegation } = requireDelegationContext(delegationId, parentTaskId);
+    if (delegation.childTaskId) {
+      deps.runner.cancel(delegation.childTaskId);
+    }
+    return delegations.cancel(delegationId, new Date().toISOString());
+  });
+
+  // A handoff is durable proof, never a model's prose alone: the caller must
+  // supply acceptanceCriteriaStatus/artifactRefs/verificationEvidence as real
+  // fields, which the parent then inspects — not chat text saying "done".
+  app.post("/api/delegations/:delegationId/handoff", async (request, reply) => {
+    const { delegationId } = request.params as { delegationId: string };
+    const body = CreateHandoffSchema.parse(request.body);
+    const { delegation, parent, child } = requireDelegationContext(delegationId, body.parentTaskId);
+    if (delegation.status !== "running") {
+      throw new ApiError(409, `Delegation is ${delegation.status}; a handoff can only be recorded while running`, "CONFLICT");
+    }
+    if (!child) throw new ApiError(409, "Delegation has no running child task", "INTEGRITY_ERROR");
+
+    const statusesByCriterion = new Map(body.acceptanceCriteriaStatus.map((status) => [status.criterion, status]));
+    const criteriaComplete = delegation.acceptanceCriteria.length === body.acceptanceCriteriaStatus.length
+      && statusesByCriterion.size === body.acceptanceCriteriaStatus.length
+      && delegation.acceptanceCriteria.every((criterion) => statusesByCriterion.get(criterion)?.met === true);
+    if (!criteriaComplete) {
+      throw new ApiError(400, "Handoff acceptance criteria do not match the delegation", "HANDOFF_PROOF_INVALID");
+    }
+
+    if (!body.verificationEvidence?.trim() || body.artifactRefs.length === 0) {
+      throw new ApiError(400, "Handoff requires verification evidence and at least one artifact", "HANDOFF_PROOF_INVALID");
+    }
+    const evidence = records.listEvidence(child.id);
+    const artifactProof = body.artifactRefs.every((artifact) => evidence.some((entry) =>
+      entry.path === artifact.path && entry.metadata.contentHash === artifact.contentHash));
+    if (!artifactProof) {
+      throw new ApiError(400, "Handoff artifacts do not match durable child-task evidence", "HANDOFF_PROOF_INVALID");
+    }
+
+    if (body.targetAgentId) {
+      const target = agents.get(body.targetAgentId);
+      const targetMember = teams.listMembers(delegation.teamId).some((member) => member.agentId === body.targetAgentId);
+      if (!target || target.projectId !== parent.projectId || target.teamId !== delegation.teamId || !target.enabled || !targetMember) {
+        throw new ApiError(404, "Handoff target agent is not a valid member of this team", "TARGET_AGENT_INVALID");
+      }
+    }
+
+    const now = new Date().toISOString();
+    const handoff = deps.db.transaction(() => {
+      const created = handoffs.create({
+        id: crypto.randomUUID(),
+        delegationId,
+        taskId: delegation.childTaskId!,
+        resultSummary: body.resultSummary,
+        acceptanceCriteriaStatus: body.acceptanceCriteriaStatus.map((c) => ({ ...c, note: c.note ?? null })),
+        artifactRefs: body.artifactRefs,
+        verificationEvidence: body.verificationEvidence ?? null,
+        unresolvedRisks: body.unresolvedRisks,
+        sourceAgentId: delegation.agentId,
+        targetAgentId: body.targetAgentId ?? null,
+        createdAt: now,
+      });
+      const completed = delegations.complete(delegationId, now);
+      if (!completed || completed.status !== "completed") throw new ApiError(409, "Delegation completion could not be committed", "COMMIT_CONFLICT");
+      return created;
+    })();
+    reply.status(201);
+    return handoff;
+  });
+
+  // ── Assistant profile ────────────────────────────────────────────────────
+  // Single local, cross-project profile (see docs/decisions/0012). Goals are
+  // user-authored, direct writes; a model-suggested fact never lands here —
+  // it becomes a candidate memory_entries row requiring explicit approval.
+
+  app.get("/api/assistant-profile", async () => assistantProfile.get());
+
+  app.patch("/api/assistant-profile", async (request) => {
+    const body = UpdateAssistantProfileSchema.parse(request.body);
+    return assistantProfile.update(body, new Date().toISOString());
+  });
+
+  app.post("/api/assistant-profile/goals", async (request, reply) => {
+    const body = CreateAssistantGoalSchema.parse(request.body);
+    const updated = assistantProfile.addGoal({ id: crypto.randomUUID(), text: body.text, enabled: body.enabled }, new Date().toISOString());
+    reply.status(201);
+    return updated;
+  });
+
+  app.patch("/api/assistant-profile/goals/:goalId", async (request) => {
+    const { goalId } = request.params as { goalId: string };
+    const body = z.object({ enabled: z.boolean() }).parse(request.body);
+    return assistantProfile.setGoalEnabled(goalId, body.enabled, new Date().toISOString());
+  });
+
+  app.delete("/api/assistant-profile/goals/:goalId", async (request) => {
+    const { goalId } = request.params as { goalId: string };
+    return assistantProfile.removeGoal(goalId, new Date().toISOString());
+  });
+
+  // The onboarding "run a safe deterministic sample task" step — the whole
+  // Researcher -> Verifier -> handoff loop, local and no-network. See
+  // mission/readme-summary-sample.ts for what it actually proves.
+  app.post("/api/projects/:projectId/sample-tasks/readme-summary", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    try {
+      const result = runReadmeSummarySample({ db: deps.db, projectId, workspacePath: project.workspacePath });
+      reply.status(201);
+      return result;
+    } catch (error) {
+      if (error instanceof ReadmeSummarySampleError) {
+        throw new ApiError(422, error.message, error.code);
+      }
+      throw error;
+    }
   });
 
   app.post("/api/projects/:projectId/tasks/inspect-workspace", async (request, reply) => {
@@ -1262,13 +1588,75 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     }
   });
 
+  // Shared by the direct /subagents route and by delegation approval: spawns
+  // a real delegated child through dispatchAgentTask (provider routing,
+  // conversation linkage, agent-state events) instead of the bare
+  // createTask+runner.run shortcut. The child gets a fresh, minimal
+  // conversation — never the parent's chat history — so it only receives
+  // the approved input projection (the objective/label).
+  function spawnAgentChatSubagent(
+    parent: { id: string; projectId: string },
+    agentId: string,
+    label: string | undefined,
+    options: { deferRun?: boolean; delegationId?: string } = {},
+  ) {
+    const agent = agents.get(agentId);
+    if (!agent || agent.projectId !== parent.projectId) {
+      throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
+    }
+    if (!agent.enabled) throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
+    if (agent.teamId && !options.delegationId) {
+      throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+    }
+    const now = new Date().toISOString();
+    const childConversation = convs.createConversation({
+      id: crypto.randomUUID(),
+      projectId: parent.projectId,
+      title: label ?? `Delegated: ${agent.name}`,
+      createdAt: now,
+      updatedAt: now,
+    });
+    try {
+      return dispatchAgentTask({ db: deps.db, runner: deps.runner, env: process.env }, {
+        conversationId: childConversation.id,
+        parentTaskId: parent.id,
+        content: label ?? `Delegated task for ${agent.name}`,
+        agentId: agent.id,
+        mode: "agent",
+        ...(options.deferRun ? { deferRun: true } : {}),
+        ...(options.delegationId ? { delegationId: options.delegationId } : {}),
+      });
+    } catch (error) {
+      if (error instanceof AgentTaskDispatchError) {
+        throw new ApiError(error.statusCode, error.message, error.code);
+      }
+      throw error;
+    }
+  }
+
   // Subagent delegation: a subagent is a child task with its own scope, linked
   // to its parent via parent_task_id. This builds the task graph.
+  //
+  // kind:"inspect_workspace" keeps its exact original code path (bare
+  // createTask + runner.run) — untouched, regression-guarded by the existing
+  // subagents.test.ts suite.
+  //
+  // kind:"agent_chat" is a real delegated child — see spawnAgentChatSubagent.
   app.post("/api/tasks/:taskId/subagents", async (request, reply) => {
     const { taskId } = request.params as { taskId: string };
     const parent = tasks.getTaskById(taskId);
     if (!parent) throw new ApiError(404, "Task not found", "NOT_FOUND");
     const body = SpawnSubagentSchema.parse(request.body ?? {});
+
+    if (body.kind === "agent_chat") {
+      if (!body.agentId) {
+        throw new ApiError(400, "agentId is required for kind:\"agent_chat\"", "AGENT_ID_REQUIRED");
+      }
+      const result = spawnAgentChatSubagent(parent, body.agentId, body.label);
+      reply.status(202);
+      return { parentTaskId: parent.id, taskId: result.task.id, aggregateUrl: `/api/tasks/${result.task.id}` };
+    }
+
     const child = tasks.createTask({
       id: crypto.randomUUID(),
       projectId: parent.projectId,
@@ -3038,7 +3426,30 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { projectId } = request.params as { projectId: string };
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const { scope } = request.query as { scope?: string };
+    if (scope) {
+      const parsedScope = MemoryScopeSchema.safeParse(scope);
+      if (!parsedScope.success) throw new ApiError(400, "Invalid scope", "VALIDATION_ERROR");
+      return memory.listByScope(projectId, parsedScope.data);
+    }
     return memory.listByProject(projectId);
+  });
+
+  // Local, explicit, versioned export/import — never leaves the machine on
+  // its own; the caller (CLI/web) writes/reads the JSON file locally.
+  app.get("/api/projects/:projectId/memory/export", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return memory.exportEntries(projectId);
+  });
+
+  app.post("/api/projects/:projectId/memory/import", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = MemoryImportSchema.parse(request.body);
+    const imported = memory.importEntries(projectId, body.entries);
+    reply.status(201);
+    return { version: 1, importedCount: imported.length, skippedCount: body.entries.length - imported.length };
   });
 
   app.post("/api/projects/:projectId/memory", async (request, reply) => {

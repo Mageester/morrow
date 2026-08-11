@@ -137,9 +137,17 @@ export function useMissionStream(missionId: string) {
       setCurrentStatus("reconnecting");
       connect();
     };
+    // A backgrounded tab can silently stall an EventSource without ever
+    // firing "error" — reconcile at least once when the tab becomes visible
+    // again (see chat-stream.ts for the same fix and the fuller rationale).
+    const handleVisibility = () => {
+      if (document.visibilityState !== "visible" || stopped) return;
+      void queryClient.invalidateQueries({ queryKey: missionKeys.detail(missionId) });
+    };
 
     window.addEventListener("offline", handleOffline);
     window.addEventListener("online", handleOnline);
+    document.addEventListener("visibilitychange", handleVisibility);
     setCurrentStatus(navigator.onLine ? "connecting" : "offline");
     if (navigator.onLine) connect();
 
@@ -149,6 +157,7 @@ export function useMissionStream(missionId: string) {
       closeSource();
       window.removeEventListener("offline", handleOffline);
       window.removeEventListener("online", handleOnline);
+      document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [missionId, queryClient]);
 

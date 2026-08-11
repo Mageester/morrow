@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-router";
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ActiveProjectProvider } from "../../state/active-project.js";
 import { GettingStarted } from "./getting-started.js";
 
 // Must satisfy ProviderStatusSchema in full: a short fixture fails validation,
@@ -45,12 +46,21 @@ function renderChecklist(options: {
           accountId: null, planId: null, checkedAt: null, lastError: null,
         });
       }
+      if (url === "/api/assistant-profile") {
+        return Response.json({
+          version: 1, id: "default", displayName: null, assistantName: null, commsVerbosity: "concise",
+          commsTone: "nontechnical", timezone: null, locale: null, defaultProviderId: null, defaultModel: null,
+          defaultReasoning: { mode: "auto" }, defaultPrivacyMode: "local_only", defaultApprovalPosture: "ask_always",
+          goals: [], createdAt: "2026-08-11T00:00:00.000Z", updatedAt: "2026-08-11T00:00:00.000Z",
+        });
+      }
+      if (url.includes("/teams")) return Response.json([]);
       throw new Error(`unexpected ${url}`);
     }),
   );
   const root = createRootRoute();
   const home = createRoute({ getParentRoute: () => root, path: "/", component: GettingStarted });
-  const stubs = ["/connections", "/projects", "/pair"].map((path) =>
+  const stubs = ["/connections", "/projects", "/pair", "/settings", "/teams"].map((path) =>
     createRoute({ getParentRoute: () => root, path, component: () => null }),
   );
   const router = createRouter({
@@ -60,7 +70,9 @@ function renderChecklist(options: {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <RouterProvider router={router as unknown as AnyRouter} />
+      <ActiveProjectProvider>
+        <RouterProvider router={router as unknown as AnyRouter} />
+      </ActiveProjectProvider>
     </QueryClientProvider>,
   );
 }
@@ -108,5 +120,18 @@ describe("GettingStarted", () => {
       pairing: "unpaired",
     });
     await waitFor(() => expect(container.querySelector(".morrow-getting-started")).toBeNull());
+  });
+
+  it("names the privacy-mode and team steps, both optional and never blocking retirement", async () => {
+    renderChecklist({});
+    // Privacy mode is already satisfied by its safe default (local_only) —
+    // it shows as Done, not an action to complete.
+    expect(await screen.findByText("Choose a privacy mode")).toBeVisible();
+    // Team creation genuinely needs action, so it shows a real link.
+    expect(await screen.findByRole("link", { name: "Create a team" })).toBeVisible();
+    // Both optional steps carry the "Optional" badge, distinguishing them from
+    // the two required steps.
+    const optionalBadges = screen.getAllByText("Optional");
+    expect(optionalBadges.length).toBeGreaterThanOrEqual(2);
   });
 });

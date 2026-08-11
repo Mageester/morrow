@@ -9,22 +9,24 @@ import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import { changeSetsRepository } from "../src/repositories/change-sets.js";
+import { agentsRepository } from "../src/repositories/agents.js";
+import { memoryRepository } from "../src/repositories/memory.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import type { AgentMode } from "@morrow/contracts";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-function seed(db: any, workspacePath: string, mode: AgentMode, prompt = "go") {
-  const project = projectRepository(db).createProject({ id: "p", name: "P", workspacePath, createdAt: new Date().toISOString() });
+function seed(db: any, workspacePath: string, mode: AgentMode, prompt = "go", agentId?: string, useMemory = false, autoApprove = false) {
+  const project = projectRepository(db).getProjectById("p") ?? projectRepository(db).createProject({ id: "p", name: "P", workspacePath, createdAt: new Date().toISOString() });
   const conv = conversationsRepository(db).createConversation({ id: "c", projectId: "p", title: "t", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   conversationsRepository(db).appendMessage({ id: "mu", conversationId: "c", role: "user", content: prompt, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-  const task = taskRepository(db).createTask({ id: "t", projectId: "p", kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
+  const task = taskRepository(db).createTask({ id: "t", projectId: "p", kind: "agent_chat", status: "queued", ...(agentId ? { agentId } : {}), createdAt: new Date().toISOString() });
   conversationsRepository(db).appendMessage({ id: "ma", conversationId: "c", role: "assistant", content: "", taskId: "t", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   taskRoutingRepository(db).upsert({
-    taskId: "t", presetId: "best-quality", providerId: "mock", model: "mock-model", useMemory: false,
-    decision: { version: 1, presetId: "best-quality", providerId: "mock", model: "mock-model", reason: "t", fallbackUsed: false, overridden: false, privacy: "cloud", candidates: [], mode },
+    taskId: "t", presetId: "best-quality", providerId: "mock", model: "mock-model", useMemory,
+    decision: { version: 1, presetId: "best-quality", providerId: "mock", model: "mock-model", reason: "t", fallbackUsed: false, overridden: false, privacy: "cloud", candidates: [], mode, autoApprove },
     createdAt: new Date().toISOString(),
   });
   taskRecordsRepository(db).transitionAgentState("t", { id: "s0", state: "idle", details: {}, createdAt: new Date().toISOString() });
@@ -50,6 +52,64 @@ describe("agent security boundaries", () => {
     const disc = taskRecordsRepository(db).getAggregate("t").disclosure!;
     expect(disc.filesystemAccess).toBe("workspace-write");
     expect(disc.shellExecution).toBe(true);
+  });
+
+  it("enforces the assigned agent tool and memory policy before exposure and side effects", async () => {
+    projectRepository(db).createProject({ id: "p", name: "P", workspacePath: ws, createdAt: new Date().toISOString() });
+    const agent = agentsRepository(db).create({
+      id: "policy-agent", projectId: "p", name: "Policy agent", role: "researcher",
+      memoryReadScopes: ["agent"], memoryWriteScopes: ["agent"],
+    });
+    agentsRepository(db).upsertToolPermission(agent.id, { toolName: "create_file", effect: "deny", priority: 10 });
+    seed(db, ws, "agent", "PROTECTED_PROJECT_MEMORY", agent.id, true);
+    memoryRepository(db).create({
+      id: "project-memory", projectId: "p", scope: "project", content: "PROTECTED_PROJECT_MEMORY",
+      source: "user", createdAt: new Date().toISOString(),
+    });
+
+    const provider = new MockProvider({
+      chunks: [
+        [tool("blocked-write", "create_file", { path: "blocked.txt", content: "must not be written" }), done],
+        [text("The policy prevented the write."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(existsSync(join(ws, "blocked.txt"))).toBe(false);
+    const call = conversationsRepository(db).listToolCallsForTask("t").find((item: any) => item.toolName === "create_file");
+    expect(call?.status).toBe("failed");
+    expect(JSON.parse(call!.resultJson!).error).toMatch(/agent policy|not permitted/i);
+    expect(provider.requests[0]?.some((message) => message.content.includes("PROTECTED_PROJECT_MEMORY"))).toBe(false);
+  });
+
+  it("enforces the assigned agent provider-call budget across tool turns", async () => {
+    projectRepository(db).createProject({ id: "p", name: "P", workspacePath: ws, createdAt: new Date().toISOString() });
+    const agent = agentsRepository(db).create({
+      id: "budget-agent", projectId: "p", name: "Budget agent", role: "researcher",
+      maxProviderCalls: 1,
+    });
+    seed(db, ws, "agent", "Use one provider call only", agent.id);
+
+    const provider = new MockProvider({
+      chunks: [
+        [tool("read-once", "read_file", { path: "evidence.txt" }), done],
+        [text("This second provider response must never be requested."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(provider.requests).toHaveLength(1);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    const budgetEvent = taskRecordsRepository(db).listEvents("t").find(
+      (event) => event.type === "task.progress_warning" && event.payload.signal === "explicit_budget_exhausted",
+    );
+    expect(budgetEvent?.payload.budget).toBe("provider_calls");
   });
 
   it("inspect (read-only) mode discloses read-only and refuses execution tools", async () => {
