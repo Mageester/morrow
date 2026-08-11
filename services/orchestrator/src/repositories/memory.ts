@@ -40,6 +40,11 @@ export interface CreateMemoryInput {
   createdAt: string;
 }
 
+export type MemoryRetrievalPolicy = {
+  allowUserGlobal?: boolean;
+  allowedScopes?: MemoryScope[];
+};
+
 /**
  * Deterministic SQLite-backed memory. No vector store, no hidden capture: every
  * entry has an explicit source, optional task provenance, and a timestamp, is
@@ -207,23 +212,29 @@ export function memoryRepository(db: Database.Database) {
      * Enabled entries applicable to a conversation: every project-wide tier plus
      * only this conversation's own conversation-scoped entries. Pinned first.
      */
-    listActiveForConversation(projectId: string, conversationId: string): MemoryEntry[] {
+    listActiveForConversation(projectId: string, conversationId: string, policy: MemoryRetrievalPolicy = {}): MemoryEntry[] {
+      const allowedScopes = policy.allowedScopes?.length ? policy.allowedScopes : undefined;
+      const scopeClause = allowedScopes ? ` AND scope IN (${allowedScopes.map(() => "?").join(",")})` : "";
+      const globalClause = policy.allowUserGlobal ? " OR (scope = 'user_global' AND enabled = 1)" : "";
+      const params: unknown[] = [projectId, conversationId];
+      if (allowedScopes) params.push(...allowedScopes);
       return db
         .prepare(
           `SELECT * FROM memory_entries
-           WHERE project_id = ? AND enabled = 1
-             AND (scope != 'conversation' OR conversation_id = ?)
+           WHERE enabled = 1 AND ((project_id = ? AND (scope != 'conversation' OR conversation_id = ?))${globalClause})
+             ${scopeClause}
            ORDER BY pinned DESC, created_at ASC, id ASC`
         )
-        .all(projectId, conversationId)
-        .map(map);
+        .all(...params)
+        .map(map)
+        .filter((entry) => entry.scope !== "user_global" || ["user_preference", "communication_preference"].includes(entry.type));
     },
 
     /** Ranked automatic recall. Only active, non-expired, non-invalidated memory
      * can affect execution; every returned record gets an auditable use count. */
-    retrieveRelevant(projectId: string, conversationId: string, prompt: string, at: string, limit = 20): MemoryEntry[] {
+    retrieveRelevant(projectId: string, conversationId: string, prompt: string, at: string, limit = 20, policy: MemoryRetrievalPolicy = {}): MemoryEntry[] {
       const tokens = new Set(normalizeMemory(prompt).match(/[a-z0-9][a-z0-9-]{2,}/g) ?? []);
-      const candidates = this.listActiveForConversation(projectId, conversationId)
+      const candidates = this.listActiveForConversation(projectId, conversationId, policy)
         .filter((entry) => entry.lifecycle === "active")
         .filter((entry) => entry.staleness !== "stale" && entry.staleness !== "invalidated")
         .filter((entry) => !entry.expiresAt || entry.expiresAt > at)
@@ -252,6 +263,16 @@ export function memoryRepository(db: Database.Database) {
     setPinned(id: string, pinned: boolean, updatedAt: string): MemoryEntry | undefined {
       db.prepare("UPDATE memory_entries SET pinned = ?, updated_at = ? WHERE id = ?").run(pinned ? 1 : 0, updatedAt, id);
       return this.get(id);
+    },
+
+    setLifecycle(id: string, lifecycle: MemoryLifecycle, updatedAt: string, enabled?: boolean): MemoryEntry | undefined {
+      db.prepare("UPDATE memory_entries SET lifecycle=?,enabled=COALESCE(?,enabled),updated_at=? WHERE id=?")
+        .run(lifecycle, enabled === undefined ? null : enabled ? 1 : 0, updatedAt, id);
+      return this.get(id);
+    },
+
+    forget(id: string, updatedAt: string): MemoryEntry | undefined {
+      return this.setLifecycle(id, "retired", updatedAt, false);
     },
 
     delete(id: string): boolean {

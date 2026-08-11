@@ -1450,6 +1450,31 @@ export const migrations:Migration[]=[
      );
      CREATE INDEX research_runs_task_idx ON research_runs(task_id, created_at, id);
    `}
+  ,{id:52,name:"memory_candidates",sql:`
+    CREATE TABLE memory_candidates (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+      originating_task_id TEXT,
+      content TEXT NOT NULL,
+      normalized_content TEXT NOT NULL,
+      proposed_type TEXT NOT NULL,
+      proposed_scope TEXT NOT NULL,
+      sensitivity TEXT NOT NULL CHECK(sensitivity IN ('public','internal','sensitive','secret')),
+      confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+      evidence_references_json TEXT NOT NULL DEFAULT '[]',
+      expiration_policy TEXT NOT NULL,
+      expires_at TEXT,
+      lifecycle TEXT NOT NULL CHECK(lifecycle IN ('proposed','approved','rejected','expired','superseded')),
+      supersedes_candidate_id TEXT REFERENCES memory_candidates(id) ON DELETE SET NULL,
+      approved_memory_id TEXT REFERENCES memory_entries(id) ON DELETE SET NULL,
+      rejection_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX memory_candidates_project_idx ON memory_candidates(project_id, lifecycle, created_at, id);
+    CREATE INDEX memory_candidates_memory_idx ON memory_candidates(approved_memory_id);
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

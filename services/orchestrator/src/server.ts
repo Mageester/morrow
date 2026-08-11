@@ -16,6 +16,9 @@ import {
   CreateMemoryEntrySchema,
   UpdateMemoryEntrySchema,
   MemoryScopeSchema,
+  CreateMemoryCandidateSchema,
+  ApproveMemoryCandidateSchema,
+  EditMemoryCandidateSchema,
   UpdateConversationSchema,
   ApprovalStatusSchema,
   ResolveApprovalSchema,
@@ -54,6 +57,8 @@ import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
 import { taskRoutingRepository } from "./repositories/task-routing.js";
 import { memoryRepository } from "./repositories/memory.js";
+import { memoryCandidatesRepository } from "./repositories/memory-candidates.js";
+import { createMemoryAdmission } from "./memory/memory-admission.js";
 import { searchRepository } from "./repositories/search.js";
 import { skillUsageRepository } from "./repositories/skill-usage.js";
 import { learnedSkillsRepository } from "./repositories/learned-skills.js";
@@ -301,6 +306,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const convs = conversationsRepository(deps.db);
   const routingRepo = taskRoutingRepository(deps.db);
   const memory = memoryRepository(deps.db);
+  const memoryCandidates = memoryCandidatesRepository(deps.db);
+  const memoryAdmission = createMemoryAdmission({ db: deps.db, candidates: memoryCandidates, memory });
   const search = searchRepository(deps.db);
   const skillUsage = skillUsageRepository(deps.db);
   const learnedSkills = learnedSkillsRepository(deps.db);
@@ -3375,6 +3382,99 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!/^[A-Za-z0-9._-]{1,120}$/.test(skillId)) throw new ApiError(400, "Invalid skill id", "VALIDATION_ERROR");
     reply.status(200);
     return skillUsage.recordUse(projectId, skillId, new Date().toISOString());
+  });
+
+  app.get("/api/projects/:projectId/memory-candidates", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return memoryCandidates.listByProject(projectId);
+  });
+
+  app.post("/api/projects/:projectId/memory-candidates", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const raw = (request.body ?? {}) as Record<string, unknown>;
+    const candidate = memoryAdmission.propose(CreateMemoryCandidateSchema.parse({
+      ...raw,
+      id: crypto.randomUUID(),
+      projectId,
+      createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
+    }));
+    reply.status(201);
+    return candidate;
+  });
+
+  app.get("/api/memory-candidates/:id", async (request) => {
+    const { id } = request.params as { id: string };
+    const candidate = memoryCandidates.get(id);
+    if (!candidate) throw new ApiError(404, "Memory candidate not found", "NOT_FOUND");
+    return candidate;
+  });
+
+  app.get("/api/memory-candidates/:id/preview", async (request) => {
+    const { id } = request.params as { id: string };
+    try {
+      return memoryAdmission.disclosure(id);
+    } catch {
+      throw new ApiError(404, "Memory candidate not found", "NOT_FOUND");
+    }
+  });
+
+  app.post("/api/memory-candidates/:id/approve", async (request) => {
+    const { id } = request.params as { id: string };
+    const candidate = memoryCandidates.get(id);
+    if (!candidate) throw new ApiError(404, "Memory candidate not found", "NOT_FOUND");
+    try {
+      return memoryAdmission.approve(id, candidate.projectId, ApproveMemoryCandidateSchema.parse(request.body));
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError(400, error instanceof Error ? error.message : "Invalid memory approval", "MEMORY_APPROVAL_INVALID");
+    }
+  });
+
+  app.patch("/api/memory-candidates/:id", async (request) => {
+    const { id } = request.params as { id: string };
+    const raw = (request.body ?? {}) as Record<string, unknown>;
+    const projectId = z.string().min(1).parse(raw.projectId);
+    const candidate = memoryCandidates.getForProject(id, projectId);
+    if (!candidate) throw new ApiError(404, "Memory candidate not found", "NOT_FOUND");
+    const { projectId: _projectId, ...editBody } = raw;
+    try {
+      return memoryAdmission.edit(id, projectId, EditMemoryCandidateSchema.parse(editBody));
+    } catch (error) {
+      throw new ApiError(400, error instanceof Error ? error.message : "Invalid memory candidate edit", "MEMORY_CANDIDATE_INVALID");
+    }
+  });
+
+  app.post("/api/memory-candidates/:id/reject", async (request) => {
+    const { id } = request.params as { id: string };
+    const body = z.object({ projectId: z.string().min(1), reason: z.string().max(500).optional() }).strict().parse(request.body);
+    try {
+      return memoryAdmission.reject(id, body.projectId, body.reason);
+    } catch (error) {
+      throw new ApiError(400, error instanceof Error ? error.message : "Unable to reject memory candidate", "MEMORY_CANDIDATE_INVALID");
+    }
+  });
+
+  app.post("/api/memory-candidates/:id/forget", async (request) => {
+    const { id } = request.params as { id: string };
+    const body = z.object({ projectId: z.string().min(1) }).strict().parse(request.body);
+    try {
+      return memoryAdmission.forget(id, body.projectId);
+    } catch (error) {
+      throw new ApiError(400, error instanceof Error ? error.message : "Unable to forget memory candidate", "MEMORY_CANDIDATE_INVALID");
+    }
+  });
+
+  app.delete("/api/memory-candidates/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = z.object({ projectId: z.string().min(1) }).strict().parse(request.body);
+    try {
+      memoryAdmission.forget(id, body.projectId);
+      reply.status(204).send();
+    } catch (error) {
+      throw new ApiError(400, error instanceof Error ? error.message : "Unable to forget memory candidate", "MEMORY_CANDIDATE_INVALID");
+    }
   });
 
   app.get("/api/projects/:projectId/memory", async (request) => {

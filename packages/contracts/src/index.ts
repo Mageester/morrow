@@ -773,6 +773,8 @@ export type MemoryLifecycle=z.infer<typeof MemoryLifecycleSchema>;
 export type MemorySensitivity=z.infer<typeof MemorySensitivitySchema>;
 export type MemoryEvidenceReference=z.infer<typeof MemoryEvidenceReferenceSchema>;
 
+export * from "./memory-candidates.js";
+
 // ── Honest OAuth integration findings ────────────────────────────────────────
 // Morrow only labels a flow "OAuth" when it is an officially supported, documented
 // third-party integration. Where no such flow exists for this class of application,
