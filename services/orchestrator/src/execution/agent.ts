@@ -11,6 +11,7 @@ import { projectRepository } from "../repositories/projects.js";
 import { intelligenceRepository } from "../repositories/intelligence.js";
 import { taskRepository } from "../repositories/tasks.js";
 import { taskRecordsRepository } from "../repositories/task-records.js";
+import { taskCostsRepository } from "../repositories/task-costs.js";
 import { conversationsRepository, type ToolCallRecord } from "../repositories/conversations.js";
 import { taskRoutingRepository } from "../repositories/task-routing.js";
 import { memoryRepository } from "../repositories/memory.js";
@@ -798,6 +799,58 @@ export async function executeAgentChatTask({
   const projects = projectRepository(db);
   const tasks = taskRepository(db);
   const records = taskRecordsRepository(db);
+  const costs = taskCostsRepository(db);
+  type ProviderCostAttempt = {
+    requestId: string;
+    providerId: string;
+    modelId: string;
+    routeFingerprint: string | null;
+    recorded: boolean;
+  };
+  const providerAttemptQueues = new Map<string, ProviderCostAttempt[]>();
+  let currentProviderAttempt: ProviderCostAttempt | null = null;
+  const recordRequestCost = (attempt: ProviderCostAttempt, usage: RequestUsage): void => {
+    if (attempt.recorded) return;
+    const cost = usage.cost ?? { amount: null, accuracy: "unknown" as const };
+    costs.record({
+      id: attempt.requestId,
+      taskId,
+      requestId: attempt.requestId,
+      providerId: usage.providerId,
+      modelId: usage.modelId,
+      inputTokens: usage.totalInputTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      outputTokens: usage.outputTokens,
+      amount: cost.amount,
+      accuracy: cost.accuracy,
+      pricing: usage.pricingSnapshot ?? null,
+      recordedAt: now(),
+    });
+    attempt.recorded = true;
+  };
+  const recordUnknownProviderAttempt = (attempt: ProviderCostAttempt): void => {
+    recordRequestCost(attempt, resolveRequestUsage({
+      providerId: attempt.providerId,
+      modelId: attempt.modelId,
+      usage: null,
+    }));
+  };
+  const trackProviderAttempt = (candidateId: string, source: AiProvider): AiProvider => ({
+    id: candidateId,
+    route: source.route,
+    async *streamChat(messages, options): AsyncIterable<ProviderChunk> {
+      const queue = providerAttemptQueues.get(candidateId);
+      const attempt = queue?.shift();
+      if (!attempt) throw new Error(`Provider attempt was not initialized for ${candidateId}`);
+      currentProviderAttempt = attempt;
+      try {
+        for await (const chunk of source.streamChat(messages, options)) yield chunk;
+      } catch (error) {
+        recordUnknownProviderAttempt(attempt);
+        throw error;
+      }
+    },
+  });
   const processesRepo = processesRepository(db);
   const procSupervisor = supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
   const convs = conversationsRepository(db);
@@ -1158,20 +1211,24 @@ export async function executeAgentChatTask({
   // Stream candidates for live fallback: the primary first, then any injected
   // fallbacks (tests) or â€” on the real registry path â€” every other *configured*
   // routing candidate, in order. A candidate we cannot construct is skipped.
-  const streamCandidates: FallbackCandidate[] = [{ id: providerType, provider: activeProvider }];
+  const rawStreamCandidates: FallbackCandidate[] = [{ id: providerType, provider: activeProvider }];
   if (fallbackProviders && fallbackProviders.length > 0) {
     fallbackProviders.forEach((fp, i) => {
-      streamCandidates.push({ id: ((fp as { id?: ProviderId }).id ?? `fallback-${i}`) as string, provider: fp });
+      rawStreamCandidates.push({ id: ((fp as { id?: ProviderId }).id ?? `fallback-${i}`) as string, provider: fp });
     });
   } else if (!provider && providerType !== "mock") {
     for (const candidateId of eligibleFallbackProviderIds({ pinned: routePinned, primaryProviderId: providerType, candidates: routing?.decision.candidates })) {
       try {
-        streamCandidates.push({ id: candidateId, provider: createProvider(candidateId, process.env) });
+        rawStreamCandidates.push({ id: candidateId, provider: createProvider(candidateId, process.env) });
       } catch {
         /* unconfigurable candidate (e.g. missing key) â€” skip it */
       }
     }
   }
+  const streamCandidates: FallbackCandidate[] = rawStreamCandidates.map((candidate) => ({
+    ...candidate,
+    provider: trackProviderAttempt(candidate.id, candidate.provider),
+  }));
 
   // Durable route evidence: what was asked for, what was resolved, and whether
   // this run is allowed to substitute anything. Recorded before the first
@@ -3991,10 +4048,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // pass. Legacy events (persisted before the canonical usage shape existed)
   // are normalized rather than skipped, so resuming an older task does not
   // silently lose its prior accounting.
+  const seenProviderUsageRequestIds = new Set<string>();
   let cumulativeUsage: CumulativeUsage = records.listEvents(taskId)
     .filter((ev) => ev.type === "provider.usage")
     .reduce((acc, ev) => {
-      const usage = normalizePersistedUsagePayload(ev.payload as Record<string, unknown>);
+      const payload = ev.payload as Record<string, unknown>;
+      const requestId = typeof payload.requestId === "string" && payload.requestId.length > 0 ? payload.requestId : null;
+      if (requestId !== null) {
+        if (seenProviderUsageRequestIds.has(requestId)) return acc;
+        seenProviderUsageRequestIds.add(requestId);
+      }
+      const usage = normalizePersistedUsagePayload(payload);
       return usage ? accumulateUsage(acc, usage) : acc;
     }, EMPTY_CUMULATIVE_USAGE);
 
@@ -4039,6 +4103,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     let currentReasoningContent = "";
     let currentServedBy = providerType as string;
     let currentRouteFingerprint = primaryRouteFingerprint;
+    let providerAttemptsThisTurn: ProviderCostAttempt[] = [];
 
     try {
       const preparedContext = prepareContextForProvider(chatMessages, {
@@ -4322,6 +4387,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           `This request is larger than every configured route accepts, even after automatic compaction (${detail}). One message or tool result is too large to send â€” start a new chat, or connect a model with a larger context window.`,
         );
       }
+      providerAttemptsThisTurn = [];
       const opened = await openStreamWithFallback(
         admittedCandidates,
         preparedContext.messages,
@@ -4345,11 +4411,28 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // support this tool_choice").
         },
         globalRateGuard,
-        (candidate) => event("provider.request_started", {
-          provider: candidate.id,
-          model: candidate.request?.options.model ?? null,
-          routeFingerprint: candidate.request?.routeFingerprint ?? null,
-        }),
+        (candidate) => {
+          const attempt: ProviderCostAttempt = {
+            requestId: randomUUID(),
+            providerId: candidate.id,
+            modelId: candidate.request?.options.model
+              ?? getProviderDefaultModel(candidate.id as ProviderId, process.env)
+              ?? `${candidate.id}-model`,
+            routeFingerprint: candidate.request?.routeFingerprint ?? null,
+            recorded: false,
+          };
+          providerAttemptsThisTurn.push(attempt);
+          const queue = providerAttemptQueues.get(candidate.id) ?? [];
+          queue.push(attempt);
+          providerAttemptQueues.set(candidate.id, queue);
+          currentProviderAttempt = attempt;
+          event("provider.request_started", {
+            requestId: attempt.requestId,
+            provider: attempt.providerId,
+            model: attempt.modelId,
+            routeFingerprint: attempt.routeFingerprint,
+          });
+        },
       );
       const selectedCandidate = projectedCandidates.find(({ candidate }) => candidate.id === opened.servedBy);
       if (!selectedCandidate) throw new Error(`Selected provider route ${opened.servedBy} was not preflighted`);
@@ -4386,6 +4469,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       currentServedBy = opened.servedBy;
       currentRouteFingerprint = opened.routeFingerprint ?? primaryRouteFingerprint;
       if (opened.fellBackFrom.length > 0) {
+        const failedAttempts = providerAttemptsThisTurn.slice(0, opened.fellBackFrom.length);
+        for (const attempt of failedAttempts) recordUnknownProviderAttempt(attempt);
         if (!openedFreshSegment) {
           const checkpointId = await persistExecutionCheckpoint("provider_route_switch");
           if (interruptAtSegmentLimit(checkpointId)) return;
@@ -4404,7 +4489,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           openedFreshSegment = true;
           await onSegmentBoundary?.("provider_failure");
         }
+        const failedRequestIds = failedAttempts.map((attempt) => attempt.requestId);
         event("provider.fallback", {
+          requestId: providerAttemptsThisTurn.at(-1)?.requestId ?? null,
+          failedRequestIds,
           from: opened.fellBackFrom,
           servedBy: opened.servedBy,
           freshSegment: openedFreshSegment,
@@ -4445,7 +4533,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           currentReasoningContent += chunk.providerContinuation.reasoningContent;
         }
 
-        if (chunk.type === "done" && chunk.usage) {
+        if (chunk.type === "done") {
           // resolveRequestUsage/accumulateUsage (routing/usage-snapshot.ts) are
           // the single source of truth for this response's usage and the
           // running task total â€” never re-derived independently downstream.
@@ -4453,11 +4541,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             providerId: opened.servedBy,
             modelId: servedModel,
             routeFingerprint: currentRouteFingerprint,
-            usage: chunk.usage,
+            usage: chunk.usage ?? null,
             metadata: resolveModelMetadata(opened.servedBy, servedModel),
           });
+          if (!currentProviderAttempt) throw new Error("Provider response had no request identity");
+          recordRequestCost(currentProviderAttempt, requestUsage);
           cumulativeUsage = accumulateUsage(cumulativeUsage, requestUsage);
           event("provider.usage", {
+            requestId: currentProviderAttempt.requestId,
             provider: opened.servedBy,
             model: servedModel,
             // The reasoning actually attached to the request that produced
@@ -4488,6 +4579,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             tokenConfidence: requestUsage.tokenConfidence,
             costUsd: requestUsage.costUsd,
             costSource: requestUsage.costSource,
+            cost: requestUsage.cost,
+            pricingSnapshot: requestUsage.pricingSnapshot ?? null,
             routeFingerprint: requestUsage.routeFingerprint,
             // Cumulative task/session totals as of this response â€” folded in
             // exactly once per response, never re-derived by summing context
@@ -4540,6 +4633,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           }
         }
       }
+
+      const completedAttempt = providerAttemptsThisTurn.at(-1);
+      if (completedAttempt && !completedAttempt.recorded) recordUnknownProviderAttempt(completedAttempt);
     } catch (e: any) {
       // A cancellation that surfaced as a thrown error (e.g. abort before the
       // first chunk) is a cancel, not a provider failure.
@@ -4548,10 +4644,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         return;
       }
       closeCurrentTurn({ final: false, aborted: true });
+      for (const attempt of providerAttemptsThisTurn) recordUnknownProviderAttempt(attempt);
       const retryableProviderError = isRetryableProviderError(e);
       const providerContextRejection = isProviderContextRejection(e);
       const safeProviderMessage = redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 2_000);
       event("provider.error_classified", {
+        requestId: providerAttemptsThisTurn.at(-1)?.requestId ?? null,
+        requestIds: providerAttemptsThisTurn.map((attempt) => attempt.requestId),
         errorName: e instanceof Error ? e.name : typeof e,
         message: safeProviderMessage.slice(0, 500),
         ...(e instanceof ProviderError ? { kind: e.kind, retryableFlag: e.retryable, status: e.status ?? null } : { kind: "unknown" }),
@@ -4578,6 +4677,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         });
         resetTransientToolTracking();
         event("provider.fallback", {
+          requestId: providerAttemptsThisTurn.at(-1)?.requestId ?? null,
+          failedRequestIds: providerAttemptsThisTurn.at(-1)?.requestId ? [providerAttemptsThisTurn.at(-1)!.requestId] : [],
           from: [failedProvider],
           servedBy: providerType,
           freshSegment: true,

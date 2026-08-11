@@ -1400,6 +1400,24 @@ export const migrations:Migration[]=[
       updated_at TEXT NOT NULL
     );
   `}
+  ,{id:50,name:"task_cost_lines",sql:`
+    CREATE TABLE task_cost_lines (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      request_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      input_tokens INTEGER CHECK(input_tokens IS NULL OR input_tokens >= 0),
+      cached_input_tokens INTEGER CHECK(cached_input_tokens IS NULL OR (input_tokens IS NOT NULL AND cached_input_tokens >= 0 AND cached_input_tokens <= input_tokens)),
+      output_tokens INTEGER CHECK(output_tokens IS NULL OR output_tokens >= 0),
+      amount_micros_usd INTEGER CHECK(amount_micros_usd IS NULL OR amount_micros_usd >= 0),
+      accuracy TEXT NOT NULL CHECK(accuracy IN ('provider_billed','exact_usage_pricing','estimated','unknown')),
+      pricing_snapshot_json TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(task_id, request_id)
+    );
+    CREATE INDEX task_cost_lines_task_created_idx ON task_cost_lines(task_id, created_at, id);
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

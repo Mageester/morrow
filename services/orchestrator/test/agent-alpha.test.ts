@@ -6,6 +6,7 @@ import { openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
+import { taskCostsRepository } from "../src/repositories/task-costs.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { symbolIndexRepository } from "../src/repositories/symbols.js";
@@ -355,6 +356,11 @@ describe("Agent Alpha", () => {
       const evidence = taskRecordsRepository(db).listEvidence("task-1");
       expect(evidence.length).toBe(1);
       expect(evidence[0]?.path).toBe("readme.md");
+
+      const costSummary = taskCostsRepository(db).summaryByTask("task-1");
+      expect(costSummary).toMatchObject({ requestCount: 2, total: null, accuracy: "unknown" });
+      expect(costSummary.lines).toHaveLength(2);
+      expect(costSummary.lines.every((line) => line.amount === null && line.accuracy === "unknown")).toBe(true);
     });
 
     it("distinguishes fresh vs cached vs output tokens per response and folds them into a cumulative total exactly once each, never inventing a cached count the provider didn't report", async () => {
@@ -430,6 +436,124 @@ describe("Agent Alpha", () => {
       expect(second.cumulativeCacheBreakdownComplete).toBe(false);
       expect(second.cumulativeKnownFreshInputTokens).toBe(70); // frozen from response 1 only
       expect(second.cumulativeKnownCachedInputTokens).toBe(30); // frozen from response 1 only
+
+      const costLines = taskCostsRepository(db).listByTask("task-1");
+      expect(costLines).toHaveLength(2);
+      expect(new Set(costLines.map((line) => line.requestId)).size).toBe(2);
+      expect(costLines.map((line) => line.inputTokens)).toEqual([100, 150]);
+    });
+
+    it("records one fixed-point cost line before completing a priced provider response", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+      const records = taskRecordsRepository(db);
+      const costs = taskCostsRepository(db);
+      const timestamp = new Date().toISOString();
+
+      projects.createProject({ id: "priced-project", name: "Priced", workspacePath: tempDir, createdAt: timestamp });
+      convs.createConversation({ id: "priced-conversation", projectId: "priced-project", title: "Priced", createdAt: timestamp, updatedAt: timestamp });
+      convs.appendMessage({ id: "priced-user", conversationId: "priced-conversation", role: "user", content: "Answer", createdAt: timestamp, updatedAt: timestamp });
+      tasks.createTask({ id: "priced-task", projectId: "priced-project", kind: "agent_chat", status: "queued", createdAt: timestamp });
+      convs.appendMessage({
+        id: "priced-assistant",
+        conversationId: "priced-conversation",
+        role: "assistant",
+        content: "",
+        taskId: "priced-task",
+        provider: "deepseek",
+        model: "deepseek-v4-flash",
+        streamingState: "queued",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+
+      const provider: AiProvider = {
+        id: "deepseek",
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          yield { type: "text", text: "priced answer" };
+          yield { type: "done", usage: { promptTokens: 1_000_000, completionTokens: 500_000, cachedPromptTokens: 0 } };
+        },
+      };
+
+      await executeAgentChatTask({ db, taskId: "priced-task", provider });
+
+      const lines = costs.listByTask("priced-task");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({
+        providerId: "deepseek",
+        modelId: "deepseek-v4-flash",
+        inputTokens: 1_000_000,
+        cachedInputTokens: 0,
+        outputTokens: 500_000,
+        amount: { currency: "USD", micros: 280_000 },
+        accuracy: "exact_usage_pricing",
+        pricing: {
+          inputMicrosPerMillion: 140_000,
+          outputMicrosPerMillion: 280_000,
+          cachedInputMicrosPerMillion: 2_800,
+          source: "authoritative",
+        },
+      });
+
+      const started = records.listEvents("priced-task").find((event) => event.type === "provider.request_started");
+      const usage = records.listEvents("priced-task").find((event) => event.type === "provider.usage");
+      expect(started?.payload).toMatchObject({ requestId: lines[0]!.requestId, provider: "deepseek" });
+      expect(usage?.payload).toMatchObject({ requestId: lines[0]!.requestId, costUsd: 0.28 });
+      expect(records.getAggregate("priced-task").cost).toMatchObject({
+        total: { currency: "USD", micros: 280_000 },
+        accuracy: "exact_usage_pricing",
+        requestCount: 1,
+      });
+    });
+
+    it("keeps failed and fallback provider attempts as separate request cost lines", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+      const records = taskRecordsRepository(db);
+      const costs = taskCostsRepository(db);
+      const timestamp = new Date().toISOString();
+
+      projects.createProject({ id: "fallback-project", name: "Fallback", workspacePath: tempDir, createdAt: timestamp });
+      convs.createConversation({ id: "fallback-conversation", projectId: "fallback-project", title: "Fallback", createdAt: timestamp, updatedAt: timestamp });
+      convs.appendMessage({ id: "fallback-user", conversationId: "fallback-conversation", role: "user", content: "Answer", createdAt: timestamp, updatedAt: timestamp });
+      tasks.createTask({ id: "fallback-task", projectId: "fallback-project", kind: "agent_chat", status: "queued", createdAt: timestamp });
+      convs.appendMessage({ id: "fallback-assistant", conversationId: "fallback-conversation", role: "assistant", content: "", taskId: "fallback-task", streamingState: "queued", createdAt: timestamp, updatedAt: timestamp });
+
+      const primary: AiProvider = {
+        id: "mock",
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          throw new Error("ECONNREFUSED");
+        },
+      };
+      const fallback: AiProvider = {
+        id: "deepseek",
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          yield { type: "text", text: "fallback answer" };
+          yield { type: "done", usage: { promptTokens: 1_000_000, completionTokens: 0, cachedPromptTokens: 0 } };
+        },
+      };
+
+      await executeAgentChatTask({ db, taskId: "fallback-task", provider: primary, fallbackProviders: [fallback] });
+
+      const attempts = records.listEvents("fallback-task").filter((event) => event.type === "provider.request_started");
+      expect(attempts).toHaveLength(2);
+      expect(attempts.map((event) => event.payload.provider)).toEqual(["mock", "deepseek"]);
+      expect(new Set(attempts.map((event) => event.payload.requestId)).size).toBe(2);
+
+      const lines = costs.listByTask("fallback-task");
+      expect(lines).toHaveLength(2);
+      expect(lines.map((line) => line.providerId)).toEqual(["mock", "deepseek"]);
+      expect(lines[0]).toMatchObject({ requestId: attempts[0]!.payload.requestId, amount: null, accuracy: "unknown" });
+      expect(lines[1]).toMatchObject({ requestId: attempts[1]!.payload.requestId, amount: { currency: "USD", micros: 140_000 }, accuracy: "exact_usage_pricing" });
+
+      const fallbackEvent = records.listEvents("fallback-task").find((event) => event.type === "provider.fallback");
+      expect(fallbackEvent?.payload).toMatchObject({
+        requestId: attempts[1]!.payload.requestId,
+        failedRequestIds: [attempts[0]!.payload.requestId],
+      });
+      expect(costs.summaryByTask("fallback-task")).toMatchObject({ total: null, accuracy: "unknown", requestCount: 2 });
     });
 
     it("projects each assistant turn once instead of recursively copying prior narration", async () => {
