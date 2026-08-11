@@ -1475,6 +1475,35 @@ export const migrations:Migration[]=[
     CREATE INDEX memory_candidates_project_idx ON memory_candidates(project_id, lifecycle, created_at, id);
     CREATE INDEX memory_candidates_memory_idx ON memory_candidates(approved_memory_id);
   `}
+  ,{id:53,name:"skill_drafts",sql:`
+    CREATE TABLE skill_drafts (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      source_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      trigger_description TEXT NOT NULL,
+      inputs_json TEXT NOT NULL,
+      outputs_json TEXT NOT NULL,
+      steps_json TEXT NOT NULL,
+      permissions_json TEXT NOT NULL,
+      creator_permissions_json TEXT NOT NULL,
+      provenance_json TEXT NOT NULL,
+      replay_fixtures_json TEXT NOT NULL,
+      validation_json TEXT NOT NULL,
+      lifecycle TEXT NOT NULL CHECK(lifecycle IN ('draft','security_review','replay_pending','approved','active','rejected','rolled_back')),
+      workflow_fingerprint TEXT NOT NULL,
+      directory TEXT,
+      rollback_history_json TEXT NOT NULL DEFAULT '[]',
+      warning TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      approved_at TEXT,
+      activated_at TEXT
+    );
+    CREATE INDEX skill_drafts_project_created_idx ON skill_drafts(project_id, created_at, id);
+    CREATE INDEX skill_drafts_source_task_idx ON skill_drafts(source_task_id);
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

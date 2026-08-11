@@ -244,6 +244,135 @@ export const LearnedSkillSchema = z.object({
 }).strict();
 export type LearnedSkill = z.infer<typeof LearnedSkillSchema>;
 
+// ── reviewed skill drafts ───────────────────────────────────────────────────
+
+/** A draft is deliberately separate from LearnedSkill: creation is durable
+ * review data and cannot make an executable skill active by itself. */
+export const SkillDraftLifecycleSchema = z.enum([
+  "draft", "security_review", "replay_pending", "approved", "active", "rejected", "rolled_back",
+]);
+export type SkillDraftLifecycle = z.infer<typeof SkillDraftLifecycleSchema>;
+
+export const SkillDraftPermissionsSchema = LearnedSkillPermissionsSchema;
+export type SkillDraftPermissions = z.infer<typeof SkillDraftPermissionsSchema>;
+
+export const SkillDraftStepSchema = z.object({
+  id: z.string().min(1).max(120),
+  position: z.number().int().positive(),
+  tool: z.string().min(1).max(120),
+  description: z.string().min(1).max(1000),
+  target: z.string().max(2048).nullable(),
+}).strict();
+export type SkillDraftStep = z.infer<typeof SkillDraftStepSchema>;
+
+export const SkillDraftProvenanceSchema = z.object({
+  taskId: z.string().min(1),
+  projectId: z.string().min(1),
+  evidenceReferences: z.array(IntelligenceSourceSchema).min(1),
+  sourceEventIds: z.array(z.string().min(1)).default([]),
+  sourceFingerprint: z.string().min(16).max(128),
+  verifiedAt: z.string().datetime(),
+}).strict();
+export type SkillDraftProvenance = z.infer<typeof SkillDraftProvenanceSchema>;
+
+export const SkillReplayFixtureSchema = z.object({
+  id: z.string().min(1).max(120),
+  name: z.string().min(1).max(200),
+  inputs: z.record(z.string(), z.unknown()),
+  expectedOutputs: z.array(z.string().max(1000)).default([]),
+  expectedFiles: z.array(z.string().max(2048)).default([]),
+  expectedEvidence: z.array(z.string().max(200)).default([]),
+}).strict();
+export type SkillReplayFixture = z.infer<typeof SkillReplayFixtureSchema>;
+
+export const SkillReplayResultSchema = z.object({
+  id: z.string().min(1),
+  fixtureId: z.string().min(1),
+  passed: z.boolean(),
+  changedFiles: z.array(z.string().max(2048)).default([]),
+  evidence: z.array(z.string().max(200)).default([]),
+  durationMs: z.number().int().nonnegative(),
+  costMicros: z.number().int().nonnegative().nullable(),
+  permissions: SkillDraftPermissionsSchema,
+  error: z.string().max(2000).nullable(),
+  recordedAt: z.string().datetime(),
+}).strict();
+export type SkillReplayResult = z.infer<typeof SkillReplayResultSchema>;
+
+export const SkillSafetyValidationSchema = z.object({
+  status: z.enum(["pending", "passed", "failed", "quarantined"]),
+  issues: z.array(z.string().max(500)).default([]),
+  warnings: z.array(z.string().max(500)).default([]),
+  checkedAt: z.string().datetime(),
+}).strict();
+export type SkillSafetyValidation = z.infer<typeof SkillSafetyValidationSchema>;
+
+export const SkillReplayValidationSchema = z.object({
+  requiredSuccesses: z.literal(2),
+  successfulRuns: z.number().int().nonnegative(),
+  failedRuns: z.number().int().nonnegative(),
+  results: z.array(SkillReplayResultSchema).default([]),
+}).strict();
+export type SkillReplayValidation = z.infer<typeof SkillReplayValidationSchema>;
+
+export const SkillDraftValidationSchema = z.object({
+  safety: SkillSafetyValidationSchema,
+  replay: SkillReplayValidationSchema,
+}).strict();
+export type SkillDraftValidation = z.infer<typeof SkillDraftValidationSchema>;
+
+export const SkillDraftRollbackSchema = z.object({
+  version: z.string().regex(/^\d+\.\d+\.\d+$/),
+  reason: z.string().min(1).max(1000),
+  at: z.string().datetime(),
+}).strict();
+
+export const SkillDraftSchema = z.object({
+  version: z.literal(1),
+  id: z.string().min(1).max(120),
+  projectId: z.string().min(1),
+  sourceTaskId: z.string().min(1),
+  name: z.string().min(1).max(200),
+  description: z.string().min(1).max(2000),
+  triggerDescription: z.string().min(1).max(2000),
+  inputs: z.array(z.string().min(1).max(500)).min(1),
+  outputs: z.array(z.string().min(1).max(500)).min(1),
+  steps: z.array(SkillDraftStepSchema).min(1).refine(
+    (steps) => steps.every((step, index) => step.position === index + 1),
+    { message: "skill draft steps must be ordered consecutively" },
+  ),
+  permissions: SkillDraftPermissionsSchema,
+  /** Frozen creator authority; requested permissions may never exceed it. */
+  creatorPermissions: SkillDraftPermissionsSchema,
+  provenance: z.array(SkillDraftProvenanceSchema).min(1),
+  replayFixtures: z.array(SkillReplayFixtureSchema).min(1),
+  validation: SkillDraftValidationSchema,
+  lifecycle: SkillDraftLifecycleSchema,
+  workflowFingerprint: z.string().min(16).max(128),
+  directory: z.string().max(4096).nullable(),
+  rollbackHistory: z.array(SkillDraftRollbackSchema).default([]),
+  warning: z.string().max(1000).nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  approvedAt: z.string().datetime().nullable(),
+  activatedAt: z.string().datetime().nullable(),
+}).strict();
+export type SkillDraft = z.infer<typeof SkillDraftSchema>;
+
+export const CreateSkillDraftSchema = z.object({ taskId: z.string().min(1) }).strict();
+export type CreateSkillDraftInput = z.infer<typeof CreateSkillDraftSchema>;
+
+export const ApproveSkillDraftSchema = z.object({
+  override: z.boolean().default(false),
+  warningAcknowledged: z.boolean().default(false),
+}).strict();
+export type ApproveSkillDraftInput = z.infer<typeof ApproveSkillDraftSchema>;
+
+export const RollbackSkillDraftInputSchema = z.object({
+  reason: z.string().trim().min(1).max(1000).default("Rolled back by user"),
+}).strict();
+export type RollbackSkillDraftInput = z.infer<typeof RollbackSkillDraftInputSchema>;
+
 // ── uncertainties ────────────────────────────────────────────────────────────
 
 export const IntelligenceUncertaintySchema = z.object({

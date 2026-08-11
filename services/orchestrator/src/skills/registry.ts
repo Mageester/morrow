@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { LearnedSkillSchema, type LearnedSkill } from "@morrow/contracts";
+import { LearnedSkillSchema, SkillDraftSchema, type LearnedSkill } from "@morrow/contracts";
 
 export interface VerifiedSkill {
   id: string;
@@ -58,6 +58,12 @@ export function verifySkillDirectory(directory: string): { ok: boolean; issues: 
     const actual = createHash("sha256").update(readFileSync(join(directory, "SKILL.md"))).digest("hex");
     if (actual !== manifest.checksum) issues.push("SKILL.md checksum does not match manifest");
   } else if (manifest) issues.push("manifest checksum is missing");
+  if (manifest && permissions) {
+    if (JSON.stringify(manifest.requestedTools ?? []) !== JSON.stringify(permissions.tools ?? [])) issues.push("manifest and permissions tools do not match");
+    if (JSON.stringify(manifest.requestedFilesystemScopes ?? []) !== JSON.stringify(permissions.filesystemScopes ?? [])) issues.push("manifest and permissions filesystem scopes do not match");
+    if (JSON.stringify(manifest.requestedNetworkDomains ?? []) !== JSON.stringify(permissions.networkDomains ?? [])) issues.push("manifest and permissions network domains do not match");
+    if (JSON.stringify(manifest.requiredSecrets ?? []) !== JSON.stringify(permissions.requiredSecrets ?? [])) issues.push("manifest and permissions secret handles do not match");
+  }
   if (manifest?.publisher === "morrow-cortex" || manifest?.publisher === "auto") {
     let lifecycle: LearnedSkill | undefined;
     try {
@@ -77,6 +83,24 @@ export function verifySkillDirectory(directory: string): { ok: boolean; issues: 
       if (JSON.stringify(lifecycle.permissions.filesystemScopes) !== JSON.stringify(["workspace"])) issues.push("automatically learned skills must remain workspace-scoped");
       if (JSON.stringify(lifecycle.permissions) !== JSON.stringify(permissions)) issues.push("permissions do not match lifecycle");
     }
+  }
+  if (manifest?.publisher === "morrow-skill-draft") {
+    try {
+      const lifecyclePath = join(directory, "lifecycle.json");
+      if (!safeRegularFile(lifecyclePath, 512 * 1024)) throw new Error("unsafe lifecycle");
+      const lifecycle = SkillDraftSchema.parse(JSON.parse(readFileSync(lifecyclePath, "utf8")));
+      if (lifecycle.id !== manifest.id) issues.push("manifest and draft ids do not match");
+      if (lifecycle.lifecycle !== "active") issues.push("skill draft is not active");
+      if (lifecycle.validation.safety.status !== "passed" || lifecycle.validation.safety.issues.length > 0) issues.push("skill draft safety validation did not pass");
+      if (JSON.stringify(lifecycle.permissions) !== JSON.stringify(permissions)) issues.push("permissions do not match draft lifecycle");
+    } catch { issues.push("lifecycle.json is invalid for a skill draft"); }
+  }
+  if (manifest?.entrypoint && existsSync(join(directory, manifest.entrypoint))) {
+    const source = `${readFileSync(join(directory, "SKILL.md"), "utf8")}\n${readFileSync(join(directory, manifest.entrypoint), "utf8")}`;
+    if (/(?:\beval\s*\(|new\s+Function\s*\(|import\s*\(|require\s*\(|child_process|exec(?:File|Sync)?\s*\(|vm\.)/i.test(source)) issues.push("skill bundle contains dynamic loading");
+    if (/(?:chmod|chown|icacls|setfacl|takeown|sudo|grant\s+permission|change\s+permissions|set\s+acl)/i.test(source)) issues.push("skill bundle changes permissions");
+    if (/(?:^|\s)(?:rm|del|erase|remove-item|format|shutdown|reboot|git\s+(?:reset|clean|push)|drop\s+table|truncate|publish|deploy|release)(?:\s|$)/im.test(source)) issues.push("skill bundle contains a destructive command");
+    if (/(?:^|\s)(?:sk|rk)-[A-Za-z0-9_-]{8,}|\bBearer\s+[A-Za-z0-9._~+/=-]{8,}|-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----/i.test(source)) issues.push("skill bundle contains secret-like material");
   }
   return { ok: issues.length === 0, issues };
 }
@@ -120,8 +144,13 @@ export function findRelevantVerifiedSkills(prompt: string, roots: string[]): Ver
       let manifest: any;
       try { manifest = JSON.parse(readFileSync(join(directory, "manifest.json"), "utf8")); } catch { continue; }
       let lifecycle: LearnedSkill | null = null;
+      let draftLifecycle: { triggerDescription: string } | null = null;
       if (manifest.publisher === "morrow-cortex") lifecycle = LearnedSkillSchema.parse(JSON.parse(readFileSync(join(directory, "lifecycle.json"), "utf8")));
-      const haystack = `${manifest.id} ${manifest.name} ${manifest.description} ${(lifecycle?.triggerConditions ?? []).join(" ")}`;
+      if (manifest.publisher === "morrow-skill-draft") {
+        const draft = SkillDraftSchema.parse(JSON.parse(readFileSync(join(directory, "lifecycle.json"), "utf8")));
+        draftLifecycle = { triggerDescription: draft.triggerDescription };
+      }
+      const haystack = `${manifest.id} ${manifest.name} ${manifest.description} ${(lifecycle?.triggerConditions ?? []).join(" ")} ${draftLifecycle?.triggerDescription ?? ""}`;
       const tokens = tokenize(haystack);
       let score = 0;
       for (const token of promptTokens) if (tokens.has(token)) score++;

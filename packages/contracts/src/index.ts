@@ -1402,6 +1402,9 @@ export {
 
 export * from "./cortex.js";
 
+// Skill drafts are exported through the shared Cortex boundary so API and web
+// consumers validate the same review/activation record as the orchestrator.
+
 export * from "./mission-runtime.js";
 
 export { isReasoningCompatible, normalizeReasoningForRoute } from "./reasoning.js";

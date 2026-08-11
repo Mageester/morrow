@@ -19,6 +19,9 @@ import {
   CreateMemoryCandidateSchema,
   ApproveMemoryCandidateSchema,
   EditMemoryCandidateSchema,
+  CreateSkillDraftSchema,
+  ApproveSkillDraftSchema,
+  RollbackSkillDraftInputSchema,
   UpdateConversationSchema,
   ApprovalStatusSchema,
   ResolveApprovalSchema,
@@ -62,9 +65,13 @@ import { createMemoryAdmission } from "./memory/memory-admission.js";
 import { searchRepository } from "./repositories/search.js";
 import { skillUsageRepository } from "./repositories/skill-usage.js";
 import { learnedSkillsRepository } from "./repositories/learned-skills.js";
+import { skillDraftsRepository } from "./repositories/skill-drafts.js";
 import { AutomaticMemoryService } from "./cortex/automatic-memory.js";
 import { AutomaticSkillService } from "./cortex/automatic-skills.js";
 import { verifySkillDirectory } from "./skills/registry.js";
+import { buildSkillDraft } from "./skills/skill-draft-builder.js";
+import { validateSkillDraftSafety } from "./skills/skill-safety.js";
+import { activateSkillDraftBundle, canActivateSkillDraft, replaySkillDraft, rollbackSkillDraftBundle } from "./skills/skill-replay.js";
 import { schedulesRepository } from "./repositories/schedules.js";
 import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
@@ -311,6 +318,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const search = searchRepository(deps.db);
   const skillUsage = skillUsageRepository(deps.db);
   const learnedSkills = learnedSkillsRepository(deps.db);
+  const skillDrafts = skillDraftsRepository(deps.db);
   const schedules = schedulesRepository(deps.db);
   const approvals = approvalsRepository(deps.db);
   const changeSets = changeSetsRepository(deps.db);
@@ -3373,6 +3381,89 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
     return learnedSkills.listByProject(projectId);
+  });
+
+  app.get("/api/projects/:projectId/skill-drafts", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return skillDrafts.listByProject(projectId);
+  });
+
+  app.get("/api/skill-drafts/:id", async (request) => {
+    const { id } = request.params as { id: string };
+    const draft = skillDrafts.get(id);
+    if (!draft) throw new ApiError(404, "Skill draft not found", "NOT_FOUND");
+    return draft;
+  });
+
+  app.post("/api/tasks/:taskId/skill-draft", async (request, reply) => {
+    const { taskId } = request.params as { taskId: string };
+    CreateSkillDraftSchema.parse({ taskId });
+    const task = tasks.getTaskById(taskId);
+    if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    const existing = skillDrafts.getBySourceTask(taskId);
+    if (existing) return existing;
+    try {
+      const draft = buildSkillDraft({ db: deps.db, taskId });
+      reply.status(201);
+      return skillDrafts.create(draft);
+    } catch (error) {
+      throw new ApiError(400, error instanceof Error ? error.message : "Unable to create skill draft", "SKILL_DRAFT_INVALID");
+    }
+  });
+
+  app.post("/api/skill-drafts/:id/replay", async (request) => {
+    const { id } = request.params as { id: string };
+    const draft = skillDrafts.get(id);
+    if (!draft) throw new ApiError(404, "Skill draft not found", "NOT_FOUND");
+    const body = request.body && typeof request.body === "object" ? request.body as Record<string, unknown> : {};
+    const fixtureId = typeof body.fixtureId === "string" ? body.fixtureId : undefined;
+    try {
+      const replayOptions = fixtureId === undefined ? {} : { fixtureId };
+      const result = await replaySkillDraft(draft, replayOptions);
+      return skillDrafts.recordReplay(id, result, new Date().toISOString());
+    } catch (error) {
+      throw new ApiError(400, error instanceof Error ? error.message : "Skill replay failed", "SKILL_REPLAY_INVALID");
+    }
+  });
+
+  app.post("/api/skill-drafts/:id/approve", async (request) => {
+    const { id } = request.params as { id: string };
+    const draft = skillDrafts.get(id);
+    if (!draft) throw new ApiError(404, "Skill draft not found", "NOT_FOUND");
+    let input;
+    try { input = ApproveSkillDraftSchema.parse(request.body ?? {}); }
+    catch (error) { throw new ApiError(400, error instanceof Error ? error.message : "Invalid skill approval", "SKILL_APPROVAL_INVALID"); }
+    const timestamp = new Date().toISOString();
+    const safety = validateSkillDraftSafety(draft, { now: () => timestamp });
+    const checked = safety.ok
+      ? skillDrafts.updateValidation(id, { ...draft.validation, safety: { status: safety.status, issues: safety.issues, warnings: safety.warnings, checkedAt: safety.checkedAt } }, timestamp)
+      : skillDrafts.updateValidation(id, { ...draft.validation, safety: { status: safety.status, issues: safety.issues, warnings: safety.warnings, checkedAt: safety.checkedAt } }, timestamp);
+    const decision = canActivateSkillDraft(checked, input);
+    if (!decision.ok) throw new ApiError(409, decision.reason ?? "Skill draft is not ready for activation", "SKILL_ACTIVATION_BLOCKED");
+    const approved = skillDrafts.setLifecycle(id, "approved", { updatedAt: timestamp, warning: decision.warning, approvedAt: timestamp });
+    try {
+      const active = activateSkillDraftBundle(approved, {
+        rootForProject: (projectId) => join(resolveMorrowHome(process.env), "projects", projectId, "skills"),
+        warning: decision.warning,
+      });
+      return skillDrafts.setLifecycle(id, "active", { updatedAt: active.updatedAt, directory: active.directory, warning: active.warning, activatedAt: active.activatedAt });
+    } catch (error) {
+      throw new ApiError(409, error instanceof Error ? error.message : "Skill activation failed", "SKILL_ACTIVATION_FAILED");
+    }
+  });
+
+  app.post("/api/skill-drafts/:id/rollback", async (request) => {
+    const { id } = request.params as { id: string };
+    const draft = skillDrafts.get(id);
+    if (!draft) throw new ApiError(404, "Skill draft not found", "NOT_FOUND");
+    let input;
+    try { input = RollbackSkillDraftInputSchema.parse(request.body ?? {}); }
+    catch (error) { throw new ApiError(400, error instanceof Error ? error.message : "Invalid skill rollback", "SKILL_ROLLBACK_INVALID"); }
+    const timestamp = new Date().toISOString();
+    const quarantinedAt = rollbackSkillDraftBundle(draft, join(resolveMorrowHome(process.env), "projects", draft.projectId, "skills", ".quarantine"), timestamp);
+    const rolledBack = skillDrafts.rollback(id, input.reason, timestamp);
+    return { draft: rolledBack, quarantinedAt };
   });
 
   app.post("/api/projects/:projectId/skills/:skillId/use", async (request, reply) => {
