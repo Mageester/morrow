@@ -10,6 +10,7 @@ import { taskCostsRepository } from "../src/repositories/task-costs.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { symbolIndexRepository } from "../src/repositories/symbols.js";
+import { installModelCatalog, listModels } from "../src/routing/models.js";
 import { MockProvider } from "../src/provider/mock.js";
 import type { AiProvider, ChatMessage, ProviderChunk, StreamOptions } from "../src/provider/base.js";
 import { TaskRunner } from "../src/runner.js";
@@ -554,6 +555,84 @@ describe("Agent Alpha", () => {
         failedRequestIds: [attempts[0]!.payload.requestId],
       });
       expect(costs.summaryByTask("fallback-task")).toMatchObject({ total: null, accuracy: "unknown", requestCount: 2 });
+    });
+
+    it("records a cancelled provider attempt as one unknown cost line", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+      const timestamp = new Date().toISOString();
+
+      projects.createProject({ id: "cancel-project", name: "Cancel", workspacePath: tempDir, createdAt: timestamp });
+      convs.createConversation({ id: "cancel-conversation", projectId: "cancel-project", title: "Cancel", createdAt: timestamp, updatedAt: timestamp });
+      convs.appendMessage({ id: "cancel-user", conversationId: "cancel-conversation", role: "user", content: "Answer", createdAt: timestamp, updatedAt: timestamp });
+      tasks.createTask({ id: "cancel-task", projectId: "cancel-project", kind: "agent_chat", status: "queued", createdAt: timestamp });
+      convs.appendMessage({ id: "cancel-assistant", conversationId: "cancel-conversation", role: "assistant", content: "", taskId: "cancel-task", streamingState: "queued", createdAt: timestamp, updatedAt: timestamp });
+
+      const abortController = new AbortController();
+      let providerStarted!: () => void;
+      const providerEntered = new Promise<void>((resolve) => { providerStarted = resolve; });
+      const provider: AiProvider = {
+        id: "mock",
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          providerStarted();
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          yield { type: "text", text: "late response" };
+        },
+      };
+      const execution = executeAgentChatTask({ db, taskId: "cancel-task", provider, abortSignal: abortController.signal });
+      await providerEntered;
+      abortController.abort();
+      await execution;
+
+      const records = taskRecordsRepository(db);
+      const started = records.listEvents("cancel-task").find((event) => event.type === "provider.request_started");
+      const lines = taskCostsRepository(db).listByTask("cancel-task");
+      expect(started?.payload.requestId).toEqual(expect.any(String));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ requestId: started?.payload.requestId, amount: null, accuracy: "unknown", pricing: null });
+    });
+
+    it("uses the pricing snapshot captured at provider attempt start", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+      const timestamp = new Date().toISOString();
+      const originalCatalog = listModels();
+
+      projects.createProject({ id: "pricing-refresh-project", name: "Pricing refresh", workspacePath: tempDir, createdAt: timestamp });
+      convs.createConversation({ id: "pricing-refresh-conversation", projectId: "pricing-refresh-project", title: "Pricing refresh", createdAt: timestamp, updatedAt: timestamp });
+      convs.appendMessage({ id: "pricing-refresh-user", conversationId: "pricing-refresh-conversation", role: "user", content: "Answer", createdAt: timestamp, updatedAt: timestamp });
+      tasks.createTask({ id: "pricing-refresh-task", projectId: "pricing-refresh-project", kind: "agent_chat", status: "queued", createdAt: timestamp });
+      convs.appendMessage({ id: "pricing-refresh-assistant", conversationId: "pricing-refresh-conversation", role: "assistant", content: "", taskId: "pricing-refresh-task", provider: "deepseek", model: "deepseek-v4-flash", streamingState: "queued", createdAt: timestamp, updatedAt: timestamp });
+
+      const provider: AiProvider = {
+        id: "deepseek",
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          yield { type: "text", text: "priced response" };
+          installModelCatalog(originalCatalog.map((model) => model.providerId === "deepseek" && model.id === "deepseek-v4-flash"
+            ? {
+                ...model,
+                pricing: { inputUsdPerMillion: 9, outputUsdPerMillion: 9, cachedInputUsdPerMillion: 9, source: "authoritative" as const },
+                metadataVersion: "catalog-refresh",
+                fetchedAt: "2026-08-11T01:00:00.000Z",
+              }
+            : model));
+          yield { type: "done", usage: { promptTokens: 1_000_000, completionTokens: 0, cachedPromptTokens: 0 } };
+        },
+      };
+
+      try {
+        await executeAgentChatTask({ db, taskId: "pricing-refresh-task", provider });
+        const line = taskCostsRepository(db).listByTask("pricing-refresh-task")[0];
+        expect(line).toMatchObject({
+          amount: { currency: "USD", micros: 140_000 },
+          accuracy: "exact_usage_pricing",
+          pricing: { inputMicrosPerMillion: 140_000, metadataVersion: "2026-07-16" },
+        });
+      } finally {
+        installModelCatalog([...originalCatalog]);
+      }
     });
 
     it("projects each assistant turn once instead of recursively copying prior narration", async () => {

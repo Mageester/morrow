@@ -179,4 +179,16 @@ describe("fixed-point cost contracts", () => {
       authoritativePricing({ inputMicrosPerMillion: Number.MAX_SAFE_INTEGER + 1 }),
     )).toThrow(/safe.*micro/i);
   });
+
+  it("rejects exact cost lines without authoritative pricing and complete usage inputs", () => {
+    expect(() => costLine({ pricing: null })).toThrow();
+    expect(() => costLine({ pricing: authoritativePricing({ source: "provider-reported" }) })).toThrow();
+    expect(() => costLine({ amount: null })).toThrow();
+    expect(() => costLine({ inputTokens: null })).toThrow();
+    expect(() => costLine({ outputTokens: null })).toThrow();
+    expect(() => costLine({
+      cachedInputTokens: null,
+      pricing: authoritativePricing({ cachedInputMicrosPerMillion: 14_000 }),
+    })).toThrow();
+  });
 });

@@ -431,4 +431,44 @@ describe("startup reconciliation", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("reconciles duplicate orphaned provider starts once after restart", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "morrow-recovery-orphan-costs-"));
+    const file = join(directory, "recovery.db");
+    const initial = openDatabase(file);
+    const ts = new Date().toISOString();
+    projectRepository(initial).createProject({ id: "p", name: "P", workspacePath: "C:/workspace", createdAt: ts });
+    const convs = conversationsRepository(initial);
+    convs.createConversation({ id: "c", projectId: "p", title: "C", createdAt: ts, updatedAt: ts });
+    convs.appendMessage({ id: "user", conversationId: "c", role: "user", content: "answer", createdAt: ts, updatedAt: ts });
+    taskRepository(initial).createTask({ id: "orphan-task", projectId: "p", kind: "agent_chat", status: "queued", createdAt: ts });
+    convs.appendMessage({ id: "assistant", conversationId: "c", role: "assistant", content: "", taskId: "orphan-task", provider: "deepseek", model: "deepseek-v4-flash", streamingState: "queued", createdAt: ts, updatedAt: ts });
+
+    const records = taskRecordsRepository(initial);
+    const startedPayload = { requestId: "orphan-request", provider: "deepseek", model: "deepseek-v4-flash", routeFingerprint: "route-at-start" };
+    records.appendEvent({ id: "orphan-start-1", taskId: "orphan-task", type: "provider.request_started", payload: startedPayload, createdAt: ts });
+    records.appendEvent({ id: "orphan-start-2", taskId: "orphan-task", type: "provider.request_started", payload: startedPayload, createdAt: ts });
+    initial.close();
+
+    const db = openDatabase(file);
+    const provider: AiProvider = {
+      id: "deepseek",
+      async *streamChat(): AsyncIterable<ProviderChunk> {
+        yield { type: "text", text: "restarted answer" };
+        yield { type: "done", usage: { promptTokens: 1_000_000, completionTokens: 0, cachedPromptTokens: 0 } };
+      },
+    };
+
+    try {
+      await executeAgentChatTask({ db, taskId: "orphan-task", provider });
+      const lines = taskCostsRepository(db).listByTask("orphan-task");
+      expect(lines.filter((line) => line.requestId === "orphan-request")).toHaveLength(1);
+      expect(lines.find((line) => line.requestId === "orphan-request")).toMatchObject({ amount: null, accuracy: "unknown", pricing: null });
+      expect(lines).toHaveLength(2);
+      expect(taskCostsRepository(db).summaryByTask("orphan-task")).toMatchObject({ requestCount: 2, total: null, accuracy: "unknown" });
+    } finally {
+      db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
