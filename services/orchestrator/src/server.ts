@@ -10,6 +10,7 @@ import {
   CreateConversationSchema,
   DeleteConversationSchema,
   ChatStreamEnvelopeSchema,
+  ChatStreamHeartbeatSchema,
   WebTaskReasoningSchema,
   CreateMemoryEntrySchema,
   UpdateMemoryEntrySchema,
@@ -227,6 +228,8 @@ export type ServerDependencies = {
   /** Injectable background-process supervisor (tests point its logs at a temp dir). */
   supervisor?: ProcessSupervisor;
   sseIntervalMs?: number;
+  /** Idle heartbeat cadence for the chat task stream; injectable for tests. */
+  chatStreamHeartbeatMs?: number;
   /** Idle heartbeat cadence for the web mission stream; injectable for tests. */
   webStreamHeartbeatMs?: number;
   modelCatalog?: ModelCatalog;
@@ -1360,12 +1363,15 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     reply.hijack();
     let closed = false;
     let cursor = after;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
     const stop = (destroy = false) => {
       if (closed) return;
       closed = true;
-      if (timer) clearTimeout(timer);
-      timer = undefined;
+      if (pollTimer) clearTimeout(pollTimer);
+      if (heartbeatTimer) clearTimeout(heartbeatTimer);
+      pollTimer = undefined;
+      heartbeatTimer = undefined;
       if (destroy && !reply.raw.destroyed) reply.raw.destroy();
     };
     request.raw.on("close", () => stop());
@@ -1377,10 +1383,36 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       Connection: "keep-alive",
     });
 
+    const scheduleHeartbeat = () => {
+      if (closed || heartbeatTimer) return;
+      heartbeatTimer = setTimeout(() => {
+        heartbeatTimer = undefined;
+        if (closed) return;
+        try {
+          const heartbeat = ChatStreamHeartbeatSchema.parse({
+            version: 1,
+            taskId,
+            conversationId,
+            eventType: "stream.heartbeat",
+            emittedAt: new Date().toISOString(),
+            payload: {},
+          });
+          reply.raw.write(`event: stream.heartbeat\ndata: ${JSON.stringify(heartbeat)}\n\n`);
+          scheduleHeartbeat();
+        } catch {
+          stop(true);
+        }
+      }, deps.chatStreamHeartbeatMs ?? 15_000);
+    };
+
     const poll = () => {
       if (closed) return;
       try {
         const pending = records.listEventsAfter(taskId, cursor);
+        if (pending.length > 0 && heartbeatTimer) {
+          clearTimeout(heartbeatTimer);
+          heartbeatTimer = undefined;
+        }
         for (const event of pending) {
           const envelope = ChatStreamEnvelopeSchema.parse({
             version: 1,
@@ -1405,7 +1437,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
           stop();
           return;
         }
-        timer = setTimeout(poll, deps.sseIntervalMs ?? 100);
+        scheduleHeartbeat();
+        pollTimer = setTimeout(poll, deps.sseIntervalMs ?? 100);
       } catch {
         stop(true);
       }

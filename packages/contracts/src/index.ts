@@ -20,6 +20,7 @@ export const ProjectSchema=z.object({version:SchemaVersionSchema,id:z.string(),n
 export const CreateProjectSchema=z.object({name:z.string().trim().min(1).max(120),workspacePath:z.string().min(1)});
 export const PlanStepSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),position:z.number().int().positive(),title:z.string(),description:z.string(),status:PlanStepStatusSchema}).strict();
 export const TaskSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),kind:z.enum(["inspect_workspace","agent_chat"]),status:TaskStatusSchema,parentTaskId:z.string().nullable().default(null),agentId:z.string().nullable().optional(),worktreeId:z.string().nullable().optional(),missionId:z.string().nullable().optional(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+export const TaskStatusSnapshotSchema=z.object({task:z.object({status:TaskStatusSchema}).passthrough()}).passthrough();
 export const SpawnSubagentSchema=z.object({kind:z.enum(["inspect_workspace","agent_chat"]).default("inspect_workspace"),label:z.string().trim().max(120).optional(),
   // Required only for kind:"agent_chat" (validated at the route, not here,
   // so kind:"inspect_workspace" keeps its exact existing shape). Identifies
@@ -68,6 +69,15 @@ export const ChatStreamEnvelopeSchema=z.object({
   emittedAt:z.string().datetime(),
   payload:z.object({eventId:z.string()}).strict(),
 }).strict();
+export const ChatStreamHeartbeatSchema=z.object({
+  version:SchemaVersionSchema,
+  taskId:z.string(),
+  conversationId:z.string(),
+  eventType:z.literal("stream.heartbeat"),
+  emittedAt:z.string().datetime(),
+  payload:z.object({}).strict(),
+}).strict();
+export const ChatStreamFrameSchema=z.union([ChatStreamEnvelopeSchema,ChatStreamHeartbeatSchema]);
 export const ConversationTaskActionResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:TaskStatusSchema,outcome:z.enum(["cancelled","already_cancelled","retried"]),afterCursor:z.number().int().nonnegative().optional()}).strict();
 
 // Local orchestrator <-> hosted-api pairing (Plans/generic-sprouting-dragon.md
@@ -87,6 +97,7 @@ export type RedeemPairingCodeResult=z.infer<typeof RedeemPairingCodeResultSchema
 
 export type Project=z.infer<typeof ProjectSchema>;
 export type Task=z.infer<typeof TaskSchema>;
+export type TaskStatusSnapshot=z.infer<typeof TaskStatusSnapshotSchema>;
 export type TaskEvent=z.infer<typeof TaskEventSchema>;
 export type PlanStep=z.infer<typeof PlanStepSchema>;
 export type TaskEvidence=z.infer<typeof TaskEvidenceSchema>;
@@ -108,6 +119,8 @@ export type ConversationMessage=z.infer<typeof ConversationMessageSchema>;
 export type ConversationToolActivity=z.infer<typeof ConversationToolActivitySchema>;
 export type ChatStreamEventType=z.infer<typeof ChatStreamEventTypeSchema>;
 export type ChatStreamEnvelope=z.infer<typeof ChatStreamEnvelopeSchema>;
+export type ChatStreamHeartbeat=z.infer<typeof ChatStreamHeartbeatSchema>;
+export type ChatStreamFrame=z.infer<typeof ChatStreamFrameSchema>;
 export type ConversationTaskActionResult=z.infer<typeof ConversationTaskActionResultSchema>;
 export type DeleteConversationResult=z.infer<typeof DeleteConversationResultSchema>;
 

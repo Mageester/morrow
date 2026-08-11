@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { conversationKeys } from "../../api/conversations.js";
-import { chatStreamCursorKey } from "../../api/chat-stream.js";
+import { chatStreamCursorKey, type ChatTaskStreamOptions } from "../../api/chat-stream.js";
 import { ConversationPageContent } from "./conversation-page.js";
 
 const now = "2026-07-22T12:00:00.000Z";
@@ -36,13 +36,13 @@ class FakeEventSource {
 
 function json(body: unknown, status = 200) { return Response.json(body, { status }); }
 
-function renderPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }), onDeleted = vi.fn()) {
+function renderPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }), onDeleted = vi.fn(), chatStreamOptions?: ChatTaskStreamOptions) {
   return {
     onDeleted,
     queryClient,
     ...render(
       <QueryClientProvider client={queryClient}>
-        <ConversationPageContent conversationId={conversation.id} onDeleted={onDeleted} projectId="project-1" />
+        <ConversationPageContent chatStreamOptions={chatStreamOptions} conversationId={conversation.id} onDeleted={onDeleted} projectId="project-1" />
       </QueryClientProvider>,
     ),
   };
@@ -248,6 +248,7 @@ describe("ConversationPage", () => {
       const path = String(input);
       if (path.endsWith("/messages") && init?.method === "GET") return json(states[Math.min(reads++, states.length - 1)]);
       if (path.includes("/approvals")) return json([]);
+      if (path.endsWith("/api/tasks/task-1")) return json({ task: { status: "completed" } });
       if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
       throw new Error(`Unexpected request ${path}`);
     }));
@@ -262,6 +263,99 @@ describe("ConversationPage", () => {
     act(() => source.emit("task.terminal", { version: 1, cursor: 2, taskId: "task-1", conversationId: conversation.id, eventType: "task.terminal", emittedAt: now, payload: { eventId: "event-2" } }));
     expect(await screen.findByText("Final canonical answer")).toBeVisible();
     expect(screen.getAllByTestId("conversation-message-assistant")).toHaveLength(1);
+    expect(source.closed).toBe(true);
+  });
+
+  it("reconciles a completed answer while the SSE connection stays silent", async () => {
+    let completed = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/messages")) {
+        return json([message(completed
+          ? { content: "Recovered without refresh", streamingState: "completed", taskStatus: "completed" }
+          : { content: "", streamingState: "streaming", taskStatus: "running" })]);
+      }
+      if (path.endsWith("/activity")) return json({ version: 1, projectId: "project-1", conversationId: conversation.id, entries: [] });
+      if (path.includes("/approvals")) return json([]);
+      if (path.endsWith("/status")) return json({ id: "project-1", name: "Project", workspacePath: "C:\\workspace", accessible: true, gitDetected: false, branch: null });
+      if (path.endsWith("/api/tasks/task-1")) return json({ task: { status: completed ? "completed" : "running" } });
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      throw new Error(`Unexpected request ${path}`);
+    }));
+    renderPage(undefined, vi.fn(), { reconcileIntervalMs: 10, silenceTimeoutMs: 40, reconnectBaseDelayMs: 1 });
+
+    const source = await waitFor(() => {
+      expect(FakeEventSource.instances).toHaveLength(1);
+      return FakeEventSource.instances[0]!;
+    });
+    act(() => source.emit("open"));
+    expect(await screen.findByText("Morrow is responding…")).toBeVisible();
+    completed = true;
+
+    expect(await screen.findByText("Recovered without refresh", {}, { timeout: 1_000 })).toBeVisible();
+    expect(screen.queryByText("Morrow is respondingâ€¦")).not.toBeInTheDocument();
+  });
+
+  it("keeps a submitted task stream mounted when an old message snapshot wins the race", async () => {
+    let releaseStaleMessages!: (response: Response) => void;
+    const staleMessages = new Promise<Response>((resolve) => { releaseStaleMessages = resolve; });
+    let messagesReads = 0;
+    let staleReleased = false;
+    let completed = false;
+    const sendResult = {
+      task: { version: 1, id: "task-1", projectId: "project-1", kind: "agent_chat", status: "queued", parentTaskId: null, agentId: null, worktreeId: null, missionId: null, createdAt: now, updatedAt: now },
+      userMessage: { version: 1, id: "user-1", conversationId: conversation.id, role: "user", content: "Race proof", taskId: null, streamingState: "completed", provider: null, model: null, createdAt: now, updatedAt: now },
+      assistantMessage: { version: 1, id: "assistant-1", conversationId: conversation.id, role: "assistant", content: "", taskId: "task-1", streamingState: "queued", provider: "mock", model: "mock-model", createdAt: now, updatedAt: now },
+      routing,
+      aggregateUrl: "/api/tasks/task-1",
+      sseUrl: "/api/projects/project-1/conversations/conversation-1/tasks/task-1/stream",
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/messages") && init?.method === "POST") return json(sendResult, 202);
+      if (path.endsWith("/messages")) {
+        messagesReads += 1;
+        if (messagesReads === 1) return json([]);
+        if (!staleReleased) return staleMessages;
+        return json(completed ? [message({ content: "Race-safe final answer", streamingState: "completed", taskStatus: "completed" })] : []);
+      }
+      if (path.endsWith("/activity")) return json({ version: 1, projectId: "project-1", conversationId: conversation.id, entries: [] });
+      if (path.includes("/approvals")) return json([]);
+      if (path.endsWith("/status")) return json({ id: "project-1", name: "Project", workspacePath: "C:\\workspace", accessible: true, gitDetected: false, branch: null });
+      if (path.endsWith("/api/tasks/task-1")) return json({ task: { status: completed ? "completed" : "running" } });
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      throw new Error(`Unexpected request ${init?.method} ${path}`);
+    }));
+    const user = userEvent.setup();
+    renderPage(undefined, vi.fn(), { reconcileIntervalMs: 10, silenceTimeoutMs: 40, reconnectBaseDelayMs: 1 });
+
+    const textbox = await screen.findByRole("textbox", { name: "Message Morrow" });
+    await user.type(textbox, "Race proof");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    const source = await waitFor(() => {
+      const instance = FakeEventSource.instances[0];
+      if (!instance) throw new Error("Expected a task stream");
+      return instance;
+    });
+    expect(source.closed).toBe(false);
+
+    act(() => source.emit("open"));
+    await waitFor(() => expect(messagesReads).toBeGreaterThanOrEqual(2));
+    staleReleased = true;
+    act(() => releaseStaleMessages(json([])));
+    await waitFor(() => expect(source.closed).toBe(false));
+
+    completed = true;
+    act(() => source.emit("task.terminal", {
+      version: 1,
+      cursor: 1,
+      taskId: "task-1",
+      conversationId: conversation.id,
+      eventType: "task.terminal",
+      emittedAt: now,
+      payload: { eventId: "event-terminal" },
+    }));
+    expect(await screen.findByText("Race-safe final answer", {}, { timeout: 1_000 })).toBeVisible();
     expect(source.closed).toBe(true);
   });
 

@@ -3,8 +3,8 @@ import { WebMissionSnapshotSchema } from "@morrow/contracts";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { Archive, ListTree, Pencil, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { clearChatStreamCursor, resumeChatStreamAfter, useChatTaskStream } from "../../api/chat-stream.js";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { clearChatStreamCursor, resumeChatStreamAfter, useChatTaskStream, type ChatTaskStreamOptions } from "../../api/chat-stream.js";
 import { useMissionStream } from "../../api/mission-stream.js";
 import {
   conversationApi,
@@ -85,8 +85,11 @@ function reconcileConversationLists(
   }
 }
 
-function TaskStream({ projectId, conversationId, taskId }: { projectId: string; conversationId: string; taskId: string }) {
-  const stream = useChatTaskStream({ projectId, conversationId, taskId });
+function TaskStream({ projectId, conversationId, taskId, options, onTerminal }: { projectId: string; conversationId: string; taskId: string; options?: ChatTaskStreamOptions; onTerminal: (taskId: string) => void }) {
+  const stream = useChatTaskStream({ projectId, conversationId, taskId }, options);
+  useEffect(() => {
+    if (stream.terminal) onTerminal(taskId);
+  }, [onTerminal, stream.terminal, taskId]);
   if (stream.status === "offline") {
     return <p className="morrow-chat-sync" role="status">Offline — showing saved conversation history.</p>;
   }
@@ -141,6 +144,8 @@ export interface ConversationPageContentProps {
   linkedMission?: WebMissionSummary | undefined;
   /** Enables the "Start a mission from this chat" action (real usage only). */
   missionsEnabled?: boolean | undefined;
+  /** Test seam for driving the silent-stream watchdog without wall-clock waits. */
+  chatStreamOptions?: ChatTaskStreamOptions | undefined;
 }
 
 export function ConversationPageContent({
@@ -150,6 +155,7 @@ export function ConversationPageContent({
   modelCatalogue,
   linkedMission,
   missionsEnabled = false,
+  chatStreamOptions,
 }: ConversationPageContentProps) {
   const queryClient = useQueryClient();
   const conversation = useQuery(conversationQueries.detail(projectId, conversationId));
@@ -171,6 +177,7 @@ export function ConversationPageContent({
   const restoreRenameFocus = useRef(false);
   const restoreDeleteFocus = useRef(false);
   const cancellationRequests = useRef(new Set<string>());
+  const [pendingTaskIds, setPendingTaskIds] = useState<Set<string>>(() => new Set());
   const startMission = useMutation({
     mutationFn: (objective: string) =>
       api.post(
@@ -189,6 +196,30 @@ export function ConversationPageContent({
     [history],
   );
   const activeTaskId = activeMessages.at(-1)?.taskId ?? undefined;
+  useEffect(() => {
+    setPendingTaskIds((current) => {
+      let next = current;
+      for (const message of activeMessages) {
+        if (!message.taskId || next.has(message.taskId)) continue;
+        if (next === current) next = new Set(current);
+        next.add(message.taskId);
+      }
+      return next;
+    });
+  }, [activeMessages]);
+  const streamTaskIds = useMemo(() => {
+    const ids = new Set(pendingTaskIds);
+    for (const message of activeMessages) if (message.taskId) ids.add(message.taskId);
+    return [...ids];
+  }, [activeMessages, pendingTaskIds]);
+  const onTaskStreamTerminal = useCallback((taskId: string) => {
+    setPendingTaskIds((current) => {
+      if (!current.has(taskId)) return current;
+      const next = new Set(current);
+      next.delete(taskId);
+      return next;
+    });
+  }, []);
   // Latest task regardless of state — the context meter should keep reporting
   // the last turn's usage after that turn finishes, not blank out.
   const latestTaskId = [...history].reverse().find((message) => message.taskId)?.taskId ?? undefined;
@@ -307,6 +338,10 @@ export function ConversationPageContent({
           return next.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
         },
       );
+      setPendingTaskIds((current) => {
+        if (current.has(result.task.id)) return current;
+        return new Set(current).add(result.task.id);
+      });
       return { accepted: true } as const;
     } catch (error) {
       return {
@@ -547,8 +582,15 @@ export function ConversationPageContent({
         })}
       </div>
 
-      {activeMessages.map((message) => (
-        <TaskStream conversationId={conversationId} key={message.taskId} projectId={projectId} taskId={message.taskId!} />
+      {streamTaskIds.map((taskId) => (
+        <TaskStream
+          {...(chatStreamOptions === undefined ? {} : { options: chatStreamOptions })}
+          conversationId={conversationId}
+          key={taskId}
+          onTerminal={onTaskStreamTerminal}
+          projectId={projectId}
+          taskId={taskId}
+        />
       ))}
 
       <PendingApprovals

@@ -39,6 +39,7 @@ beforeEach(() => {
   sessionStorage.clear();
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("navigator", { onLine: true });
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ task: { status: "completed" } })));
 });
 
 afterEach(() => {
@@ -181,5 +182,48 @@ describe("useChatTaskStream", () => {
     document.dispatchEvent(new Event("visibilitychange"));
 
     expect(invalidate.mock.calls.length).toBe(beforeVisible);
+  });
+
+  it("uses heartbeat signals without advancing the cursor and reconnects after bounded silence", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ task: { status: "running" } })));
+    const now = "2026-07-22T12:00:00.000Z";
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+    const identity = { projectId: "p-heartbeat", conversationId: "c-heartbeat", taskId: "t-heartbeat" };
+
+    renderHook(
+      () => useChatTaskStream(identity, {
+        reconcileIntervalMs: 5,
+        silenceTimeoutMs: 20,
+        reconnectBaseDelayMs: 1,
+        maxReconnectAttempts: 2,
+      }),
+      { wrapper: wrapper(queryClient) },
+    );
+    const first = FakeEventSource.instances[0]!;
+    act(() => first.emit("open"));
+    act(() => first.emit("stream.heartbeat", {
+      version: 1,
+      taskId: identity.taskId,
+      conversationId: identity.conversationId,
+      eventType: "stream.heartbeat",
+      emittedAt: now,
+      payload: {},
+    }));
+    act(() => first.emit("message.updated", {
+      version: 1,
+      cursor: 3,
+      taskId: identity.taskId,
+      conversationId: identity.conversationId,
+      eventType: "message.updated",
+      emittedAt: now,
+      payload: { eventId: "event-3" },
+    }));
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(25); });
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances[1]?.url).toContain("?after=3");
+    expect(JSON.parse(sessionStorage.getItem(chatStreamCursorKey(identity))!)).toMatchObject({ cursor: 3, terminal: false });
   });
 });
