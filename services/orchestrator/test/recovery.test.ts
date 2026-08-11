@@ -11,6 +11,10 @@ import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { recoverRunningTasks, reconcileTasksOnStartup, type ReconcilableRunner } from "../src/recovery.js";
 import { TaskRunner } from "../src/runner.js";
 import { createExecutionLeaseOwnerId, executionContinuityRepository } from "../src/repositories/execution-continuity.js";
+import { taskCostsRepository } from "../src/repositories/task-costs.js";
+import { executeAgentChatTask } from "../src/execution/agent.js";
+import { CostLineSchema } from "@morrow/contracts";
+import type { AiProvider, ProviderChunk } from "../src/provider/base.js";
 
 const now = "2026-01-01T00:00:00.000Z";
 
@@ -343,6 +347,88 @@ describe("startup reconciliation", () => {
       db.close();
       rmSync(work, { recursive: true, force: true });
       if (prevMock === undefined) delete process.env.MOCK_PROVIDER; else process.env.MOCK_PROVIDER = prevMock;
+    }
+  });
+
+  it("rehydrates a repeated usage event once after reopen and keeps the durable cost total idempotent", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "morrow-recovery-costs-"));
+    const file = join(directory, "recovery.db");
+    const initial = openDatabase(file);
+    const ts = new Date().toISOString();
+    projectRepository(initial).createProject({ id: "p", name: "P", workspacePath: "C:/workspace", createdAt: ts });
+    const convs = conversationsRepository(initial);
+    convs.createConversation({ id: "c", projectId: "p", title: "C", createdAt: ts, updatedAt: ts });
+    convs.appendMessage({ id: "user", conversationId: "c", role: "user", content: "answer", createdAt: ts, updatedAt: ts });
+    taskRepository(initial).createTask({ id: "cost-task", projectId: "p", kind: "agent_chat", status: "queued", createdAt: ts });
+    convs.appendMessage({ id: "assistant", conversationId: "c", role: "assistant", content: "", taskId: "cost-task", provider: "deepseek", model: "deepseek-v4-flash", streamingState: "queued", createdAt: ts, updatedAt: ts });
+
+    const historicalLine = CostLineSchema.parse({
+      id: "replay-request",
+      taskId: "cost-task",
+      requestId: "replay-request",
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+      inputTokens: 1_000_000,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      amount: { currency: "USD", micros: 140_000 },
+      accuracy: "exact_usage_pricing",
+      pricing: {
+        inputMicrosPerMillion: 140_000,
+        outputMicrosPerMillion: 280_000,
+        cachedInputMicrosPerMillion: 2_800,
+        source: "authoritative",
+        metadataVersion: "catalog-v1",
+        fetchedAt: "2026-08-11T00:00:00.000Z",
+      },
+      recordedAt: ts,
+    });
+    const costs = taskCostsRepository(initial);
+    costs.record(historicalLine);
+    const usagePayload = {
+      requestId: "replay-request",
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      inputTokens: 1_000_000,
+      totalInputTokens: 1_000_000,
+      freshInputTokens: 1_000_000,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 1_000_000,
+      cacheBreakdownStatus: "reported",
+      tokenSource: "provider-reported",
+      tokenConfidence: "exact",
+      costUsd: 0.14,
+      costSource: "morrow-estimated",
+    };
+    taskRecordsRepository(initial).appendEvent({ id: "usage-1", taskId: "cost-task", type: "provider.usage", payload: usagePayload, createdAt: ts });
+    taskRecordsRepository(initial).appendEvent({ id: "usage-2", taskId: "cost-task", type: "provider.usage", payload: usagePayload, createdAt: ts });
+    initial.close();
+
+    const db = openDatabase(file);
+    const records = taskRecordsRepository(db);
+    const provider: AiProvider = {
+      id: "deepseek",
+      async *streamChat(): AsyncIterable<ProviderChunk> {
+        yield { type: "text", text: "recovered answer" };
+        yield { type: "done", usage: { promptTokens: 1_000_000, completionTokens: 0, cachedPromptTokens: 0 } };
+      },
+    };
+
+    try {
+      await executeAgentChatTask({ db, taskId: "cost-task", provider });
+
+      const usageEvents = records.listEvents("cost-task").filter((event) => event.type === "provider.usage");
+      const latestUsage = usageEvents.at(-1)?.payload as Record<string, unknown>;
+      expect(latestUsage.cumulativeResponseCount).toBe(2);
+      expect(taskCostsRepository(db).summaryByTask("cost-task")).toMatchObject({
+        requestCount: 2,
+        total: { currency: "USD", micros: 280_000 },
+        accuracy: "exact_usage_pricing",
+      });
+    } finally {
+      db.close();
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });

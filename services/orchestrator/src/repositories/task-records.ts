@@ -17,6 +17,7 @@ import {
   type TaskEvent,
   type VerificationResult,
 } from "@morrow/contracts";
+import { taskCostsRepository } from "./task-costs.js";
 
 type EventInput = Omit<TaskEvent, "sequence">;
 type TransitionEvent = Omit<EventInput, "taskId" | "type">;
@@ -91,6 +92,7 @@ function safeText(value: unknown): string {
 }
 
 export function taskRecordsRepository(db: Database.Database) {
+  const costs = taskCostsRepository(db);
   const mapTask = (row: unknown): Task => {
     const value = row as Record<string, unknown>;
     return TaskSchema.parse({
@@ -310,7 +312,7 @@ export function taskRecordsRepository(db: Database.Database) {
     getAggregate(taskId: string) {
       const row = db.prepare("SELECT * FROM tasks WHERE id=?").get(taskId);
       if (!row) throw new Error(`Task not found: ${taskId}`);
-      return { task: mapTask(row), plan: this.listPlanSteps(taskId), events: this.listEvents(taskId), agentState: getAgentState(taskId), agentStates: listAgentStates(taskId), disclosure: this.getDisclosure(taskId), evidence: this.listEvidence(taskId), verification: this.getVerification(taskId) };
+      return { task: mapTask(row), plan: this.listPlanSteps(taskId), events: this.listEvents(taskId), agentState: getAgentState(taskId), agentStates: listAgentStates(taskId), disclosure: this.getDisclosure(taskId), evidence: this.listEvidence(taskId), verification: this.getVerification(taskId), cost: costs.summaryByTask(taskId) };
     },
   };
 }
