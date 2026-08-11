@@ -17,13 +17,19 @@ describe("registry reasoning capability, with provenance", () => {
     expect(cap.source).toBe("registry");
   });
 
-  it("declares fixed control for the DeepSeek reasoner", () => {
-    expect(resolveReasoningCapability("deepseek", "deepseek-reasoner").control).toBe("fixed");
+  it("declares effort control and an explicit toggle for DeepSeek V4", () => {
+    const cap = resolveReasoningCapability("deepseek", "deepseek-v4-pro");
+    expect(cap).toMatchObject({
+      control: "effort",
+      efforts: ["low", "high", "xhigh", "max"],
+      supportsOff: true,
+      wire: "deepseek-thinking",
+    });
+    expect(cap.source).toBe("provider-metadata");
   });
 
-  it("declares no reasoning for plain chat models", () => {
-    expect(resolveReasoningCapability("deepseek", "deepseek-chat").control).toBe("none");
-    expect(resolveReasoningCapability("deepseek", "deepseek-chat").source).toBe("registry");
+  it("keeps the deprecated DeepSeek reasoner provider-fixed", () => {
+    expect(resolveReasoningCapability("deepseek", "deepseek-reasoner").control).toBe("fixed");
   });
 
   it("returns an explicit unknown capability for a model the registry has never seen", () => {
@@ -48,6 +54,25 @@ describe("translateReasoning — provider-specific, never uniform", () => {
     const cfg: ReasoningConfiguration = { mode: "effort", effort: "high" };
     const r = translateReasoning(cfg, "openai-chat", effortCap);
     expect(r).toEqual({ ok: true, params: { reasoning_effort: "high" } });
+  });
+
+  it("maps DeepSeek effort and off to the thinking-mode wire fields", () => {
+    const deepseekCap: RouteReasoningCapability = {
+      control: "effort",
+      efforts: ["low", "high", "xhigh", "max"],
+      budgets: [],
+      source: "provider-metadata",
+      supportsOff: true,
+      wire: "deepseek-thinking",
+    };
+    expect(translateReasoning({ mode: "effort", effort: "high" }, "openai-chat", deepseekCap)).toEqual({
+      ok: true,
+      params: { reasoning_effort: "high", thinking: { type: "enabled" } },
+    });
+    expect(translateReasoning({ mode: "off" }, "openai-chat", deepseekCap)).toEqual({
+      ok: true,
+      params: { thinking: { type: "disabled" } },
+    });
   });
 
   it("rejects effort on a protocol that has no effort API", () => {

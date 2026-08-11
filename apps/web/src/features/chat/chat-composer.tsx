@@ -1,4 +1,4 @@
-import type { AgentMode, ModelStatus, PresetId, PresetStatus, ProviderId } from "@morrow/contracts";
+import { normalizeReasoningForRoute, type AgentMode, type ModelStatus, type PresetId, type PresetStatus, type ProviderId, type ReasoningConfiguration, type RouteReasoningCapability } from "@morrow/contracts";
 import { Send, Square } from "lucide-react";
 import { ContextMeter } from "./context-meter.js";
 import { ModelPicker } from "./model-picker.js";
@@ -59,6 +59,7 @@ export interface ChatComposerModelRoute {
   preset?: PresetId | undefined;
   providerId?: ProviderId | undefined;
   model?: string | undefined;
+  reasoning?: RouteReasoningCapability | undefined;
 }
 
 export interface ChatComposerSubmission {
@@ -70,6 +71,7 @@ export interface ChatComposerSubmission {
   preset?: PresetId | undefined;
   providerId?: ProviderId | undefined;
   model?: string | undefined;
+  reasoning?: ReasoningConfiguration | undefined;
 }
 
 export interface ChatComposerSubmitResult {
@@ -99,8 +101,8 @@ export interface ChatComposerProps {
   onStop?: ((taskId: string) => Promise<void>) | undefined;
   showReasoning?: boolean | undefined;
   onShowReasoningChange?: ((show: boolean) => void) | undefined;
-  reasoningConfig?: import("@morrow/contracts").ReasoningConfiguration | undefined;
-  onReasoningConfigChange?: ((config: import("@morrow/contracts").ReasoningConfiguration) => void) | undefined;
+  reasoningConfig?: ReasoningConfiguration | undefined;
+  onReasoningConfigChange?: ((config: ReasoningConfiguration) => void) | undefined;
 }
 
 const DEFAULT_ROUTE: ChatComposerModelRoute = {
@@ -133,6 +135,111 @@ function mapMode(
 ): Pick<ChatComposerSubmission, "mode" | "autoApprove"> {
   if (mode === "chat") return { mode: "read-only", autoApprove: false };
   return { mode: "agent", autoApprove };
+}
+
+interface ReasoningSliderOption {
+  label: string;
+  config: ReasoningConfiguration;
+}
+
+function reasoningSliderOptions(capability: RouteReasoningCapability | undefined): ReasoningSliderOption[] {
+  const auto: ReasoningSliderOption = { label: "Auto", config: { mode: "auto" } };
+  if (!capability) return [auto];
+  switch (capability.control) {
+    case "none":
+    case "fixed":
+      return [auto];
+    case "effort":
+      return [
+        auto,
+        ...(capability.supportsOff ? [{ label: "Off", config: { mode: "off" } as ReasoningConfiguration }] : []),
+        ...capability.efforts.map((effort): ReasoningSliderOption => ({
+          label: effort === "xhigh" ? "xHigh" : effort[0]!.toUpperCase() + effort.slice(1),
+          config: { mode: "effort", effort },
+        })),
+      ];
+    case "budget":
+      return [
+        auto,
+        { label: "Off", config: { mode: "off" } },
+        ...capability.budgets.map((tokens): ReasoningSliderOption => ({
+          label: tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(tokens),
+          config: { mode: "budget", tokens },
+        })),
+      ];
+  }
+}
+
+function sameReasoningConfig(left: ReasoningConfiguration, right: ReasoningConfiguration): boolean {
+  if (left.mode !== right.mode) return false;
+  if (left.mode === "effort" && right.mode === "effort") return left.effort === right.effort;
+  if (left.mode === "budget" && right.mode === "budget") return left.tokens === right.tokens;
+  return true;
+}
+
+function ReasoningSlider({
+  capability,
+  disabled,
+  onChange,
+  value,
+}: {
+  capability: RouteReasoningCapability | undefined;
+  disabled: boolean;
+  onChange: (config: ReasoningConfiguration) => void;
+  value: ReasoningConfiguration;
+}) {
+  const options = reasoningSliderOptions(capability);
+  const normalized = capability
+    ? normalizeReasoningForRoute(value, capability).config
+    : { mode: "auto" as const };
+  const selectedIndex = Math.max(0, options.findIndex((option) => sameReasoningConfig(option.config, normalized)));
+  const progress = options.length <= 1 ? 0 : (selectedIndex / (options.length - 1)) * 100;
+  const isAdjustable = capability?.control === "effort" || capability?.control === "budget";
+  const selectedLabel = options[selectedIndex]?.label ?? "Auto";
+  const description = !capability
+    ? "Select a model to adjust reasoning"
+    : capability.control === "fixed"
+      ? "Reasoning is fixed by the provider"
+      : capability.control === "none"
+        ? "This model does not expose reasoning controls"
+        : "Set reasoning effort / thinking depth for the model";
+
+  return (
+    <div
+      aria-label="Reasoning effort"
+      className={`morrow-reasoning-slider${isAdjustable ? "" : " is-static"}`}
+      title={description}
+    >
+      <span className="morrow-reasoning-slider__label">Reasoning</span>
+      <div className="morrow-reasoning-slider__control">
+        <div className="morrow-reasoning-slider__track" aria-hidden="true">
+          <span className="morrow-reasoning-slider__fill" style={{ width: `${progress}%` }} />
+        </div>
+        <input
+          aria-label="Reasoning effort"
+          aria-valuetext={selectedLabel}
+          className="morrow-reasoning-slider__input"
+          data-adjustable={isAdjustable ? "true" : "false"}
+          data-value={selectedLabel.toLowerCase()}
+          disabled={disabled || !isAdjustable}
+          max={Math.max(0, options.length - 1)}
+          min={0}
+          onChange={(event) => {
+            const option = options[Number(event.target.value)];
+            if (option) onChange(option.config);
+          }}
+          type="range"
+          value={selectedIndex}
+        />
+        <span aria-atomic="true" aria-live="polite" className="morrow-reasoning-slider__value">
+          {selectedLabel}
+        </span>
+        <div className="morrow-reasoning-slider__labels" aria-hidden="true">
+          {options.map((option) => <span key={option.label}>{option.label}</span>)}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function scopeId(scope: ChatDraftScope): string {
@@ -191,6 +298,15 @@ export function ChatComposer({
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const selectedRoute = modelCatalogue
+    ? catalogueRoute
+    : availableRoutes.find((route) => route.id === routeId) ?? availableRoutes[0];
+  const selectedReasoningCapability = selectedRoute?.reasoning;
+  const selectedReasoning = onReasoningConfigChange
+    ? selectedReasoningCapability
+      ? normalizeReasoningForRoute(reasoningConfig, selectedReasoningCapability).config
+      : { mode: "auto" as const }
+    : undefined;
 
   useEffect(() => {
     saveComposerModePreference({ mode, autoApprove: mode === "build" && autoApprove });
@@ -274,16 +390,13 @@ export function ChatComposer({
       end: textarea.selectionEnd,
       start: textarea.selectionStart,
     };
-    const effectiveRoute = modelCatalogue
-      ? catalogueRoute
-      : availableRoutes.find((route) => route.id === routeId) ?? availableRoutes[0];
-    const routing = effectiveRoute?.providerId
+    const routing = selectedRoute?.providerId
       ? {
-          providerId: effectiveRoute.providerId,
-          ...(effectiveRoute.model ? { model: effectiveRoute.model } : {}),
+          providerId: selectedRoute.providerId,
+          ...(selectedRoute.model ? { model: selectedRoute.model } : {}),
         }
-      : effectiveRoute?.preset
-        ? { preset: effectiveRoute.preset }
+      : selectedRoute?.preset
+        ? { preset: selectedRoute.preset }
         : {};
 
     try {
@@ -295,6 +408,7 @@ export function ChatComposer({
           : {}),
         ...mapMode(mode, autoApprove),
         ...routing,
+        ...(selectedReasoning ? { reasoning: selectedReasoning } : {}),
       });
       if (!result.accepted) {
         if (submittedScopeId === committedScope.current.id) {
@@ -473,33 +587,12 @@ export function ChatComposer({
         <ContextMeter taskId={contextTaskId ?? activeTaskId} />
 
         {onReasoningConfigChange ? (
-          <label className="morrow-chat-composer__select" title="Set reasoning effort / thinking depth for the model">
-            <span>Reasoning effort</span>
-            <select
-              disabled={interactionDisabled}
-              onChange={(event) => {
-                const val = event.target.value;
-                if (val === "auto") onReasoningConfigChange({ mode: "auto" });
-                else if (val === "off") onReasoningConfigChange({ mode: "off" });
-                else onReasoningConfigChange({ mode: "effort", effort: val as any });
-              }}
-              value={
-                reasoningConfig
-                  ? reasoningConfig.mode === "effort"
-                    ? reasoningConfig.effort
-                    : reasoningConfig.mode
-                  : "auto"
-              }
-            >
-              <option value="auto">Auto</option>
-              <option value="off">Off</option>
-              <option value="low">Low effort</option>
-              <option value="medium">Medium effort</option>
-              <option value="high">High effort</option>
-              <option value="xhigh">xHigh effort</option>
-              <option value="max">Max effort</option>
-            </select>
-          </label>
+          <ReasoningSlider
+            capability={selectedReasoningCapability}
+            disabled={interactionDisabled}
+            onChange={onReasoningConfigChange}
+            value={reasoningConfig ?? { mode: "auto" }}
+          />
         ) : null}
 
         {onShowReasoningChange ? (

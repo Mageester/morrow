@@ -22,6 +22,16 @@ export const UNKNOWN_REASONING: RouteReasoningCapability = { control: "none", ef
 function effort(levels: ReasoningEffort[] = ["low", "medium", "high"]): RouteReasoningCapability {
   return { control: "effort", efforts: levels, budgets: [], source: "registry" };
 }
+function deepSeekReasoning(): RouteReasoningCapability {
+  return {
+    control: "effort",
+    efforts: ["low", "high", "xhigh", "max"],
+    budgets: [],
+    source: "provider-metadata",
+    supportsOff: true,
+    wire: "deepseek-thinking",
+  };
+}
 function fixedReasoning(): RouteReasoningCapability {
   return { control: "fixed", efforts: [], budgets: [], source: "registry" };
 }
@@ -149,7 +159,7 @@ export const BUILT_IN_MODELS: BundledModelInfo[] = [
   model("openrouter", "deepseek/deepseek-v4-flash", "DeepSeek V4 Flash (via OpenRouter)", { contextWindow: 1000000, speed: "fast", cost: "low" }),
 
   // DeepSeek
-  model("deepseek", "deepseek-v4-pro", "DeepSeek V4 Pro", { aliases: ["deepseek-pro"], contextWindow: 1000000, speed: "powerful", cost: "low" }),
+  model("deepseek", "deepseek-v4-pro", "DeepSeek V4 Pro", { aliases: ["deepseek-pro"], contextWindow: 1000000, maxOutputTokens: 384000, pricing: price(0.435, 0.87, 0.003625), speed: "powerful", cost: "low", reasoning: deepSeekReasoning() }),
   // Declared `noReasoning()` until 2026-08-04: live traffic showed the wire
   // stream emitting `delta.reasoning_content` chunks (task 46ea7980-3905-45ac-
   // a0cf-48b0ec7e4c25 in morrow.db), i.e. this is a reasoning model in
@@ -157,7 +167,7 @@ export const BUILT_IN_MODELS: BundledModelInfo[] = [
   // endpoint gives no caller-tunable control over that reasoning (no
   // `reasoning_effort` support), so `fixed` — same declaration as
   // deepseek-reasoner below — is the honest capability, not a guess.
-  model("deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash", { aliases: ["deepseek-flash"], contextWindow: 1000000, speed: "fast", cost: "low", reasoning: fixedReasoning() }),
+  model("deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash", { aliases: ["deepseek-flash"], contextWindow: 1000000, maxOutputTokens: 384000, pricing: price(0.14, 0.28, 0.0028), speed: "fast", cost: "low", reasoning: deepSeekReasoning() }),
   model("deepseek", "deepseek-chat", "DeepSeek Chat", { canonicalTarget: { providerId: "deepseek", modelId: "deepseek-v4-flash" }, lifecycle: "deprecated", speed: "balanced", cost: "low" }),
   // The reasoner always thinks; the depth is fixed by the provider, not caller-tunable.
   model("deepseek", "deepseek-reasoner", "DeepSeek Reasoner", { canonicalTarget: { providerId: "deepseek", modelId: "deepseek-v4-flash" }, lifecycle: "deprecated", speed: "powerful", cost: "low", reasoning: fixedReasoning() }),
@@ -273,7 +283,31 @@ export function installModelCatalog(models: ModelInfo[]): void {
 export function mergeModelCatalog(seed: ModelInfo[], remote: ModelInfo[]): ModelInfo[] {
   const merged = new Map<string, ModelInfo>();
   for (const model of seed) merged.set(catalogKey(model.providerId, model.canonicalId), model);
-  for (const model of remote) merged.set(catalogKey(model.providerId, model.canonicalId), model);
+  for (const model of remote) {
+    const key = catalogKey(model.providerId, model.canonicalId);
+    const bundled = merged.get(key);
+    if (!bundled) {
+      merged.set(key, model);
+      continue;
+    }
+
+    // Remote catalogues commonly omit pricing and normalized reasoning even
+    // when the bundled provider contract knows them. Preserve those facts when
+    // the remote row is silent or explicitly marks its reasoning as unknown;
+    // remote context/capability metadata still wins when it is present.
+    const remoteReasoning = model.reasoning;
+    const reasoning = remoteReasoning && remoteReasoning.source !== "unknown"
+      ? remoteReasoning
+      : bundled.reasoning;
+    merged.set(key, {
+      ...bundled,
+      ...model,
+      pricing: model.pricing ?? bundled.pricing,
+      contextWindow: model.contextWindow ?? bundled.contextWindow,
+      maxOutputTokens: model.maxOutputTokens ?? bundled.maxOutputTokens,
+      ...(reasoning ? { reasoning } : {}),
+    });
+  }
   return [...merged.values()];
 }
 

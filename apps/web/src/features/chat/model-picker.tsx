@@ -99,6 +99,7 @@ function buildModelOptions(models: ReadonlyArray<ModelStatus>): ModelOption[] {
         label: model.label,
         providerId: model.providerId,
         model: model.id,
+        ...(model.reasoning ? { reasoning: model.reasoning } : {}),
       },
       provider: providerName(model.providerId),
       available: status.available,
@@ -175,6 +176,7 @@ export function ModelPicker({ models, presets, value, onChange, disabled = false
         aria-expanded={open}
         aria-haspopup="menu"
         className="morrow-model-picker__trigger"
+        data-open={open ? "true" : "false"}
         disabled={disabled}
         onClick={() => setOpen((next) => !next)}
         type="button"
@@ -187,7 +189,12 @@ export function ModelPicker({ models, presets, value, onChange, disabled = false
       </button>
 
       {open ? (
-        <div className="morrow-model-picker__panel" onKeyDown={(event) => { if (event.key === "Escape") { setOpen(false); } }}>
+        <div
+          className="morrow-model-picker__panel"
+          data-open="true"
+          onKeyDown={(event) => { if (event.key === "Escape") { setOpen(false); } }}
+          role="menu"
+        >
           <input
             aria-label="Search models"
             autoFocus
@@ -288,6 +295,7 @@ function ModelPickerOption({
         aria-describedby={reason ? `${option.route.id}-reason` : undefined}
         aria-pressed={selected}
         className="morrow-model-picker__option"
+        data-selected={selected ? "true" : "false"}
         disabled={!option.available}
         onClick={() => onChoose(option.route)}
         type="button"

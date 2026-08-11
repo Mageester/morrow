@@ -45,7 +45,10 @@ function readStoredPreference(): ThemePreference {
   } catch {
     // A blocked storage API simply means we fall back to following the OS.
   }
-  return "system";
+  // Morrow opens in its graphite workspace by default. An explicit choice is
+  // always respected, while new installs get the intended premium first
+  // impression without persisting a preference until the user chooses one.
+  return "dark";
 }
 
 function resolvePreference(preference: ThemePreference): ResolvedTheme {

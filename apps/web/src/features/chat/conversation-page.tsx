@@ -18,6 +18,7 @@ import { projectQueries } from "../../api/projects.js";
 import { missionKeys, missionQueries } from "../../api/query-keys.js";
 import { api, ApiClientError } from "../../api/client.js";
 import { ChatComposer, type ChatComposerSubmission } from "./chat-composer.js";
+import { toConversationMessageInput } from "./conversation-submit.js";
 import { MissionCard } from "./mission-card.js";
 import { MissionPanel } from "./mission-panel.js";
 import { ActivityPanel, ConversationActivity, ConversationTranscript } from "./activity-panel.js";
@@ -284,14 +285,11 @@ export function ConversationPageContent({
   async function submit(submission: ChatComposerSubmission) {
     resumeAutoscroll();
     try {
-      const result = await conversationApi.sendMessage(projectId, conversationId, {
-        content: submission.content,
-        mode: submission.mode,
-        autoApprove: submission.autoApprove,
-        ...(submission.preset ? { preset: submission.preset } : {}),
-        ...(submission.providerId ? { providerId: submission.providerId } : {}),
-        ...(submission.model ? { model: submission.model } : {}),
-      });
+      const result = await conversationApi.sendMessage(
+        projectId,
+        conversationId,
+        toConversationMessageInput(submission),
+      );
       queryClient.setQueryData<WebConversationMessage[]>(
         conversationKeys.messages(projectId, conversationId),
         (current = []) => {

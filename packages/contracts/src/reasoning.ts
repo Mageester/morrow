@@ -20,6 +20,7 @@ export function isReasoningCompatible(config: ReasoningConfiguration, capability
     case "fixed":
       return config.mode === "provider-fixed";
     case "effort":
+      if (config.mode === "off") return capability.supportsOff === true;
       return config.mode === "effort" && capability.efforts.includes(config.effort);
     case "budget":
       return config.mode === "off" || (config.mode === "budget" && (capability.budgets.length === 0 || capability.budgets.includes(config.tokens)));

@@ -123,6 +123,10 @@ a {
   font-size: 0.875rem;
   font-weight: 590;
   text-decoration: none;
+  transition:
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    color var(--morrow-motion-control) var(--morrow-ease-out),
+    transform var(--morrow-motion-fast) var(--morrow-ease-out);
 }
 
 .morrow-nav__link svg {
@@ -153,6 +157,11 @@ a {
 .morrow-nav__link:hover {
   color: var(--morrow-text);
   background: var(--morrow-surface-subtle);
+  transform: translateX(2px);
+}
+
+.morrow-nav__link:active {
+  transform: translateX(0);
 }
 
 .morrow-nav__link[aria-current="page"] {
@@ -280,6 +289,22 @@ a {
   border: 1px solid var(--morrow-border);
   border-radius: var(--morrow-radius-sm);
   place-items: center;
+  transition:
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    border-color var(--morrow-motion-control) var(--morrow-ease-out),
+    color var(--morrow-motion-control) var(--morrow-ease-out),
+    transform var(--morrow-motion-fast) var(--morrow-ease-out);
+}
+
+.morrow-activity-panel__header button:hover {
+  color: var(--morrow-text);
+  background: var(--morrow-surface-subtle);
+  border-color: var(--morrow-accent);
+  transform: translateY(-1px);
+}
+
+.morrow-activity-panel__header button:active {
+  transform: translateY(0);
 }
 
 .morrow-activity-panel__contract,
@@ -322,10 +347,15 @@ a {
   border-radius: var(--morrow-radius-sm);
   cursor: pointer;
   list-style: none;
+  transition:
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    color var(--morrow-motion-control) var(--morrow-ease-out),
+    transform var(--morrow-motion-fast) var(--morrow-ease-out);
 }
 
 .morrow-activity-timeline summary:hover {
   background: var(--morrow-surface-subtle);
+  transform: translateX(2px);
 }
 
 .morrow-activity-timeline summary::-webkit-details-marker {
@@ -671,6 +701,9 @@ a {
   border: 1px solid var(--morrow-border);
   border-radius: var(--morrow-radius-lg);
   box-shadow: var(--morrow-shadow-sm);
+  transition:
+    border-color var(--morrow-motion-state) var(--morrow-ease-out),
+    box-shadow var(--morrow-motion-state) var(--morrow-ease-out);
 }
 
 .morrow-chat-composer__input {
@@ -695,8 +728,8 @@ a {
 
 .morrow-chat-composer:focus-within {
   border-color: var(--morrow-focus);
-  outline: 2px solid var(--morrow-focus);
-  outline-offset: 2px;
+  outline: 0;
+  box-shadow: var(--morrow-shadow-sm), 0 0 0 3px color-mix(in srgb, var(--morrow-focus) 14%, transparent);
 }
 
 .morrow-chat-composer__modes-row {
@@ -754,6 +787,24 @@ a {
   font: inherit;
   font-size: 0.8125rem;
   font-weight: 600;
+  transition:
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    border-color var(--morrow-motion-control) var(--morrow-ease-out),
+    color var(--morrow-motion-control) var(--morrow-ease-out),
+    box-shadow var(--morrow-motion-control) var(--morrow-ease-out),
+    transform var(--morrow-motion-fast) var(--morrow-ease-out);
+}
+
+.morrow-chat-composer__modes button:hover:not(:disabled),
+.morrow-chat-composer__stop:hover:not(:disabled),
+.morrow-chat-composer__send:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.morrow-chat-composer__modes button:active:not(:disabled),
+.morrow-chat-composer__stop:active:not(:disabled),
+.morrow-chat-composer__send:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 .morrow-chat-composer__modes button.is-active {
@@ -802,6 +853,20 @@ a {
   cursor: pointer;
   font-size: 0.8125rem;
   font-weight: 650;
+  transition:
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    border-color var(--morrow-motion-control) var(--morrow-ease-out),
+    color var(--morrow-motion-control) var(--morrow-ease-out),
+    transform var(--morrow-motion-fast) var(--morrow-ease-out);
+}
+
+.morrow-chat-composer__reasoning-toggle:hover {
+  color: var(--morrow-text);
+  transform: translateY(-1px);
+}
+
+.morrow-chat-composer__reasoning-toggle:active {
+  transform: translateY(0);
 }
 
 .morrow-chat-composer__reasoning-toggle:has(input:checked) {
@@ -813,6 +878,355 @@ a {
   width: 16px;
   height: 16px;
   accent-color: var(--morrow-accent);
+}
+
+.morrow-reasoning-slider {
+  position: relative;
+  display: grid;
+  min-width: min(240px, 28vw);
+  gap: 4px;
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 650;
+}
+
+.morrow-reasoning-slider__control {
+  position: relative;
+  display: grid;
+  min-width: 160px;
+  padding: 0 2px;
+  gap: 2px;
+}
+
+.morrow-reasoning-slider__value {
+  position: absolute;
+  top: 0;
+  right: 0;
+  color: var(--morrow-text);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .morrow-reasoning-slider__value {
+    animation: morrow-reasoning-value-in var(--morrow-motion-fast) var(--morrow-ease-out);
+  }
+}
+
+.morrow-reasoning-slider__track {
+  position: absolute;
+  top: 8px;
+  right: 2px;
+  left: 2px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--morrow-border) 72%, transparent);
+  pointer-events: none;
+}
+
+.morrow-reasoning-slider__fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--morrow-accent) 58%, transparent), var(--morrow-accent));
+  transition: width 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.morrow-reasoning-slider__input {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  appearance: none;
+  cursor: pointer;
+  background: transparent;
+}
+
+.morrow-reasoning-slider__input::-webkit-slider-runnable-track {
+  height: 4px;
+  background: transparent;
+}
+
+.morrow-reasoning-slider__input::-moz-range-track {
+  height: 4px;
+  background: transparent;
+}
+
+.morrow-reasoning-slider__input::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  appearance: none;
+  border: 2px solid var(--morrow-surface);
+  border-radius: 50%;
+  background: var(--morrow-accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--morrow-accent) 70%, transparent), var(--morrow-shadow-sm);
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease;
+}
+
+.morrow-reasoning-slider__input::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--morrow-surface);
+  border-radius: 50%;
+  background: var(--morrow-accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--morrow-accent) 70%, transparent), var(--morrow-shadow-sm);
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease;
+}
+
+.morrow-reasoning-slider__input:hover::-webkit-slider-thumb,
+.morrow-reasoning-slider__input:focus-visible::-webkit-slider-thumb {
+  transform: scale(1.18);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--morrow-accent) 18%, transparent), var(--morrow-shadow-sm);
+}
+
+.morrow-reasoning-slider__input:hover::-moz-range-thumb,
+.morrow-reasoning-slider__input:focus-visible::-moz-range-thumb {
+  transform: scale(1.18);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--morrow-accent) 18%, transparent), var(--morrow-shadow-sm);
+}
+
+.morrow-reasoning-slider__input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--morrow-accent) 62%, transparent);
+  outline-offset: 4px;
+  border-radius: 999px;
+}
+
+.morrow-reasoning-slider__labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--morrow-text-muted);
+  font-size: 0.625rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.morrow-reasoning-slider__labels span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-reasoning-slider.is-static {
+  min-width: 128px;
+}
+
+.morrow-reasoning-slider.is-static .morrow-reasoning-slider__track {
+  opacity: 0.45;
+}
+
+.morrow-reasoning-slider.is-static .morrow-reasoning-slider__labels {
+  color: var(--morrow-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .morrow-reasoning-slider__value,
+  .morrow-reasoning-slider__fill,
+  .morrow-reasoning-slider__input::-webkit-slider-thumb,
+  .morrow-reasoning-slider__input::-moz-range-thumb {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* Shared control language for secondary surfaces. Inline legacy styles remain
+   functional, but these rules give every existing route the same tactile
+   field, list, and action treatment. */
+.morrow-page input:not([type="checkbox"]):not([type="radio"]),
+.morrow-page select,
+.morrow-page textarea {
+  color: var(--morrow-text);
+  background: var(--morrow-surface-elevated);
+  border-color: var(--morrow-border-strong);
+  transition:
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    border-color var(--morrow-motion-control) var(--morrow-ease-out),
+    box-shadow var(--morrow-motion-control) var(--morrow-ease-out);
+}
+
+.morrow-page input:not([type="checkbox"]):not([type="radio"]):focus,
+.morrow-page select:focus,
+.morrow-page textarea:focus {
+  background: var(--morrow-surface);
+  border-color: var(--morrow-accent);
+  box-shadow: 0 0 0 4px var(--morrow-accent-soft);
+  outline: none;
+}
+
+.morrow-page button:not(.morrow-mobile-dock__link):not(.morrow-nav__link),
+.morrow-page a.morrow-empty__action,
+.morrow-page .morrow-section-head__link {
+  transition:
+    color var(--morrow-motion-control) var(--morrow-ease-out),
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    border-color var(--morrow-motion-control) var(--morrow-ease-out),
+    transform var(--morrow-motion-fast) var(--morrow-ease-out);
+}
+
+.morrow-section-head {
+  align-items: center;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--morrow-border);
+}
+
+.morrow-section-head h2 {
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.morrow-section-head__link {
+  color: var(--morrow-accent);
+  font-weight: 700;
+}
+
+.morrow-chats__tabs {
+  border-color: var(--morrow-border-strong);
+  background: var(--morrow-surface-subtle);
+}
+
+.morrow-chats__tab {
+  min-height: 36px;
+  border-radius: 9px;
+  transition: background-color var(--morrow-motion-control) var(--morrow-ease-out), color var(--morrow-motion-control) var(--morrow-ease-out);
+}
+
+.morrow-chats__tab[aria-pressed="true"] {
+  color: var(--morrow-on-accent);
+  background: var(--morrow-accent);
+}
+
+.morrow-chats__row,
+.morrow-projects__row {
+  min-height: 62px;
+  transition: background-color var(--morrow-motion-control) var(--morrow-ease-out), transform var(--morrow-motion-fast) var(--morrow-ease-out);
+}
+
+.morrow-chats__row:hover,
+.morrow-projects__row:hover {
+  background: var(--morrow-surface-elevated);
+}
+
+.morrow-empty,
+.morrow-inline-error {
+  border-color: var(--morrow-border-strong);
+  border-radius: 18px;
+  background: var(--morrow-surface);
+  box-shadow: var(--morrow-shadow-sm);
+}
+
+.morrow-empty--soft {
+  background: var(--morrow-surface-subtle);
+}
+
+.morrow-conversation-workspace {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: 9px;
+  font-size: 0.6875rem;
+}
+
+.morrow-conversation-workspace__project {
+  color: var(--morrow-text);
+  font-weight: 750;
+}
+
+.morrow-conversation-workspace__path {
+  overflow: hidden;
+  color: var(--morrow-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-conversation-workspace__branch {
+  padding: 2px 6px;
+  color: var(--morrow-accent);
+  background: var(--morrow-accent-soft);
+  border-radius: 5px;
+  font-weight: 700;
+}
+
+.morrow-conversation-empty {
+  padding: clamp(44px, 10vw, 112px) 24px;
+  background: var(--morrow-surface-subtle);
+  border: 1px dashed var(--morrow-border-strong);
+  border-radius: 22px;
+  text-align: center;
+}
+
+.morrow-conversation-empty h2 {
+  font-size: clamp(1.5rem, 4vw, 2rem);
+  letter-spacing: -0.035em;
+}
+
+.morrow-conversation-mission__start {
+  border-color: var(--morrow-border-strong);
+  border-radius: 12px;
+  background: var(--morrow-surface);
+  color: var(--morrow-accent);
+  font-weight: 700;
+  transition: background-color var(--morrow-motion-control) var(--morrow-ease-out), border-color var(--morrow-motion-control) var(--morrow-ease-out), transform var(--morrow-motion-fast) var(--morrow-ease-out);
+}
+
+.morrow-conversation-mission__start:hover:not(:disabled) {
+  background: var(--morrow-accent-soft);
+  border-color: var(--morrow-accent);
+  transform: translateY(-2px);
+}
+
+@media (max-width: 760px) {
+  .morrow-topbar__brand-mark {
+    display: grid;
+    width: 24px;
+    height: 24px;
+    margin-left: 4px;
+    color: var(--morrow-on-accent);
+    background: var(--morrow-accent);
+    border-radius: 7px;
+    place-items: center;
+  }
+
+  .morrow-topbar__brand {
+    margin-left: -2px;
+    font-weight: 760;
+    letter-spacing: -0.02em;
+  }
+
+  .morrow-workspace-context__link {
+    font-size: 0.6875rem;
+  }
+
+  .morrow-conversation-workspace {
+    display: flex;
+  }
+
+  .morrow-conversation-workspace__branch {
+    display: none;
+  }
+}
+
+@keyframes morrow-reasoning-value-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .morrow-chat-composer__send {
@@ -939,6 +1353,22 @@ a {
   display: grid;
   padding: 0;
   place-items: center;
+  transition:
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    border-color var(--morrow-motion-control) var(--morrow-ease-out),
+    color var(--morrow-motion-control) var(--morrow-ease-out),
+    transform var(--morrow-motion-fast) var(--morrow-ease-out);
+}
+
+.morrow-conversation-actions button:hover {
+  color: var(--morrow-text);
+  background: var(--morrow-surface-subtle);
+  border-color: var(--morrow-accent);
+  transform: translateY(-1px);
+}
+
+.morrow-conversation-actions button:active {
+  transform: translateY(0);
 }
 
 .morrow-conversation-workspace {
@@ -1064,108 +1494,6 @@ a {
   font-size: 0.75rem;
 }
 
-.morrow-reasoning__entry-details {
-  display: grid;
-  gap: var(--morrow-space-1);
-  border: 1px solid color-mix(in srgb, var(--morrow-border) 50%, transparent);
-  border-radius: var(--morrow-radius-sm);
-  padding: var(--morrow-space-2) var(--morrow-space-3);
-  background: color-mix(in srgb, var(--morrow-surface) 50%, transparent);
-  position: relative;
-}
-
-.morrow-reasoning__entries {
-  display: grid;
-  gap: var(--morrow-space-3);
-  position: relative;
-}
-
-.morrow-reasoning__entries::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 12px;
-  width: 2px;
-  background: color-mix(in srgb, var(--morrow-border) 50%, transparent);
-  z-index: 0;
-}
-
-.morrow-reasoning__entry-details {
-  margin-left: 28px;
-}
-
-.morrow-reasoning__entry-details::before {
-  content: "";
-  position: absolute;
-  top: 14px;
-  left: -20px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--morrow-accent);
-  box-shadow: 0 0 0 2px var(--morrow-surface-subtle);
-  z-index: 1;
-}
-
-.morrow-reasoning__entry-summary {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  cursor: pointer;
-  list-style: none;
-  font-weight: 500;
-  user-select: none;
-}
-
-.morrow-reasoning__turn-info {
-  display: flex;
-  align-items: center;
-  gap: var(--morrow-space-2);
-}
-
-.morrow-reasoning__turn-label {
-  font-size: 0.8125rem;
-  color: var(--morrow-text);
-}
-
-.morrow-reasoning__turn-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--morrow-space-3);
-}
-
-.morrow-reasoning__time {
-  font-size: 0.75rem;
-  color: var(--morrow-text-muted);
-}
-
-.morrow-reasoning__entry-summary::-webkit-details-marker {
-  display: none;
-}
-
-.morrow-reasoning__summary-hint {
-  font-size: 0.75rem;
-  color: var(--morrow-text-muted);
-  opacity: 0.5;
-  transition: opacity 0.2s ease;
-}
-
-.morrow-reasoning__entry-summary:hover .morrow-reasoning__summary-hint {
-  opacity: 1;
-}
-
-.morrow-reasoning__content {
-  max-height: 32rem;
-  overflow-y: auto;
-  padding-top: var(--morrow-space-2);
-  border-top: 1px solid color-mix(in srgb, var(--morrow-border) 50%, transparent);
-  margin-top: var(--morrow-space-2);
-  color: var(--morrow-text-muted);
-  font-size: 0.8125rem;
-  line-height: 1.5;
-}
-
 .morrow-reasoning__content p {
   margin-bottom: var(--morrow-space-2);
 }
@@ -1190,10 +1518,226 @@ a {
   border-radius: 2px;
 }
 
-.morrow-reasoning__content ul, 
+.morrow-reasoning__content ul,
 .morrow-reasoning__content ol {
   margin-bottom: var(--morrow-space-2);
   padding-left: var(--morrow-space-4);
+}
+
+/* The reasoning surface is a quiet, streaming timeline. The content shell
+   uses a grid row transition so opening a step does not animate the whole
+   conversation layout or force the browser to measure a large markdown block. */
+.morrow-reasoning {
+  padding: var(--morrow-space-3) var(--morrow-space-4);
+  gap: var(--morrow-space-2);
+  background: color-mix(in srgb, var(--morrow-surface-subtle) 72%, transparent);
+  border-left-width: 2px;
+}
+
+.morrow-reasoning__title,
+.morrow-reasoning__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--morrow-space-2);
+}
+
+.morrow-reasoning__summary {
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+  white-space: nowrap;
+}
+
+.morrow-reasoning__summary .morrow-reasoning__status {
+  color: var(--morrow-accent);
+}
+
+.morrow-reasoning__viewport {
+  position: relative;
+  max-height: min(28rem, 42vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.morrow-reasoning__entries {
+  display: grid;
+  gap: 2px;
+  padding: 2px 0;
+}
+
+.morrow-reasoning__entries::before {
+  top: 13px;
+  bottom: 13px;
+  left: 8px;
+  width: 1px;
+  background: color-mix(in srgb, var(--morrow-accent) 28%, var(--morrow-border));
+}
+
+.morrow-reasoning__entry {
+  position: relative;
+  margin: 0;
+  border: 0;
+  border-radius: var(--morrow-radius-sm);
+  background: transparent;
+  transition: background-color 160ms ease;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .morrow-reasoning__entry {
+    animation: morrow-reasoning-entry-in var(--morrow-motion-state) var(--morrow-ease-out) both;
+  }
+
+  .morrow-reasoning__entry[data-streaming="true"] .morrow-reasoning__entry-marker {
+    animation: morrow-reasoning-marker-pulse 1.8s ease-in-out infinite;
+  }
+}
+
+.morrow-reasoning__entry:hover,
+.morrow-reasoning__entry.is-latest {
+  background: color-mix(in srgb, var(--morrow-surface) 64%, transparent);
+}
+
+.morrow-reasoning__entry-trigger {
+  display: grid;
+  grid-template-columns: 16px auto 1fr auto;
+  align-items: center;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 var(--morrow-space-2);
+  gap: var(--morrow-space-2);
+  color: var(--morrow-text-muted);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.morrow-reasoning__entry-marker {
+  width: 7px;
+  height: 7px;
+  justify-self: center;
+  border: 2px solid var(--morrow-surface-subtle);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--morrow-accent) 72%, var(--morrow-border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--morrow-accent) 40%, transparent);
+  transition: transform 160ms ease, background-color 160ms ease;
+}
+
+.morrow-reasoning__entry.is-latest .morrow-reasoning__entry-marker,
+.morrow-reasoning__entry.is-open .morrow-reasoning__entry-marker {
+  transform: scale(1.2);
+  background: var(--morrow-accent);
+}
+
+.morrow-reasoning__entry-trigger:focus-visible {
+  outline: 2px solid var(--morrow-accent);
+  outline-offset: -2px;
+}
+
+.morrow-reasoning__turn-label {
+  color: var(--morrow-text);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.morrow-reasoning__time {
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.morrow-reasoning__entry-action {
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+  opacity: 0.7;
+}
+
+.morrow-reasoning__content-shell {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-left: 28px;
+  opacity: 0;
+  transition: grid-template-rows 180ms cubic-bezier(0.22, 1, 0.36, 1), opacity 140ms ease;
+}
+
+.morrow-reasoning__entry.is-open .morrow-reasoning__content-shell {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.morrow-reasoning__content {
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
+  padding: 0 var(--morrow-space-3) var(--morrow-space-3) 0;
+  border-top: 0;
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.morrow-reasoning__content p:first-child {
+  margin-top: 0;
+}
+
+.morrow-reasoning__jump {
+  justify-self: end;
+  min-height: 30px;
+  padding: 0 var(--morrow-space-3);
+  color: var(--morrow-text);
+  border: 1px solid color-mix(in srgb, var(--morrow-accent) 48%, var(--morrow-border));
+  border-radius: 999px;
+  background: var(--morrow-surface);
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+
+@media (max-width: 760px) {
+  .morrow-reasoning-slider {
+    min-width: 170px;
+  }
+
+  .morrow-reasoning__summary {
+    font-size: 0.625rem;
+  }
+
+  .morrow-reasoning__viewport {
+    max-height: 36vh;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .morrow-reasoning__entry,
+  .morrow-reasoning__entry-marker,
+  .morrow-reasoning__content-shell {
+    transition: none;
+    animation: none;
+  }
+}
+
+@keyframes morrow-reasoning-entry-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes morrow-reasoning-marker-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+
+  50% {
+    opacity: 0.58;
+    transform: scale(1.3);
+  }
 }
 
 .morrow-conversation-message__route,
@@ -3112,8 +3656,19 @@ a {
 
 @media (prefers-reduced-motion: reduce) {
   .morrow-sidebar,
-  .morrow-tile {
+  .morrow-tile,
+  .morrow-nav__link,
+  .morrow-activity-timeline summary,
+  .morrow-conversation-actions button,
+  .morrow-chat-composer__modes button,
+  .morrow-chat-composer__stop,
+  .morrow-chat-composer__send,
+  .morrow-chat-composer__reasoning-toggle,
+  .morrow-model-picker__trigger,
+  .morrow-model-picker__option,
+  .morrow-activity-panel__header button {
     transition: none;
+    transform: none;
   }
 }
 
@@ -3136,9 +3691,24 @@ a {
   font-size: 0.8125rem;
   font-weight: 600;
   cursor: pointer;
+  transition:
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    border-color var(--morrow-motion-control) var(--morrow-ease-out),
+    box-shadow var(--morrow-motion-control) var(--morrow-ease-out),
+    transform var(--morrow-motion-fast) var(--morrow-ease-out);
 }
 .morrow-model-picker__trigger:hover:not(:disabled) {
   border-color: var(--morrow-accent);
+  transform: translateY(-1px);
+}
+.morrow-model-picker__trigger:active:not(:disabled),
+.morrow-model-picker__trigger[data-open="true"] {
+  transform: translateY(0);
+}
+.morrow-model-picker__trigger[data-open="true"] {
+  background: var(--morrow-surface-subtle);
+  border-color: color-mix(in srgb, var(--morrow-accent) 58%, var(--morrow-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--morrow-accent) 10%, transparent);
 }
 .morrow-model-picker__trigger:disabled {
   opacity: 0.6;
@@ -3180,6 +3750,8 @@ a {
   border: 1px solid var(--morrow-border);
   border-radius: var(--morrow-radius-md);
   box-shadow: var(--morrow-shadow-sm);
+  transform-origin: bottom left;
+  animation: morrow-picker-in var(--morrow-motion-state) var(--morrow-ease-out) both;
 }
 .morrow-model-picker__search {
   width: 100%;
@@ -3228,9 +3800,17 @@ a {
   font: inherit;
   text-align: start;
   cursor: pointer;
+  transition:
+    background-color var(--morrow-motion-fast) var(--morrow-ease-out),
+    color var(--morrow-motion-fast) var(--morrow-ease-out),
+    transform var(--morrow-motion-fast) var(--morrow-ease-out);
 }
 .morrow-model-picker__option:hover {
   background: var(--morrow-surface-subtle);
+  transform: translateX(2px);
+}
+.morrow-model-picker__option:active {
+  transform: translateX(0);
 }
 .morrow-model-picker__option[aria-pressed="true"] {
   color: var(--morrow-text);
@@ -3411,6 +3991,23 @@ a {
 .morrow-model-picker__toggle:focus-visible {
   color: var(--morrow-text);
   background: var(--morrow-surface-hover, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .morrow-model-picker__panel {
+    animation: none;
+  }
+}
+
+@keyframes morrow-picker-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 /* ── Slice 8: mission inside chat ────────────────────────────────────────── */
@@ -4000,4 +4597,556 @@ a {
 
 @keyframes morrow-transcript-pulse {
   50% { opacity: 0.45; }
+}
+
+/* ── Morrow command workspace ──────────────────────────────────────────────
+   The product shell is intentionally quiet: one graphite field, one warm
+   action colour, and depth reserved for surfaces that need attention. Motion
+   is state-led rather than ornamental. */
+
+.morrow-app-shell {
+  grid-template-columns: 272px minmax(0, 1fr);
+  background: var(--morrow-bg);
+}
+
+.morrow-sidebar {
+  gap: var(--morrow-space-5);
+  padding: 20px 16px 16px;
+  background: var(--morrow-surface-subtle);
+  border-inline-end-color: var(--morrow-border-strong);
+}
+
+.morrow-brand {
+  gap: 10px;
+  padding-inline: 8px;
+}
+
+.morrow-brand__mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--morrow-accent) 25%, transparent);
+}
+
+.morrow-brand strong {
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+}
+
+.morrow-sidebar__new {
+  padding-inline: 4px;
+}
+
+.morrow-new-chat__button {
+  min-height: 44px;
+  border-radius: 12px;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--morrow-accent) 18%, transparent);
+  transition:
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    box-shadow var(--morrow-motion-control) var(--morrow-ease-out),
+    transform var(--morrow-motion-fast) var(--morrow-ease-out);
+}
+
+.morrow-new-chat__button:hover:not(:disabled) {
+  box-shadow: 0 14px 28px color-mix(in srgb, var(--morrow-accent) 26%, transparent);
+  transform: translateY(-2px);
+}
+
+.morrow-nav__link {
+  min-height: 42px;
+  padding-inline: 12px;
+  border-radius: 12px;
+  font-size: 0.875rem;
+  transition:
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    color var(--morrow-motion-control) var(--morrow-ease-out),
+    transform var(--morrow-motion-fast) var(--morrow-ease-out),
+    box-shadow var(--morrow-motion-control) var(--morrow-ease-out);
+}
+
+.morrow-nav__link:hover {
+  background: var(--morrow-surface-strong);
+  transform: translateX(3px);
+}
+
+.morrow-nav__link[aria-current="page"] {
+  color: var(--morrow-text);
+  background: var(--morrow-accent-soft);
+  box-shadow: inset 3px 0 0 var(--morrow-accent);
+}
+
+.morrow-sidebar__footer {
+  padding-inline: 8px;
+  border-top-color: var(--morrow-border-strong);
+}
+
+.morrow-main {
+  min-height: 100vh;
+  padding: 0 clamp(24px, 5vw, 80px) 72px;
+  background: var(--morrow-bg);
+}
+
+.morrow-workspace-context {
+  position: sticky;
+  z-index: 4;
+  top: 0;
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  gap: 10px;
+  max-width: 1180px;
+  padding: 12px 0;
+  margin-inline: auto;
+  background: color-mix(in srgb, var(--morrow-bg) 92%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--morrow-border) 75%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+.morrow-workspace-context__signal {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  background: var(--morrow-accent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 4px var(--morrow-accent-soft);
+}
+
+.morrow-workspace-context[data-state="empty"] .morrow-workspace-context__signal {
+  background: var(--morrow-text-muted);
+  box-shadow: none;
+}
+
+.morrow-workspace-context__copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.morrow-workspace-context__label {
+  color: var(--morrow-text-muted);
+  font-size: 0.625rem;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.morrow-workspace-context__copy strong {
+  overflow: hidden;
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-workspace-context__path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--morrow-text-muted);
+  font-family: var(--morrow-font-mono, ui-monospace, monospace);
+  font-size: 0.6875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-workspace-context__link {
+  flex: none;
+  margin-left: auto;
+  color: var(--morrow-accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-decoration: none;
+  transition: color var(--morrow-motion-fast) var(--morrow-ease-out), transform var(--morrow-motion-fast) var(--morrow-ease-out);
+}
+
+.morrow-workspace-context__link:hover {
+  color: var(--morrow-accent-hover);
+  transform: translateX(2px);
+}
+
+.morrow-page {
+  width: min(100%, 1180px);
+  gap: clamp(28px, 4vw, 48px);
+  padding-top: clamp(32px, 5vw, 68px);
+  animation: morrow-route-enter var(--morrow-motion-page) var(--morrow-ease-out) both;
+}
+
+.morrow-page__heading h1,
+.morrow-home__intro h1,
+.morrow-conversation-header h1 {
+  font-weight: 680;
+  letter-spacing: -0.045em;
+}
+
+.morrow-page__heading h1 {
+  font-size: clamp(2rem, 4vw, 3.25rem);
+}
+
+.morrow-page__heading > p:last-child {
+  max-width: 62ch;
+  font-size: 0.98rem;
+  line-height: 1.7;
+}
+
+.morrow-page .morrow-surface {
+  border-color: var(--morrow-border-strong);
+  border-radius: var(--morrow-radius-xl);
+}
+
+.morrow-home__intro {
+  position: relative;
+  gap: 14px;
+  padding: clamp(28px, 5vw, 64px);
+  overflow: hidden;
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border-strong);
+  border-radius: var(--morrow-radius-xl);
+  box-shadow: var(--morrow-shadow-lg);
+}
+
+.morrow-home__intro::after {
+  position: absolute;
+  right: 7%;
+  bottom: 14%;
+  width: 96px;
+  height: 96px;
+  content: "";
+  border: 1px solid color-mix(in srgb, var(--morrow-accent) 32%, transparent);
+  border-radius: 50%;
+  opacity: 0.55;
+  transform: scale(1.15);
+}
+
+.morrow-home__intro h1 {
+  position: relative;
+  z-index: 1;
+  max-width: 12ch;
+  font-size: clamp(2.5rem, 7vw, 5.6rem);
+  line-height: 0.98;
+}
+
+.morrow-home__subtitle {
+  position: relative;
+  z-index: 1;
+  max-width: 36ch;
+  font-size: 1.125rem;
+}
+
+.morrow-home__start {
+  position: relative;
+  z-index: 1;
+  max-width: 340px;
+  margin-top: 18px;
+}
+
+.morrow-new-chat__button--large {
+  min-height: 54px;
+  border-radius: 14px;
+  font-size: 1rem;
+}
+
+.morrow-home__tiles {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.morrow-tile,
+.morrow-mission-row,
+.morrow-chats__list,
+.morrow-projects__list {
+  background: var(--morrow-surface);
+  border-color: var(--morrow-border-strong);
+  border-radius: 16px;
+  box-shadow: var(--morrow-shadow-sm);
+}
+
+.morrow-tile,
+.morrow-mission-row {
+  transition:
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    border-color var(--morrow-motion-control) var(--morrow-ease-out),
+    box-shadow var(--morrow-motion-control) var(--morrow-ease-out),
+    transform var(--morrow-motion-control) var(--morrow-ease-out);
+}
+
+.morrow-tile:hover,
+.morrow-mission-row:hover {
+  background: var(--morrow-surface-elevated);
+  border-color: var(--morrow-accent);
+  box-shadow: var(--morrow-shadow-lg);
+  transform: translateY(-4px);
+}
+
+.morrow-conversation-page {
+  width: min(100%, 1180px);
+  min-height: calc(100vh - 72px);
+  padding-top: 28px;
+  margin-inline: auto;
+  animation: morrow-route-enter var(--morrow-motion-page) var(--morrow-ease-out) both;
+}
+
+.morrow-conversation-header {
+  align-items: center;
+  padding-bottom: 18px;
+  border-bottom-color: var(--morrow-border-strong);
+}
+
+.morrow-conversation-header h1 {
+  font-size: clamp(1.35rem, 3vw, 2rem);
+}
+
+.morrow-conversation-actions button {
+  width: 38px;
+  height: 38px;
+  border-color: var(--morrow-border-strong);
+  border-radius: 11px;
+  background: var(--morrow-surface);
+  transition:
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    border-color var(--morrow-motion-control) var(--morrow-ease-out),
+    transform var(--morrow-motion-fast) var(--morrow-ease-out);
+}
+
+.morrow-conversation-actions button:hover {
+  background: var(--morrow-surface-strong);
+  border-color: var(--morrow-accent);
+  transform: translateY(-2px);
+}
+
+.morrow-conversation-history {
+  max-width: 900px;
+  padding-block: 32px 44px;
+}
+
+.morrow-conversation-message {
+  padding-block: 22px;
+  border-bottom-color: var(--morrow-border);
+}
+
+.morrow-conversation-message--user {
+  margin-block: 14px;
+  padding: 18px 20px;
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border-strong);
+  border-radius: 18px;
+  box-shadow: var(--morrow-shadow-sm);
+}
+
+.morrow-conversation-message__author {
+  color: var(--morrow-accent);
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.morrow-conversation-composer {
+  position: sticky;
+  z-index: 3;
+  bottom: 18px;
+  max-width: 900px;
+  padding-top: 12px;
+}
+
+.morrow-chat-composer {
+  border-color: var(--morrow-border-strong);
+  border-radius: 22px;
+  background: var(--morrow-surface-elevated);
+  box-shadow: var(--morrow-shadow-lg);
+}
+
+.morrow-chat-composer:focus-within {
+  border-color: var(--morrow-accent);
+  box-shadow: 0 0 0 4px var(--morrow-accent-soft), var(--morrow-shadow-lg);
+}
+
+.morrow-chat-composer__input {
+  min-height: 94px;
+  padding: 18px 20px;
+  font-size: 1rem;
+  line-height: 1.55;
+}
+
+.morrow-chat-composer__modes-row,
+.morrow-chat-composer__toolbar {
+  padding-inline: 14px;
+}
+
+.morrow-chat-composer__modes button,
+.morrow-chat-composer__reasoning-toggle,
+.morrow-chat-composer__select {
+  border-color: var(--morrow-border-strong);
+  border-radius: 11px;
+  transition:
+    background-color var(--morrow-motion-control) var(--morrow-ease-out),
+    border-color var(--morrow-motion-control) var(--morrow-ease-out),
+    transform var(--morrow-motion-fast) var(--morrow-ease-out);
+}
+
+.morrow-chat-composer__modes button:hover:not(:disabled),
+.morrow-chat-composer__reasoning-toggle:hover,
+.morrow-chat-composer__select:hover {
+  border-color: var(--morrow-accent);
+  transform: translateY(-1px);
+}
+
+.morrow-chat-composer__modes button.is-active,
+.morrow-chat-composer__reasoning-toggle:has(input:checked) {
+  background: var(--morrow-accent-soft);
+  border-color: var(--morrow-accent);
+}
+
+.morrow-chat-composer__send {
+  min-width: 56px;
+  border-radius: 13px;
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--morrow-accent) 22%, transparent);
+}
+
+.morrow-mobile-dock {
+  display: none;
+}
+
+@keyframes morrow-route-enter {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 760px) {
+  .morrow-app-shell {
+    display: block;
+    min-height: 100svh;
+  }
+
+  .morrow-main {
+    min-height: 100svh;
+    padding: 0 14px 100px;
+  }
+
+  .morrow-workspace-context {
+    top: 50px;
+    min-height: 50px;
+    padding-block: 10px;
+  }
+
+  .morrow-workspace-context__path {
+    display: none;
+  }
+
+  .morrow-page {
+    gap: 28px;
+    padding-top: 28px;
+  }
+
+  .morrow-home__intro {
+    min-height: 390px;
+    justify-content: end;
+    padding: 26px 22px;
+    border-radius: 22px;
+  }
+
+  .morrow-home__intro h1 {
+    max-width: 10ch;
+    font-size: clamp(2.65rem, 13vw, 4.25rem);
+  }
+
+  .morrow-home__tiles {
+    grid-template-columns: 1fr;
+  }
+
+  .morrow-conversation-page {
+    min-height: auto;
+    padding-top: 18px;
+  }
+
+  .morrow-conversation-header {
+    gap: 12px;
+  }
+
+  .morrow-conversation-header h1 {
+    max-width: 13ch;
+  }
+
+  .morrow-conversation-actions button {
+    width: 34px;
+    height: 34px;
+  }
+
+  .morrow-conversation-history {
+    padding-block: 18px 24px;
+  }
+
+  .morrow-conversation-composer {
+    bottom: 80px;
+  }
+
+  .morrow-chat-composer {
+    border-radius: 18px;
+  }
+
+  .morrow-chat-composer__input {
+    min-height: 82px;
+    padding: 15px;
+  }
+
+  .morrow-chat-composer__toolbar,
+  .morrow-chat-composer__modes-row {
+    padding-inline: 10px;
+  }
+
+  .morrow-mobile-dock {
+    position: fixed;
+    z-index: 8;
+    right: 10px;
+    bottom: 10px;
+    left: 10px;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+    padding: 6px;
+    background: color-mix(in srgb, var(--morrow-surface-elevated) 94%, transparent);
+    border: 1px solid var(--morrow-border-strong);
+    border-radius: 18px;
+    box-shadow: var(--morrow-shadow-lg);
+    backdrop-filter: blur(18px);
+  }
+
+  .morrow-mobile-dock__link {
+    display: grid;
+    min-height: 50px;
+    align-content: center;
+    justify-items: center;
+    gap: 2px;
+    padding: 4px;
+    color: var(--morrow-text-muted);
+    background: transparent;
+    border: 0;
+    border-radius: 13px;
+    font: inherit;
+    font-size: 0.625rem;
+    font-weight: 700;
+    text-decoration: none;
+    transition:
+      background-color var(--morrow-motion-control) var(--morrow-ease-out),
+      color var(--morrow-motion-control) var(--morrow-ease-out),
+      transform var(--morrow-motion-fast) var(--morrow-ease-out);
+  }
+
+  .morrow-mobile-dock__link:hover,
+  .morrow-mobile-dock__link:focus-visible,
+  .morrow-mobile-dock__link[aria-current="page"] {
+    color: var(--morrow-text);
+    background: var(--morrow-accent-soft);
+  }
+
+  .morrow-mobile-dock__link:active {
+    transform: scale(0.94);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .morrow-page,
+  .morrow-conversation-page {
+    animation: none;
+  }
+
+  .morrow-workspace-context {
+    backdrop-filter: none;
+  }
 }

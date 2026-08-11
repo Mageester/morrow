@@ -85,12 +85,13 @@ describe("Morrow application shell", () => {
 
   it("marks the active route as the current page", async () => {
     renderAt("/app/missions");
+    const navigation = await screen.findByRole("navigation", { name: "Primary" });
 
-    expect(await screen.findByRole("link", { name: "Missions" })).toHaveAttribute(
+    expect(within(navigation).getByRole("link", { name: "Missions" })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    expect(screen.getByRole("link", { name: "Home" })).not.toHaveAttribute("aria-current");
+    expect(within(navigation).getByRole("link", { name: "Home" })).not.toHaveAttribute("aria-current");
   });
 
   it("updates the title and focuses main content after client navigation", async () => {
@@ -100,8 +101,9 @@ describe("Morrow application shell", () => {
     await waitFor(() => expect(document.title).toBe("Home · Morrow"));
     const main = screen.getByRole("main");
     expect(main).not.toHaveFocus();
+    const navigation = await screen.findByRole("navigation", { name: "Primary" });
 
-    await user.click(await screen.findByRole("link", { name: "Missions" }));
+    await user.click(within(navigation).getByRole("link", { name: "Missions" }));
 
     expect(
       await screen.findByRole("heading", { name: "Missions", level: 1 }),
@@ -140,6 +142,19 @@ describe("Morrow application shell", () => {
     ).toHaveAttribute("aria-expanded", "true");
   });
 
+  it("provides a compact mobile dock and exposes secondary navigation through More", async () => {
+    const user = userEvent.setup();
+    renderAt("/app/");
+
+    const dock = await screen.findByRole("navigation", { name: "Mobile navigation" });
+    expect(within(dock).getByRole("link", { name: "Chats" })).toBeVisible();
+    await user.click(within(dock).getByRole("button", { name: "More navigation" }));
+    expect(await screen.findByRole("button", { name: "Close navigation" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
   it("applies a stored dark theme and switches to an explicit light choice", async () => {
     localStorage.setItem("morrow-theme", "dark");
     const user = userEvent.setup();
@@ -161,29 +176,29 @@ describe("Morrow application shell", () => {
     expect(screen.getByRole("button", { name: "Dark" })).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("defaults to following the system and never rewrites an unset preference", async () => {
+  it("defaults new installs to dark and never rewrites an unset preference", async () => {
     renderAt("/app/settings");
 
-    expect(await screen.findByRole("button", { name: "System" })).toHaveAttribute(
+    expect(await screen.findByRole("button", { name: "Dark" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
     await waitFor(() => {
-      expect(document.documentElement).toHaveAttribute("data-theme", "light");
+      expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     });
     expect(localStorage.getItem("morrow-theme")).toBeNull();
   });
 
-  it("ignores an invalid stored theme and keeps following the system preference", async () => {
+  it("ignores an invalid stored theme and keeps the graphite default", async () => {
     localStorage.setItem("morrow-theme", "sepia");
     renderAt("/app/settings");
 
-    expect(await screen.findByRole("button", { name: "System" })).toHaveAttribute(
+    expect(await screen.findByRole("button", { name: "Dark" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
     await waitFor(() => {
-      expect(document.documentElement).toHaveAttribute("data-theme", "light");
+      expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     });
     // The invalid value is ignored, not silently rewritten.
     expect(localStorage.getItem("morrow-theme")).toBe("sepia");

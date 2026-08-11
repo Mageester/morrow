@@ -74,12 +74,12 @@ describe("authoritative model metadata", () => {
     expect(openrouter?.canonicalId).toBe("deepseek/deepseek-v4-flash");
   });
 
-  it("inherits canonical context while keeping unavailable pricing unknown", () => {
+  it("inherits canonical context and pricing for the deprecated DeepSeek alias", () => {
     const chat = resolveModelMetadata("deepseek", "deepseek-chat");
     expect(chat?.canonicalId).toBe("deepseek-v4-flash");
     expect(chat?.contextWindow).toBe(1_000_000);
-    expect(chat?.pricing).toBeNull();
-    expect(calculateUsageCost({ inputTokens: 100, outputTokens: 50 }, chat)).toEqual({ known: false, label: "unknown" });
+    expect(chat?.pricing).toMatchObject({ inputUsdPerMillion: 0.14, outputUsdPerMillion: 0.28 });
+    expect(calculateUsageCost({ inputTokens: 100, outputTokens: 50 }, chat)).toMatchObject({ known: true });
   });
 
   it("calculates cost only with authoritative pricing", () => {

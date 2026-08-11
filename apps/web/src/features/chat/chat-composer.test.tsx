@@ -188,6 +188,59 @@ describe("ChatComposer", () => {
     } satisfies ChatComposerSubmission);
   });
 
+  it("animates a capability-aware reasoning slider and submits its normalized selection", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue({ accepted: true });
+    const onReasoningConfigChange = vi.fn();
+    const deepSeekRoute = {
+      id: "deepseek:v4-pro",
+      label: "DeepSeek V4 Pro",
+      providerId: "deepseek" as const,
+      model: "deepseek-v4-pro",
+      reasoning: {
+        control: "effort" as const,
+        efforts: ["low", "high", "xhigh", "max"] as ("low" | "medium" | "high" | "xhigh" | "max")[],
+        budgets: [],
+        source: "provider-metadata" as const,
+        supportsOff: true,
+        wire: "deepseek-thinking" as const,
+      },
+    };
+    function Parent() {
+      const [reasoningConfig, setReasoningConfig] = useState<import("@morrow/contracts").ReasoningConfiguration>({ mode: "auto" });
+      return (
+        <ChatComposer
+          draftScope={scope}
+          modelRoutes={[...routes, deepSeekRoute]}
+          onReasoningConfigChange={(config) => {
+            onReasoningConfigChange(config);
+            setReasoningConfig(config);
+          }}
+          onSubmit={onSubmit}
+          reasoningConfig={reasoningConfig}
+        />
+      );
+    }
+    render(<Parent />);
+
+    await user.selectOptions(screen.getByLabelText("Model route"), "deepseek:v4-pro");
+    const slider = screen.getByRole("slider", { name: "Reasoning effort" });
+    expect(slider).toHaveAttribute("aria-valuetext", "Auto");
+    expect(slider).toHaveAttribute("data-value", "auto");
+    expect(slider).toHaveAttribute("data-adjustable", "true");
+    expect(screen.getByText("Auto", { selector: '[aria-live="polite"]' })).toBeVisible();
+    fireEvent.change(slider, { target: { value: "3" } });
+    expect(onReasoningConfigChange).toHaveBeenCalledWith({ mode: "effort", effort: "high" });
+    expect(slider).toHaveAttribute("data-value", "high");
+    expect(screen.getByText("High", { selector: '[aria-live="polite"]' })).toBeVisible();
+
+    await user.type(screen.getByRole("textbox", { name: "Message Morrow" }), "Use DeepSeek");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      reasoning: { mode: "effort", effort: "high" },
+    } satisfies Partial<ChatComposerSubmission>));
+  });
+
   it("preserves an explicit supervised Build preference across composer remounts", async () => {
     const user = userEvent.setup();
     const first = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);

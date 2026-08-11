@@ -44,6 +44,15 @@ export function translateReasoning(
       return { ok: false, reason: "This model's reasoning is fixed by the provider and cannot be tuned." };
 
     case "effort":
+      if (config.mode === "off") {
+        if (!capability.supportsOff) {
+          return { ok: false, reason: "This model exposes effort control but does not support disabling reasoning." };
+        }
+        return {
+          ok: true,
+          params: capability.wire === "deepseek-thinking" ? { thinking: { type: "disabled" } } : {},
+        };
+      }
       if (config.mode !== "effort") {
         return { ok: false, reason: "This route configures reasoning by effort level (Low/Medium/High), not this mode." };
       }
@@ -53,7 +62,13 @@ export function translateReasoning(
       if (!isOpenAiFamily(protocol)) {
         return { ok: false, reason: "Effort-based reasoning is not supported on this provider protocol." };
       }
-      return { ok: true, params: { reasoning_effort: config.effort } };
+      return {
+        ok: true,
+        params: {
+          reasoning_effort: config.effort,
+          ...(capability.wire === "deepseek-thinking" ? { thinking: { type: "enabled" } } : {}),
+        },
+      };
 
     case "budget":
       if (config.mode === "off") {

@@ -197,6 +197,10 @@ export const RouteReasoningCapabilitySchema=z.object({
   /** Supported thinking-token budgets — only meaningful when control === "budget". */
   budgets:z.array(z.number().int().positive()),
   source:ReasoningSourceSchema,
+  /** Whether an active reasoning route can explicitly disable thinking. */
+  supportsOff:z.boolean().optional(),
+  /** Provider-specific wire variant when the protocol alone is insufficient. */
+  wire:z.enum(["deepseek-thinking"]).optional(),
 }).strict();
 /**
  * The normalized reasoning selection carried by a route. Every provider adapter
