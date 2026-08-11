@@ -75,3 +75,31 @@ Each benchmark record must include:
 - Final outcome
 - Logs or video where appropriate
 - Known limitations
+
+## Agentic harness release gate
+
+The cross-cutting deterministic gate is
+`services/orchestrator/test/agentic-harness-acceptance.test.ts`, with the
+browser-specific silent-stream and projection proof in
+`apps/web/e2e/agentic-harness-acceptance.spec.ts`. The gate covers these
+scenarios without live providers or network access: silent SSE completion,
+two-request exact cost, unknown cost, local-only freshness refusal, controlled
+cloud source provenance, approved memory and forget, skill quarantine for
+undeclared network access, and a privacy-preserving optimization proposal.
+
+Every recorded result must preserve the following fields, with `null` or
+`unknown` when a measurement is unavailable rather than a guessed value:
+
+- exact usage source, pricing snapshot version and retrieval time, fixed-point
+  cost amount, cost accuracy, provider/model, and request count;
+- wall-clock time, provider attempts, retries, compactions, duplicate
+  observations, tool-schema input tokens, and intervention count;
+- configured privacy mode, network/tool permissions, source IDs and retrieval
+  timestamps when research is used, memory scope/approval state, skill safety
+  and replay results, improvement version, and verification outcome.
+
+The deterministic fixture is evidence of contract and persistence behavior, not
+of model quality. Provider invoice accuracy is unavailable until a real billing
+integration reports an invoice-backed amount. External-provider reliability,
+live-browser behavior, and network research quality remain deferred and require
+separate, explicitly funded runs with redacted evidence.

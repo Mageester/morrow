@@ -125,3 +125,64 @@ The first implementation should prove:
 8. Privacy and execution evidence
 
 No broad integration work should precede a reliable vertical slice.
+
+## Agentic harness evolution boundaries
+
+The Tasks 1-8 harness changes are additive around the existing orchestrator
+boundaries. The orchestrator owns the durable records and policy decisions;
+`packages/contracts` defines the browser-safe shapes; `apps/web` renders those
+shapes and never receives provider credentials.
+
+### Durable records and authority
+
+- `task_cost_lines` is the cost ledger. Each request is idempotent by
+  task/request identity and retains its fixed-point amount, usage values,
+  accuracy, and pricing snapshot. Historical lines do not change when current
+  catalog prices change.
+- Research source records retain a normalized URL, content hash, retrieval
+  time, publication metadata when available, citations, and task provenance.
+  The source snapshot is server-side and fetched instructions are untrusted.
+- Memory candidates are separate from active memory. The candidate lifecycle
+  is the approval boundary; retrieval and forget operate on the resulting
+  scope, not on model suggestions.
+- Skill drafts retain provenance, declared tools/scopes/domains/secrets,
+  safety results, replay fixtures, and rollback state. A draft is not active
+  merely because a model proposed it.
+- Improvement proposals retain evidence task IDs, benchmark fixture IDs,
+  expected effect, privacy impact, shadow evaluation, rollout version, and
+  rollback reference. Shadow evidence is required before promotion.
+
+### Task-sync recovery contract
+
+The durable task aggregate is the source of truth for answer, status, events,
+cost, and verification. SSE is an ordered delivery channel with cursor replay,
+not a second state store. After a silent stream, reconnect, refresh, or browser
+visibility change, the client may reconcile from the authoritative aggregate
+and must not require a navigation to display a completed answer.
+
+### Feature boundaries and rollback
+
+The first release keeps research, memory admission, skill activation, and
+optimization promotion behind their existing policy/review boundaries:
+
+1. Local-only research remains blocked; controlled-cloud research requires an
+   approved network-capable path and records provenance.
+2. Memory candidates remain proposed until the user chooses scope and
+   retention. Forget is immediately effective for retrieval.
+3. Skills remain quarantined or in review until safety and replay gates pass;
+   there is no automatic activation.
+4. Optimization remains shadow-only until a user approves the versioned
+   proposal; rollback returns to the prior approved version.
+
+All new persistence is additive and must be migrated through the normal local
+database migration path. Operational rollback is feature-first: stop creating
+or promoting the new records, keep the records readable for diagnosis, and
+serve the previous UI/provider projection. Do not drop new tables while active
+tasks depend on their replay or provenance metadata; only remove them after a
+separate data-retention decision confirms that no resumability or audit record
+is needed. Existing task, mission, event, tool, and workspace records remain
+the rollback anchor.
+
+The release gate proves deterministic local contracts and the local Playwright
+surface. It does not prove live external-provider output quality, a provider's
+invoice total, or arbitrary live-browser behavior; those are separate gates.

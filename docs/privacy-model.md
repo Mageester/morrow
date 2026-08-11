@@ -113,3 +113,40 @@ authoritative and are not destroyed by provider compaction. The provider only
 receives a bounded projection selected for that request; screen clearing has no
 retention effect. Deleting a task cascades its execution segments, provider
 turns, checkpoints, private continuation rows, and canonical answer.
+
+## Agentic harness release boundary
+
+Tasks 1-8 add inspectable records around the existing task boundary. The
+release-gate test in `services/orchestrator/test/agentic-harness-acceptance.test.ts`
+proves these records deterministically with an in-memory database; it does not
+use a live provider, an external website, telemetry, or a provider billing API.
+
+- The task/event ledger remains authoritative when an SSE connection is silent.
+  The web client may reconcile from the durable task aggregate, but a stream
+  message is never treated as the only copy of an answer.
+- Cost lines store provider-reported usage, a frozen pricing snapshot, and
+  fixed-point micro-USD amounts. Missing usage or authoritative pricing keeps
+  cost `unknown`. Morrow does not claim a provider invoice total until a
+  billing integration exists.
+- A current/latest request is a research requirement. Local-only mode stops at
+  the policy boundary and makes no research request. Controlled-cloud research
+  records URL, retrieval time, publication metadata when known, citations, and
+  task provenance; fetched content remains untrusted and cannot grant tools.
+- Memory extraction creates a proposed candidate only. Approval selects the
+  final scope and retention, retrieval enforces that scope, and forget removes
+  the record from future retrieval. Project memory never crosses projects;
+  `user_global` is the explicit, opt-in exception.
+- A learned skill is a draft until safety validation, deterministic replay, and
+  explicit user approval succeed. Undeclared tools, network domains, secrets,
+  destructive operations, dynamic loading, and permission widening fail closed.
+- An improvement is a proposal evaluated in shadow fixtures. Promotion is a
+  user action after the candidate improves the declared metric without privacy,
+  reliability, or verification regression. Model text cannot activate a skill,
+  widen a tool profile, or change policy.
+
+Browser-safe projections contain bounded execution facts and provenance labels,
+not credentials, raw tool arguments, raw tool output, raw provider reasoning,
+source snapshots, or secret-like memory content. The deterministic Playwright
+proof covers the local packaged surface and mock runtime only. Live browser
+behavior, external-provider behavior, and provider-invoice accuracy remain
+deferred release boundaries and must not be described as proven by this gate.

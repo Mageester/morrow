@@ -6,6 +6,25 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+### Added - agentic harness acceptance and privacy release gate
+
+- Added deterministic cross-cutting acceptance coverage for silent-stream
+  recovery, fixed-point/unknown cost, freshness routing and source provenance,
+  approved memory, skill quarantine, permission boundaries, and shadow-tested
+  optimization proposals.
+- Added a local Playwright proof that a completed answer remains visible when
+  chat SSE is silent and that browser-safe projections do not expose
+  credentials or raw provider reasoning.
+- Documented the additive record boundaries, review/approval gates, feature
+  rollback rules, and benchmark evidence fields in the architecture, privacy,
+  benchmark, and ADR records.
+
+### Limitations
+
+- This gate uses deterministic local fixtures only. Live provider behavior,
+  live browser/network behavior, and provider-invoice accuracy remain deferred;
+  Morrow must not describe them as proven by this release gate.
+
 ## [0.1.0-beta.40] - 2026-08-09
 
 ### Added - trusted workspace agents can finish real builds without being babysat
