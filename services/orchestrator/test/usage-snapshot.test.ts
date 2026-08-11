@@ -81,8 +81,7 @@ describe("canonical usage snapshot (token + cost accounting truth)", () => {
       metadata: resolveModelMetadata("deepseek", "deepseek-v4-flash"),
     });
 
-    expect(usage.cost?.accuracy).toBe("estimated");
-    expect(usage.cost?.accuracy).not.toBe("exact_usage_pricing");
+    expect(usage.cost).toEqual({ amount: null, accuracy: "unknown" });
   });
 
   it("keeps a local zero-rate model exact even without a cache breakdown", () => {
@@ -190,6 +189,29 @@ describe("canonical usage snapshot (token + cost accounting truth)", () => {
     expect(unknownCost.costUsd).toBeNull();
     const cumulative = accumulateUsage(EMPTY_CUMULATIVE_USAGE, unknownCost);
     expect(cumulative.totalCostUsd).toBeNull();
+    expect(cumulative.totalCostMicros).toBeNull();
+  });
+
+  it("folds fixed-point cost totals while retaining legacy USD readability", () => {
+    const metadata = resolveModelMetadata("openai", "gpt-5.6-sol");
+    const request = resolveRequestUsage({
+      providerId: "openai",
+      modelId: "gpt-5.6-sol",
+      usage: { promptTokens: 1, completionTokens: 0, cachedPromptTokens: 0 },
+      metadata,
+    });
+    expect(request.cost).toEqual({
+      amount: { currency: "USD", micros: 5 },
+      accuracy: "exact_usage_pricing",
+    });
+
+    let cumulative = accumulateUsage(EMPTY_CUMULATIVE_USAGE, request);
+    expect(cumulative.totalCostMicros).toBe(5);
+    expect(cumulative.totalCostUsd).toBeCloseTo(0.000005, 12);
+
+    cumulative = accumulateUsage(cumulative, request);
+    expect(cumulative.totalCostMicros).toBe(10);
+    expect(cumulative.totalCostUsd).toBeCloseTo(0.00001, 12);
   });
 
   it("keeps legacy costUsd replay rows foldable when no fixed-point result exists", () => {
@@ -211,5 +233,6 @@ describe("canonical usage snapshot (token + cost accounting truth)", () => {
 
     const cumulative = accumulateUsage(EMPTY_CUMULATIVE_USAGE, legacy);
     expect(cumulative.totalCostUsd).toBe(0.001234);
+    expect(cumulative.totalCostMicros).toBe(1234);
   });
 });

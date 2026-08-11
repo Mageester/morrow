@@ -66,9 +66,8 @@ export interface RequestUsage {
    * input tokens and — only when known — the cached subtotal) or
    * "unavailable" — "provider-metered" is reserved for a future real
    * billing-API integration and must not be claimed until one exists. An
-   * estimate computed without a known cache breakdown is still a valid
-   * total-input-based estimate; it is simply not cache-adjusted, and must
-   * never be presented as one. */
+   * a discounted cached-input rate requires a reported cache breakdown; such
+   * a result remains unknown rather than being presented as a guessed total. */
   costUsd: number | null;
   costSource: UsageCostSource;
   /** New fixed-point result; absent only on legacy replay rows. */
@@ -101,7 +100,11 @@ export interface CumulativeUsage {
    * the true cumulative split, and must be displayed as "at least N", never
    * as an unqualified total. */
   cacheBreakdownComplete: boolean;
-  /** Null until the first response with a known cost is folded in. */
+  /** Fixed-point cumulative cost. Null until the first response with a known
+   * fixed-point cost is folded in. */
+  totalCostMicros: number | null;
+  /** Legacy decimal view retained for replay/readability compatibility; null
+   * until the first response with a known cost is folded in. */
   totalCostUsd: number | null;
 }
 
@@ -112,6 +115,7 @@ export const EMPTY_CUMULATIVE_USAGE: CumulativeUsage = {
   knownFreshInputTokens: 0,
   knownCachedInputTokens: 0,
   cacheBreakdownComplete: true, // vacuously true; the first incomplete response flips it
+  totalCostMicros: null,
   totalCostUsd: null,
 };
 
@@ -201,6 +205,11 @@ export function resolveRequestUsage(input: {
 export function accumulateUsage(previous: CumulativeUsage | null, request: RequestUsage): CumulativeUsage {
   const base = previous ?? EMPTY_CUMULATIVE_USAGE;
   const thisResponseComplete = request.cacheBreakdownStatus === "reported";
+  const requestCostMicros = request.cost !== undefined
+    ? request.cost.amount?.micros ?? null
+    : request.costUsd === null
+      ? null
+      : Math.round(request.costUsd * 1_000_000);
   return {
     responseCount: base.responseCount + 1,
     totalInputTokens: base.totalInputTokens + (request.totalInputTokens ?? 0),
@@ -208,6 +217,9 @@ export function accumulateUsage(previous: CumulativeUsage | null, request: Reque
     knownFreshInputTokens: base.knownFreshInputTokens + (request.freshInputTokens ?? 0),
     knownCachedInputTokens: base.knownCachedInputTokens + (request.cachedInputTokens ?? 0),
     cacheBreakdownComplete: base.cacheBreakdownComplete && thisResponseComplete,
+    totalCostMicros: requestCostMicros === null
+      ? base.totalCostMicros
+      : (base.totalCostMicros ?? 0) + requestCostMicros,
     totalCostUsd: request.costUsd === null
       ? base.totalCostUsd
       : (base.totalCostUsd ?? 0) + request.costUsd,

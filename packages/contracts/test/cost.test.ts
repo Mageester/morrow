@@ -86,15 +86,25 @@ describe("fixed-point cost contracts", () => {
     )).toEqual({ amount: null, accuracy: "unknown" });
   });
 
-  it("marks a cache-discounted estimate without a provider cache breakdown as estimated", () => {
+  it("returns unknown without an amount when a discounted cache rate lacks a provider cache breakdown", () => {
     const result = calculateUsageCostMicros(
       { inputTokens: 1_000_000, cachedInputTokens: null, outputTokens: 0 },
       authoritativePricing({ cachedInputMicrosPerMillion: 14_000 }),
     );
 
-    expect(result.accuracy).toBe("estimated");
-    expect(result.accuracy).not.toBe("exact_usage_pricing");
-    expect(result.amount).toEqual({ currency: "USD", micros: 140_000 });
+    expect(result).toEqual({ amount: null, accuracy: "unknown" });
+  });
+
+  it("uses the normal input rate when cached tokens are known but no cached rate exists", () => {
+    const result = calculateUsageCostMicros(
+      { inputTokens: 1_000_000, cachedInputTokens: 250_000, outputTokens: 0 },
+      authoritativePricing({ cachedInputMicrosPerMillion: null }),
+    );
+
+    expect(result).toEqual({
+      amount: { currency: "USD", micros: 140_000 },
+      accuracy: "exact_usage_pricing",
+    });
   });
 
   it("sums equal cost lines deterministically while preserving request identity", () => {

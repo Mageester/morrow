@@ -166,10 +166,14 @@ export function calculateUsageCostMicros(
   const hasDiscountedCacheRate = pricingSnapshot.cachedInputMicrosPerMillion !== null
     && pricingSnapshot.cachedInputMicrosPerMillion !== pricingSnapshot.inputMicrosPerMillion;
   const hasCacheBreakdown = cachedInputTokens !== null;
+  if (hasDiscountedCacheRate && !hasCacheBreakdown) return unknownCost();
+
+  const cachedInputMicrosPerMillion = pricingSnapshot.cachedInputMicrosPerMillion
+    ?? pricingSnapshot.inputMicrosPerMillion;
   const uncachedInputTokens = hasCacheBreakdown ? usage.inputTokens - cachedInputTokens : usage.inputTokens;
   const inputMicros = BigInt(uncachedInputTokens) * BigInt(pricingSnapshot.inputMicrosPerMillion);
   const cachedMicros = hasCacheBreakdown
-    ? BigInt(cachedInputTokens) * BigInt(pricingSnapshot.cachedInputMicrosPerMillion!)
+    ? BigInt(cachedInputTokens) * BigInt(cachedInputMicrosPerMillion)
     : 0n;
   const outputMicros = BigInt(usage.outputTokens) * BigInt(pricingSnapshot.outputMicrosPerMillion);
   const numerator = inputMicros + cachedMicros + outputMicros;
@@ -180,6 +184,6 @@ export function calculateUsageCostMicros(
 
   return {
     amount: { currency: "USD", micros: Number(microsBigInt) },
-    accuracy: hasDiscountedCacheRate && !hasCacheBreakdown ? "estimated" : "exact_usage_pricing",
+    accuracy: "exact_usage_pricing",
   };
 }
