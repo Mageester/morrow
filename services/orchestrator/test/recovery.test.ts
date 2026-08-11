@@ -471,4 +471,38 @@ describe("startup reconciliation", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("reconciles an orphaned provider start before rejecting a cancelled agent task", async () => {
+    const db = openDatabase(":memory:");
+    const ts = new Date().toISOString();
+    projectRepository(db).createProject({ id: "p", name: "P", workspacePath: "C:/workspace", createdAt: ts });
+    taskRepository(db).createTask({ id: "cancelled-orphan", projectId: "p", kind: "agent_chat", status: "cancelled", createdAt: ts });
+    taskRecordsRepository(db).appendEvent({
+      id: "cancelled-orphan-start",
+      taskId: "cancelled-orphan",
+      type: "provider.request_started",
+      payload: { requestId: "cancelled-orphan-request", provider: "deepseek", model: "deepseek-v4-flash" },
+      createdAt: ts,
+    });
+    const provider: AiProvider = {
+      id: "deepseek",
+      async *streamChat(): AsyncIterable<ProviderChunk> {},
+    };
+
+    try {
+      await expect(executeAgentChatTask({ db, taskId: "cancelled-orphan", provider })).rejects.toThrow("Task is not available for agent execution");
+      await expect(executeAgentChatTask({ db, taskId: "cancelled-orphan", provider })).rejects.toThrow("Task is not available for agent execution");
+
+      const lines = taskCostsRepository(db).listByTask("cancelled-orphan");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({
+        requestId: "cancelled-orphan-request",
+        amount: null,
+        accuracy: "unknown",
+        pricing: null,
+      });
+    } finally {
+      db.close();
+    }
+  });
 });
