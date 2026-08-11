@@ -1,5 +1,17 @@
 # Project Progress
 
+## Active package: Agentic Harness Evolution
+
+**State:** deterministic implementation complete on `codex/agentic-harness-evolution` at `45c0c3d`; not merged or pushed.
+
+**Delivered:** fixed-point per-request cost accounting and UI, no-refresh chat recovery, freshness/source provenance, approval-gated memory, reviewed skill drafts, evidence-backed optimization controls, and cross-cutting privacy/acceptance documentation.
+
+**Verification:** `pnpm test`, `pnpm check`, and `pnpm build` pass. The new orchestrator acceptance gate passes 7/7 and the directly targeted browser acceptance gate passes 2/2. `git diff --check` is clean.
+
+**Residual gate:** the aggregate web E2E runner still reports four existing UI-baseline failures outside the new acceptance spec: attention-card contrast, a mobile conversation timeout, a stale navigation expectation that Memory is disabled, and a stale visual snapshot. Live providers, provider-invoice accuracy, live-network research, and arbitrary live-browser proof remain unverified. No live provider or external-network run was performed.
+
+**Next action:** review the isolated branch and decide whether to repair the four aggregate E2E baselines before opening a pull request. Do not merge or push without explicit authorization.
+
 ## Active package: RPR-5 - fresh artifact recovery
 
 **State:** paused at a verified safe boundary on `codex/flagship-web-v1`.

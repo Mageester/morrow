@@ -1,5 +1,34 @@
 # Latest Session Work
 
+## Session: 2026-08-11 - agentic-harness-evolution
+
+Implemented the nine-task Agentic Harness Evolution plan on the isolated branch `codex/agentic-harness-evolution` using Luna Max implementation tasks and main-agent integration. The original dirty checkout remained untouched.
+
+### Completed
+
+- Added fixed-point cost contracts, durable idempotent request-cost lines, the task-cost API, and an accessible expandable cost panel.
+- Added cursor-neutral SSE heartbeats, silence watchdog/reconnect, authoritative reconciliation, and stale-message protection so completed answers appear without refresh.
+- Added freshness policy, redacted source provenance, fail-closed source safety, and a citation panel.
+- Added approval-gated memory candidates with conservative extraction, scoped retrieval, expiry, conflict handling, reject/forget, and review UI.
+- Added quarantined skill drafts, static safety validation, deterministic replay, approval/override rules, activation controls, and rollback.
+- Added capability-scoped tool profiles, budget ceilings, durable shadow-evaluated improvement proposals, versioned approval/rollback, and settings review UI.
+- Added ADR 0013, privacy/architecture/benchmark/changelog updates, deterministic orchestrator acceptance, and browser acceptance.
+- Preserved the original ignored memory page and test in the isolated branch so repository typecheck/build reflect the source checkout accurately.
+
+### Verification
+
+- `pnpm test`: passed (all 14 Turbo tasks).
+- `pnpm check`: passed (10/10 package checks plus repository validation).
+- `pnpm build`: passed (9/9 build tasks).
+- New orchestrator acceptance: 7/7.
+- Direct new Playwright acceptance: 2/2.
+- Aggregate web E2E: 56 passed, 4 failed, 12 skipped; failures are the existing attention contrast, mobile conversation timeout, stale Memory-navigation expectation, and visual snapshot baseline.
+
+### Pending
+
+- No push, pull request, merge, live-provider call, provider-billing proof, or live-network research was performed.
+- Decide whether to repair the four aggregate E2E failures before PR preparation.
+
 ## Session: 2026-08-09 - flagship-web-v1
 
 This deployment session began from commit `b973008` on a dedicated worktree branch, `codex/flagship-web-v1`. The source checkout contained unrelated uncommitted prototype UI work, so implementation remains isolated under `.worktrees/flagship-web-v1` and the protected surfaces remain excluded. The route changed deliberately from Heavy to Medium before implementation continued; all remaining work is sequential.
