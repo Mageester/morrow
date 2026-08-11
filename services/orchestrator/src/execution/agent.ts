@@ -909,10 +909,13 @@ export async function executeAgentChatTask({
   const auditLog = auditLogRepository(db);
 
   const task = tasks.getTaskById(taskId);
-  if (!task || task.kind !== "agent_chat" || !["queued", "running", "interrupted"].includes(task.status)) {
+  if (!task || task.kind !== "agent_chat") {
     throw new Error("Task is not available for agent execution");
   }
   reconcileOrphanedProviderAttempts();
+  if (!["queued", "running", "interrupted"].includes(task.status)) {
+    throw new Error("Task is not available for agent execution");
+  }
   const durableResume = continuity.latestCheckpoint(taskId) !== null;
 
   const project = projects.getProjectById(task.projectId);
