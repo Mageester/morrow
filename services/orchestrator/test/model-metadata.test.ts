@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderStatus } from "@morrow/contracts";
-import { calculateUsageCost, getModel, listConfiguredCustomModels, resolveModelMetadata } from "../src/routing/models.js";
+import { calculateUsageCost, calculateUsageCostMicros, getModel, listConfiguredCustomModels, resolveModelMetadata } from "../src/routing/models.js";
 
 function providerStatus(overrides: Partial<ProviderStatus>): ProviderStatus {
   return {
@@ -85,6 +85,21 @@ describe("authoritative model metadata", () => {
   it("calculates cost only with authoritative pricing", () => {
     const local = resolveModelMetadata("ollama", "llama3.1");
     expect(calculateUsageCost({ inputTokens: 1000, outputTokens: 500 }, local)).toEqual({ known: true, usd: 0, label: "$0.0000" });
+  });
+
+  it("exposes fixed-point cost calculation without allowing provider-reported pricing", () => {
+    const model = resolveModelMetadata("deepseek", "deepseek-v4-flash");
+    expect(calculateUsageCostMicros(
+      { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 500_000 },
+      {
+        inputMicrosPerMillion: 140_000,
+        outputMicrosPerMillion: 280_000,
+        cachedInputMicrosPerMillion: 2_800,
+        source: "authoritative",
+        metadataVersion: model.metadataVersion ?? null,
+        fetchedAt: model.fetchedAt ?? null,
+      },
+    )).toEqual({ amount: { currency: "USD", micros: 280_000 }, accuracy: "exact_usage_pricing" });
   });
 });
 

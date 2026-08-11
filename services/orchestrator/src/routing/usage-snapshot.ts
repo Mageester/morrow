@@ -1,5 +1,5 @@
-import type { ModelInfo } from "@morrow/contracts";
-import { calculateUsageCost } from "./models.js";
+import type { CostCalculation, ModelInfo, PricingSnapshot } from "@morrow/contracts";
+import { calculateUsageCostMicros, pricingSnapshotForModel } from "./models.js";
 
 /**
  * The canonical usage source of truth for one provider response and for the
@@ -71,6 +71,10 @@ export interface RequestUsage {
    * never be presented as one. */
   costUsd: number | null;
   costSource: UsageCostSource;
+  /** New fixed-point result; absent only on legacy replay rows. */
+  cost?: CostCalculation;
+  /** Frozen metadata used for the fixed-point calculation, when available. */
+  pricingSnapshot?: PricingSnapshot | null;
 }
 
 export interface CumulativeUsage {
@@ -144,6 +148,8 @@ export function resolveRequestUsage(input: {
       tokenConfidence: "unavailable",
       costUsd: null,
       costSource: "unavailable",
+      cost: { amount: null, accuracy: "unknown" },
+      pricingSnapshot: null,
     };
   }
 
@@ -156,14 +162,16 @@ export function resolveRequestUsage(input: {
   // cached portion; otherwise it stays null — never "assume all fresh."
   const freshInputTokens = hasCacheBreakdown ? Math.max(0, totalInputTokens - cachedInputTokens!) : null;
 
-  const cost = calculateUsageCost(
+  const pricingSnapshot = pricingSnapshotForModel(input.metadata);
+  const cost = calculateUsageCostMicros(
     {
       inputTokens: totalInputTokens,
       outputTokens,
       ...(cachedInputTokens !== null ? { cachedInputTokens } : {}),
     },
-    input.metadata ?? undefined,
+    pricingSnapshot,
   );
+  const legacyCostUsd = cost.amount === null ? null : cost.amount.micros / 1_000_000;
 
   return {
     providerId: input.providerId,
@@ -177,8 +185,10 @@ export function resolveRequestUsage(input: {
     cacheBreakdownStatus: hasCacheBreakdown ? "reported" : "unavailable",
     tokenSource: "provider-reported",
     tokenConfidence: "exact",
-    costUsd: cost.known ? cost.usd : null,
-    costSource: cost.known ? "morrow-estimated" : "unavailable",
+    costUsd: legacyCostUsd,
+    costSource: legacyCostUsd === null ? "unavailable" : "morrow-estimated",
+    cost,
+    pricingSnapshot,
   };
 }
 

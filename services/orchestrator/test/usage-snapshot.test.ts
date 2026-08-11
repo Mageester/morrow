@@ -51,6 +51,52 @@ describe("canonical usage snapshot (token + cost accounting truth)", () => {
     expect(usage.tokenSource).toBe("unavailable");
     expect(usage.tokenConfidence).toBe("unavailable");
     expect(usage.costSource).toBe("unavailable");
+    expect(usage.cost).toEqual({ amount: null, accuracy: "unknown" });
+  });
+
+  it("resolves authoritative usage into fixed-point cost with explicit accuracy", () => {
+    const usage = resolveRequestUsage({
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+      usage: { promptTokens: 1_000_000, completionTokens: 500_000, cachedPromptTokens: 0 },
+      metadata: resolveModelMetadata("deepseek", "deepseek-v4-flash"),
+    });
+
+    expect(usage.cost).toEqual({
+      amount: { currency: "USD", micros: 280_000 },
+      accuracy: "exact_usage_pricing",
+    });
+    expect(usage.pricingSnapshot).toMatchObject({
+      inputMicrosPerMillion: 140_000,
+      outputMicrosPerMillion: 280_000,
+      source: "authoritative",
+    });
+  });
+
+  it("does not claim exact usage pricing when a discounted cache rate lacks a cache breakdown", () => {
+    const usage = resolveRequestUsage({
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+      usage: { promptTokens: 1_000_000, completionTokens: 0 },
+      metadata: resolveModelMetadata("deepseek", "deepseek-v4-flash"),
+    });
+
+    expect(usage.cost?.accuracy).toBe("estimated");
+    expect(usage.cost?.accuracy).not.toBe("exact_usage_pricing");
+  });
+
+  it("keeps a local zero-rate model exact even without a cache breakdown", () => {
+    const usage = resolveRequestUsage({
+      providerId: "ollama",
+      modelId: "llama3.1",
+      usage: { promptTokens: 1_000, completionTokens: 500 },
+      metadata: resolveModelMetadata("ollama", "llama3.1"),
+    });
+
+    expect(usage.cost).toEqual({
+      amount: { currency: "USD", micros: 0 },
+      accuracy: "exact_usage_pricing",
+    });
   });
 
   it("distinguishes provider-metered cost (never claimed today) from morrow-estimated cost, and never claims a cache-adjusted estimate without a known breakdown", () => {
@@ -144,5 +190,26 @@ describe("canonical usage snapshot (token + cost accounting truth)", () => {
     expect(unknownCost.costUsd).toBeNull();
     const cumulative = accumulateUsage(EMPTY_CUMULATIVE_USAGE, unknownCost);
     expect(cumulative.totalCostUsd).toBeNull();
+  });
+
+  it("keeps legacy costUsd replay rows foldable when no fixed-point result exists", () => {
+    const legacy = {
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+      routeFingerprint: null,
+      totalInputTokens: 10,
+      freshInputTokens: null,
+      cachedInputTokens: null,
+      outputTokens: 1,
+      totalTokens: 11,
+      cacheBreakdownStatus: "unavailable" as const,
+      tokenSource: "provider-reported" as const,
+      tokenConfidence: "exact" as const,
+      costUsd: 0.001234,
+      costSource: "morrow-estimated" as const,
+    };
+
+    const cumulative = accumulateUsage(EMPTY_CUMULATIVE_USAGE, legacy);
+    expect(cumulative.totalCostUsd).toBe(0.001234);
   });
 });

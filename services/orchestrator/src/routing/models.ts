@@ -1,4 +1,16 @@
-import type { ModelInfo, ModelStatus, ProviderId, ProviderStatus, RouteReasoningCapability, ReasoningEffort } from "@morrow/contracts";
+import {
+  calculateUsageCostMicros as calculateFixedPointUsageCost,
+  normalizeUsdPerMillionToMicros,
+  type CostCalculation,
+  type CostUsageInput,
+  type ModelInfo,
+  type ModelStatus,
+  type PricingSnapshot,
+  type ProviderId,
+  type ProviderStatus,
+  type RouteReasoningCapability,
+  type ReasoningEffort,
+} from "@morrow/contracts";
 import type { ProviderModelDiscovery } from "../repositories/provider-model-discovery.js";
 
 type Pricing = NonNullable<ModelInfo["pricing"]>;
@@ -541,10 +553,28 @@ export function resolveModelStatuses(
   return output;
 }
 
-export interface UsageForCost {
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens?: number;
+export type UsageForCost = CostUsageInput;
+
+export function pricingSnapshotForModel(metadata: ModelInfo | undefined | null): PricingSnapshot | null {
+  const pricing = metadata?.pricing;
+  if (!pricing) return null;
+  return {
+    inputMicrosPerMillion: normalizeUsdPerMillionToMicros(pricing.inputUsdPerMillion),
+    outputMicrosPerMillion: normalizeUsdPerMillionToMicros(pricing.outputUsdPerMillion),
+    cachedInputMicrosPerMillion: pricing.cachedInputUsdPerMillion == null
+      ? null
+      : normalizeUsdPerMillionToMicros(pricing.cachedInputUsdPerMillion),
+    source: pricing.source,
+    metadataVersion: metadata?.metadataVersion ?? null,
+    fetchedAt: metadata?.fetchedAt ?? null,
+  };
+}
+
+export function calculateUsageCostMicros(
+  usage: UsageForCost,
+  pricingSnapshot: PricingSnapshot | null | undefined,
+): CostCalculation {
+  return calculateFixedPointUsageCost(usage, pricingSnapshot);
 }
 
 export type UsageCost =
@@ -552,14 +582,8 @@ export type UsageCost =
   | { known: false; label: "unknown" };
 
 export function calculateUsageCost(usage: UsageForCost, metadata: ModelInfo | undefined | null): UsageCost {
-  const pricing = metadata?.pricing;
-  if (!pricing || pricing.source !== "authoritative") return { known: false, label: "unknown" };
-  const cached = usage.cachedInputTokens ?? 0;
-  const uncachedInput = Math.max(0, usage.inputTokens - cached);
-  const cachedRate = pricing.cachedInputUsdPerMillion ?? pricing.inputUsdPerMillion;
-  const usd =
-    (uncachedInput / 1_000_000) * pricing.inputUsdPerMillion +
-    (cached / 1_000_000) * cachedRate +
-    (usage.outputTokens / 1_000_000) * pricing.outputUsdPerMillion;
+  const result = calculateUsageCostMicros(usage, pricingSnapshotForModel(metadata));
+  if (!result.amount) return { known: false, label: "unknown" };
+  const usd = result.amount.micros / 1_000_000;
   return { known: true, usd, label: `$${usd.toFixed(4)}` };
 }
