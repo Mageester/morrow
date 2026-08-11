@@ -5,6 +5,7 @@ import {
   CreateProjectSchema,
   CreateTaskSchema,
   TaskCostSummarySchema,
+  ResearchSourcesResponseSchema,
   StructuredApiErrorSchema,
   SendMessageSchema,
   CreateConversationSchema,
@@ -48,6 +49,7 @@ import { handoffsRepository } from "./repositories/handoffs.js";
 import { assistantProfileRepository } from "./repositories/assistant-profile.js";
 import { taskRepository } from "./repositories/tasks.js";
 import { taskCostsRepository } from "./repositories/task-costs.js";
+import { researchSourcesRepository } from "./repositories/research-sources.js";
 import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
 import { taskRoutingRepository } from "./repositories/task-routing.js";
@@ -294,6 +296,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const assistantProfile = assistantProfileRepository(deps.db);
   const tasks = taskRepository(deps.db);
   const taskCosts = taskCostsRepository(deps.db);
+  const researchSources = researchSourcesRepository(deps.db);
   const records = taskRecordsRepository(deps.db);
   const convs = conversationsRepository(deps.db);
   const routingRepo = taskRoutingRepository(deps.db);
@@ -1013,6 +1016,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const task = tasks.getTaskById(taskId);
     if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
     return TaskCostSummarySchema.parse(taskCosts.summaryByTask(taskId));
+  });
+
+  app.get("/api/tasks/:taskId/sources", async (request, reply) => {
+    const { taskId } = request.params as { taskId: string };
+    if (!tasks.getTaskById(taskId)) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    reply.header("cache-control", "no-store");
+    return ResearchSourcesResponseSchema.parse({ version: 1, taskId, sources: researchSources.listByTask(taskId) });
   });
 
   app.get("/api/tasks/:taskId/events", async (request, reply) => {

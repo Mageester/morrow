@@ -1416,8 +1416,40 @@ export const migrations:Migration[]=[
       created_at TEXT NOT NULL,
       UNIQUE(task_id, request_id)
     );
-    CREATE INDEX task_cost_lines_task_created_idx ON task_cost_lines(task_id, created_at, id);
-  `}
+     CREATE INDEX task_cost_lines_task_created_idx ON task_cost_lines(task_id, created_at, id);
+   `}
+  ,{id:51,name:"research_sources_and_runs",sql:`
+     CREATE TABLE research_sources (
+       id TEXT PRIMARY KEY,
+       task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+       url TEXT NOT NULL,
+       normalized_url TEXT NOT NULL,
+       title TEXT NOT NULL,
+       publisher TEXT NOT NULL,
+       retrieved_at TEXT NOT NULL,
+       published_at TEXT,
+       content_hash TEXT NOT NULL,
+       source_type TEXT NOT NULL CHECK(source_type IN ('web','api','document','local')),
+       trust_status TEXT NOT NULL CHECK(trust_status IN ('untrusted','user-reviewed')),
+       validation_status TEXT NOT NULL CHECK(validation_status IN ('pending','validated','rejected','stale','post_cutoff')),
+       snapshot_content TEXT NOT NULL,
+       citations_json TEXT NOT NULL DEFAULT '[]',
+       UNIQUE(task_id, normalized_url, content_hash)
+     );
+     CREATE INDEX research_sources_task_idx ON research_sources(task_id, retrieved_at, id);
+     CREATE TABLE research_runs (
+       id TEXT PRIMARY KEY,
+       task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+       query TEXT NOT NULL,
+       freshness_policy_json TEXT NOT NULL,
+       source_ids_json TEXT NOT NULL DEFAULT '[]',
+       conflicts_json TEXT NOT NULL DEFAULT '[]',
+       status TEXT NOT NULL CHECK(status IN ('pending','completed','failed','blocked')),
+       created_at TEXT NOT NULL,
+       completed_at TEXT
+     );
+     CREATE INDEX research_runs_task_idx ON research_runs(task_id, created_at, id);
+   `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});
