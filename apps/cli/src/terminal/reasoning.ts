@@ -49,6 +49,7 @@ export function reasoningOptions(cap: RouteReasoningCapability): ReasoningOption
     case "effort":
       return [
         auto,
+        ...(cap.supportsOff ? [{ arg: "off", label: "Off", config: { mode: "off" } as ReasoningConfiguration }] : []),
         ...cap.efforts.map((e): ReasoningOption => ({ arg: e, label: e[0]!.toUpperCase() + e.slice(1), config: { mode: "effort", effort: e } })),
       ];
     case "budget":

@@ -1283,6 +1283,123 @@ export const migrations:Migration[]=[
         JOIN conversations c ON c.id=m.conversation_id;
     `);
   }}
+  ,{id:47,name:"teams_and_agent_delegation_policy",sql:`
+    CREATE TABLE teams (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      purpose TEXT,
+      status TEXT NOT NULL CHECK(status IN ('draft','active','paused','archived')),
+      shared_memory_policy TEXT NOT NULL CHECK(shared_memory_policy IN ('none','read','read_write')),
+      default_max_provider_calls INTEGER,
+      default_max_token_budget INTEGER,
+      default_max_wall_clock_ms INTEGER,
+      default_concurrency_limit INTEGER NOT NULL DEFAULT 1,
+      default_approval_required INTEGER NOT NULL DEFAULT 1,
+      artifact_policy TEXT NOT NULL CHECK(artifact_policy IN ('workspace_write','verified_only')),
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX teams_project_idx ON teams(project_id);
+    CREATE TABLE team_members (
+      schema_version INTEGER NOT NULL,
+      team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(team_id, agent_id)
+    );
+    CREATE INDEX team_members_agent_idx ON team_members(agent_id);
+
+    -- Agent identity/permission profiles gain optional team-delegation fields.
+    -- All nullable/defaulted so a standalone agent with no team keeps working
+    -- exactly as before (see AgentSchema in packages/contracts).
+    ALTER TABLE agents ADD COLUMN team_id TEXT REFERENCES teams(id) ON DELETE SET NULL;
+    ALTER TABLE agents ADD COLUMN memory_read_scopes_json TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE agents ADD COLUMN memory_write_scopes_json TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE agents ADD COLUMN max_provider_calls INTEGER;
+    ALTER TABLE agents ADD COLUMN max_token_budget INTEGER;
+    ALTER TABLE agents ADD COLUMN max_wall_clock_ms INTEGER;
+    ALTER TABLE agents ADD COLUMN max_child_tasks INTEGER;
+    ALTER TABLE agents ADD COLUMN approval_required INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE agents ADD COLUMN created_by TEXT NOT NULL DEFAULT 'user';
+    CREATE INDEX agents_team_idx ON agents(team_id);
+  `}
+  ,{id:48,name:"delegations_and_handoffs",sql:`
+    CREATE TABLE delegations (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      parent_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+      objective TEXT NOT NULL,
+      acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+      context_snapshot_ref TEXT NOT NULL,
+      allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+      allowed_memory_scopes_json TEXT NOT NULL DEFAULT '[]',
+      provider_id TEXT,
+      model TEXT,
+      budget_max_provider_calls INTEGER,
+      budget_max_token_budget INTEGER,
+      budget_max_wall_clock_ms INTEGER,
+      approval_required INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL CHECK(status IN ('pending_approval','approved','rejected','running','completed','failed','cancelled')),
+      deadline_at TEXT,
+      correlation_id TEXT NOT NULL,
+      child_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX delegations_parent_task_idx ON delegations(parent_task_id);
+    CREATE INDEX delegations_team_idx ON delegations(team_id);
+    -- At most one in-flight delegation per child task, enforced durably at
+    -- the database level, matching the agent_execution_segments_one_running
+    -- reservation pattern.
+    CREATE UNIQUE INDEX delegations_one_running_per_child
+      ON delegations(child_task_id) WHERE status='running';
+
+    CREATE TABLE handoffs (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      delegation_id TEXT NOT NULL REFERENCES delegations(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      result_summary TEXT NOT NULL,
+      acceptance_criteria_status_json TEXT NOT NULL DEFAULT '[]',
+      artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+      verification_evidence TEXT,
+      unresolved_risks_json TEXT NOT NULL DEFAULT '[]',
+      source_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+      target_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX handoffs_delegation_idx ON handoffs(delegation_id);
+    CREATE INDEX handoffs_task_idx ON handoffs(task_id);
+  `}
+  ,{id:49,name:"assistant_profile",sql:`
+    -- Singleton row: one local, cross-project assistant profile. Enforced by
+    -- the CHECK constraint plus repository upsert-only access (never a
+    -- client-supplied id).
+    CREATE TABLE assistant_profile (
+      id TEXT PRIMARY KEY CHECK(id='default'),
+      schema_version INTEGER NOT NULL,
+      display_name TEXT,
+      assistant_name TEXT,
+      comms_verbosity TEXT NOT NULL DEFAULT 'concise' CHECK(comms_verbosity IN ('concise','detailed')),
+      comms_tone TEXT NOT NULL DEFAULT 'nontechnical' CHECK(comms_tone IN ('technical','nontechnical')),
+      timezone TEXT,
+      locale TEXT,
+      default_provider_id TEXT,
+      default_model TEXT,
+      default_reasoning_json TEXT NOT NULL DEFAULT '{"mode":"auto"}',
+      default_privacy_mode TEXT NOT NULL DEFAULT 'local_only' CHECK(default_privacy_mode IN ('local_only','controlled_cloud','custom')),
+      default_approval_posture TEXT NOT NULL DEFAULT 'ask_always' CHECK(default_approval_posture IN ('ask_always','trust_reads','trust_project')),
+      goals_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

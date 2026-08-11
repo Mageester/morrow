@@ -176,6 +176,33 @@ export function memoryRepository(db: Database.Database) {
         .map(map);
     },
 
+    /** Scope-filtered listing for the memory vault UI — strictly project-isolated,
+     * same as listByProject. Only `agent`/`team` scopes additionally imply the
+     * caller should filter by originTaskId/conversationId at the call site if
+     * they need one specific agent's or team's records; this returns all
+     * enabled records of that scope within the project. */
+    listByScope(projectId: string, scope: MemoryScope): MemoryEntry[] {
+      return db
+        .prepare("SELECT * FROM memory_entries WHERE project_id = ? AND scope = ? ORDER BY pinned DESC, created_at ASC, id ASC")
+        .all(projectId, scope)
+        .map(map);
+    },
+
+    /**
+     * The ONE query that deliberately crosses project boundaries — and only
+     * for `user_global` scope, which exists precisely to hold cross-project
+     * "personal" facts (assistant profile candidates, user-wide preferences).
+     * Every other scope stays strictly project-isolated via listByProject /
+     * listByScope. Disabled and non-active entries are excluded so a
+     * forgotten/archived personal fact never leaks back in.
+     */
+    listUserGlobal(): MemoryEntry[] {
+      return db
+        .prepare("SELECT * FROM memory_entries WHERE scope = 'user_global' AND enabled = 1 ORDER BY pinned DESC, created_at ASC, id ASC")
+        .all()
+        .map(map);
+    },
+
     /**
      * Enabled entries applicable to a conversation: every project-wide tier plus
      * only this conversation's own conversation-scoped entries. Pinned first.
@@ -230,6 +257,47 @@ export function memoryRepository(db: Database.Database) {
     delete(id: string): boolean {
       const res = db.prepare("DELETE FROM memory_entries WHERE id = ?").run(id);
       return res.changes > 0;
+    },
+
+    /** Local, explicit, versioned export. `secret`-sensitivity content is
+     * redacted — this is a file the user controls, but a secret should never
+     * sit in a plaintext export any more than in a log. */
+    exportEntries(projectId: string): { version: 1; exportedAt: string; entries: MemoryEntry[] } {
+      const entries = this.listByProject(projectId).map((entry) =>
+        entry.sensitivity === "secret" ? { ...entry, content: "[redacted]", normalizedContent: "[redacted]" } : entry,
+      );
+      return { version: 1, exportedAt: new Date().toISOString(), entries };
+    },
+
+    /**
+     * Import never silently widens scope or permissions:
+     * - every entry is re-scoped to the IMPORTING project — any projectId in
+     *   the payload is ignored, so import can never resurrect a cross-project
+     *   reach the importing project didn't already have;
+     * - `agent`/`team` scoped entries are skipped outright — importing them
+     *   would imply an agent/team identity this project may not have;
+     * - source is always forced to "user" — import can never fake automatic
+     *   ("cortex") learning provenance;
+     * - lifecycle/pinned/confidence are never taken from the payload — every
+     *   imported entry starts as an ordinary active, unpinned, default-
+     *   confidence record the user can review like any other.
+     */
+    importEntries(projectId: string, entries: MemoryEntry[]): MemoryEntry[] {
+      const imported: MemoryEntry[] = [];
+      for (const entry of entries) {
+        if (entry.scope === "agent" || entry.scope === "team") continue;
+        imported.push(this.create({
+          id: crypto.randomUUID(),
+          projectId,
+          scope: entry.scope,
+          type: entry.type,
+          content: entry.content,
+          source: "user",
+          sensitivity: entry.sensitivity,
+          createdAt: new Date().toISOString(),
+        }));
+      }
+      return imported;
     },
   };
 }

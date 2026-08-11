@@ -23,6 +23,8 @@ const ConversationPage = lazyRouteComponent(() => import("../features/chat/conve
 const LibraryPage = lazyRouteComponent(() => import("../features/library/library-page.js"), "LibraryPage");
 const PairPage = lazyRouteComponent(() => import("../features/pairing/pair-page.js"), "PairPage");
 const SettingsPage = lazyRouteComponent(() => import("../features/placeholders/settings-page.js"), "SettingsPage");
+const MemoryPage = lazyRouteComponent(() => import("../features/memory/memory-page.js"), "MemoryPage");
+const TeamsPage = lazyRouteComponent(() => import("../features/teams/teams-page.js"), "TeamsPage");
 
 const rootRoute = createRootRoute({ component: AppShell });
 
@@ -89,6 +91,18 @@ const pairRoute = createRoute({
   path: "/pair",
 });
 
+const memoryRoute = createRoute({
+  component: MemoryPage,
+  getParentRoute: () => rootRoute,
+  path: "/memory",
+});
+
+const teamsRoute = createRoute({
+  component: TeamsPage,
+  getParentRoute: () => rootRoute,
+  path: "/teams",
+});
+
 export const routeTree = rootRoute.addChildren([
   homeRoute,
   chatsRoute,
@@ -100,6 +114,8 @@ export const routeTree = rootRoute.addChildren([
   connectionsRoute,
   settingsRoute,
   pairRoute,
+  memoryRoute,
+  teamsRoute,
 ]);
 
 export function createAppRouter(history: RouterHistory = createBrowserHistory()) {

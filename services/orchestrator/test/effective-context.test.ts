@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { providerRouteFingerprint, resolveEffectiveContext } from "../src/routing/effective-context.js";
 
 describe("route-aware effective context", () => {
-  it("uses a 131072 endpoint limit for an advertised 1M model", () => {
+  it("uses the advertised 1M capacity for the default DeepSeek route", () => {
     const resolved = resolveEffectiveContext({
       providerId: "deepseek",
       selectedModel: "deepseek-v4-flash",
@@ -10,8 +10,8 @@ describe("route-aware effective context", () => {
         kind: "default",
         host: "api.deepseek.com",
         protocol: "openai-chat",
-        limitTokens: 131_072,
-        limitSource: "provider-metadata",
+        limitTokens: null,
+        limitSource: "unknown",
       },
       outputReserveTokens: 16_384,
     });
@@ -20,10 +20,11 @@ describe("route-aware effective context", () => {
     expect(resolved.canonicalModelId).toBe("deepseek-v4-flash");
     expect(resolved.advertisedModelCapacityTokens).toBe(1_000_000);
     expect(resolved.advertisedModelCapacitySource).toBe("model-metadata");
-    expect(resolved.configuredEndpointLimitTokens).toBe(131_072);
-    expect(resolved.endpointLimitSource).toBe("provider-metadata");
-    expect(resolved.effectiveRequestLimitTokens).toBe(131_072);
-    expect(resolved.maximumInputTokens).toBe(114_688);
+    expect(resolved.configuredEndpointLimitTokens).toBeNull();
+    expect(resolved.endpointLimitSource).toBe("unknown");
+    expect(resolved.effectiveRequestLimitTokens).toBe(1_000_000);
+    expect(resolved.effectiveLimitSource).toBe("model-metadata");
+    expect(resolved.maximumInputTokens).toBe(983_616);
   });
 
   it("uses an endpoint override only for the actual custom route", () => {
@@ -77,8 +78,8 @@ describe("route-aware effective context", () => {
         kind: "default",
         host: "api.deepseek.com",
         protocol: "openai-chat",
-        limitTokens: 131_072,
-        limitSource: "provider-metadata",
+        limitTokens: null,
+        limitSource: "unknown",
       },
       outputReserveTokens: 8_192,
     });
@@ -96,8 +97,8 @@ describe("route-aware effective context", () => {
           kind: "default",
           host: "api.deepseek.com",
           protocol: "openai-chat",
-          limitTokens: 131_072,
-          limitSource: "provider-metadata",
+          limitTokens: null,
+          limitSource: "unknown",
         },
         outputReserveTokens: 8_192,
       });

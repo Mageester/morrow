@@ -5150,3 +5150,345 @@ a {
     backdrop-filter: none;
   }
 }
+
+/* ── Chat: typing indicator ─────────────────────────────────────────────── */
+
+.morrow-typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--morrow-space-2);
+  color: var(--morrow-text-muted);
+}
+
+.morrow-typing-indicator__dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.morrow-typing-indicator__dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.35;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .morrow-typing-indicator__dots span {
+    animation: morrow-typing-bounce 1.2s ease-in-out infinite;
+  }
+  .morrow-typing-indicator__dots span:nth-child(2) {
+    animation-delay: 0.15s;
+  }
+  .morrow-typing-indicator__dots span:nth-child(3) {
+    animation-delay: 0.3s;
+  }
+}
+
+@keyframes morrow-typing-bounce {
+  0%, 60%, 100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* No bounce, but still visibly distinct from a settled state — the dots
+     stay static and dimmer rather than animating. */
+  .morrow-typing-indicator__dots span {
+    opacity: 0.5;
+  }
+}
+
+/* ── Teams ──────────────────────────────────────────────────────────────── */
+
+.morrow-teams__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--morrow-space-2);
+}
+
+.morrow-teams__list {
+  display: grid;
+  gap: var(--morrow-space-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.morrow-teams__row {
+  padding: 0;
+  overflow: hidden;
+}
+
+.morrow-teams__row-toggle {
+  width: 100%;
+  display: grid;
+  gap: var(--morrow-space-1);
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: var(--morrow-space-3) var(--morrow-space-4);
+  color: inherit;
+  font: inherit;
+}
+
+.morrow-teams__row-main {
+  display: flex;
+  align-items: center;
+  gap: var(--morrow-space-2);
+}
+
+.morrow-teams__row-purpose {
+  color: var(--morrow-text-muted);
+  font-size: 0.875rem;
+}
+
+.morrow-teams__detail {
+  border-top: 1px solid var(--morrow-border-subtle);
+  padding: var(--morrow-space-3) var(--morrow-space-4) var(--morrow-space-4);
+}
+
+.morrow-teams__detail h3 {
+  margin: 0 0 var(--morrow-space-2);
+  font-size: 0.9375rem;
+}
+
+.morrow-teams__detail-note {
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+  margin: 0 0 var(--morrow-space-3);
+}
+
+.morrow-teams__members {
+  display: grid;
+  gap: var(--morrow-space-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.morrow-teams__member {
+  border: 1px solid var(--morrow-border-subtle);
+  border-radius: var(--morrow-radius-md);
+  padding: var(--morrow-space-3);
+}
+
+.morrow-teams__member-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--morrow-space-2);
+  margin-bottom: var(--morrow-space-2);
+}
+
+.morrow-teams__member-role {
+  color: var(--morrow-text-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.morrow-teams__member-policy {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--morrow-space-2) var(--morrow-space-3);
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.morrow-teams__member-policy dt {
+  color: var(--morrow-text-muted);
+  font-weight: 500;
+}
+
+.morrow-teams__member-policy dd {
+  margin: 0;
+}
+
+/* ── Memory ─────────────────────────────────────────────────────────────── */
+
+.morrow-memory__add {
+  display: grid;
+  gap: var(--morrow-space-2);
+  margin-bottom: var(--morrow-space-4);
+}
+
+.morrow-memory__add-note {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+}
+
+.morrow-memory__add-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-memory__add-field {
+  display: grid;
+  gap: var(--morrow-space-1);
+  font-size: 0.875rem;
+  flex: 1 1 240px;
+}
+
+.morrow-memory__add-field--scope {
+  flex: 0 1 180px;
+}
+
+.morrow-memory__add-field input,
+.morrow-memory__add-field select {
+  padding: var(--morrow-space-2);
+  border-radius: var(--morrow-radius-sm);
+  border: 1px solid var(--morrow-border);
+  background: var(--morrow-surface);
+  color: inherit;
+}
+
+.morrow-memory__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--morrow-space-2);
+  margin-bottom: var(--morrow-space-3);
+}
+
+.morrow-memory__scope-chip {
+  padding: var(--morrow-space-1) var(--morrow-space-3);
+  border-radius: 999px;
+  border: 1px solid var(--morrow-border);
+  background: var(--morrow-surface);
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.morrow-memory__scope-chip[aria-pressed="true"] {
+  border-color: var(--morrow-accent);
+  color: var(--morrow-accent);
+  background: var(--morrow-accent-soft);
+}
+
+.morrow-memory__export {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  padding: var(--morrow-space-1) var(--morrow-space-3);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  color: var(--morrow-text-muted);
+}
+
+.morrow-memory__list {
+  display: grid;
+  gap: var(--morrow-space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.morrow-memory__row {
+  display: grid;
+  gap: var(--morrow-space-2);
+}
+
+.morrow-memory__row[data-disabled] {
+  opacity: 0.6;
+}
+
+.morrow-memory__row-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--morrow-space-2);
+}
+
+.morrow-memory__content {
+  margin: 0;
+  flex: 1 1 240px;
+}
+
+.morrow-memory__source-toggle,
+.morrow-memory__row-actions button {
+  background: transparent;
+  border: 1px solid var(--morrow-border-subtle);
+  border-radius: var(--morrow-radius-sm);
+  padding: var(--morrow-space-1) var(--morrow-space-2);
+  font-size: 0.75rem;
+  cursor: pointer;
+  color: var(--morrow-text-muted);
+  width: fit-content;
+}
+
+.morrow-memory__source {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--morrow-space-2);
+  margin: 0;
+  padding: var(--morrow-space-2);
+  background: var(--morrow-surface-subtle);
+  border-radius: var(--morrow-radius-sm);
+  font-size: 0.8125rem;
+}
+
+.morrow-memory__source dt {
+  color: var(--morrow-text-muted);
+  font-weight: 500;
+}
+
+.morrow-memory__source dd {
+  margin: 0;
+}
+
+.morrow-memory__row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--morrow-space-2);
+}
+
+/* ── Home: deterministic sample task ───────────────────────────────────── */
+
+.morrow-home__sample-task {
+  display: grid;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-home__sample-result {
+  display: grid;
+  gap: var(--morrow-space-2);
+  padding: var(--morrow-space-3);
+  border-radius: var(--morrow-radius-md);
+  background: var(--morrow-surface-subtle);
+}
+
+.morrow-home__sample-result-summary {
+  margin: 0;
+  font-weight: 500;
+}
+
+.morrow-home__sample-result-criteria {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--morrow-space-1);
+  font-size: 0.875rem;
+}
+
+.morrow-home__sample-result-criteria li[data-met="false"] {
+  color: var(--morrow-danger);
+}
+
+.morrow-home__sample-result-evidence {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+}

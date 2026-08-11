@@ -64,6 +64,15 @@ destination. Private Local startup never triggers this request.
 - Retention controls
 - Explicit exceptions
 
+### Browser/web tool access is not a fourth mode
+
+Whether an agent may use browser or web-search tools is a per-agent tool
+permission (`AgentToolPermission`, allow/deny on the specific tool name), not
+a separate privacy mode. It composes with any of the three modes above —
+Local only still runs with web tools denied by default, since it forbids
+external network access outright. See
+[docs/decisions/0012-assistant-memory-and-teams.md](decisions/0012-assistant-memory-and-teams.md).
+
 ## Required safeguards
 
 - No silent telemetry

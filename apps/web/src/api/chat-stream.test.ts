@@ -137,4 +137,49 @@ describe("useChatTaskStream", () => {
     await waitFor(() => expect(result.current.terminal).toBe(true));
     expect(sessionStorage.getItem(chatStreamCursorKey(identity))).toBeNull();
   });
+
+  /**
+   * Reported live: an answer sometimes never appeared until the page was
+   * manually refreshed. Root cause: browsers throttle/can silently stall a
+   * background tab's EventSource without ever firing "error" — nothing
+   * reconnects it, and refetchOnWindowFocus is deliberately off globally
+   * (app/providers.tsx), so there was no other safety net. Coming back to
+   * the tab must reconcile at least once even if the connection never
+   * visibly failed.
+   */
+  it("catches up when the tab becomes visible again, even if the stream connection went silent", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+    renderHook(() => useChatTaskStream({ projectId: "p", conversationId: "c", taskId: "t" }), { wrapper: wrapper(queryClient) });
+    const source = FakeEventSource.instances[0]!;
+    act(() => source.emit("open"));
+    await waitFor(() => expect(invalidate).toHaveBeenCalled());
+    const beforeVisible = invalidate.mock.calls.length;
+
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    await waitFor(() => expect(invalidate.mock.calls.length).toBeGreaterThan(beforeVisible));
+  });
+
+  it("does not reconcile on visibilitychange once the task is already terminal", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.spyOn(queryClient, "refetchQueries").mockResolvedValue(undefined);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+    const { result } = renderHook(() => useChatTaskStream({ projectId: "p2", conversationId: "c2", taskId: "t2" }), { wrapper: wrapper(queryClient) });
+    const source = FakeEventSource.instances[0]!;
+    act(() => source.emit("task.terminal", {
+      version: 1, cursor: 1, taskId: "t2", conversationId: "c2",
+      eventType: "task.terminal", emittedAt: "2026-07-22T12:00:00.000Z", payload: { eventId: "e1" },
+    }));
+    await waitFor(() => expect(result.current.terminal).toBe(true));
+    const beforeVisible = invalidate.mock.calls.length;
+
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(invalidate.mock.calls.length).toBe(beforeVisible);
+  });
 });

@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-labelledby="benchmark-title benchmark-subtitle">
+<rect width="1280" height="720" fill="#11110f"/>
+<style>text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif} .axis{fill:#8d8980;font-size:14px} .title{fill:#f4f0e7;font-size:21px;font-weight:600} .value{fill:#f4f0e7;font-size:17px;font-weight:700} .harness{fill:#b7b1a7;font-size:14px} .meta{fill:#77736b;font-size:12px}</style>
+<text id="benchmark-title" x="58" y="54" fill="#f4f0e7" font-size="27" font-weight="700">Morrow / DeepSeek V4 / bounded live route check</text>
+<text id="benchmark-subtitle" x="58" y="82" fill="#858078" font-size="14">2 measured tasks · personal benchmark artifact</text>
+<text class="title" x="242.66666666666666" y="124" text-anchor="middle">Pass rate</text>
+<line x1="58" y1="602.00" x2="427.33" y2="602.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="46" y="607.00" text-anchor="end">0%</text>
+<line x1="58" y1="493.00" x2="427.33" y2="493.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="46" y="498.00" text-anchor="end">25%</text>
+<line x1="58" y1="384.00" x2="427.33" y2="384.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="46" y="389.00" text-anchor="end">50%</text>
+<line x1="58" y1="275.00" x2="427.33" y2="275.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="46" y="280.00" text-anchor="end">75%</text>
+<line x1="58" y1="166.00" x2="427.33" y2="166.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="46" y="171.00" text-anchor="end">100%</text>
+<rect x="165.67" y="602.00" width="62.00" height="1.00" rx="2" fill="#f5b532"/>
+<text class="value" x="196.67" y="590.00" text-anchor="middle">0%</text>
+<text class="harness" x="196.67" y="630.00" text-anchor="middle">Morrow / V4</text>
+<text class="harness" x="196.67" y="647.00" text-anchor="middle">Flash route</text>
+<text class="meta" x="196.67" y="665.00" text-anchor="middle">n=1</text>
+<rect x="257.67" y="602.00" width="62.00" height="1.00" rx="2" fill="#dc579a"/>
+<text class="value" x="288.67" y="590.00" text-anchor="middle">0%</text>
+<text class="harness" x="288.67" y="630.00" text-anchor="middle">Morrow / V4</text>
+<text class="harness" x="288.67" y="647.00" text-anchor="middle">Pro route</text>
+<text class="meta" x="288.67" y="665.00" text-anchor="middle">n=1</text>
+<text class="title" x="640" y="124" text-anchor="middle">Median cost per task</text>
+<line x1="455.3333333333333" y1="602.00" x2="824.67" y2="602.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="443.3333333333333" y="607.00" text-anchor="end">$0.000</text>
+<line x1="455.3333333333333" y1="493.00" x2="824.67" y2="493.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="443.3333333333333" y="498.00" text-anchor="end">$0.003</text>
+<line x1="455.3333333333333" y1="384.00" x2="824.67" y2="384.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="443.3333333333333" y="389.00" text-anchor="end">$0.006</text>
+<line x1="455.3333333333333" y1="275.00" x2="824.67" y2="275.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="443.3333333333333" y="280.00" text-anchor="end">$0.009</text>
+<line x1="455.3333333333333" y1="166.00" x2="824.67" y2="166.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="443.3333333333333" y="171.00" text-anchor="end">$0.012</text>
+<rect x="563.00" y="575.27" width="62.00" height="26.73" rx="2" fill="#f5b532"/>
+<text class="value" x="594.00" y="563.27" text-anchor="middle">$0.001</text>
+<text class="harness" x="594.00" y="630.00" text-anchor="middle">Morrow / V4</text>
+<text class="harness" x="594.00" y="647.00" text-anchor="middle">Flash route</text>
+<text class="meta" x="594.00" y="665.00" text-anchor="middle">n=1</text>
+<rect x="655.00" y="528.86" width="62.00" height="73.14" rx="2" fill="#dc579a"/>
+<text class="value" x="686.00" y="516.86" text-anchor="middle">$0.002</text>
+<text class="harness" x="686.00" y="630.00" text-anchor="middle">Morrow / V4</text>
+<text class="harness" x="686.00" y="647.00" text-anchor="middle">Pro route</text>
+<text class="meta" x="686.00" y="665.00" text-anchor="middle">n=1</text>
+<text class="title" x="1037.3333333333333" y="124" text-anchor="middle">Median time per task</text>
+<line x1="852.6666666666666" y1="602.00" x2="1222.00" y2="602.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="840.6666666666666" y="607.00" text-anchor="end">0.0s</text>
+<line x1="852.6666666666666" y1="493.00" x2="1222.00" y2="493.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="840.6666666666666" y="498.00" text-anchor="end">4.1s</text>
+<line x1="852.6666666666666" y1="384.00" x2="1222.00" y2="384.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="840.6666666666666" y="389.00" text-anchor="end">8.2s</text>
+<line x1="852.6666666666666" y1="275.00" x2="1222.00" y2="275.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="840.6666666666666" y="280.00" text-anchor="end">12s</text>
+<line x1="852.6666666666666" y1="166.00" x2="1222.00" y2="166.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="840.6666666666666" y="171.00" text-anchor="end">16s</text>
+<rect x="960.33" y="366.64" width="62.00" height="235.36" rx="2" fill="#f5b532"/>
+<text class="value" x="991.33" y="354.64" text-anchor="middle">8.8s</text>
+<text class="harness" x="991.33" y="630.00" text-anchor="middle">Morrow / V4</text>
+<text class="harness" x="991.33" y="647.00" text-anchor="middle">Flash route</text>
+<text class="meta" x="991.33" y="665.00" text-anchor="middle">n=1</text>
+<rect x="1052.33" y="238.67" width="62.00" height="363.33" rx="2" fill="#dc579a"/>
+<text class="value" x="1083.33" y="226.67" text-anchor="middle">14s</text>
+<text class="harness" x="1083.33" y="630.00" text-anchor="middle">Morrow / V4</text>
+<text class="harness" x="1083.33" y="647.00" text-anchor="middle">Pro route</text>
+<text class="meta" x="1083.33" y="665.00" text-anchor="middle">n=1</text>
+<text x="1222" y="692" fill="#77736b" font-size="12" text-anchor="end">Source: supplied benchmark records · costs are measured or token-estimated</text>
+</svg>

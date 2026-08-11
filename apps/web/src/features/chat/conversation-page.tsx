@@ -514,7 +514,16 @@ export function ConversationPageContent({
                     <ConversationActivity entries={activityByTask.get(message.taskId) ?? []} />
                   ) : null}
                   <div className={`morrow-conversation-message__content${message.role === "assistant" ? " morrow-conversation-message__content--markdown" : ""}`}>
-                    {waiting ? <p>Morrow is responding…</p> : message.role === "assistant" ? (
+                    {waiting ? (
+                      <p className="morrow-typing-indicator" role="status">
+                        Morrow is responding…
+                        <span aria-hidden="true" className="morrow-typing-indicator__dots">
+                          <span />
+                          <span />
+                          <span />
+                        </span>
+                      </p>
+                    ) : message.role === "assistant" ? (
                       <Markdown streaming={ACTIVE_STATES.has(message.streamingState)} text={message.content} />
                     ) : <p>{message.content}</p>}
                   </div>

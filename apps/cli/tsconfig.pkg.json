@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false,
+    "incremental": false,
+    "outDir": "C:/Users/aidan/OneDrive/Documents/Morrow/Morrow/dist/Morrow-v0.1.0-beta.40-windows-x64/orchestrator/cli/src"
+  },
+  "include": [
+    "src"
+  ]
+}

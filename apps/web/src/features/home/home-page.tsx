@@ -1,10 +1,14 @@
 import type { Conversation, WebMissionSummary } from "@morrow/contracts";
+import { Button, StatusPill, Surface } from "@morrow/ui";
 import { providerQueries } from "../../api/providers.js";
-import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import { useMutation, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { MessageSquare, Workflow } from "lucide-react";
 import { conversationQueries } from "../../api/conversations.js";
 import { missionQueries } from "../../api/query-keys.js";
+import { ApiClientError } from "../../api/client.js";
+import { teamApi } from "../../api/teams.js";
+import { resultStateForDelegation } from "../shared/result-state.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 import { NewChatButton } from "../chat/new-chat-button.js";
 import { GettingStarted } from "../onboarding/getting-started.js";
@@ -116,9 +120,71 @@ export function HomePage() {
           {activeMissions.length > 0 ? (
             <ActiveWorkSection missions={activeMissions} />
           ) : null}
+          <SampleTaskSection projectId={activeProject.id} />
         </>
       )}
     </section>
+  );
+}
+
+function safeError(error: unknown, fallback: string): string {
+  return error instanceof ApiClientError ? error.message : fallback;
+}
+
+/**
+ * The onboarding mission's step 6: "run a safe deterministic sample task."
+ * Local, no-network, no live model — Researcher reads README.md, Verifier
+ * checks the result, and the full evidence trail (acceptance criteria,
+ * artifact hash, verification note) renders right here, not just a "done"
+ * toast.
+ */
+function SampleTaskSection({ projectId }: { projectId: string }) {
+  const runSample = useMutation({
+    mutationFn: () => teamApi.runReadmeSummarySample(projectId),
+  });
+
+  return (
+    <Surface aria-labelledby="sample-task-heading" className="morrow-home__sample-task" padding="large">
+      <div className="morrow-section-head">
+        <h2 id="sample-task-heading">Try a safe deterministic sample task</h2>
+      </div>
+      <p>
+        Summarizes this project's README through a Researcher → Verifier handoff. Local only — no
+        network request, no live model call, nothing written outside this evidence trail.
+      </p>
+      <Button
+        disabled={runSample.isPending}
+        onClick={() => runSample.mutate()}
+        variant="secondary"
+      >
+        {runSample.isPending ? "Running…" : "Run sample task"}
+      </Button>
+      {runSample.isError ? (
+        <p role="alert">{safeError(runSample.error, "The sample task could not run — is there a README.md in this project?")}</p>
+      ) : null}
+      {runSample.isSuccess ? (
+        <div aria-live="polite" className="morrow-home__sample-result" role="status">
+          {(() => {
+            const info = resultStateForDelegation(
+              runSample.data.delegation.status as "completed",
+              runSample.data.handoff.acceptanceCriteriaStatus,
+            );
+            return <StatusPill variant={info.variant}>{info.label}</StatusPill>;
+          })()}
+          <p className="morrow-home__sample-result-summary">{runSample.data.handoff.resultSummary}</p>
+          <ul aria-label="Acceptance criteria" className="morrow-home__sample-result-criteria">
+            {runSample.data.handoff.acceptanceCriteriaStatus.map((criterion) => (
+              <li data-met={criterion.met} key={criterion.criterion}>
+                {criterion.met ? "✓" : "✗"} {criterion.criterion}
+              </li>
+            ))}
+          </ul>
+          {runSample.data.handoff.verificationEvidence ? (
+            <p className="morrow-home__sample-result-evidence">{runSample.data.handoff.verificationEvidence}</p>
+          ) : null}
+        </div>
+      ) : null}
+    </Surface>
   );
 }
 

@@ -21,7 +21,16 @@ import {
 type EventInput = Omit<TaskEvent, "sequence">;
 type TransitionEvent = Omit<EventInput, "taskId" | "type">;
 type PlanInput = Omit<PlanStep, "version" | "taskId">;
-type DisclosureInput = Omit<ExecutionDisclosure, "version">;
+// memoryRecordLabels/toolsAvailable are the pre-request privacy-preview
+// fields (see docs/decisions/0012). They are NOT persisted in
+// execution_disclosures — that table stays historical execution evidence;
+// the preview is assembled fresh, on demand, from live tool-permission and
+// memory-retrieval data (see the web privacy-preview projection). Optional
+// here so existing callers that predate the preview keep compiling as-is.
+type DisclosureInput = Omit<ExecutionDisclosure, "version" | "memoryRecordLabels" | "toolsAvailable"> & {
+  memoryRecordLabels?: string[];
+  toolsAvailable?: string[];
+};
 type EvidenceInput = Omit<TaskEvidence, "version">;
 type VerificationInput = Omit<VerificationResult, "version">;
 type AgentStateInput = Omit<AgentStateTransition, "version" | "taskId" | "sequence">;

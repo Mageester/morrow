@@ -32,6 +32,12 @@ export class AgentTaskDispatchError extends Error {
 
 export interface AgentTaskRequest extends SendMessageInput {
   conversationId: string;
+  /** Set when this task is a delegated child of another task (subagent
+   * delegation) — threaded straight through to tasks.createTask so the
+   * child gets real provider routing, conversation linkage, and agent-state
+   * events instead of the bare runner.run shortcut. Optional and additive:
+   * every existing caller keeps working with no parent relationship. */
+  parentTaskId?: string;
 }
 
 export interface AgentTaskDispatcherDependencies {
@@ -198,7 +204,7 @@ export function dispatchAgentTask(
   dependencies: AgentTaskDispatcherDependencies,
   request: AgentTaskRequest,
 ) {
-  const { conversationId, ...rawBody } = request;
+  const { conversationId, parentTaskId, ...rawBody } = request;
   const body = SendMessageSchema.parse(rawBody);
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date());
@@ -254,6 +260,7 @@ export function dispatchAgentTask(
         ...(body.agentId ? { agentId: body.agentId } : {}),
         ...(body.worktreeId ? { worktreeId: body.worktreeId } : {}),
         ...(body.missionId ? { missionId: body.missionId } : {}),
+        ...(parentTaskId ? { parentTaskId } : {}),
         createdAt: timestampIso,
       });
       const userMessage = conversations.appendMessage({

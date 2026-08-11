@@ -102,6 +102,42 @@ describe("HomePage", () => {
     expect(await screen.findByRole("link", { name: /Local research/ })).toBeVisible();
   });
 
+  it("runs the deterministic sample task and shows real proof, not just a done toast", async () => {
+    renderHome(async (input) => {
+      const url = String(input);
+      if (url === "/api/projects") return Response.json([project]);
+      if (url.includes("/web/missions")) return emptyMissions();
+      if (url.includes("/conversations")) return Response.json([]);
+      if (url.includes("/sample-tasks/readme-summary")) {
+        return Response.json({
+          team: { id: "team-1", name: "Research and verify" },
+          parentTask: { id: "parent-1", status: "completed" },
+          researcherTask: { id: "researcher-task-1", status: "completed" },
+          verifierTask: { id: "verifier-task-1", status: "completed" },
+          delegation: { id: "del-1", status: "completed" },
+          handoff: {
+            id: "handoff-1",
+            resultSummary: "Morrow: A private, local-first personal AI agent.",
+            acceptanceCriteriaStatus: [
+              { criterion: "Summary cites README.md", met: true, note: null },
+              { criterion: "Summary is non-empty", met: true, note: null },
+            ],
+            verificationEvidence: "Verifier confirmed a non-empty summary citing README.md.",
+          },
+        });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+
+    const user = userEvent.setup();
+    expect(await screen.findByRole("button", { name: "Run sample task" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Run sample task" }));
+
+    expect(await screen.findByText("Morrow: A private, local-first personal AI agent.")).toBeVisible();
+    expect(screen.getByText(/Summary cites README.md/)).toBeVisible();
+    expect(screen.getByText(/Verifier confirmed a non-empty summary/)).toBeVisible();
+  });
+
   it("explains the no-project state without inventing data", async () => {
     renderHome(async (input) => {
       const url = String(input);
