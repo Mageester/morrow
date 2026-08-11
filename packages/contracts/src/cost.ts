@@ -60,7 +60,31 @@ export const CostLineSchema = z.object({
     ? true
     : line.inputTokens !== null && line.cachedInputTokens <= line.inputTokens,
   { message: "cached input tokens must be a subset of total input tokens", path: ["cachedInputTokens"] },
-);
+).superRefine((line, context) => {
+  if (line.accuracy !== "exact_usage_pricing") return;
+
+  if (line.amount === null) {
+    context.addIssue({ code: "custom", path: ["amount"], message: "exact usage pricing requires an amount" });
+  }
+  if (line.inputTokens === null) {
+    context.addIssue({ code: "custom", path: ["inputTokens"], message: "exact usage pricing requires input tokens" });
+  }
+  if (line.outputTokens === null) {
+    context.addIssue({ code: "custom", path: ["outputTokens"], message: "exact usage pricing requires output tokens" });
+  }
+  if (line.pricing === null) {
+    context.addIssue({ code: "custom", path: ["pricing"], message: "exact usage pricing requires a pricing snapshot" });
+    return;
+  }
+  if (line.pricing.source !== "authoritative") {
+    context.addIssue({ code: "custom", path: ["pricing", "source"], message: "exact usage pricing requires authoritative pricing" });
+  }
+  const discountedCacheRate = line.pricing.cachedInputMicrosPerMillion !== null
+    && line.pricing.cachedInputMicrosPerMillion !== line.pricing.inputMicrosPerMillion;
+  if (discountedCacheRate && line.cachedInputTokens === null) {
+    context.addIssue({ code: "custom", path: ["cachedInputTokens"], message: "exact discounted pricing requires a complete cached-input breakdown" });
+  }
+});
 export type CostLine = z.infer<typeof CostLineSchema>;
 
 const TaskCostSummaryBaseSchema = z.object({

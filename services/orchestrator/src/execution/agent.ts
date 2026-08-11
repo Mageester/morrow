@@ -49,7 +49,7 @@ import { isRetryableProviderError, openStreamWithFallback, type FallbackCandidat
 import { globalRateGuard } from "../provider/rate-guard.js";
 import { translateReasoning } from "../provider/reasoning.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
-import { resolveModelMetadata } from "../routing/models.js";
+import { pricingSnapshotForModel, resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { redactSecrets } from "../provider/credentials.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint } from "./adaptive-budget.js";
@@ -84,7 +84,8 @@ import { resolveModelBudget } from "../routing/model-budget.js";
 import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type CumulativeUsage, type RequestUsage } from "../routing/usage-snapshot.js";
 import { toolArtifactsRepository } from "../repositories/tool-artifacts.js";
 import { collectOfferedArtifactIds, externalizeToolResult, readArtifactRange, renderExternalizedForContext } from "./artifact-externalization.js";
-import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, ReasoningConfiguration, LearnedSkill, MissionProgressObservation } from "@morrow/contracts";
+import { calculateUsageCostMicros, PricingSnapshotSchema } from "@morrow/contracts";
+import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, ReasoningConfiguration, LearnedSkill, MissionProgressObservation, PricingSnapshot } from "@morrow/contracts";
 import { browserAuditSink } from "../browser/audit.js";
 import { playwrightController, type PlaywrightControllerOptions } from "../browser/playwright.js";
 import type { BrowserController, BrowserViewport, PageSnapshot } from "../browser/types.js";
@@ -805,10 +806,25 @@ export async function executeAgentChatTask({
     providerId: string;
     modelId: string;
     routeFingerprint: string | null;
+    pricingSnapshot: PricingSnapshot | null;
     recorded: boolean;
   };
   const providerAttemptQueues = new Map<string, ProviderCostAttempt[]>();
-  let currentProviderAttempt: ProviderCostAttempt | null = null;
+  let providerAttemptsThisTurn: ProviderCostAttempt[] = [];
+  const applyFrozenPricing = (usage: RequestUsage, pricingSnapshot: PricingSnapshot | null): RequestUsage => {
+    const cost = calculateUsageCostMicros({
+      inputTokens: usage.totalInputTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      outputTokens: usage.outputTokens,
+    }, pricingSnapshot);
+    return {
+      ...usage,
+      cost,
+      costUsd: cost.amount === null ? null : cost.amount.micros / 1_000_000,
+      costSource: cost.amount === null ? "unavailable" : "morrow-estimated",
+      pricingSnapshot,
+    };
+  };
   const recordRequestCost = (attempt: ProviderCostAttempt, usage: RequestUsage): void => {
     if (attempt.recorded) return;
     const cost = usage.cost ?? { amount: null, accuracy: "unknown" as const };
@@ -829,11 +845,11 @@ export async function executeAgentChatTask({
     attempt.recorded = true;
   };
   const recordUnknownProviderAttempt = (attempt: ProviderCostAttempt): void => {
-    recordRequestCost(attempt, resolveRequestUsage({
+    recordRequestCost(attempt, applyFrozenPricing(resolveRequestUsage({
       providerId: attempt.providerId,
       modelId: attempt.modelId,
       usage: null,
-    }));
+    }), attempt.pricingSnapshot));
   };
   const trackProviderAttempt = (candidateId: string, source: AiProvider): AiProvider => ({
     id: candidateId,
@@ -842,7 +858,6 @@ export async function executeAgentChatTask({
       const queue = providerAttemptQueues.get(candidateId);
       const attempt = queue?.shift();
       if (!attempt) throw new Error(`Provider attempt was not initialized for ${candidateId}`);
-      currentProviderAttempt = attempt;
       try {
         for await (const chunk of source.streamChat(messages, options)) yield chunk;
       } catch (error) {
@@ -851,6 +866,33 @@ export async function executeAgentChatTask({
       }
     },
   });
+  const reconcileOrphanedProviderAttempts = (): void => {
+    const recordedRequestIds = new Set(costs.listByTask(taskId).map((line) => line.requestId));
+    for (const persistedEvent of records.listEvents(taskId)) {
+      if (persistedEvent.type !== "provider.request_started") continue;
+      const payload = persistedEvent.payload as Record<string, unknown>;
+      const requestId = typeof payload.requestId === "string" && payload.requestId.trim() ? payload.requestId : null;
+      if (!requestId || recordedRequestIds.has(requestId)) continue;
+      const providerId = typeof payload.provider === "string" && payload.provider.trim() ? payload.provider : "unknown-provider";
+      const modelId = typeof payload.model === "string" && payload.model.trim() ? payload.model : "unknown-model";
+      const pricing = PricingSnapshotSchema.safeParse(payload.pricingSnapshot);
+      costs.record({
+        id: requestId,
+        taskId,
+        requestId,
+        providerId,
+        modelId,
+        inputTokens: null,
+        cachedInputTokens: null,
+        outputTokens: null,
+        amount: null,
+        accuracy: "unknown",
+        pricing: pricing.success ? pricing.data : null,
+        recordedAt: persistedEvent.createdAt,
+      });
+      recordedRequestIds.add(requestId);
+    }
+  };
   const processesRepo = processesRepository(db);
   const procSupervisor = supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
   const convs = conversationsRepository(db);
@@ -870,6 +912,7 @@ export async function executeAgentChatTask({
   if (!task || task.kind !== "agent_chat" || !["queued", "running", "interrupted"].includes(task.status)) {
     throw new Error("Task is not available for agent execution");
   }
+  reconcileOrphanedProviderAttempts();
   const durableResume = continuity.latestCheckpoint(taskId) !== null;
 
   const project = projects.getProjectById(task.projectId);
@@ -3936,6 +3979,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   };
 
   const handleCancellation = () => {
+    for (const attempt of providerAttemptsThisTurn) recordUnknownProviderAttempt(attempt);
     closeCurrentTurn({ final: false, aborted: true });
     const currentTask = tasks.getTaskById(taskId);
     if (currentTask && currentTask.status !== "cancelled") {
@@ -4103,7 +4147,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     let currentReasoningContent = "";
     let currentServedBy = providerType as string;
     let currentRouteFingerprint = primaryRouteFingerprint;
-    let providerAttemptsThisTurn: ProviderCostAttempt[] = [];
 
     try {
       const preparedContext = prepareContextForProvider(chatMessages, {
@@ -4412,25 +4455,27 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         },
         globalRateGuard,
         (candidate) => {
+          const modelId = candidate.request?.options.model
+            ?? getProviderDefaultModel(candidate.id as ProviderId, process.env)
+            ?? `${candidate.id}-model`;
           const attempt: ProviderCostAttempt = {
             requestId: randomUUID(),
             providerId: candidate.id,
-            modelId: candidate.request?.options.model
-              ?? getProviderDefaultModel(candidate.id as ProviderId, process.env)
-              ?? `${candidate.id}-model`,
+            modelId,
             routeFingerprint: candidate.request?.routeFingerprint ?? null,
+            pricingSnapshot: pricingSnapshotForModel(resolveModelMetadata(candidate.id, modelId)),
             recorded: false,
           };
           providerAttemptsThisTurn.push(attempt);
           const queue = providerAttemptQueues.get(candidate.id) ?? [];
           queue.push(attempt);
           providerAttemptQueues.set(candidate.id, queue);
-          currentProviderAttempt = attempt;
           event("provider.request_started", {
             requestId: attempt.requestId,
             provider: attempt.providerId,
             model: attempt.modelId,
             routeFingerprint: attempt.routeFingerprint,
+            pricingSnapshot: attempt.pricingSnapshot,
           });
         },
       );
@@ -4537,18 +4582,20 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // resolveRequestUsage/accumulateUsage (routing/usage-snapshot.ts) are
           // the single source of truth for this response's usage and the
           // running task total â€” never re-derived independently downstream.
+          const attempt = providerAttemptsThisTurn.at(-1);
+          if (!attempt) throw new Error("Provider response had no request identity");
           const requestUsage = resolveRequestUsage({
             providerId: opened.servedBy,
             modelId: servedModel,
             routeFingerprint: currentRouteFingerprint,
             usage: chunk.usage ?? null,
-            metadata: resolveModelMetadata(opened.servedBy, servedModel),
+            metadata: null,
           });
-          if (!currentProviderAttempt) throw new Error("Provider response had no request identity");
-          recordRequestCost(currentProviderAttempt, requestUsage);
-          cumulativeUsage = accumulateUsage(cumulativeUsage, requestUsage);
+          const frozenRequestUsage = applyFrozenPricing(requestUsage, attempt.pricingSnapshot);
+          recordRequestCost(attempt, frozenRequestUsage);
+          cumulativeUsage = accumulateUsage(cumulativeUsage, frozenRequestUsage);
           event("provider.usage", {
-            requestId: currentProviderAttempt.requestId,
+            requestId: attempt.requestId,
             provider: opened.servedBy,
             model: servedModel,
             // The reasoning actually attached to the request that produced
@@ -4562,26 +4609,26 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             // count (fresh + cached), matching every existing consumer's
             // "X in" display â€” never confuse this with freshInputTokens
             // below, which is null whenever the cache breakdown is unknown.
-            inputTokens: requestUsage.totalInputTokens,
-            outputTokens: requestUsage.outputTokens,
-            totalTokens: requestUsage.totalTokens,
-            ...(requestUsage.cachedInputTokens !== null ? { cachedInputTokens: requestUsage.cachedInputTokens } : {}),
-            ...(requestUsage.costUsd !== null ? { estimatedCostUsd: requestUsage.costUsd } : {}),
+            inputTokens: frozenRequestUsage.totalInputTokens,
+            outputTokens: frozenRequestUsage.outputTokens,
+            totalTokens: frozenRequestUsage.totalTokens,
+            ...(frozenRequestUsage.cachedInputTokens !== null ? { cachedInputTokens: frozenRequestUsage.cachedInputTokens } : {}),
+            ...(frozenRequestUsage.costUsd !== null ? { estimatedCostUsd: frozenRequestUsage.costUsd } : {}),
             // Canonical fields (routing/usage-snapshot.ts): total input is
             // always distinct from the (possibly unknown) fresh/cached
             // split; cacheBreakdownStatus says explicitly whether that split
             // is known for THIS response â€” freshInputTokens/cachedInputTokens
             // must never be read as known unless it says "reported".
-            totalInputTokens: requestUsage.totalInputTokens,
-            ...(requestUsage.freshInputTokens !== null ? { freshInputTokens: requestUsage.freshInputTokens } : {}),
-            cacheBreakdownStatus: requestUsage.cacheBreakdownStatus,
-            tokenSource: requestUsage.tokenSource,
-            tokenConfidence: requestUsage.tokenConfidence,
-            costUsd: requestUsage.costUsd,
-            costSource: requestUsage.costSource,
-            cost: requestUsage.cost,
-            pricingSnapshot: requestUsage.pricingSnapshot ?? null,
-            routeFingerprint: requestUsage.routeFingerprint,
+            totalInputTokens: frozenRequestUsage.totalInputTokens,
+            ...(frozenRequestUsage.freshInputTokens !== null ? { freshInputTokens: frozenRequestUsage.freshInputTokens } : {}),
+            cacheBreakdownStatus: frozenRequestUsage.cacheBreakdownStatus,
+            tokenSource: frozenRequestUsage.tokenSource,
+            tokenConfidence: frozenRequestUsage.tokenConfidence,
+            costUsd: frozenRequestUsage.costUsd,
+            costSource: frozenRequestUsage.costSource,
+            cost: frozenRequestUsage.cost,
+            pricingSnapshot: frozenRequestUsage.pricingSnapshot ?? null,
+            routeFingerprint: frozenRequestUsage.routeFingerprint,
             // Cumulative task/session totals as of this response â€” folded in
             // exactly once per response, never re-derived by summing context
             // snapshots. cumulativeCacheBreakdownComplete is false as soon as
