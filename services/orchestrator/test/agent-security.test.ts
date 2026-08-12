@@ -61,7 +61,10 @@ describe("agent security boundaries", () => {
       memoryReadScopes: ["agent"], memoryWriteScopes: ["agent"],
     });
     agentsRepository(db).upsertToolPermission(agent.id, { toolName: "create_file", effect: "deny", priority: 10 });
-    seed(db, ws, "agent", "PROTECTED_PROJECT_MEMORY", agent.id, true);
+    // Keep the user prompt distinct from the memory sentinel. Reusing the
+    // sentinel as the prompt makes its presence in the provider request
+    // inevitable and cannot prove whether project-scoped memory leaked.
+    seed(db, ws, "agent", "Attempt the assigned file operation without project memory.", agent.id, true);
     memoryRepository(db).create({
       id: "project-memory", projectId: "p", scope: "project", content: "PROTECTED_PROJECT_MEMORY",
       source: "user", createdAt: new Date().toISOString(),
