@@ -26,7 +26,7 @@ function renderPage() {
 describe("Settings page — assistant profile", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("shows the current profile and lets the user pick the default privacy mode, with an honest explanation", async () => {
+  it("shows the current profile and describes privacy as a non-enforcing preference", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/assistant-profile") return Response.json(profile);
@@ -34,8 +34,9 @@ describe("Settings page — assistant profile", () => {
     }));
     renderPage();
     expect(await screen.findByDisplayValue("Aidan")).toBeVisible();
-    expect(screen.getByRole("radio", { name: /Local only/ })).toBeChecked();
-    expect(screen.getByText(/No external model providers/)).toBeVisible();
+    expect(screen.getByRole("radio", { name: /Prefer local providers/ })).toBeChecked();
+    expect(screen.getByText(/does not enforce provider or tool routing/i)).toBeVisible();
+    expect(screen.queryByText(/No external model providers/)).not.toBeInTheDocument();
   });
 
   it("adds a goal as a definition only, never claiming it runs automatically", async () => {

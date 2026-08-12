@@ -12,9 +12,9 @@ function safeError(error: unknown, fallback: string): string {
 }
 
 const PRIVACY_MODE_COPY: Record<string, { label: string; hint: string }> = {
-  local_only: { label: "Local only", hint: "No external model providers, no external tools, no telemetry. Network-deny by default." },
-  controlled_cloud: { label: "Controlled cloud", hint: "User-approved providers, with request-by-request context disclosure before anything leaves this machine." },
-  custom: { label: "Custom", hint: "Per-project and per-agent rules — domain allowlists, model restrictions, retention controls." },
+  local_only: { label: "Prefer local providers", hint: "Records your preference for local models. It does not block configured cloud providers or tools." },
+  controlled_cloud: { label: "Cloud providers available", hint: "Records that your configured cloud providers are acceptable for ordinary work." },
+  custom: { label: "Custom preference", hint: "Records that you intend to review provider choices per project or task." },
 };
 
 function AssistantProfileSection() {
@@ -165,14 +165,14 @@ function AssistantPrivacySection() {
     <Surface aria-labelledby="assistant-privacy-heading" padding="large" style={{ display: "grid", gap: "var(--morrow-space-3)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "var(--morrow-space-2)" }}>
         <Lock size={20} color="var(--morrow-accent)" />
-        <h2 id="assistant-privacy-heading" style={{ margin: 0 }}>Default privacy mode</h2>
+        <h2 id="assistant-privacy-heading" style={{ margin: 0 }}>Provider privacy preference</h2>
       </div>
       <p style={{ margin: 0, color: "var(--morrow-text-muted)", fontSize: "0.875rem" }}>
-        This is the default new tasks start with. Before any request leaves the machine, Morrow shows
-        which provider, which memory records (by label, never raw content), and which tools are
-        involved — you can always change the mode for one request.
+        This is a saved preference for future routing controls. It does not enforce provider or tool
+        routing today. Choose the provider for each task and review the visible model selection before
+        sending sensitive context.
       </p>
-      <div role="radiogroup" aria-label="Default privacy mode" style={{ display: "grid", gap: "var(--morrow-space-2)" }}>
+      <div role="radiogroup" aria-label="Provider privacy preference" style={{ display: "grid", gap: "var(--morrow-space-2)" }}>
         {Object.entries(PRIVACY_MODE_COPY).map(([mode, copy]) => (
           <label
             key={mode}

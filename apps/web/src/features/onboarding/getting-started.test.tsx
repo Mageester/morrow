@@ -126,7 +126,8 @@ describe("GettingStarted", () => {
     renderChecklist({});
     // Privacy mode is already satisfied by its safe default (local_only) —
     // it shows as Done, not an action to complete.
-    expect(await screen.findByText("Choose a privacy mode")).toBeVisible();
+    expect(await screen.findByText("Review your privacy preference")).toBeVisible();
+    expect(screen.getByText(/does not enforce provider routing/i)).toBeVisible();
     // Team creation genuinely needs action, so it shows a real link.
     expect(await screen.findByRole("link", { name: "Create a team" })).toBeVisible();
     // Both optional steps carry the "Optional" badge, distinguishing them from

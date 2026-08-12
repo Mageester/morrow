@@ -67,10 +67,10 @@ export function GettingStarted() {
     },
     {
       id: "privacy",
-      title: "Choose a privacy mode",
+      title: "Review your privacy preference",
       body: profile.data
-        ? `${profile.data.defaultPrivacyMode === "local_only" ? "Local only" : profile.data.defaultPrivacyMode === "controlled_cloud" ? "Controlled cloud" : "Custom"} is active by default — review or change it any time in Settings.`
-        : "Local only is active by default — review or change it any time in Settings.",
+        ? `${profile.data.defaultPrivacyMode === "local_only" ? "Prefer local providers" : profile.data.defaultPrivacyMode === "controlled_cloud" ? "Cloud providers available" : "Custom preference"} is saved. It does not enforce provider routing; review it any time in Settings.`
+        : "A local-first preference is saved. It does not enforce provider routing; review it any time in Settings.",
       done: profile.isSuccess,
       optional: true,
       action: { label: "Review privacy settings", to: "/settings" },
