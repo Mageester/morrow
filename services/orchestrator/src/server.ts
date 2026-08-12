@@ -31,6 +31,7 @@ import {
   CreateHandoffSchema,
   UpdateAssistantProfileSchema,
   CreateAssistantGoalSchema,
+  GlobalSearchResponseSchema,
   type PresetId,
   type ProviderId,
   type ProviderAuthMode,
@@ -3191,6 +3192,35 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   // ── Memory ──────────────────────────────────────────────────────────────────
 
+  app.get("/api/memory/settings", async () => {
+    const row = deps.db.prepare("SELECT value FROM settings WHERE key = ?").get("memory.autoCapture") as { value?: string } | undefined;
+    return { autoCapture: row?.value !== "false" };
+  });
+
+  app.patch("/api/memory/settings", async (request) => {
+    const body = z.object({ autoCapture: z.boolean() }).strict().parse(request.body);
+    deps.db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)")
+      .run("memory.autoCapture", String(body.autoCapture));
+    return body;
+  });
+
+  app.get("/api/search", async (request) => {
+    const q = z
+      .object({
+        q: z.string().max(500).optional().default(""),
+        kind: z.union([SearchKindSchema, z.array(SearchKindSchema)]).optional(),
+        limit: z.coerce.number().int().positive().max(100).optional().default(25),
+      })
+      .parse(request.query);
+    const kinds = q.kind === undefined ? undefined : Array.isArray(q.kind) ? q.kind : [q.kind];
+    const hits = projects
+      .listProjects()
+      .flatMap((project) => search.search(project.id, q.q, { ...(kinds ? { kinds } : {}), limit: q.limit }).hits)
+      .sort((left, right) => left.score - right.score || right.createdAt.localeCompare(left.createdAt))
+      .slice(0, q.limit);
+    return GlobalSearchResponseSchema.parse({ version: 1, query: q.q, total: hits.length, hits });
+  });
+
   app.get("/api/projects/:projectId/search", async (request) => {
     const { projectId } = request.params as { projectId: string };
     const project = projects.getProjectById(projectId);
@@ -3430,9 +3460,12 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (scope) {
       const parsedScope = MemoryScopeSchema.safeParse(scope);
       if (!parsedScope.success) throw new ApiError(400, "Invalid scope", "VALIDATION_ERROR");
+      if (parsedScope.data === "user_global") return memory.listAllUserGlobal();
       return memory.listByScope(projectId, parsedScope.data);
     }
-    return memory.listByProject(projectId);
+    const visible = new Map(memory.listByProject(projectId).map((entry) => [entry.id, entry]));
+    for (const entry of memory.listAllUserGlobal()) visible.set(entry.id, entry);
+    return [...visible.values()];
   });
 
   // Local, explicit, versioned export/import — never leaves the machine on
@@ -3491,6 +3524,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (existing.projectId !== body.projectId) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
     const now = new Date().toISOString();
     let updated = existing;
+    if (body.content !== undefined) updated = memory.updateContent(id, body.content, now)!;
     if (body.enabled !== undefined) updated = memory.setEnabled(id, body.enabled, now)!;
     if (body.pinned !== undefined) updated = memory.setPinned(id, body.pinned, now)!;
     return updated;

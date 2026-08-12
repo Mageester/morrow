@@ -75,6 +75,24 @@ export function learnedSkillsRepository(db: Database.Database) {
       return this.get(id)!;
     },
 
+    setVersion(id: string, version: string, updatedAt: string): LearnedSkill {
+      db.prepare("UPDATE learned_skills SET version=?,updated_at=? WHERE id=?").run(version, updatedAt, id);
+      return this.get(id)!;
+    },
+
+    supersede(id: string, replacementId: string, updatedAt: string): LearnedSkill {
+      const current = this.get(id);
+      if (!current) throw new Error(`Learned skill ${id} not found`);
+      const history = [...current.rollbackHistory, {
+        version: current.version,
+        reason: `Superseded by newly verified workflow ${replacementId}`,
+        at: updatedAt,
+      }];
+      db.prepare("UPDATE learned_skills SET state='superseded',directory=NULL,rollback_history_json=?,updated_at=? WHERE id=?")
+        .run(JSON.stringify(history), updatedAt, id);
+      return this.get(id)!;
+    },
+
     recordRollback(id: string, reason: string, updatedAt: string): LearnedSkill {
       const current = this.get(id);
       if (!current) throw new Error(`Learned skill ${id} not found`);

@@ -143,6 +143,47 @@ describe("automatic Cortex memory and skills", () => {
     expect(matching.map((skill) => skill.id)).toContain(active.id);
   });
 
+  it("supersedes an outdated validation skill after a corrected workflow succeeds twice", () => {
+    cortex.build("p1");
+    cortex.addLearnings("p1", [learning("mission-a"), learning("mission-b")]);
+    const oldSkill = learnedSkillsRepository(db).listByProject("p1")[0]!;
+    expect(oldSkill.state).toBe("active");
+
+    cortex.addLearnings("p1", [learning("mission-c", "npm run check")]);
+    expect(learnedSkillsRepository(db).listByProject("p1").filter((skill) => skill.state === "active")).toHaveLength(1);
+    cortex.addLearnings("p1", [learning("mission-d", "npm run check")]);
+
+    const skills = learnedSkillsRepository(db).listByProject("p1");
+    const replacement = skills.find((skill) => skill.workflowFingerprint !== oldSkill.workflowFingerprint)!;
+    expect(learnedSkillsRepository(db).get(oldSkill.id)).toMatchObject({
+      state: "superseded",
+      directory: null,
+      rollbackHistory: [expect.objectContaining({ reason: expect.stringContaining(replacement.id) })],
+    });
+    expect(replacement).toMatchObject({ state: "active", successCount: 2, version: "2.0.0" });
+    expect(replacement.directory).not.toBeNull();
+    expect(existsSync(oldSkill.directory!)).toBe(false);
+  });
+
+  it("supersedes a replacement even when the prior bundle path was changed to a symlink", () => {
+    cortex.build("p1");
+    cortex.addLearnings("p1", [learning("mission-a"), learning("mission-b")]);
+    const oldSkill = learnedSkillsRepository(db).listByProject("p1")[0]!;
+    const outside = mkdtempSync(join(tmpdir(), "morrow-cortex-prior-outside-"));
+    writeFileSync(join(outside, "sentinel.txt"), "outside", "utf8");
+    rmSync(oldSkill.directory!, { force: true, recursive: true });
+    symlinkSync(outside, oldSkill.directory!, process.platform === "win32" ? "junction" : "dir");
+
+    cortex.addLearnings("p1", [learning("mission-c", "npm run check")]);
+    expect(() => cortex.addLearnings("p1", [learning("mission-d", "npm run check")])).not.toThrow();
+
+    expect(learnedSkillsRepository(db).get(oldSkill.id)?.state).toBe("superseded");
+    expect(readFileSync(join(outside, "sentinel.txt"), "utf8")).toBe("outside");
+    expect(existsSync(oldSkill.directory!)).toBe(true);
+    rmSync(oldSkill.directory!, { force: true, recursive: true });
+    rmSync(outside, { force: true, recursive: true });
+  });
+
   it("never activates a repeated procedure with shell chaining or destructive behavior", () => {
     cortex.build("p1");
     cortex.addLearnings("p1", [learning("mission-a", "pnpm check; Remove-Item -Recurse .")]);

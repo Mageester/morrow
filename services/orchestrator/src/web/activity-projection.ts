@@ -235,6 +235,16 @@ function projectEvent(taskId: string, event: TaskEvent): WebConversationActivity
       });
     case "verification.completed":
       return null;
+    case "memory.learned": {
+      const count = nonnegativeInteger(payload.count) ?? 0;
+      return entry(taskId, event, {
+        kind: "memory",
+        status: "completed",
+        summary: "Updated memory",
+        detail: `${count} useful detail${count === 1 ? "" : "s"} learned`,
+        resultCount: count,
+      });
+    }
     case "tool.started": {
       const toolName = identifier(payload.toolName);
       if (!isTranscriptTool(toolName)) return null;

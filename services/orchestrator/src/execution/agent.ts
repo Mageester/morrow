@@ -18,6 +18,7 @@ import { taskRoutingRepository } from "../repositories/task-routing.js";
 import { memoryRepository } from "../repositories/memory.js";
 import { skillUsageRepository } from "../repositories/skill-usage.js";
 import { learnedSkillsRepository } from "../repositories/learned-skills.js";
+import { AutomaticUserMemoryService } from "../cortex/automatic-user-memory.js";
 import { approvalsRepository } from "../repositories/approvals.js";
 import { changeSetsRepository } from "../repositories/change-sets.js";
 import { taskContinuationsRepository } from "../repositories/task-continuations.js";
@@ -988,6 +989,7 @@ export async function executeAgentChatTask({
   const providerId = (routing?.providerId ?? (assistantMessageRow.provider as ProviderId | null) ?? "openai") as ProviderId;
   const resolvedModel: string | undefined = routing?.model ?? assistantMessageRow.model ?? undefined;
   const useMemory = routing?.useMemory ?? true;
+  const autoMemoryCapture = (db.prepare("SELECT value FROM settings WHERE key = ?").get("memory.autoCapture") as { value?: string } | undefined)?.value !== "false";
   // The reasoning selection frozen into the routing decision at send time
   // (server.ts already validated it against the primary route). Retry/resume
   // re-read this same durable value â€” never "current session settings",
@@ -1598,7 +1600,8 @@ export async function executeAgentChatTask({
   // Load conversation messages before this task's assistant message
   const chatMessages: ChatMessage[] = [];
   const dbMessages = convs.listMessages(conversationId);
-  const latestUserPrompt = [...dbMessages].reverse().find((m) => m.id !== assistantMessageRow.id && m.role === "user")?.content ?? "";
+  const latestUserMessage = [...dbMessages].reverse().find((m) => m.id !== assistantMessageRow.id && m.role === "user");
+  const latestUserPrompt = latestUserMessage?.content ?? "";
   // Mission controller prompts contain operational instructions such as
   // "Use the persisted mission contract ...". Those are orchestrator policy,
   // not user-authored execution requirements. Extract the user's durable
@@ -1723,6 +1726,26 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   // Inject user-controlled memory (bounded, deterministic, project-isolated).
   if (useMemory) {
+    // Learn explicit durable preferences before recall so a request such as
+    // "I prefer minimal interfaces; build this page" can influence the work
+    // immediately as well as future projects. Resume never re-extracts the
+    // same turn, and delegated specialist prompts are excluded because they
+    // are orchestrator-authored objectives rather than direct user speech.
+    if (autoMemoryCapture && !durableResume && !assignedAgent && latestUserMessage) {
+      const learned = new AutomaticUserMemoryService(memoryRepo, now).capture({
+        projectId,
+        conversationId,
+        messageId: latestUserMessage.id,
+        taskId,
+        content: latestUserPrompt,
+      });
+      if (learned.length > 0) {
+        event("memory.learned", {
+          count: learned.length,
+          memoryIds: learned.map((entry) => entry.id),
+        });
+      }
+    }
     const entries = memoryRepo.retrieveRelevant(
       projectId,
       conversationId,

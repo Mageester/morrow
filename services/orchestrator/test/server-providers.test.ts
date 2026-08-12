@@ -447,6 +447,11 @@ describe("Provider / preset / memory API", () => {
     expect(deniedPatch.status).toBe(404);
     expect((await json("GET", `/api/conversations/${conv.id}/memory`)).body.length).toBe(1);
 
+    const edited = await json("PATCH", `/api/memory/${id}`, { projectId: project.id, content: "remember the revised preference" });
+    expect(edited.body.content).toBe("remember the revised preference");
+    expect(edited.body.normalizedContent).toBe("remember the revised preference");
+    expect(edited.body.source).toBe("user");
+
     const disabled = await json("PATCH", `/api/memory/${id}`, { projectId: project.id, enabled: false });
     expect(disabled.body.enabled).toBe(false);
     expect((await json("GET", `/api/conversations/${conv.id}/memory`)).body.length).toBe(0);
@@ -462,5 +467,15 @@ describe("Provider / preset / memory API", () => {
     const { project } = await makeConversation();
     const res = await json("POST", `/api/projects/${project.id}/memory`, { scope: "conversation", content: "x" });
     expect(res.status).toBe(400);
+  });
+
+  it("shows personal memory in every local project without exposing other project memory", async () => {
+    const { project } = await makeConversation();
+    const other = (await json("POST", "/api/projects", { name: "Other", workspacePath: process.cwd() })).body;
+    await json("POST", `/api/projects/${project.id}/memory`, { scope: "user_global", content: "I prefer concise answers" });
+    await json("POST", `/api/projects/${project.id}/memory`, { scope: "project", content: "Private project fact" });
+
+    const visible = await json("GET", `/api/projects/${other.id}/memory`);
+    expect(visible.body.map((entry: { content: string }) => entry.content)).toEqual(["I prefer concise answers"]);
   });
 });

@@ -203,6 +203,16 @@ export function memoryRepository(db: Database.Database) {
         .map(map);
     },
 
+    /** Complete personal-memory vault listing for user-controlled inspection.
+     * Unlike execution recall, this includes disabled and stale records so the
+     * user can review, restore, edit, or permanently remove them. */
+    listAllUserGlobal(): MemoryEntry[] {
+      return db
+        .prepare("SELECT * FROM memory_entries WHERE scope = 'user_global' ORDER BY pinned DESC, created_at ASC, id ASC")
+        .all()
+        .map(map);
+    },
+
     /**
      * Enabled entries applicable to a conversation: every project-wide tier plus
      * only this conversation's own conversation-scoped entries. Pinned first.
@@ -230,7 +240,13 @@ export function memoryRepository(db: Database.Database) {
       allowedScopes?: ReadonlySet<MemoryScope> | null,
     ): MemoryEntry[] {
       const tokens = new Set(normalizeMemory(prompt).match(/[a-z0-9][a-z0-9-]{2,}/g) ?? []);
-      const candidates = this.listActiveForConversation(projectId, conversationId)
+      // Personal memory is intentionally global. Merge it with the current
+      // project's records, then deduplicate rows that originated in this
+      // project before ranking. No other scope crosses a project boundary.
+      const seen = new Map<string, MemoryEntry>();
+      for (const entry of this.listActiveForConversation(projectId, conversationId)) seen.set(entry.id, entry);
+      for (const entry of this.listUserGlobal()) seen.set(entry.id, entry);
+      const candidates = [...seen.values()]
         .filter((entry) => allowedScopes === undefined || allowedScopes === null || allowedScopes.has(entry.scope))
         .filter((entry) => entry.lifecycle === "active")
         .filter((entry) => entry.staleness !== "stale" && entry.staleness !== "invalidated")
@@ -259,6 +275,16 @@ export function memoryRepository(db: Database.Database) {
 
     setPinned(id: string, pinned: boolean, updatedAt: string): MemoryEntry | undefined {
       db.prepare("UPDATE memory_entries SET pinned = ?, updated_at = ? WHERE id = ?").run(pinned ? 1 : 0, updatedAt, id);
+      return this.get(id);
+    },
+
+    updateContent(id: string, content: string, updatedAt: string): MemoryEntry | undefined {
+      db.prepare(
+        `UPDATE memory_entries
+         SET content = ?, normalized_content = ?, source = 'user', confidence = 1,
+             lifecycle = 'active', staleness = 'current', last_verified_at = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(content, normalizeMemory(content), updatedAt, updatedAt, id);
       return this.get(id);
     },
 
