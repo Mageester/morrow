@@ -81,4 +81,3 @@
 - [ ] Commit only onboarding/release files with Conventional Commit messages.
 - [ ] Push the branch and create a pull request to `main`; do not merge directly to `main`.
 - [ ] Publish only after required review and the release workflow's package/install validation succeed. If review prevents publication in this session, leave a complete release candidate and report the exact remaining gate.
-

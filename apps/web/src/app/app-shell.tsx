@@ -18,6 +18,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { conversationQueries } from "../api/conversations.js";
 import { NewChatButton } from "../features/chat/new-chat-button.js";
+import { OnboardingExperience } from "../features/onboarding/onboarding-experience.js";
 import { PairingBanner } from "../features/pairing/pairing-banner.js";
 import { useActiveProject } from "../features/projects/use-active-project.js";
 import { CommandPalette } from "../features/search/command-palette.js";
@@ -243,6 +244,8 @@ export function AppShell() {
       <a className="morrow-skip-link" href="#main-content">
         Skip to content
       </a>
+
+      <OnboardingExperience pathname={pathname} />
 
       <header className="morrow-topbar">
         <button

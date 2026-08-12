@@ -100,4 +100,3 @@ reloading the page.
 - Keyboard focus, reduced motion, contrast, and error messaging are verified.
 - Full tests, check, production build, package validation, and branch freshness
   pass before publication.
-
