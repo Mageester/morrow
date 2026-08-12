@@ -39,8 +39,9 @@ Generated concept references:
    action is **Begin**; **Explore first** permanently dismisses onboarding and
    exposes the regular app.
 2. **Privacy** — three plain-language promises: local control, visible external
-   data flow, and reversible memory. The user chooses **Local only** or
-   **Controlled cloud** as the default privacy mode.
+   data flow, and reversible memory. The user records either a **Local-first
+   preference** or that configured **Cloud is available**; the copy explicitly
+   states that this preference does not enforce provider routing.
 3. **Personalization** — optional display name plus one of **Building
    products**, **Research & thinking**, or **Everyday work**. These values are
    persisted to onboarding state; display name and privacy mode also update the

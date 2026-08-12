@@ -68,6 +68,7 @@ interface RenderOptions {
   providers?: unknown[];
   projects?: unknown[];
   pathname?: string;
+  failOnboardingUpdates?: number;
 }
 
 function renderExperience(options: RenderOptions = {}) {
@@ -79,6 +80,8 @@ function renderExperience(options: RenderOptions = {}) {
   };
   const onboardingUpdates: Array<Record<string, unknown>> = [];
   const profileUpdates: Array<Record<string, unknown>> = [];
+  let remainingOnboardingFailures = options.failOnboardingUpdates ?? 0;
+  let assistantProfile = profile;
 
   vi.stubGlobal(
     "fetch",
@@ -88,6 +91,10 @@ function renderExperience(options: RenderOptions = {}) {
         return Response.json(onboarding);
       }
       if (url === "/api/onboarding" && init?.method === "POST") {
+        if (remainingOnboardingFailures > 0) {
+          remainingOnboardingFailures -= 1;
+          return Response.json({ error: "save failed" }, { status: 500 });
+        }
         const update = JSON.parse(String(init.body)) as Record<string, unknown>;
         onboardingUpdates.push(update);
         onboarding = { ...onboarding, ...update };
@@ -96,7 +103,8 @@ function renderExperience(options: RenderOptions = {}) {
       if (url === "/api/assistant-profile" && init?.method === "PATCH") {
         const update = JSON.parse(String(init.body)) as Record<string, unknown>;
         profileUpdates.push(update);
-        return Response.json({ ...profile, ...update });
+        assistantProfile = { ...assistantProfile, ...update };
+        return Response.json(assistantProfile);
       }
       if (url === "/api/providers") return Response.json(options.providers ?? []);
       if (url === "/api/projects") return Response.json(options.projects ?? []);
@@ -123,7 +131,7 @@ function renderExperience(options: RenderOptions = {}) {
     </QueryClientProvider>,
   );
 
-  return { ...view, onboardingUpdates, profileUpdates };
+  return { ...view, client, onboardingUpdates, profileUpdates };
 }
 
 afterEach(() => {
@@ -149,17 +157,17 @@ describe("OnboardingExperience", () => {
       onboarding: { onboarded: false, onboardingStep: "privacy", useCase: null, name: null },
     });
 
-    expect(await screen.findByRole("heading", { name: "Private by design." })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Privacy, with you in control." })).toBeVisible();
     expect(screen.queryByText("Your private intelligence, ready to grow with you.")).not.toBeInTheDocument();
     expect(screen.getByText("2 of 5")).toBeVisible();
   });
 
   it("persists personalization and presents real provider and project readiness", async () => {
-    const { onboardingUpdates, profileUpdates } = renderExperience();
+    const { client, onboardingUpdates, profileUpdates } = renderExperience();
     const user = userEvent.setup();
 
     await user.click(await screen.findByRole("button", { name: "Begin" }));
-    await user.click(screen.getByRole("radio", { name: /Controlled cloud/ }));
+    await user.click(screen.getByRole("radio", { name: /Cloud available/ }));
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await user.type(screen.getByRole("textbox", { name: "What should Morrow call you?" }), "Aidan");
     await user.click(screen.getByRole("radio", { name: "Research & thinking" }));
@@ -169,6 +177,7 @@ describe("OnboardingExperience", () => {
     expect(screen.getByRole("link", { name: "Connect a model" })).toHaveAttribute("href", "/connections");
     expect(screen.getByRole("link", { name: "Add a project" })).toHaveAttribute("href", "/projects");
     expect(profileUpdates).toContainEqual({ defaultPrivacyMode: "controlled_cloud" });
+    expect(client.getQueryData(["assistant-profile"])).toMatchObject({ defaultPrivacyMode: "controlled_cloud" });
     expect(profileUpdates).toContainEqual({ displayName: "Aidan" });
     expect(onboardingUpdates).toContainEqual({ name: "Aidan", onboardingStep: "readiness", useCase: "research" });
   });
@@ -201,5 +210,33 @@ describe("OnboardingExperience", () => {
 
     const setupRoute = renderExperience({ pathname: "/connections" });
     await waitFor(() => expect(setupRoute.container.querySelector(".morrow-onboarding")).toBeNull());
+  });
+
+  it("keeps the current scene visible when persistence fails and succeeds on retry", async () => {
+    renderExperience({ failOnboardingUpdates: 1 });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Begin" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Morrow couldn't save that yet. Try again.");
+    expect(screen.getByRole("dialog", { name: "Welcome to Morrow" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Begin" }));
+    expect(await screen.findByRole("heading", { name: "Privacy, with you in control." })).toBeVisible();
+  });
+
+  it("wraps keyboard focus inside the dialog", async () => {
+    renderExperience({
+      onboarding: { onboarded: false, onboardingStep: "privacy", useCase: null, name: null },
+    });
+    const user = userEvent.setup();
+    const first = await screen.findByRole("radio", { name: /Local-first preference/ });
+    const last = screen.getByRole("button", { name: "Back" });
+
+    await waitFor(() => expect(first).toHaveFocus());
+    await user.tab({ shift: true });
+    expect(last).toHaveFocus();
+    await user.tab();
+    expect(first).toHaveFocus();
   });
 });

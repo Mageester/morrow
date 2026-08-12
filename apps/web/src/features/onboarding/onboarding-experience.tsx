@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Check, ShieldCheck } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { assistantProfileApi } from "../../api/assistant-profile.js";
+import { assistantProfileApi, assistantProfileQueries } from "../../api/assistant-profile.js";
 import { onboardingApi, onboardingKeys, onboardingQueries, type OnboardingUpdate } from "../../api/onboarding.js";
 import { projectQueries } from "../../api/projects.js";
 import { providerQueries } from "../../api/providers.js";
@@ -75,24 +75,24 @@ function PrivacyScene({ back, continueToNext, mode, pending, setMode }: {
   return (
     <div className="morrow-onboarding__split">
       <div className="morrow-onboarding__copy">
-        <h1 id="morrow-onboarding-heading">Private by design.</h1>
-        <p>Your work starts local. Morrow shows when a provider will receive context, and memory stays inspectable and reversible.</p>
+        <h1 id="morrow-onboarding-heading">Privacy, with you in control.</h1>
+        <p>Your workspace and settings stay local. Configured cloud models receive context only when you choose to use them.</p>
       </div>
       <div className="morrow-onboarding__controls">
         <div className="morrow-onboarding__promises">
           <p><ShieldCheck aria-hidden="true" size={18} /><span><strong>Local control</strong>Your projects and settings stay on this machine.</span></p>
-          <p><ShieldCheck aria-hidden="true" size={18} /><span><strong>Visible data flow</strong>External model use is disclosed before work begins.</span></p>
+          <p><ShieldCheck aria-hidden="true" size={18} /><span><strong>Provider choice</strong>You choose the model provider for your work.</span></p>
           <p><ShieldCheck aria-hidden="true" size={18} /><span><strong>Memory you own</strong>Review, edit, disable, or remove anything Morrow learns.</span></p>
         </div>
         <fieldset className="morrow-onboarding__choices">
-          <legend>Default privacy mode</legend>
+          <legend>Privacy preference</legend>
           <label data-selected={mode === "local_only" ? "true" : undefined}>
             <input checked={mode === "local_only"} name="privacy" onChange={() => setMode("local_only")} type="radio" />
-            <span><strong>Local only</strong><small>Use local providers unless you choose otherwise.</small></span>
+            <span><strong>Local-first preference</strong><small>Records your preference; it does not block configured cloud providers.</small></span>
           </label>
           <label data-selected={mode === "controlled_cloud" ? "true" : undefined}>
             <input checked={mode === "controlled_cloud"} name="privacy" onChange={() => setMode("controlled_cloud")} type="radio" />
-            <span><strong>Controlled cloud</strong><small>Allow configured cloud providers with visible routing.</small></span>
+            <span><strong>Cloud available</strong><small>Records that configured cloud providers are acceptable for your work.</small></span>
           </label>
         </fieldset>
         <StageActions back={back}><button className="morrow-onboarding__primary" disabled={pending} onClick={continueToNext} type="button">Continue</button></StageActions>
@@ -248,7 +248,8 @@ export function OnboardingExperience({ pathname }: { pathname: string }) {
     setPending(true);
     setError(null);
     try {
-      await assistantProfileApi.update({ defaultPrivacyMode: privacy });
+      const updatedProfile = await assistantProfileApi.update({ defaultPrivacyMode: privacy });
+      queryClient.setQueryData(assistantProfileQueries.get().queryKey, updatedProfile);
       await onboardingApi.update({ onboardingStep: "personalize" });
       queryClient.setQueryData(onboardingKeys.state, { ...onboarding.data, onboardingStep: "personalize" });
       setSceneOverride("personalize");
@@ -264,7 +265,10 @@ export function OnboardingExperience({ pathname }: { pathname: string }) {
     setError(null);
     try {
       const trimmedName = name.trim();
-      if (trimmedName) await assistantProfileApi.update({ displayName: trimmedName });
+      if (trimmedName) {
+        const updatedProfile = await assistantProfileApi.update({ displayName: trimmedName });
+        queryClient.setQueryData(assistantProfileQueries.get().queryKey, updatedProfile);
+      }
       const input = { name: trimmedName || null, onboardingStep: "readiness", useCase } as const;
       await onboardingApi.update(input);
       queryClient.setQueryData(onboardingKeys.state, { ...onboarding.data, ...input });
