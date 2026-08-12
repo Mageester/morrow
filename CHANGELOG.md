@@ -6,6 +6,71 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+### Added - Morrow learns through ordinary work
+
+- Ordinary agent conversations now capture explicit durable preferences and
+  project facts automatically. Temporary chatter, likely secrets, and prompt
+  instructions are rejected before persistence; duplicate statements
+  consolidate and later corrections supersede the earlier fact.
+- Personal memory follows the user across local projects while project,
+  conversation, agent, and team memory remains isolated. The Memory page now
+  exposes automatic-learning opt-out, provenance, editing, pin/forget/restore,
+  permanent deletion, and local export.
+- Repeated successful project validation workflows become private learned
+  skills after two independently verified uses. A newer verified workflow
+  supersedes the older bundle with version and rollback history instead of
+  leaving two active conflicting procedures.
+- Skills is now a first-class product destination. It shows installed and
+  learned procedures, evidence, safety requirements, versions, use counts, and
+  improvement history with calm progressive disclosure.
+- `Ctrl/Cmd K` opens local global search across conversations, messages, tasks,
+  memory, and product destinations. Search spans the user's local projects but
+  does not contact an external service.
+
+### Changed
+
+- The primary navigation is now Home, Projects, Skills, Memory, History,
+  Connections, and Settings. Missions and Teams remain available to product
+  workflows without dominating the default surface; the empty Library
+  placeholder and route were removed.
+- Chats is presented as History, emphasizing durable continuity rather than a
+  transient message list.
+
+### Security and privacy impact
+
+- Automatic user-memory extraction is deterministic and runs locally. It has no
+  model or network call, requires explicit durable language, rejects
+  secret-like content and instruction-shaped payloads, and can be disabled with
+  a server-enforced setting.
+- Only `user_global` memory crosses projects. All other scopes retain their
+  project boundary, and the full personal-memory vault is exposed only for
+  local inspection and control.
+- Automatically learned skills remain workspace-scoped, network-free,
+  secret-free, checksum-verified, and evidence-gated before activation.
+
+### Rollback
+
+- Turn off **Learn useful memory automatically** on the Memory page to stop new
+  preference capture. Existing entries remain inspectable and removable.
+- Reverting this change restores the prior navigation and skill lifecycle; the
+  additive memory rows remain valid SQLite data and do not require migration.
+
+## [0.1.0-beta.41] - 2026-08-12
+
+### Added
+
+- A premium command workspace with persistent reasoning controls and clearer
+  visibility into active execution.
+- Scoped assistant teams, delegation safeguards, handoff context, and
+  security-tested project boundaries.
+- Deterministic harness-efficiency evidence and reduced provider/tool-loop
+  overhead without weakening completion checks.
+
+### Security and privacy impact
+
+- Team memory, delegation, and assistant context remain project-scoped, while
+  provider and tool execution continue to honor explicit permission policy.
+
 ## [0.1.0-beta.40] - 2026-08-09
 
 ### Added - trusted workspace agents can finish real builds without being babysat

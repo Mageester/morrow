@@ -94,11 +94,16 @@ as verified commands, reviewer findings, recorded failures, and recovery results
 Unsupported claims are rejected. Learnings include staleness conditions and can
 affect later planning when they remain current.
 
-Each automatically captured memory has a stable content-derived ID, scope, type,
+Each automatically captured memory has a stable topic-derived ID, scope, type,
 normalized content, evidence references, lifecycle state, confidence, verification
 time, use and outcome counters, freshness, conflict/supersession fields,
-sensitivity, and expiration policy. Retrieval is project-isolated and ranked
-against the next mission request. Expired, stale, invalidated, disabled, or
+sensitivity, and expiration policy. Deterministic repository facts stay within
+their project. Direct, durable user preferences use `user_global` scope and can
+follow the user across local projects; no other scope crosses that boundary.
+Ordinary-turn extraction is local and deterministic, accepts only explicit
+durable language, and rejects temporary facts, likely secrets, and instruction-
+shaped content. Users can turn future capture off and edit or remove every entry.
+Retrieval is ranked against the next mission request. Expired, stale, invalidated, disabled, or
 non-active records cannot affect execution. Repository changes stale superseded
 deterministic memory before replacement facts become active.
 
@@ -115,6 +120,9 @@ Active learned skills carry stable ID, semantic version, trigger conditions,
 scope, steps, permissions, validation requirements, provenance, success/failure
 counts, confidence, last verification, and rollback history. A later matching
 agent request retrieves the verified skill automatically and records the use.
+When a different validation workflow becomes repeatedly successful for the same
+project, Cortex validates and activates the replacement first, increments its
+major version, and then supersedes the older bundle with a rollback record.
 Any checksum, lifecycle, or permission drift makes the bundle undiscoverable;
 mission-start monitoring quarantines it and records a rollback. A model-created
 bundle without this Cortex lifecycle never becomes implicitly active.

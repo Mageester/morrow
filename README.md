@@ -4,7 +4,7 @@
 
 Morrow is a self-hosted, deeply customizable personal AI agent. Local-first, provider-neutral, with visible execution, explicit permissions, and persistent memory.
 
-> **Status:** v0.1.0-beta.40 Early Access. Windows 10/11 x64 supported. Linux via source build. macOS planned.
+> **Status:** v0.1.0-beta.41 Early Access. Windows 10/11 x64 supported. Linux via source build. macOS planned.
 
 ## Quick Install (Windows)
 
@@ -186,8 +186,10 @@ Morrow runs a conversation-first agent through a provider-neutral runtime:
 - **Truthful execution:** visible plan, tool calls, files read, evidence,
   provider/model, routing, privacy, and disclosure; cancellation, timeout, and
   restart recovery are persisted honestly. Cost is never fabricated.
-- **Memory:** a deterministic, project-isolated, user-controlled SQLite memory
-  layer (no hidden capture, no cross-project leakage).
+- **Memory:** a deterministic, user-controlled SQLite memory layer that learns
+  explicit durable preferences and project facts during ordinary work. Personal
+  preferences can follow the user across local projects; every other scope stays
+  project-isolated. Capture is inspectable, editable, removable, and optional.
 
 **Configuring a provider** takes about a minute and never requires PowerShell,
 environment variables, or a service restart:
