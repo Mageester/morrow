@@ -4,6 +4,12 @@ import { z } from "zod";
 import { api } from "./client.js";
 
 export const memoryQueries = {
+  settings() {
+    return queryOptions({
+      queryKey: ["memory", "settings"] as const,
+      queryFn: () => api.get("/api/memory/settings", z.object({ autoCapture: z.boolean() }).strict()),
+    });
+  },
   list(projectId: string, scope?: string) {
     const query = scope ? `?scope=${encodeURIComponent(scope)}` : "";
     return queryOptions({
@@ -36,6 +42,13 @@ export const MEMORY_SCOPE_LABELS: Record<string, string> = {
 export const VAULT_SCOPES = ["user_global", "project", "agent", "team", "temporary_context"] as const;
 
 export const memoryApi = {
+  setAutoCapture(autoCapture: boolean) {
+    return api.patch(
+      "/api/memory/settings",
+      { autoCapture },
+      z.object({ autoCapture: z.boolean() }).strict(),
+    );
+  },
   create(projectId: string, input: { scope: string; content: string; pinned?: boolean }) {
     return api.post(`/api/projects/${encodeURIComponent(projectId)}/memory`, input, MemoryEntrySchema);
   },
@@ -44,6 +57,9 @@ export const memoryApi = {
   },
   setPinned(id: string, projectId: string, pinned: boolean) {
     return api.patch(`/api/memory/${encodeURIComponent(id)}`, { projectId, pinned }, MemoryEntrySchema);
+  },
+  updateContent(id: string, projectId: string, content: string) {
+    return api.patch(`/api/memory/${encodeURIComponent(id)}`, { projectId, content }, MemoryEntrySchema);
   },
   remove(id: string, projectId: string) {
     return api.deleteWithBody(`/api/memory/${encodeURIComponent(id)}`, { projectId }, z.object({}).nullable());

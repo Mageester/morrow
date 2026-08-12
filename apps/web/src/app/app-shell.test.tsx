@@ -11,16 +11,14 @@ import { createAppRouter } from "./router.js";
 
 const NAV_ORDER = [
   "Home",
-  "Chats",
   "Projects",
-  "Missions",
-  "Teams",
-  "Library",
+  "Skills",
   "Memory",
+  "History",
   "Connections",
   "Settings",
 ];
-const IMPLEMENTED = ["Home", "Chats", "Projects", "Missions", "Teams", "Library", "Memory", "Connections", "Settings"];
+const IMPLEMENTED = NAV_ORDER;
 const UPCOMING: string[] = [];
 
 function stubFetch() {
@@ -32,6 +30,23 @@ function stubFetch() {
         return new Response(JSON.stringify({ ok: true, service: "morrow-orchestrator" }), {
           headers: { "content-type": "application/json" },
           status: 200,
+        });
+      }
+      if (url.startsWith("/api/search?")) {
+        return Response.json({
+          version: 1,
+          query: "database",
+          total: 1,
+          hits: [{
+            kind: "conversation",
+            refId: "conversation-1",
+            projectId: "project-1",
+            conversationId: "conversation-1",
+            title: "Refactor the database layer",
+            snippet: "Refactor the [database] layer",
+            createdAt: "2026-08-12T12:00:00.000Z",
+            score: -1,
+          }],
         });
       }
       // No local project in shell tests: keeps the sidebar recent/new-chat data
@@ -64,7 +79,7 @@ describe("Morrow application shell", () => {
   });
 
   it("renders the chat-first destinations in order and marks upcoming areas honestly", async () => {
-    renderAt("/app/missions");
+    renderAt("/app/skills");
 
     const navigation = await screen.findByRole("navigation", { name: "Primary" });
     const labels = [...navigation.querySelectorAll("[data-nav]")].map((element) =>
@@ -85,10 +100,10 @@ describe("Morrow application shell", () => {
   });
 
   it("marks the active route as the current page", async () => {
-    renderAt("/app/missions");
+    renderAt("/app/skills");
     const navigation = await screen.findByRole("navigation", { name: "Primary" });
 
-    expect(within(navigation).getByRole("link", { name: "Missions" })).toHaveAttribute(
+    expect(within(navigation).getByRole("link", { name: "Skills" })).toHaveAttribute(
       "aria-current",
       "page",
     );
@@ -104,22 +119,21 @@ describe("Morrow application shell", () => {
     expect(main).not.toHaveFocus();
     const navigation = await screen.findByRole("navigation", { name: "Primary" });
 
-    await user.click(within(navigation).getByRole("link", { name: "Missions" }));
+    await user.click(within(navigation).getByRole("link", { name: "Skills" }));
 
     expect(
-      await screen.findByRole("heading", { name: "Missions", level: 1 }),
+      await screen.findByRole("heading", { name: "Skills", level: 1 }),
     ).toBeVisible();
     await waitFor(() => {
-      expect(document.title).toBe("Missions · Morrow");
+      expect(document.title).toBe("Skills · Morrow");
       expect(main).toHaveFocus();
     });
   });
 
   it.each([
-    ["/app/chats", "Chats"],
+    ["/app/chats", "History"],
     ["/app/projects", "Projects"],
-    ["/app/missions", "Missions"],
-    ["/app/library", "Library"],
+    ["/app/skills", "Skills"],
     ["/app/connections", "Connect a model"],
     ["/app/settings", "Settings"],
   ])("renders %s inside the shared shell", async (path, heading) => {
@@ -148,12 +162,25 @@ describe("Morrow application shell", () => {
     renderAt("/app/");
 
     const dock = await screen.findByRole("navigation", { name: "Mobile navigation" });
-    expect(within(dock).getByRole("link", { name: "Chats" })).toBeVisible();
+    expect(within(dock).getByRole("link", { name: "History" })).toBeVisible();
     await user.click(within(dock).getByRole("button", { name: "More navigation" }));
     expect(await screen.findByRole("button", { name: "Close navigation" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
+  });
+
+  it("opens global search from the keyboard and exposes a real conversation destination", async () => {
+    const user = userEvent.setup();
+    renderAt("/app/");
+
+    await user.keyboard("{Control>}k{/Control}");
+    const search = await screen.findByRole("searchbox", { name: "Search Morrow" });
+    expect(search).toHaveFocus();
+    await user.type(search, "database");
+
+    const result = await screen.findByRole("link", { name: /Refactor the database layer/i });
+    expect(result).toHaveAttribute("href", "/app/chats/conversation-1?projectId=project-1");
   });
 
   it("applies a stored dark theme and switches to an explicit light choice", async () => {

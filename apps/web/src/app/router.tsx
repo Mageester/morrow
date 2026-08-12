@@ -20,10 +20,10 @@ const ConnectionsPage = lazyRouteComponent(() => import("../features/connections
 const ProjectsPage = lazyRouteComponent(() => import("../features/projects/projects-page.js"), "ProjectsPage");
 const ChatsPage = lazyRouteComponent(() => import("../features/chat/chats-page.js"), "ChatsPage");
 const ConversationPage = lazyRouteComponent(() => import("../features/chat/conversation-page.js"), "ConversationPage");
-const LibraryPage = lazyRouteComponent(() => import("../features/library/library-page.js"), "LibraryPage");
 const PairPage = lazyRouteComponent(() => import("../features/pairing/pair-page.js"), "PairPage");
 const SettingsPage = lazyRouteComponent(() => import("../features/placeholders/settings-page.js"), "SettingsPage");
 const MemoryPage = lazyRouteComponent(() => import("../features/memory/memory-page.js"), "MemoryPage");
+const SkillsPage = lazyRouteComponent(() => import("../features/skills/skills-page.js"), "SkillsPage");
 const TeamsPage = lazyRouteComponent(() => import("../features/teams/teams-page.js"), "TeamsPage");
 
 const rootRoute = createRootRoute({ component: AppShell });
@@ -67,12 +67,6 @@ const conversationRoute = createRoute({
   }),
 });
 
-const libraryRoute = createRoute({
-  component: LibraryPage,
-  getParentRoute: () => rootRoute,
-  path: "/library",
-});
-
 const connectionsRoute = createRoute({
   component: ConnectionsPage,
   getParentRoute: () => rootRoute,
@@ -97,6 +91,12 @@ const memoryRoute = createRoute({
   path: "/memory",
 });
 
+const skillsRoute = createRoute({
+  component: SkillsPage,
+  getParentRoute: () => rootRoute,
+  path: "/skills",
+});
+
 const teamsRoute = createRoute({
   component: TeamsPage,
   getParentRoute: () => rootRoute,
@@ -110,11 +110,11 @@ export const routeTree = rootRoute.addChildren([
   missionsRoute,
   missionRoute,
   conversationRoute,
-  libraryRoute,
   connectionsRoute,
   settingsRoute,
   pairRoute,
   memoryRoute,
+  skillsRoute,
   teamsRoute,
 ]);
 

@@ -2,17 +2,16 @@ import { StatusPill } from "@morrow/ui";
 import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import {
+  Brain,
   Cable,
+  Clock3,
   Folder,
   Home,
-  Library,
   Menu,
-  MessageSquare,
   MoreHorizontal,
   Settings,
   Sparkles,
-  Users,
-  Workflow,
+  WandSparkles,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -21,18 +20,19 @@ import { conversationQueries } from "../api/conversations.js";
 import { NewChatButton } from "../features/chat/new-chat-button.js";
 import { PairingBanner } from "../features/pairing/pairing-banner.js";
 import { useActiveProject } from "../features/projects/use-active-project.js";
+import { CommandPalette } from "../features/search/command-palette.js";
 import { useRuntimeStatus } from "../state/runtime-status.js";
 
 type ImplementedRoute =
   | "/"
   | "/chats"
   | "/missions"
-  | "/library"
   | "/connections"
   | "/settings"
   | "/projects"
   | "/pair"
   | "/memory"
+  | "/skills"
   | "/teams";
 
 interface NavItem {
@@ -46,21 +46,19 @@ interface NavItem {
 
 const NAVIGATION: NavItem[] = [
   { icon: Home, label: "Home", to: "/" },
-  { icon: MessageSquare, label: "Chats", to: "/chats" },
   { icon: Folder, label: "Projects", to: "/projects" },
-  { icon: Workflow, label: "Missions", to: "/missions" },
-  { icon: Users, label: "Teams", to: "/teams" },
-  { icon: Library, label: "Library", to: "/library" },
-  { icon: Sparkles, label: "Memory", to: "/memory" },
+  { icon: WandSparkles, label: "Skills", to: "/skills" },
+  { icon: Brain, label: "Memory", to: "/memory" },
+  { icon: Clock3, label: "History", to: "/chats" },
   { icon: Cable, label: "Connections", to: "/connections" },
   { icon: Settings, label: "Settings", to: "/settings" },
 ];
 
 const MOBILE_NAVIGATION: NavItem[] = [
   { icon: Home, label: "Home", to: "/" },
-  { icon: MessageSquare, label: "Chats", to: "/chats" },
-  { icon: Workflow, label: "Missions", to: "/missions" },
+  { icon: Clock3, label: "History", to: "/chats" },
   { icon: Folder, label: "Projects", to: "/projects" },
+  { icon: WandSparkles, label: "Skills", to: "/skills" },
 ];
 
 const runtimeLabels = {
@@ -88,14 +86,14 @@ function getRouteTitle(pathname: string): string {
 
   const routeTitles: Record<string, string> = {
     "/": "Home",
-    "/chats": "Chats",
+    "/chats": "History",
     "/connections": "Connections",
-    "/library": "Library",
     "/memory": "Memory",
     "/missions": "Missions",
     "/pair": "Pair this install",
     "/projects": "Projects",
     "/settings": "Settings",
+    "/skills": "Skills",
     "/teams": "Teams",
   };
   return routeTitles[routePath] ?? "Morrow";
@@ -287,6 +285,7 @@ export function AppShell() {
 
         <div className="morrow-sidebar__new">
           <SidebarNewChat />
+          <CommandPalette />
         </div>
 
         <nav aria-label="Primary" className="morrow-nav">

@@ -30,8 +30,8 @@ export function ChatsPage() {
     <section aria-labelledby="chats-heading" className="morrow-page morrow-chats">
       <div className="morrow-chats__head">
         <div className="morrow-page__heading">
-          <h1 id="chats-heading">Chats</h1>
-          <p>Every conversation you’ve had with Morrow, kept with its project.</p>
+          <h1 id="chats-heading">History</h1>
+          <p>Every conversation you’ve had with Morrow, organized by project.</p>
         </div>
         {activeProject ? <NewChatButton projectId={activeProject.id} /> : null}
       </div>
@@ -69,7 +69,7 @@ export function ChatsPage() {
         </div>
       ) : (
         <>
-          <div aria-label="Filter chats" className="morrow-chats__tabs" role="group">
+          <div aria-label="Filter history" className="morrow-chats__tabs" role="group">
             <button
               aria-pressed={tab === "active"}
               className="morrow-chats__tab"
