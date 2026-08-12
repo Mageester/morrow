@@ -6,6 +6,21 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.42] - 2026-08-12
+
+### Added - premium visual onboarding
+
+- New installs now open into a five-scene, full-screen onboarding journey for
+  privacy, personalization, real setup readiness, and launch. The experience
+  uses a purpose-made smoked-glass continuity visual, restrained motion, and
+  responsive desktop and mobile layouts while preserving a direct skip path.
+- Progress resumes from the durable local onboarding state. Provider and
+  project readiness come from the existing product APIs, and setup links yield
+  to their real destinations before resuming on Home.
+- The onboarding dialog traps keyboard focus, restores focus on exit, exposes
+  clear error recovery, and disables decorative movement when reduced motion
+  is requested.
+
 ### Added - Morrow learns through ordinary work
 
 - Ordinary agent conversations now capture explicit durable preferences and
@@ -38,6 +53,9 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ### Security and privacy impact
 
+- Onboarding introduces no telemetry or new external service. Its progress and
+  assistant-profile choices use the existing local API and remain in Morrow's
+  local data boundary.
 - Automatic user-memory extraction is deterministic and runs locally. It has no
   model or network call, requires explicit durable language, rejects
   secret-like content and instruction-shaped payloads, and can be disabled with
@@ -50,6 +68,8 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ### Rollback
 
+- Reinstall `v0.1.0-beta.41` to remove the visual onboarding. Existing local
+  onboarding and assistant-profile data remains compatible and is not deleted.
 - Turn off **Learn useful memory automatically** on the Memory page to stop new
   preference capture. Existing entries remain inspectable and removable.
 - Reverting this change restores the prior navigation and skill lifecycle; the
