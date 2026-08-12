@@ -17,9 +17,8 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 - Progress resumes from the durable local onboarding state. Provider and
   project readiness come from the existing product APIs, and setup links yield
   to their real destinations before resuming on Home.
-- The onboarding dialog traps keyboard focus, restores focus on exit, exposes
-  clear error recovery, and disables decorative movement when reduced motion
-  is requested.
+- The onboarding dialog traps keyboard focus, exposes clear error recovery,
+  and disables decorative movement when reduced motion is requested.
 
 ### Added - Morrow learns through ordinary work
 
