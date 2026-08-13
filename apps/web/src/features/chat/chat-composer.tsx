@@ -480,6 +480,7 @@ export function ChatComposer({
 
   return (
     <form
+      aria-label="Message Morrow"
       aria-busy={sending || stopping ? "true" : undefined}
       className="morrow-chat-composer"
       onSubmit={handleSubmit}
