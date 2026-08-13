@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { ApiClientError } from "../../api/client.js";
+import { ProductHeader } from "../../components/product-frame.js";
 import { pairingQueries } from "../../api/pairing.js";
 import {
   providerApi,
@@ -496,14 +497,12 @@ export function ConnectionsPage() {
 
   return (
     <section aria-labelledby="connections-heading" className="morrow-page morrow-connections-page">
-      <div className="morrow-page__heading">
-        <p className="morrow-eyebrow">Connections</p>
-        <h1 id="connections-heading">Connect a model</h1>
-        <p>
-          Morrow works with {all.length} providers. Credentials are stored on this computer and are never returned to
-          this browser.
-        </p>
-      </div>
+      <ProductHeader
+        description={`Morrow works with ${all.length} providers. Credentials are stored on this computer and are never returned to this browser.`}
+        eyebrow="Connections"
+        headingId="connections-heading"
+        title="Connect a model"
+      />
 
       {providers.isPending ? <p aria-live="polite" role="status">Checking your connections…</p> : null}
       {providers.isError && all.length > 0 ? <p className="morrow-connection__feedback morrow-connection__feedback--info" role="status">We could not refresh connection status. Showing the last known state.</p> : null}

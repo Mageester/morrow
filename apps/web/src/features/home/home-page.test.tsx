@@ -109,8 +109,9 @@ describe("HomePage", () => {
       throw new Error(`unexpected ${url}`);
     });
 
-    expect(await screen.findByText(/No local project yet/i)).toBeVisible();
-    expect(screen.getByRole("button", { name: "New chat" })).toBeDisabled();
+    expect(await screen.findByText(/Your work begins with a place/i)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "New chat" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Choose a local project" })).toHaveAttribute("href", "/projects");
   });
 });
 
@@ -132,8 +133,8 @@ describe("first run", () => {
   it("offers a way out when there is neither a project nor a provider", async () => {
     renderHome(emptyWorkspace([]));
 
-    expect(await screen.findByRole("heading", { name: "No local project yet" })).toBeVisible();
-    expect(await screen.findByRole("link", { name: "Create a project" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Your work begins with a place" })).toBeVisible();
+    expect(await screen.findByRole("link", { name: "Choose a local project" })).toBeVisible();
     expect(await screen.findByRole("link", { name: "Connect a model" })).toBeVisible();
     expect(await screen.findByRole("heading", { name: /steps and you're running/i })).toBeVisible();
   });
@@ -141,7 +142,7 @@ describe("first run", () => {
   it("stops asking for a provider once one is connected", async () => {
     renderHome(emptyWorkspace([{ id: "groq", configured: true }]));
 
-    expect(await screen.findByRole("link", { name: "Create a project" })).toBeVisible();
+    expect(await screen.findByRole("link", { name: "Choose a local project" })).toBeVisible();
     await waitFor(() => expect(screen.queryByRole("link", { name: "Connect a model" })).not.toBeInTheDocument());
   });
 });

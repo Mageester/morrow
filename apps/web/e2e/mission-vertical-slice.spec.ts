@@ -8,17 +8,19 @@ test.describe.configure({ mode: "serial" });
 test.describe("Morrow web vertical slice", () => {
   test("Home renders the chat-first start and the reordered navigation", async ({ page }) => {
     await page.goto("/app/");
+    await page.getByRole("button", { name: "Explore first" }).click();
+    await expect(page.getByRole("dialog", { name: "Welcome to Morrow" })).toBeHidden();
     await expect(page.getByRole("heading", { name: /Good (morning|afternoon|evening)\./ })).toBeVisible();
     await expect(page.getByText("What should we work on?")).toBeVisible();
     const home = page.getByRole("region", { name: /Good (morning|afternoon|evening)\./ });
     await expect(home.getByRole("button", { name: "New chat" })).toBeEnabled();
     const nav = page.getByRole("navigation", { name: "Primary" });
-    for (const label of ["Home", "Chats", "Projects", "Missions", "Library", "Connections", "Settings"]) {
+    for (const label of ["Home", "Projects", "Skills", "Memory", "History", "Connections", "Settings"]) {
       await expect(nav.getByRole("link", { name: new RegExp(`^${label}`) })).toBeVisible();
     }
-    await expect(nav.getByRole("button", { name: /Memory .* coming soon/i })).toBeDisabled();
+    await expect(nav.getByRole("link", { name: "Memory", exact: true })).toHaveAttribute("href", "/app/memory");
     // No task-type selector — Morrow is a general agent, not a coding-only tool.
-    await expect(page.getByText(/Coding|Research|Documents/)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^(Coding|Research|Documents)$/ })).toHaveCount(0);
   });
 
   test("creates a conversation from Home and lands on its durable workspace", async ({ page }) => {

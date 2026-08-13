@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { assistantProfileApi, assistantProfileQueries } from "../../api/assistant-profile.js";
 import { ApiClientError } from "../../api/client.js";
+import { ProductHeader } from "../../components/product-frame.js";
 import { useTheme, type ThemePreference } from "../../state/theme.js";
 import { useUserSettings } from "../../state/settings-store.js";
 import { Palette, Sliders, ShieldCheck, Trash2, Check, UserCircle, Lock } from "lucide-react";
@@ -225,12 +226,13 @@ export function SettingsPage() {
   }
 
   return (
-    <section aria-labelledby="settings-heading" className="morrow-page" style={{ display: "grid", gap: "var(--morrow-space-6)" }}>
-      <div className="morrow-page__heading">
-        <p className="morrow-eyebrow">Preferences & Configuration</p>
-        <h1 id="settings-heading">Settings</h1>
-        <p>Customize Morrow’s interface, model reasoning defaults, and privacy preferences across all projects.</p>
-      </div>
+    <section aria-labelledby="settings-heading" className="morrow-page morrow-settings">
+      <ProductHeader
+        description="Customize Morrow’s interface, model reasoning defaults, and privacy preferences across all projects."
+        eyebrow="Preferences & configuration"
+        headingId="settings-heading"
+        title="Settings"
+      />
 
       {/* Assistant profile */}
       <AssistantProfileSection />

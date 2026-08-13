@@ -5,6 +5,7 @@ import { Link } from "@tanstack/react-router";
 import { MessageSquare, Workflow } from "lucide-react";
 import { conversationQueries } from "../../api/conversations.js";
 import { missionQueries } from "../../api/query-keys.js";
+import { AmbientMark, StateScene } from "../../components/product-frame.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 import { NewChatButton } from "../chat/new-chat-button.js";
 import { GettingStarted } from "../onboarding/getting-started.js";
@@ -58,13 +59,21 @@ export function HomePage() {
 
   return (
     <section aria-labelledby="home-heading" className="morrow-page morrow-home">
-      <div className="morrow-home__intro">
+      <header className="morrow-home__intro">
+        <AmbientMark />
+        <p className="morrow-product-eyebrow">Private workspace</p>
         <h1 id="home-heading">{greeting(new Date())}</h1>
-        <p className="morrow-home__subtitle">What should we work on?</p>
-        <div className="morrow-home__start">
-          <NewChatButton className="morrow-new-chat__button--large" projectId={activeProject?.id} />
-        </div>
-      </div>
+        <p className="morrow-home__subtitle">
+          {activeProject ? "What should we work on?" : "A quieter place for ambitious work."}
+        </p>
+        {activeProject && !noProviderConnected ? (
+          <div className="morrow-home__start">
+            <NewChatButton className="morrow-new-chat__button--large" projectId={activeProject.id} />
+          </div>
+        ) : activeProject && noProviderConnected ? (
+          <Link className="morrow-home__primary-action" to="/connections">Connect a model</Link>
+        ) : null}
+      </header>
 
       {/* Setup guidance sits above every other state. The branch below only
           prompted for a model inside the "no project yet" case, so an install
@@ -84,32 +93,21 @@ export function HomePage() {
           </button>
         </div>
       ) : projects.needsSelection ? (
-        <div className="morrow-empty">
-          <h2>{projects.staleSelection ? "Your project selection needs a refresh" : "Select a project"}</h2>
-          <p>
-            {projects.staleSelection
-              ? "The project Morrow last used here is no longer available."
-              : "Choose which local project Morrow should work in."}
-          </p>
-          <Link className="morrow-empty__action" to="/projects">
-            Go to Projects
-          </Link>
-        </div>
+        <StateScene
+          action={<Link className="morrow-home__primary-action" to="/projects">Choose a local project</Link>}
+          description={projects.staleSelection
+            ? "The project Morrow last used here is no longer available."
+            : "Choose which local project Morrow should work in."}
+          title={projects.staleSelection ? "Your project selection needs a refresh" : "Select a project"}
+        />
       ) : !activeProject ? (
-        <div className="morrow-empty">
-          <h2>No local project yet</h2>
-          <p>Create a local project and Morrow will keep your chats and work here.</p>
-          {/*
-            Only the project action lives here now. The missing-provider prompt
-            this used to carry has moved into the setup checklist above, which
-            covers both first-run steps in one place and in a fixed order —
-            two separate "Connect a model" calls to action competing on the
-            same screen was worse than the gap it was added to close.
-          */}
-          <p className="morrow-empty__actions">
-            <Link to="/projects">Create a project</Link>
-          </p>
-        </div>
+        <StateScene
+          action={<Link className="morrow-home__primary-action" to="/projects">Choose a local project</Link>}
+          description="Choose a folder already on this machine. Morrow keeps its conversations, memory, and work anchored there."
+          title="Your work begins with a place"
+        >
+          <p className="morrow-home__local-note">Local by default · yours to inspect</p>
+        </StateScene>
       ) : (
         <>
           <ContinueSection projectId={activeProject.id} query={conversations} recent={recent} />

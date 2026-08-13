@@ -5884,7 +5884,7 @@ a {
   --onboarding-accent-bright: #3b68ff;
   --onboarding-text: #f4f5f7;
   --onboarding-muted: #9298a6;
-  --onboarding-subtle: #626977;
+  --onboarding-subtle: #7d8492;
   --onboarding-line: rgb(255 255 255 / 14%);
   display: grid;
   grid-template-rows: 82px minmax(0, 1fr) 92px;
@@ -6367,8 +6367,8 @@ a {
 }
 
 @keyframes morrow-onboarding-stage-in {
-  from { opacity: 0; transform: translateY(16px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { transform: translateY(16px); }
+  to { transform: translateY(0); }
 }
 
 @keyframes morrow-onboarding-breathe {

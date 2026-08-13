@@ -5,6 +5,7 @@ import "@morrow/ui/styles.css";
 import { AppProviders } from "./app/providers.js";
 import { createAppRouter } from "./app/router.js";
 import "./styles/app.css";
+import "./styles/product-refresh.css";
 
 const root = document.getElementById("root");
 

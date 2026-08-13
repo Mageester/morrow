@@ -5,6 +5,7 @@ import { Trash2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { ApiClientError } from "../../api/client.js";
 import { projectApi, projectQueries, type ProjectSelection } from "../../api/projects.js";
+import { ProductHeader } from "../../components/product-frame.js";
 import { useActiveProject } from "./use-active-project.js";
 
 function safeError(error: unknown, fallback: string): string {
@@ -52,18 +53,17 @@ export function ProjectsPage() {
 
   return (
     <section aria-labelledby="projects-heading" className="morrow-page morrow-projects">
-      <div className="morrow-page__heading">
-        <h1 id="projects-heading">Projects</h1>
-        <p>
-          Point Morrow at a repository already on this machine. Chats and missions only ever read
-          or change files inside the project you select here.
-        </p>
-        {activeProject ? (
+      <ProductHeader
+        action={activeProject ? (
           <Link className="morrow-projects__open-build" to="/chats">
             Open {activeProject.name} in Build
           </Link>
-        ) : null}
-      </div>
+        ) : undefined}
+        description="Point Morrow at a repository already on this machine. Chats and missions only ever read or change files inside the project you select here."
+        eyebrow="Local workspaces"
+        headingId="projects-heading"
+        title="Projects"
+      />
 
       <Surface aria-labelledby="projects-add-heading" className="morrow-projects__create">
         <h2 id="projects-add-heading">Add a project</h2>
@@ -242,4 +242,3 @@ function ProjectRow({
     </li>
   );
 }
-

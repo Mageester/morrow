@@ -3,6 +3,7 @@ import { Surface } from "@morrow/ui";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { missionQueries } from "../../api/query-keys.js";
+import { ProductHeader } from "../../components/product-frame.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 import { MissionCardList } from "./mission-card.js";
 
@@ -67,11 +68,12 @@ export function MissionsPage() {
 
   return (
     <section aria-labelledby="missions-heading" className="morrow-page">
-      <div className="morrow-page__heading">
-        <p className="morrow-eyebrow">Durable work</p>
-        <h1 id="missions-heading">Missions</h1>
-        <p>Review active, blocked, and completed missions in one place.</p>
-      </div>
+      <ProductHeader
+        description="Review active, blocked, and completed missions in one place."
+        eyebrow="Durable work"
+        headingId="missions-heading"
+        title="Missions"
+      />
       {projects.isPending || (activeProject && missions.isPending) ? (
         <p aria-live="polite" role="status">
           Loading missions…

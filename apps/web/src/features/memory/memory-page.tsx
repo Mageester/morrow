@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { ApiClientError } from "../../api/client.js";
 import { MEMORY_SCOPE_LABELS, VAULT_SCOPES, memoryApi, memoryQueries } from "../../api/memory.js";
+import { ProductHeader } from "../../components/product-frame.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 
 function safeError(error: unknown, fallback: string): string {
@@ -83,14 +84,12 @@ export function MemoryPage() {
 
   return (
     <section aria-labelledby="memory-heading" className="morrow-page morrow-memory">
-      <div className="morrow-page__heading">
-        <p className="morrow-eyebrow">Learns with you</p>
-        <h1 id="memory-heading">Memory</h1>
-        <p>
-          Morrow learns durable preferences and project facts as you work. Every memory stays
-          local, inspectable, editable, and scoped; temporary task chatter is not promoted here.
-        </p>
-      </div>
+      <ProductHeader
+        description="Morrow learns durable preferences and project facts as you work. Every memory stays local, inspectable, editable, and scoped; temporary task chatter is not promoted here."
+        eyebrow="Learns with you"
+        headingId="memory-heading"
+        title="Memory"
+      />
 
       <Surface className="morrow-memory__automatic" padding="large">
         <label className="morrow-memory__automatic-control">

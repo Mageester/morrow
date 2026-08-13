@@ -1,4 +1,3 @@
-import { StatusPill } from "@morrow/ui";
 import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import {
@@ -17,6 +16,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { conversationQueries } from "../api/conversations.js";
+import { AmbientMark } from "../components/product-frame.js";
 import { NewChatButton } from "../features/chat/new-chat-button.js";
 import { OnboardingExperience } from "../features/onboarding/onboarding-experience.js";
 import { PairingBanner } from "../features/pairing/pairing-banner.js";
@@ -67,13 +67,6 @@ const runtimeLabels = {
   offline: "Runtime offline",
   online: "Runtime online",
   reconnecting: "Runtime reconnecting",
-} as const;
-
-const runtimeVariants = {
-  checking: "neutral",
-  offline: "warning",
-  online: "success",
-  reconnecting: "warning",
 } as const;
 
 function getRouteTitle(pathname: string): string {
@@ -134,6 +127,14 @@ function NavItemLink({ item, onNavigate }: { item: NavItem; onNavigate: () => vo
 
 function SidebarNewChat() {
   const { activeProject } = useActiveProject();
+  if (!activeProject) {
+    return (
+      <Link className="morrow-sidebar-project-action" to="/projects">
+        <Folder aria-hidden="true" size={16} strokeWidth={1.8} />
+        <span>Choose a project</span>
+      </Link>
+    );
+  }
   return <NewChatButton projectId={activeProject?.id} />;
 }
 
@@ -176,21 +177,22 @@ function SidebarRecent({ onNavigate }: { onNavigate: () => void }) {
 
 function WorkspaceContext() {
   const { activeProject, isPending } = useActiveProject();
+  const workspaceName = isPending ? "Checking workspace" : activeProject?.name ?? "No project selected";
 
   return (
-    <div className="morrow-workspace-context" data-state={isPending ? "loading" : activeProject ? "ready" : "empty"}>
-      <span aria-hidden="true" className="morrow-workspace-context__signal" />
-      <span className="morrow-workspace-context__copy">
-        <span className="morrow-workspace-context__label">Active workspace</span>
-        <strong>{isPending ? "Checking workspace…" : activeProject?.name ?? "No project selected"}</strong>
+    <Link
+      aria-label={`Current workspace: ${workspaceName}`}
+      className="morrow-shell-workspace"
+      data-state={isPending ? "loading" : activeProject ? "ready" : "empty"}
+      to="/projects"
+    >
+      <span aria-hidden="true" className="morrow-shell-workspace__signal" />
+      <span className="morrow-shell-workspace__copy">
+        <span>Workspace</span>
+        <strong>{workspaceName}</strong>
       </span>
-      <span className="morrow-workspace-context__path">
-        {activeProject ? "Local files stay on this machine" : "Choose a project to begin"}
-      </span>
-      <Link className="morrow-workspace-context__link" to="/projects">
-        {activeProject ? "Change" : "Choose project"}
-      </Link>
-    </div>
+      <span aria-hidden="true" className="morrow-shell-workspace__arrow">↗</span>
+    </Link>
   );
 }
 
@@ -279,6 +281,7 @@ export function AppShell() {
           if (event.key === "Escape") setNavOpen(false);
         }}
       >
+        <AmbientMark variant="arc" />
         <div className="morrow-brand">
           <span aria-hidden="true" className="morrow-brand__mark">
             <Sparkles size={18} strokeWidth={1.8} />
@@ -301,8 +304,17 @@ export function AppShell() {
         </nav>
 
         <div className="morrow-sidebar__footer">
-          <StatusPill variant={runtimeVariants[status]}>{runtimeLabels[status]}</StatusPill>
-          <span className="morrow-profile">Local profile</span>
+          <div
+            aria-label={`Morrow runtime: ${runtimeLabels[status]}`}
+            className="morrow-shell-runtime"
+            role="status"
+          >
+            <span aria-hidden="true" className="morrow-shell-runtime__signal" data-state={status} />
+            <span>
+              <strong>Local Morrow</strong>
+              <small>{runtimeLabels[status]}</small>
+            </span>
+          </div>
         </div>
       </aside>
 
@@ -313,9 +325,13 @@ export function AppShell() {
         ref={mainRef}
         tabIndex={-1}
       >
-        <WorkspaceContext />
-        <PairingBanner />
-        <Outlet />
+        <div className="morrow-shell-context">
+          <WorkspaceContext />
+          <PairingBanner />
+        </div>
+        <div className="morrow-route-canvas" key={pathname}>
+          <Outlet />
+        </div>
       </main>
       <MobileDock onMore={() => setNavOpen(true)} onNavigate={closeNav} />
     </div>

@@ -62,6 +62,23 @@ afterEach(() => {
 });
 
 describe("ConversationPage", () => {
+  it("composes the transcript and command field as one conversation workspace", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/activity")) return json({ version: 1, projectId: "project-1", conversationId: conversation.id, entries: [] });
+      if (path.includes("/approvals")) return json([]);
+      if (path.endsWith("/messages")) return json([]);
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      if (path.endsWith("/projects/project-1/status")) return json({ id: "project-1", name: "Local project", workspacePath: "C:\\local", accessible: true, gitDetected: true, branch: "main" });
+      throw new Error(`Unexpected request ${path}`);
+    }));
+
+    renderPage();
+
+    expect(await screen.findByRole("region", { name: "Conversation workspace" })).toBeVisible();
+    expect(screen.getByRole("form", { name: "Message Morrow" })).toBeVisible();
+  });
+
   it("opens compact activity details for reasoning, files, and skills", async () => {
     const activity = {
       version: 1,

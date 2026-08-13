@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiClientError } from "../../api/client.js";
 import { teamApi, teamQueries } from "../../api/teams.js";
+import { ProductHeader } from "../../components/product-frame.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 
 function safeError(error: unknown, fallback: string): string {
@@ -33,15 +34,12 @@ export function TeamsPage() {
 
   return (
     <section aria-labelledby="teams-heading" className="morrow-page morrow-teams">
-      <div className="morrow-page__heading">
-        <p className="morrow-eyebrow">Persistent agent teams</p>
-        <h1 id="teams-heading">Teams</h1>
-        <p>
-          A team is a durable, inspectable pair of named specialists — not an invisible subagent that
-          multiplies model calls. Every team's effective policy (tools, memory scopes, budget) is
-          visible before it ever runs.
-        </p>
-      </div>
+      <ProductHeader
+        description="A team is a durable, inspectable pair of named specialists—not an invisible subagent that multiplies model calls. Every team's effective policy is visible before it ever runs."
+        eyebrow="Persistent agent teams"
+        headingId="teams-heading"
+        title="Teams"
+      />
 
       {!activeProject ? (
         <EmptyState

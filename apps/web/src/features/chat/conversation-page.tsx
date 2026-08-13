@@ -427,7 +427,7 @@ export function ConversationPageContent({
   }
 
   return (
-    <section aria-labelledby="conversation-heading" className="morrow-conversation-page">
+    <section aria-label="Conversation workspace" className="morrow-conversation-page">
       <header className="morrow-conversation-header">
         <h1 id="conversation-heading">{value.title}</h1>
         <div aria-label="Conversation actions" className="morrow-conversation-actions">
