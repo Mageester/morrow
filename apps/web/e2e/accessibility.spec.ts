@@ -16,18 +16,23 @@ async function seriousViolations(page: Page) {
   return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
 }
 
+function describeViolation(violation: Awaited<ReturnType<typeof seriousViolations>>[number]) {
+  const nodes = violation.nodes.map((node) => `${node.target.join(", ")}: ${node.failureSummary ?? node.html}`);
+  return `${violation.id}: ${violation.help} (${nodes.join(" | ")})`;
+}
+
 test("Home has no serious or critical accessibility violations", async ({ page }) => {
   await page.goto("/app/");
   await expect(page.getByRole("heading", { name: /Good (morning|afternoon|evening)\./ })).toBeVisible();
   const violations = await seriousViolations(page);
-  expect(violations.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
+  expect(violations.map(describeViolation)).toEqual([]);
 });
 
 test("Mission workspace with an attention request has no serious or critical violations", async ({ page }) => {
   await page.goto(`/app/missions/${state.seed.attentionMissionId}`);
   await expect(page.getByRole("heading", { name: "Waiting for your approval" })).toBeVisible();
   const violations = await seriousViolations(page);
-  expect(violations.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
+  expect(violations.map(describeViolation)).toEqual([]);
 });
 
 test("Result mission page has no serious or critical violations", async ({ page }) => {
@@ -35,7 +40,7 @@ test("Result mission page has no serious or critical violations", async ({ page 
   // The result panel is inline for a completed mission — no tab to activate.
   await expect(page.getByRole("heading", { name: "Completed with caveats" })).toBeVisible();
   const violations = await seriousViolations(page);
-  expect(violations.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
+  expect(violations.map(describeViolation)).toEqual([]);
 });
 
 test("a destructive attention choice traps focus and restores it on cancel", async ({ page }) => {

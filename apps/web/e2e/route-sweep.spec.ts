@@ -23,11 +23,13 @@ const ROUTES = [
   { path: "/app/chats", name: "chats" },
   { path: "/app/projects", name: "projects" },
   { path: "/app/missions", name: "missions" },
-  { path: "/app/library", name: "library" },
+  { path: "/app/skills", name: "skills" },
+  { path: "/app/memory", name: "memory" },
+  { path: "/app/teams", name: "teams" },
   { path: "/app/connections", name: "connections" },
   { path: "/app/settings", name: "settings" },
   // Not a registered route: proves unrecognised addresses land somewhere real.
-  { path: "/app/memory", name: "unknown address" },
+  { path: "/app/not-a-real-route", name: "unknown address" },
 ] as const;
 
 const VIEWPORTS = [
@@ -43,6 +45,9 @@ async function overflowReport(page: Page) {
     const limit = de.clientWidth + 1;
     const offenders = [...document.querySelectorAll("body *")]
       .filter((el) => {
+        // Decorative artwork is intentionally clipped beyond its frame and
+        // cannot create an actionable or readable overflow defect.
+        if (el.closest('[aria-hidden="true"]')) return false;
         const rect = el.getBoundingClientRect();
         return rect.width > 0 && rect.right > limit;
       })
@@ -67,10 +72,13 @@ for (const viewport of VIEWPORTS) {
         // SSE keeps the network open, so `networkidle` never settles here.
         await page.goto(route.path, { waitUntil: "domcontentloaded" });
 
+        const explore = page.getByRole("button", { name: "Explore first" });
+        if (await explore.isVisible()) await explore.click();
+
         // Every route must present a level-1 heading: it is the landmark screen
         // readers navigate by, and its absence is how the missing not-found
         // page went unnoticed.
-        await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+        await expect(page.locator(".morrow-route-canvas").getByRole("heading", { level: 1 })).toBeVisible();
 
         const { scrollOverflow, offenders } = await overflowReport(page);
         expect(

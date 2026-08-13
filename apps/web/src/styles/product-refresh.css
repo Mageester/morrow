@@ -283,8 +283,8 @@ body {
 }
 
 @keyframes morrow-product-arrive {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { transform: translateY(12px); }
+  to { transform: translateY(0); }
 }
 
 .morrow-product-header,
@@ -1745,8 +1745,7 @@ body {
     font-size: 1.45rem;
   }
 
-  .morrow-conversation-actions__activity span,
-  .morrow-conversation-actions button:not(.morrow-conversation-actions__activity):not(:last-child) {
+  .morrow-conversation-actions__activity span {
     display: none;
   }
 
