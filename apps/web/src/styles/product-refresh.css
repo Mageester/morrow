@@ -325,6 +325,422 @@ body {
   }
 }
 
+/* Library, configuration, and durable-work routes ------------------------ */
+
+.morrow-page:not(.morrow-home) {
+  width: min(100%, var(--morrow-product-content));
+  max-width: none;
+  margin: 0 auto;
+  display: grid;
+  gap: clamp(22px, 3vw, 36px);
+  padding: 0;
+}
+
+.morrow-page > .morrow-product-header {
+  position: relative;
+  min-height: clamp(230px, 32vh, 360px);
+  align-items: flex-end;
+  padding: clamp(34px, 6vw, 72px) 0 clamp(30px, 5vw, 58px);
+  border-bottom: 1px solid var(--morrow-product-line);
+}
+
+.morrow-page > .morrow-product-header::after {
+  content: "";
+  position: absolute;
+  right: 2%;
+  bottom: 16%;
+  width: clamp(110px, 15vw, 190px);
+  aspect-ratio: 1;
+  border: 1px solid var(--morrow-product-copper-line);
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 24px color-mix(in srgb, var(--morrow-product-copper) 5%, transparent),
+    0 0 0 52px color-mix(in srgb, var(--morrow-product-copper) 3%, transparent);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.morrow-page > .morrow-product-header > * {
+  position: relative;
+  z-index: 1;
+}
+
+.morrow-product-header h1 {
+  font-size: clamp(4rem, 9vw, 8rem);
+  font-weight: 470;
+  line-height: 0.82;
+  letter-spacing: -0.075em;
+}
+
+.morrow-product-header__description {
+  max-width: 680px;
+  margin-top: 18px;
+  color: var(--morrow-product-muted);
+  font-size: clamp(0.9rem, 1.2vw, 1.02rem);
+  line-height: 1.7;
+}
+
+.morrow-product-header__action {
+  align-self: flex-end;
+  padding-bottom: 4px;
+}
+
+.morrow-product-header__action :where(button, a),
+.morrow-projects__open-build {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 18px;
+  border: 1px solid var(--morrow-product-ink);
+  border-radius: 999px;
+  background: var(--morrow-product-ink);
+  color: var(--morrow-product-canvas);
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-decoration: none;
+  box-shadow: 0 14px 30px color-mix(in srgb, var(--morrow-product-ink) 13%, transparent);
+}
+
+.morrow-page .morrow-surface {
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-large);
+  background: color-mix(in srgb, var(--morrow-product-panel) 84%, transparent);
+  box-shadow: none;
+}
+
+.morrow-page .morrow-surface:hover {
+  border-color: color-mix(in srgb, var(--morrow-product-copper) 28%, var(--morrow-product-line));
+}
+
+.morrow-page .morrow-surface :where(h2, h3) {
+  color: var(--morrow-product-ink);
+  font-family: var(--morrow-product-display);
+  font-weight: 540;
+  letter-spacing: -0.035em;
+}
+
+.morrow-page .morrow-surface h2 {
+  font-size: clamp(1.45rem, 2.6vw, 2.25rem);
+}
+
+.morrow-page .morrow-surface p {
+  color: var(--morrow-product-muted);
+  line-height: 1.65;
+}
+
+.morrow-page :where(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  min-height: 44px;
+  border: 1px solid var(--morrow-product-line-strong);
+  border-radius: 12px;
+  background: var(--morrow-product-field-strong);
+  color: var(--morrow-product-ink);
+  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--morrow-product-ink) 4%, transparent);
+}
+
+.morrow-page :where(input:not([type="checkbox"]):not([type="radio"]), select, textarea):focus {
+  border-color: var(--morrow-product-copper-line);
+  box-shadow: 0 0 0 3px var(--morrow-product-copper-soft);
+}
+
+.morrow-page :where(button, .morrow-empty__action) {
+  border-radius: 11px;
+}
+
+.morrow-page :where(button, a) {
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+}
+
+.morrow-page :where(button, a):hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.morrow-empty,
+.morrow-page .morrow-empty-state {
+  min-height: 280px;
+  display: grid;
+  place-content: center;
+  padding: clamp(30px, 5vw, 58px);
+  border: 1px dashed var(--morrow-product-line-strong);
+  border-radius: var(--morrow-product-radius-large);
+  background: color-mix(in srgb, var(--morrow-product-panel) 46%, transparent);
+  text-align: center;
+}
+
+.morrow-empty :where(h2, h3),
+.morrow-page .morrow-empty-state :where(h2, h3) {
+  font-family: var(--morrow-product-display);
+  font-size: clamp(2rem, 4vw, 3.3rem);
+  font-weight: 500;
+  letter-spacing: -0.05em;
+}
+
+.morrow-empty p,
+.morrow-page .morrow-empty-state p {
+  max-width: 520px;
+  margin-inline: auto;
+  color: var(--morrow-product-muted);
+  line-height: 1.65;
+}
+
+/* History and projects are lists, not dashboard card grids. */
+.morrow-chats__tabs,
+.morrow-memory__toolbar,
+.morrow-teams__toolbar {
+  gap: 8px;
+  padding: 4px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 14px;
+  background: var(--morrow-product-field-inset);
+}
+
+.morrow-chats__tab,
+.morrow-memory__scope-chip {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--morrow-product-muted);
+  font-size: 0.72rem;
+}
+
+.morrow-chats__tab[aria-pressed="true"],
+.morrow-memory__scope-chip[aria-pressed="true"] {
+  background: var(--morrow-product-panel);
+  color: var(--morrow-product-ink);
+  box-shadow: 0 5px 16px color-mix(in srgb, var(--morrow-product-ink) 8%, transparent);
+}
+
+.morrow-chats__list,
+.morrow-projects__list,
+.morrow-memory__list,
+.morrow-teams__list {
+  padding: 0;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-large);
+  background: color-mix(in srgb, var(--morrow-product-panel) 76%, transparent);
+  overflow: hidden;
+}
+
+.morrow-chats__row,
+.morrow-projects__row,
+.morrow-memory__row,
+.morrow-teams__row {
+  padding: 17px clamp(16px, 3vw, 30px);
+  border-bottom: 1px solid var(--morrow-product-line);
+  background: transparent;
+}
+
+.morrow-chats__row:last-child,
+.morrow-projects__row:last-child,
+.morrow-memory__row:last-child,
+.morrow-teams__row:last-child {
+  border-bottom: 0;
+}
+
+.morrow-chats__row:hover,
+.morrow-projects__row:hover,
+.morrow-memory__row:hover,
+.morrow-teams__row:hover {
+  background: color-mix(in srgb, var(--morrow-product-copper-soft) 36%, transparent);
+}
+
+.morrow-chats__link,
+.morrow-projects__row-name,
+.morrow-memory__content {
+  color: var(--morrow-product-ink);
+}
+
+.morrow-chats__meta,
+.morrow-projects__row-detail,
+.morrow-projects__row-path,
+.morrow-skills__meta {
+  color: var(--morrow-product-faint);
+}
+
+.morrow-projects__create,
+.morrow-memory__add,
+.morrow-memory__automatic {
+  padding: clamp(24px, 4vw, 42px);
+}
+
+.morrow-projects__form,
+.morrow-memory__add-form {
+  gap: 14px;
+}
+
+/* Skills and teams use restrained disclosure rows. */
+.morrow-skills__search {
+  min-height: 50px;
+  padding: 0 16px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 15px;
+  background: var(--morrow-product-field-strong);
+  color: var(--morrow-product-faint);
+}
+
+.morrow-skills__search input {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.morrow-skills__sections {
+  gap: 34px;
+}
+
+.morrow-skills__sections .morrow-section-head,
+.morrow-mission-section > header {
+  padding-bottom: 13px;
+  border-bottom: 1px solid var(--morrow-product-line);
+}
+
+.morrow-skills__row {
+  border-color: var(--morrow-product-line);
+  background: color-mix(in srgb, var(--morrow-product-panel) 78%, transparent);
+}
+
+.morrow-skills__row summary {
+  min-height: 66px;
+  padding: 15px 18px;
+}
+
+.morrow-skills__row[open] {
+  border-color: var(--morrow-product-copper-line);
+  box-shadow: var(--morrow-product-shadow-soft);
+}
+
+.morrow-teams__member {
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 16px;
+  background: var(--morrow-product-field-inset);
+}
+
+/* Provider catalogue is tactile and calm, even at high density. */
+.morrow-connections-page__group {
+  gap: 16px;
+}
+
+.morrow-connections-page__group > h2,
+.morrow-mission-section h2 {
+  font-family: var(--morrow-product-display);
+  font-size: clamp(1.7rem, 3vw, 2.7rem);
+  font-weight: 520;
+  letter-spacing: -0.045em;
+}
+
+.morrow-connections-page__catalog {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.morrow-connections-page__catalog > li {
+  min-height: 82px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--morrow-product-panel) 76%, transparent);
+}
+
+.morrow-connections-page__catalog > li:hover {
+  border-color: var(--morrow-product-copper-line);
+  background: var(--morrow-product-copper-soft);
+  box-shadow: var(--morrow-product-shadow-soft);
+}
+
+.morrow-connections-page__catalog-name {
+  color: var(--morrow-product-ink);
+}
+
+.morrow-connections-page__catalog-note {
+  color: var(--morrow-product-faint);
+}
+
+/* Settings becomes a quiet stack of authored sections. */
+.morrow-settings {
+  gap: 18px !important;
+}
+
+.morrow-settings > .morrow-product-header {
+  margin-bottom: 18px;
+}
+
+.morrow-settings > .morrow-surface {
+  padding: clamp(24px, 4vw, 42px) !important;
+}
+
+.morrow-settings > .morrow-surface > div:first-child :where(svg) {
+  color: var(--morrow-product-copper) !important;
+}
+
+.morrow-settings button[aria-pressed="true"] {
+  border-color: var(--morrow-product-copper-line) !important;
+  background: var(--morrow-product-copper-soft) !important;
+  color: var(--morrow-product-ink) !important;
+}
+
+/* Missions retain dense operational information inside the same materials. */
+.morrow-mission-section {
+  display: grid;
+  gap: 14px;
+}
+
+.morrow-mission-card,
+.morrow-mission-topbar,
+.morrow-mission-panel {
+  border-color: var(--morrow-product-line);
+  background: color-mix(in srgb, var(--morrow-product-panel) 82%, transparent);
+  box-shadow: none;
+}
+
+.morrow-mission-page {
+  width: min(100%, 1320px) !important;
+}
+
+.morrow-mission-topbar {
+  border-radius: 20px;
+}
+
+.morrow-pair__form-surface,
+.morrow-pair__result {
+  width: min(100%, 720px);
+  justify-self: center;
+  padding: clamp(28px, 5vw, 56px) !important;
+}
+
+@media (max-width: 760px) {
+  .morrow-page > .morrow-product-header {
+    min-height: 260px;
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
+
+  .morrow-page > .morrow-product-header::after {
+    right: -10%;
+    bottom: 36%;
+  }
+
+  .morrow-product-header h1 {
+    font-size: clamp(3.7rem, 19vw, 6rem);
+  }
+
+  .morrow-product-header__action,
+  .morrow-product-header__action > * {
+    width: 100%;
+  }
+
+  .morrow-connections-page__catalog {
+    grid-template-columns: 1fr;
+  }
+
+  .morrow-chats__tabs,
+  .morrow-memory__toolbar,
+  .morrow-teams__toolbar {
+    overflow-x: auto;
+  }
+}
+
 @media (max-width: 380px) {
   :root { --morrow-product-gutter: 16px; }
 

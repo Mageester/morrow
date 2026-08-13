@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { ApiClientError } from "../../api/client.js";
 import { pairingApi } from "../../api/pairing.js";
+import { ProductHeader } from "../../components/product-frame.js";
 
 function safeError(error: unknown, fallback: string): string {
   return error instanceof ApiClientError ? error.message : fallback;
@@ -44,13 +45,12 @@ export function PairPage() {
 
   return (
     <section aria-labelledby="pair-heading" className="morrow-page morrow-pair">
-      <div className="morrow-page__heading">
-        <h1 id="pair-heading">Pair this install</h1>
-        <p>
-          This links your account for billing and entitlement only — Morrow still runs entirely on
-          this machine.
-        </p>
-      </div>
+      <ProductHeader
+        description="This links your account for billing and entitlement only—Morrow still runs entirely on this machine."
+        eyebrow="Optional account link"
+        headingId="pair-heading"
+        title="Pair this install"
+      />
 
       {redeem.isSuccess ? (
         <Surface className="morrow-pair__result">

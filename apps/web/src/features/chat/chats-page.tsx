@@ -3,6 +3,7 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { conversationQueries } from "../../api/conversations.js";
+import { ProductHeader } from "../../components/product-frame.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 import { NewChatButton } from "./new-chat-button.js";
 
@@ -28,13 +29,13 @@ export function ChatsPage() {
 
   return (
     <section aria-labelledby="chats-heading" className="morrow-page morrow-chats">
-      <div className="morrow-chats__head">
-        <div className="morrow-page__heading">
-          <h1 id="chats-heading">History</h1>
-          <p>Every conversation you’ve had with Morrow, organized by project.</p>
-        </div>
-        {activeProject ? <NewChatButton projectId={activeProject.id} /> : null}
-      </div>
+      <ProductHeader
+        action={activeProject ? <NewChatButton projectId={activeProject.id} /> : undefined}
+        description="Every conversation you’ve had with Morrow, organized by project."
+        eyebrow="Your record"
+        headingId="chats-heading"
+        title="History"
+      />
 
       {projects.isPending ? (
         <p aria-live="polite" role="status">

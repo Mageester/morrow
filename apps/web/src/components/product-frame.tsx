@@ -20,12 +20,14 @@ export function ProductHeader({
   action,
   description,
   eyebrow,
+  headingId,
   status,
   title,
 }: {
   action?: ReactNode;
   description?: string;
   eyebrow?: string;
+  headingId?: string;
   status?: ReactNode;
   title: string;
 }) {
@@ -34,7 +36,7 @@ export function ProductHeader({
       <div className="morrow-product-header__copy">
         {eyebrow ? <p className="morrow-product-eyebrow">{eyebrow}</p> : null}
         <div className="morrow-product-header__title-line">
-          <h1>{title}</h1>
+          <h1 id={headingId}>{title}</h1>
           {status ? <div className="morrow-product-header__status">{status}</div> : null}
         </div>
         {description ? <p className="morrow-product-header__description">{description}</p> : null}

@@ -9,11 +9,13 @@ describe("product frame primitives", () => {
         action={<button type="button">Add memory</button>}
         description="Things Morrow remembers with you."
         eyebrow="Local intelligence"
+        headingId="memory-heading"
         title="Memory"
       />,
     );
 
     expect(screen.getByRole("heading", { level: 1, name: "Memory" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "Memory" })).toHaveAttribute("id", "memory-heading");
     expect(screen.getByText("Local intelligence")).toBeVisible();
     expect(screen.getByText("Things Morrow remembers with you.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Add memory" })).toBeVisible();

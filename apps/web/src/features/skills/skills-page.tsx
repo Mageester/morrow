@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { skillQueries, type InstalledSkill } from "../../api/skills.js";
+import { ProductHeader } from "../../components/product-frame.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 
 function displayLearnedName(skill: { triggerConditions: string[] }): string {
@@ -53,11 +54,12 @@ export function SkillsPage() {
 
   return (
     <section aria-labelledby="skills-heading" className="morrow-page morrow-skills">
-      <div className="morrow-page__heading">
-        <p className="morrow-eyebrow">Procedural memory</p>
-        <h1 id="skills-heading">Skills</h1>
-        <p>Morrow learns reusable procedures from verified work and retrieves only the ones relevant to the task.</p>
-      </div>
+      <ProductHeader
+        description="Morrow learns reusable procedures from verified work and retrieves only the ones relevant to the task."
+        eyebrow="Procedural memory"
+        headingId="skills-heading"
+        title="Skills"
+      />
 
       <label className="morrow-skills__search">
         <Search aria-hidden="true" size={16} />
