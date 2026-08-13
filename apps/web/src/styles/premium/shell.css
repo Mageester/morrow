@@ -236,8 +236,12 @@
     0 0 0 90px rgb(161 95 63 / 0.03);
 }
 
-.morrow-sidebar > .morrow-product-mark span {
+/* The reference arc is one ring with two soft halos, not concentric borders. */
+.morrow-sidebar > .morrow-product-mark span,
+.morrow-sidebar > .morrow-product-mark::before,
+.morrow-sidebar > .morrow-product-mark::after {
   display: none;
+  content: none;
 }
 
 .morrow-sidebar__new {

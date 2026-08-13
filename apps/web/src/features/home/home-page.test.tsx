@@ -60,9 +60,14 @@ describe("HomePage", () => {
     });
 
     expect(await screen.findByRole("heading", { level: 1 })).toBeVisible();
+    // Home opens on the composer: state an outcome and Morrow opens the
+    // conversation that carries it.
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "New chat" })).toBeEnabled(),
+      expect(
+        screen.getByRole("button", { name: "Start a conversation with this message" }),
+      ).toBeInTheDocument(),
     );
+    expect(screen.getByRole("textbox", { name: /What should Morrow move forward/i })).toBeEnabled();
     expect(await screen.findByRole("link", { name: /Local research/ })).toHaveAttribute(
       "href",
       "/chats/conv-1?projectId=project-1",
@@ -102,6 +107,42 @@ describe("HomePage", () => {
     expect(await screen.findByRole("link", { name: /Local research/ })).toBeVisible();
   });
 
+  it("runs the deterministic sample task and shows real proof, not just a done toast", async () => {
+    renderHome(async (input) => {
+      const url = String(input);
+      if (url === "/api/projects") return Response.json([project]);
+      if (url.includes("/web/missions")) return emptyMissions();
+      if (url.includes("/conversations")) return Response.json([]);
+      if (url.includes("/sample-tasks/readme-summary")) {
+        return Response.json({
+          team: { id: "team-1", name: "Research and verify" },
+          parentTask: { id: "parent-1", status: "completed" },
+          researcherTask: { id: "researcher-task-1", status: "completed" },
+          verifierTask: { id: "verifier-task-1", status: "completed" },
+          delegation: { id: "del-1", status: "completed" },
+          handoff: {
+            id: "handoff-1",
+            resultSummary: "Morrow: A private, local-first personal AI agent.",
+            acceptanceCriteriaStatus: [
+              { criterion: "Summary cites README.md", met: true, note: null },
+              { criterion: "Summary is non-empty", met: true, note: null },
+            ],
+            verificationEvidence: "Verifier confirmed a non-empty summary citing README.md.",
+          },
+        });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+
+    const user = userEvent.setup();
+    expect(await screen.findByRole("button", { name: "Run sample task" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Run sample task" }));
+
+    expect(await screen.findByText("Morrow: A private, local-first personal AI agent.")).toBeVisible();
+    expect(screen.getByText(/Summary cites README.md/)).toBeVisible();
+    expect(screen.getByText(/Verifier confirmed a non-empty summary/)).toBeVisible();
+  });
+
   it("explains the no-project state without inventing data", async () => {
     renderHome(async (input) => {
       const url = String(input);
@@ -135,6 +176,8 @@ describe("first run", () => {
 
     expect(await screen.findByRole("heading", { name: "Your work begins with a place" })).toBeVisible();
     expect(await screen.findByRole("link", { name: "Choose a local project" })).toBeVisible();
+    // The provider prompt now sits with the composer it unblocks, so it reads
+    // as a precondition for sending rather than a second competing headline.
     expect(await screen.findByRole("link", { name: "Connect a model" })).toBeVisible();
     expect(await screen.findByRole("heading", { name: /steps and you're running/i })).toBeVisible();
   });

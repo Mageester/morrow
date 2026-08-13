@@ -87,9 +87,9 @@ describe("ConnectionsPage", () => {
     await user.click(screen.getByRole("button", { name: "Save connection" }));
 
     await waitFor(() => expect(input).toHaveValue(""));
-    expect(await screen.findByText("Connected", { exact: true })).toBeVisible();
+    expect(await screen.findByText("Healthy", { exact: true })).toBeVisible();
     expect(await screen.findByText(/could not confirm owner-restricted permissions/i)).toBeVisible();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Replace key" })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Replace credential" })).toHaveFocus());
     // Matched by path, not call index: the page makes other ambient requests
     // (account status), and pinning this to position 1 made an unrelated added
     // request look like a credential regression.
@@ -111,15 +111,18 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     renderPage();
 
-    await screen.findByText("Connected");
-    await user.click(screen.getByRole("button", { name: "Replace key" }));
+    await screen.findByText("Healthy");
+    // A configured provider rests as one compact row; its controls live in
+    // the detail that Manage opens.
+    await user.click(await screen.findByRole("button", { name: "Manage" }));
+    await user.click(screen.getByRole("button", { name: "Replace credential" }));
     const input = screen.getByLabelText("OpenRouter API key");
     await user.type(input, secret);
     await user.click(screen.getByRole("button", { name: "Save connection" }));
     expect(await screen.findByText(/could not verify this replacement key/i)).toBeVisible();
     expect(input).toHaveValue("");
-    expect(screen.getByText("Connected")).toBeVisible();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Replace key" })).toHaveFocus());
+    expect(screen.getByText("Healthy")).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Replace credential" })).toHaveFocus());
 
     await user.click(screen.getByRole("button", { name: "Test connection" }));
     expect(await screen.findByText(/rate limit/i)).toBeVisible();
@@ -154,11 +157,12 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     renderPage();
 
-    expect(await screen.findByText("2 available models")).toBeVisible();
+    await user.click(await screen.findByRole("button", { name: "Manage" }));
+    expect(await screen.findByText("2 models available")).toBeVisible();
     expect(screen.getByLabelText(/Active model for/)).toHaveValue("anthropic/claude-sonnet-4");
     expect(await screen.findByText(/last successful health check:.*2026/i)).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Test connection" }));
-    const disconnect = screen.getByRole("button", { name: "Disconnect OpenRouter" });
+    const disconnect = screen.getByRole("button", { name: "Disconnect" });
     await user.click(disconnect);
     const dialog = await screen.findByRole("alertdialog", { name: "Disconnect OpenRouter?" });
     expect(dialog).toBeVisible();
@@ -184,8 +188,11 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     const firstMount = renderPage();
 
+    // A configured provider rests as one compact row; its controls live in
+    // the detail that Manage opens.
+    await user.click(await screen.findByRole("button", { name: "Manage" }));
     await waitFor(() => expect(screen.getByLabelText(/Active model for/)).toHaveValue("vendor/old"));
-    await user.click(screen.getByRole("button", { name: "Replace key" }));
+    await user.click(screen.getByRole("button", { name: "Replace credential" }));
     const input = screen.getByLabelText("OpenRouter API key");
     await user.type(input, secret);
     await user.click(screen.getByRole("button", { name: "Save connection" }));
@@ -193,10 +200,13 @@ describe("ConnectionsPage", () => {
     expect(await screen.findByText(/last successful health check:.*2026/i)).toBeVisible();
     expect(await screen.findByText(/protected local credential file/i)).toBeVisible();
     await waitFor(() => expect(providerReads).toBeGreaterThanOrEqual(2));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Replace key" })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Replace credential" })).toHaveFocus());
 
     firstMount.unmount();
     renderPage();
+    // A configured provider rests as one compact row; its controls live in
+    // the detail that Manage opens.
+    await user.click(await screen.findByRole("button", { name: "Manage" }));
     await waitFor(() => expect(screen.getByLabelText(/Active model for/)).toHaveValue("vendor/new"));
     expect(await screen.findByText(/last successful health check:.*2026/i)).toBeVisible();
     expect(providerReads).toBeGreaterThanOrEqual(3);
@@ -212,16 +222,19 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     renderPage();
 
-    const replace = await screen.findByRole("button", { name: "Replace key" });
+    // A configured provider rests as one compact row; its controls live in
+    // the detail that Manage opens.
+    await user.click(await screen.findByRole("button", { name: "Manage" }));
+    const replace = await screen.findByRole("button", { name: "Replace credential" });
     await user.click(replace);
     const input = screen.getByLabelText("OpenRouter API key");
     expect(input).toHaveFocus();
     await user.type(input, secret);
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByLabelText("OpenRouter API key")).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Replace key" })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Replace credential" })).toHaveFocus());
 
-    const disconnect = screen.getByRole("button", { name: "Disconnect OpenRouter" });
+    const disconnect = screen.getByRole("button", { name: "Disconnect" });
     await user.click(disconnect);
     const dialog = await screen.findByRole("alertdialog", { name: "Disconnect OpenRouter?" });
     await user.tab();
@@ -395,6 +408,9 @@ describe("ConnectionsPage — the full provider catalog", () => {
     renderPage();
     const user = userEvent.setup();
 
+    // A configured provider rests as one compact row; its controls live in
+    // the detail that Manage opens.
+    await user.click(await screen.findByRole("button", { name: "Manage" }));
     await user.click(await screen.findByRole("button", { name: "Test connection" }));
     expect(await screen.findByText(/lists models without a key/i)).toBeVisible();
   });
@@ -420,6 +436,9 @@ describe("ConnectionsPage — the full provider catalog", () => {
     renderPage();
     const user = userEvent.setup();
 
+    // A configured provider rests as one compact row; its controls live in
+    // the detail that Manage opens.
+    await user.click(await screen.findByRole("button", { name: "Manage" }));
     const select = await screen.findByLabelText(/Active model for/);
     expect(select).toHaveValue("");
     await user.selectOptions(select, "vendor/b");
@@ -437,9 +456,13 @@ describe("ConnectionsPage — the full provider catalog", () => {
       throw new Error(`Unexpected request: ${path}`);
     });
     renderPage();
+    const user = userEvent.setup();
 
     // Showing the first model as selected would misreport an unset default as
     // a decision the user had made.
+    // A configured provider rests as one compact row; its controls live in
+    // the detail that Manage opens.
+    await user.click(await screen.findByRole("button", { name: "Manage" }));
     expect(await screen.findByLabelText(/Active model for/)).toHaveValue("");
   });
 });

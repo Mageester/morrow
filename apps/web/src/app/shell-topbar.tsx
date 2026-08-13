@@ -25,6 +25,9 @@ export function ShellTopbar({
   const publishedTitle = useShellTitle();
   const { activeProject, isPending } = useActiveProject();
   const title = publishedTitle ?? routeTitle;
+  const workspaceName = isPending
+    ? "Checking workspace"
+    : activeProject?.name ?? "No project selected";
 
   return (
     <header className="morrow-shell-context">
@@ -44,26 +47,18 @@ export function ShellTopbar({
           /
         </span>
         <strong className="morrow-shell-crumb__here">{title}</strong>
-        {isPending || activeProject ? (
-          <Link
-            aria-label={
-              isPending
-                ? "Checking workspace"
-                : `Current workspace: ${activeProject?.name}. Open Projects.`
-            }
-            className="morrow-shell-crumb__workspace"
-            data-state={isPending ? "loading" : "ready"}
-            to="/projects"
-          >
-            <span aria-hidden="true">·</span>
-            <span>{isPending ? "Checking workspace" : activeProject?.name}</span>
-          </Link>
-        ) : (
-          <Link className="morrow-shell-crumb__workspace" data-state="empty" to="/projects">
-            <span aria-hidden="true">·</span>
-            <span>No project selected</span>
-          </Link>
-        )}
+        {/* One link in every state with a stable accessible name, so assistive
+            technology hears the same thing whether a project is chosen, still
+            loading, or absent. */}
+        <Link
+          aria-label={`Current workspace: ${workspaceName}`}
+          className="morrow-shell-crumb__workspace"
+          data-state={isPending ? "loading" : activeProject ? "ready" : "empty"}
+          to="/projects"
+        >
+          <span aria-hidden="true">·</span>
+          <span>{workspaceName}</span>
+        </Link>
       </div>
       <CommandPalette />
     </header>

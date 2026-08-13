@@ -75,7 +75,7 @@ describe("ConversationPage", () => {
 
     renderPage();
 
-    expect(await screen.findByRole("region", { name: "Conversation workspace" })).toBeVisible();
+    expect(await screen.findByRole("region", { name: `Conversation: ${conversation.title}` })).toBeVisible();
     expect(screen.getByRole("form", { name: "Message Morrow" })).toBeVisible();
   });
 
@@ -150,10 +150,11 @@ describe("ConversationPage", () => {
     const user = userEvent.setup();
     renderPage();
 
-    await screen.findByRole("heading", { name: conversation.title });
+    await screen.findByRole("region", { name: `Conversation: ${conversation.title}` });
     await screen.findByRole("region", { name: "Morrow activity" });
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/activity"))).toBe(true);
-    await user.click(screen.getByRole("button", { name: "Activity / Inspect" }));
+    await user.click(screen.getByRole("button", { name: "Show live work" }));
+    await user.click(await screen.findByRole("button", { name: "Open full activity ↗" }));
 
     const panel = await screen.findByRole("complementary", { name: "Activity / Inspect" });
     const items = within(panel).getAllByRole("listitem");
@@ -353,7 +354,7 @@ describe("ConversationPage", () => {
     queryClient.setQueryData(conversationKeys.list("project-1", false), [conversation]);
     queryClient.setQueryData(conversationKeys.list("project-1", true), [conversation]);
     const { onDeleted } = renderPage(queryClient);
-    await screen.findByRole("heading", { name: "Local model research" });
+    await screen.findByRole("region", { name: "Conversation: Local model research" });
 
     const renameButton = screen.getByRole("button", { name: "Rename conversation" });
     await user.click(renameButton);
@@ -367,7 +368,7 @@ describe("ConversationPage", () => {
     await user.clear(title);
     await user.type(title, "Renamed chat");
     await user.click(within(renameDialog).getByRole("button", { name: "Save name" }));
-    expect(await screen.findByRole("heading", { name: "Renamed chat" })).toBeVisible();
+    expect(await screen.findByRole("region", { name: "Conversation: Renamed chat" })).toBeVisible();
     await waitFor(() => expect(renameButton).toHaveFocus());
     expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", false))?.[0]?.title).toBe("Renamed chat");
     expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", true))?.[0]?.title).toBe("Renamed chat");

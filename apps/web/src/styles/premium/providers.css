@@ -7,6 +7,9 @@
  */
 
 .morrow-provider-list {
+  /* The refresh layer grids lists inside a connections group into columns;
+     provider rows are a single stacked index. */
+  display: block;
   border: 1px solid var(--morrow-product-line);
   border-radius: var(--morrow-product-radius-lg);
   background: var(--morrow-product-field);

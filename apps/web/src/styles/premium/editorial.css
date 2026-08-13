@@ -10,11 +10,32 @@
 
 .morrow-page,
 .morrow-conversation-page {
+  display: grid;
   width: 100%;
   max-width: var(--morrow-premium-content);
   padding: 44px 52px 80px;
   margin-inline: auto;
+  /* The reference paces a page with its own section margins, not a large
+     uniform grid gap. */
+  gap: 0;
+  align-content: start;
   animation: none;
+}
+
+/* Section headings that are not inside a `.morrow-section-head` still belong to
+   the same 22px editorial rule rather than the display size. */
+.morrow-page > div > h2,
+.morrow-connections-page__group > h2,
+.morrow-connections-page__category > h3 {
+  margin: 30px 0 12px;
+  color: var(--morrow-product-copy);
+  font: 500 22px var(--morrow-product-display);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.morrow-connections-page__category > h3 {
+  font-size: 15px;
 }
 
 /* ── Page hero ───────────────────────────────────────────────────────────── */
@@ -27,11 +48,32 @@
   padding: 0;
   border: 0;
   gap: 28px;
+  animation: none;
+}
+
+.morrow-product-section,
+.morrow-product-state {
+  animation: none;
 }
 
 .morrow-product-header__copy {
   min-width: 0;
+  max-width: 760px;
   gap: 0;
+}
+
+/*
+ * The reference draws exactly two ambient forms: the arc in the navigation
+ * rail and the ring inside a featured panel. The refresh layer's page-level
+ * concentric marks are decoration beyond that vocabulary, so they are removed
+ * rather than restyled — everywhere except the rail, which shell.css owns.
+ */
+.morrow-page .morrow-product-mark,
+.morrow-conversation-page .morrow-product-mark,
+.morrow-product-header::after,
+.morrow-product-header::before {
+  display: none;
+  content: none;
 }
 
 .morrow-product-eyebrow {

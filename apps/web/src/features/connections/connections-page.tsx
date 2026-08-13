@@ -227,6 +227,9 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
   const replaceButtonRef = useRef<HTMLButtonElement>(null);
   const disconnectButtonRef = useRef<HTMLButtonElement>(null);
   const [editing, setEditing] = useState(Boolean(autoOpen));
+  // A provider being set up opens straight into its detail; everything else
+  // stays a single compact row until asked.
+  const [expanded, setExpanded] = useState(Boolean(autoOpen));
   const [apiKey, setApiKey] = useState("");
   // Use the server's complete default endpoint. Rebuilding it from
   // `endpointHost` dropped the version path ("http://127.0.0.1:1234" rather
@@ -354,50 +357,95 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
   const lastCheck = formatCheckTime(provider.lastSuccessAt);
   const modelCount = provider.models.length;
 
+  const connectedAndReady = provider.configured && provider.available;
+
   return (
-    <Surface className="morrow-connection" padding="large">
-      <div className="morrow-connection__heading">
-        <div>
-          <p className="morrow-eyebrow">{isLocal ? "Local models" : "Cloud models"}</p>
-            <h2 ref={cardHeadingRef} tabIndex={-1}>{label}</h2>
-          <p>{provider.note ?? `Connect once to make your available ${label} models ready for chat.`}</p>
+    <div className="morrow-connection">
+      {/* The resting state of a provider is one dense row: who it is, which
+          model it routes to, and whether it is healthy. */}
+      <div className="morrow-provider-row" data-open={expanded ? "true" : undefined}>
+        <div className="morrow-provider-id">
+          <span aria-hidden="true" className="morrow-provider-logo">{label.slice(0, 1)}</span>
+          <div>
+            <b ref={cardHeadingRef} tabIndex={-1}>{label}</b>
+            <small>{isLocal ? "Runs on this machine" : provider.note ?? "Cloud model provider"}</small>
+          </div>
         </div>
-        <StatusPill variant={provider.configured && provider.available ? "success" : "neutral"}>
-          {provider.configured && provider.available ? "Connected" : "Not connected"}
-        </StatusPill>
+        <div>
+          <b>{provider.defaultModel ?? (provider.configured ? "No default model" : "—")}</b>
+          <small>
+            {provider.configured
+              ? `${modelCount} model${modelCount === 1 ? "" : "s"} available`
+              : "Active model"}
+          </small>
+        </div>
+        <div>
+          {/* Reaching an endpoint is not the same as proving a credential, so
+              a connected-but-unverified provider is never called healthy. */}
+          <span
+            className="morrow-provider-health"
+            data-state={connectedAndReady ? "healthy" : provider.configured ? "unverified" : "idle"}
+          >
+            {connectedAndReady ? "Healthy" : provider.configured ? "Connected" : "Not connected"}
+          </span>
+          <small>{lastCheck ?? (provider.configured ? "Not checked yet" : "")}</small>
+        </div>
+        <Button
+          aria-expanded={expanded}
+          onClick={() => { setExpanded((open) => !open); setFeedback(null); }}
+          size="compact"
+          variant="secondary"
+        >
+          {expanded ? "Close" : "Manage"}
+        </Button>
       </div>
 
-      {provider.configured ? (
-        <dl className="morrow-connection__details">
-          <div><dt>Models</dt><dd>{modelCount} available model{modelCount === 1 ? "" : "s"}</dd></div>
+      {expanded ? (
+        <div className="morrow-provider-detail">
           <div>
-            <dt>Active model</dt>
-            <dd><ActiveModelChooser provider={provider} /></dd>
+            <span className="morrow-field-label">{label}</span>
+            <h3>Provider settings</h3>
+            <p>
+              {isLocal
+                ? `Point Morrow at your running ${label} server. Nothing leaves this machine.`
+                : "Credentials are stored locally and never displayed again. Test or replace the connection only when needed."}
+            </p>
           </div>
-          <div><dt>Health</dt><dd>{lastCheck ? `Last successful health check: ${lastCheck}` : "Connected after an authenticated account check"}</dd></div>
-        </dl>
-      ) : (
-        <p className="morrow-connection__hint">
-          {isLocal
-            ? `Point Morrow at your running ${label} server. Nothing leaves this machine.`
-            : `Morrow checks a new key with ${label} before reporting it as connected.`}
-        </p>
-      )}
+          {provider.configured ? (
+            <div>
+              <span className="morrow-field-label">Active model</span>
+              <ActiveModelChooser provider={provider} />
+              <p className="morrow-connection__health">
+                {lastCheck
+                  ? `Last successful health check: ${lastCheck}`
+                  : "Connected after an authenticated account check"}
+              </p>
+            </div>
+          ) : (
+            <div>
+              <span className="morrow-field-label">Status</span>
+              <p>{`Morrow checks a new key with ${label} before reporting it as connected.`}</p>
+            </div>
+          )}
 
-      {!editing ? <div className="morrow-connection__actions">
-        {provider.configured ? (
-          <>
-            <Button onClick={() => { setEditing(true); setFeedback(null); }} ref={replaceButtonRef} size="compact" variant="secondary">Replace key</Button>
-            <Button disabled={testing} onClick={() => void runCheck("test")} size="compact" variant="secondary">{testing ? "Testing…" : "Test connection"}</Button>
-            <Button disabled={refreshing} onClick={() => void runCheck("refresh")} size="compact" variant="secondary">{refreshing ? "Refreshing…" : "Refresh models"}</Button>
-            <Button onClick={() => setConfirmingDisconnect(true)} ref={disconnectButtonRef} size="compact" variant="danger">Disconnect {label}</Button>
-          </>
-        ) : (
-          <Button onClick={() => { setEditing(true); setFeedback(null); }} ref={connectButtonRef} size="compact">Connect {label}</Button>
-        )}
-      </div> : null}
+          {!editing ? (
+            <div className="morrow-provider-detail__actions">
+              {provider.configured ? (
+                <>
+                  <Button onClick={() => { setEditing(true); setFeedback(null); }} ref={replaceButtonRef} size="compact" variant="secondary">Replace credential</Button>
+                  <Button disabled={testing} onClick={() => void runCheck("test")} size="compact" variant="secondary">{testing ? "Testing…" : "Test connection"}</Button>
+                  <Button disabled={refreshing} onClick={() => void runCheck("refresh")} size="compact" variant="secondary">{refreshing ? "Refreshing…" : "Refresh models"}</Button>
+                  {/* Disconnect is destructive, so it is reached only after the
+                      row has been deliberately opened, and still confirms. */}
+                  <Button onClick={() => setConfirmingDisconnect(true)} ref={disconnectButtonRef} size="compact" variant="danger">Disconnect</Button>
+                </>
+              ) : (
+                <Button onClick={() => { setEditing(true); setFeedback(null); }} ref={connectButtonRef} size="compact">Connect {label}</Button>
+              )}
+            </div>
+          ) : null}
 
-      {editing ? (
+          {editing ? (
         <form className="morrow-connection__form" onSubmit={(event) => void submit(event)}>
           {needsUrl ? (
             <>
@@ -433,9 +481,13 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
             <Button disabled={saving} onClick={() => clearDraft(provider.configured ? "replace" : "connect")} size="compact" type="button" variant="secondary">Cancel</Button>
           </div>
         </form>
+          ) : null}
+
+          {feedback ? <p aria-live="polite" className={`morrow-connection__feedback morrow-connection__feedback--${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}>{feedback.text}</p> : null}
+          {disconnecting ? <p aria-live="polite" role="status">Disconnecting {label}…</p> : null}
+        </div>
       ) : null}
 
-      {feedback ? <p aria-live="polite" className={`morrow-connection__feedback morrow-connection__feedback--${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}>{feedback.text}</p> : null}
       {confirmingDisconnect ? (
         <DisconnectDialog
           label={label}
@@ -443,8 +495,7 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
           onConfirm={() => void disconnect()}
         />
       ) : null}
-      {disconnecting ? <p aria-live="polite" role="status">Disconnecting {label}…</p> : null}
-    </Surface>
+    </div>
   );
 }
 
@@ -510,15 +561,23 @@ export function ConnectionsPage() {
 
       {cards.length > 0 ? (
         <div className="morrow-connections-page__group">
-          <h2>{connected.length > 0 ? "Your connections" : `Set up ${openProvider?.label ?? "a provider"}`}</h2>
-          {cards.map((provider) => (
-            <ProviderConnection
-              autoOpen={provider.id === connecting && !provider.configured}
-              key={provider.id}
-              onDisconnected={setConnecting}
-              provider={provider}
-            />
-          ))}
+          <div className="morrow-section-head">
+            <h2>{connected.length > 0 ? "Connected providers" : `Set up ${openProvider?.label ?? "a provider"}`}</h2>
+            <span>{connected.length} ready</span>
+          </div>
+          {/* Compact rows, one per provider; the detail a row needs opens
+              underneath it rather than every provider shouting at once. */}
+          <ul className="morrow-provider-list">
+            {cards.map((provider) => (
+              <li key={provider.id}>
+                <ProviderConnection
+                  autoOpen={provider.id === connecting && !provider.configured}
+                  onDisconnected={setConnecting}
+                  provider={provider}
+                />
+              </li>
+            ))}
+          </ul>
         </div>
       ) : null}
 
@@ -544,16 +603,16 @@ export function ConnectionsPage() {
             return (
               <div className="morrow-connections-page__category" key={category}>
                 <h3>{CATEGORY_LABEL[category]}</h3>
-                <ul className="morrow-connections-page__catalog">
+                <ul className="morrow-provider-catalog">
                   {group.map((provider) => (
                     <li key={provider.id}>
                       <div>
-                        <p className="morrow-connections-page__catalog-name">
+                        <b className="morrow-connections-page__catalog-name">
                           {provider.label}
                           {provider.supportsOAuth ? <StatusPill variant="neutral">Sign in with a subscription</StatusPill> : null}
                           {provider.hasFreeTier ? <StatusPill variant="success">Free tier</StatusPill> : null}
-                        </p>
-                        {provider.note ? <p className="morrow-connections-page__catalog-note">{provider.note}</p> : null}
+                        </b>
+                        {provider.note ? <span className="morrow-connections-page__catalog-note">{provider.note}</span> : null}
                       </div>
                       {/*
                         The visible label stays "Connect" so the action column is
