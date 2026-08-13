@@ -127,6 +127,14 @@ function NavItemLink({ item, onNavigate }: { item: NavItem; onNavigate: () => vo
 
 function SidebarNewChat() {
   const { activeProject } = useActiveProject();
+  if (!activeProject) {
+    return (
+      <Link className="morrow-sidebar-project-action" to="/projects">
+        <Folder aria-hidden="true" size={16} strokeWidth={1.8} />
+        <span>Choose a project</span>
+      </Link>
+    );
+  }
   return <NewChatButton projectId={activeProject?.id} />;
 }
 

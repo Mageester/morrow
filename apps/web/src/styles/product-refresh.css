@@ -167,7 +167,7 @@ body {
   align-items: end;
   gap: clamp(28px, 6vw, 88px);
   padding: clamp(30px, 6vw, 72px);
-  overflow: hidden;
+  overflow: clip;
   background:
     linear-gradient(145deg, var(--morrow-product-field-strong), var(--morrow-product-field));
   border: 1px solid var(--morrow-product-line);
@@ -782,7 +782,7 @@ body {
     linear-gradient(180deg, color-mix(in srgb, var(--morrow-product-panel) 91%, transparent), var(--morrow-product-panel)),
     var(--morrow-product-panel);
   box-shadow: 22px 0 64px color-mix(in srgb, var(--morrow-product-ink) 5%, transparent);
-  overflow: hidden;
+  overflow: clip;
 }
 
 .morrow-sidebar > :not(.morrow-product-mark) {
@@ -847,6 +847,27 @@ body {
   box-shadow: 0 14px 30px color-mix(in srgb, var(--morrow-product-ink) 14%, transparent);
 }
 
+.morrow-sidebar-project-action {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  border: 1px solid var(--morrow-product-ink);
+  border-radius: 14px;
+  background: var(--morrow-product-ink);
+  color: var(--morrow-product-canvas);
+  box-shadow: 0 14px 30px color-mix(in srgb, var(--morrow-product-ink) 14%, transparent);
+  font-size: 0.8rem;
+  font-weight: 670;
+  text-decoration: none;
+}
+
+.morrow-sidebar-project-action:hover {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--morrow-product-ink) 90%, var(--morrow-product-copper));
+}
+
 .morrow-sidebar__new .morrow-new-chat__button:hover:not(:disabled) {
   transform: translateY(-1px);
   background: color-mix(in srgb, var(--morrow-product-ink) 90%, var(--morrow-product-copper));
@@ -870,6 +891,11 @@ body {
 .morrow-nav {
   gap: 20px;
   padding: 0;
+  scrollbar-width: none;
+}
+
+.morrow-nav::-webkit-scrollbar {
+  display: none;
 }
 
 .morrow-nav__group {
@@ -1069,8 +1095,19 @@ body {
   }
 
   .morrow-sidebar {
+    position: fixed;
+    z-index: 40;
+    inset: 52px auto 0 0;
     width: min(304px, calc(100vw - 42px));
+    height: calc(100vh - 52px);
+    min-height: 0;
+    transform: translateX(-100%);
     box-shadow: 24px 0 80px rgba(31, 25, 21, 0.2);
+    transition: transform 240ms var(--morrow-product-shift);
+  }
+
+  .morrow-app-shell[data-nav-open="true"] .morrow-sidebar {
+    transform: translateX(0);
   }
 
   .morrow-main {
@@ -1367,7 +1404,8 @@ body {
 
 .morrow-conversation-page {
   width: min(100%, 1100px);
-  min-height: calc(100vh - 58px - var(--morrow-product-gutter));
+  height: calc(100vh - 58px - var(--morrow-product-gutter));
+  min-height: 540px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -1433,6 +1471,9 @@ body {
 }
 
 .morrow-conversation-workspace {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
   min-height: 40px;
   margin: 0;
   display: flex;
@@ -1476,6 +1517,9 @@ body {
   flex-direction: column;
   gap: clamp(22px, 4vw, 40px);
   padding: clamp(34px, 6vw, 72px) clamp(18px, 4vw, 38px) 34px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--morrow-product-line-strong) transparent;
 }
 
 .morrow-conversation-empty {
@@ -1686,7 +1730,8 @@ body {
 
 @media (max-width: 720px) {
   .morrow-conversation-page {
-    min-height: calc(100vh - 108px);
+    height: calc(100vh - 108px);
+    min-height: 500px;
     border-inline: 0;
     border-radius: 24px;
   }
@@ -1728,5 +1773,34 @@ body {
   .morrow-chat-composer__mode-hint,
   .morrow-chat-composer__meta {
     display: none;
+  }
+}
+
+@media (max-height: 780px) and (min-width: 721px) {
+  .morrow-conversation-page {
+    min-height: 520px;
+  }
+
+  .morrow-conversation-history {
+    min-height: 160px;
+    padding-block: 26px 18px;
+  }
+
+  .morrow-conversation-empty {
+    min-height: 0;
+    padding: 18px 30px;
+  }
+
+  .morrow-conversation-empty h2 {
+    font-size: clamp(1.9rem, 3.4vw, 2.7rem);
+  }
+
+  .morrow-chat-composer__mode-hint,
+  .morrow-chat-composer__meta {
+    display: none;
+  }
+
+  .morrow-chat-composer__input {
+    min-height: 42px;
   }
 }

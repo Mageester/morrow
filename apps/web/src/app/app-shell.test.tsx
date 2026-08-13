@@ -247,6 +247,7 @@ describe("Morrow application shell", () => {
     expect(screen.getByRole("status", { name: "Morrow runtime: Runtime online" })).toBeVisible();
     expect(screen.queryByText("Choose a project to begin")).not.toBeInTheDocument();
     expect(document.querySelector(".morrow-workspace-context")).toBeNull();
+    expect(screen.getByRole("link", { name: "Choose a project" })).toHaveAttribute("href", "/app/projects");
   });
 });
 
