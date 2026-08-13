@@ -55,7 +55,10 @@ describe("ModelPicker", () => {
     render(<ModelPicker models={models} presets={[]} onChange={vi.fn()} />);
 
     const trigger = screen.getByRole("button", { name: /Auto — recommended/ });
+    expect(trigger).toHaveAttribute("data-open", "false");
     await user.click(trigger);
+    expect(trigger).toHaveAttribute("data-open", "true");
+    expect(screen.getByRole("menu")).toHaveAttribute("data-open", "true");
     expect(screen.getByRole("searchbox", { name: "Search models" })).toBeVisible();
     expect(screen.getByRole("button", { name: /Claude Opus/ })).toBeVisible();
     // Models from providers that are not connected start collapsed. On a real
@@ -68,12 +71,14 @@ describe("ModelPicker", () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     render(<ModelPicker models={models} presets={[]} onChange={onChange} />);
+    const trigger = screen.getByRole("button", { name: /Auto/ });
 
     await user.click(screen.getByRole("button", { name: /Auto — recommended/ }));
     await user.type(screen.getByRole("searchbox", { name: "Search models" }), "opus");
     expect(screen.queryByRole("button", { name: /Llama/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Claude Opus/ }));
 
+    expect(trigger).toHaveAttribute("data-open", "false");
     expect(onChange).toHaveBeenCalledWith({
       id: "model:anthropic:claude-opus",
       label: "Claude Opus",

@@ -18,7 +18,7 @@ async function seriousViolations(page: Page) {
 
 test("Home has no serious or critical accessibility violations", async ({ page }) => {
   await page.goto("/app/");
-  await expect(page.getByRole("heading", { name: "What should Morrow accomplish?" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Good (morning|afternoon|evening)\./ })).toBeVisible();
   const violations = await seriousViolations(page);
   expect(violations.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
 });

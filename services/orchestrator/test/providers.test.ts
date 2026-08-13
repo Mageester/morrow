@@ -140,6 +140,34 @@ describe("OpenAI-compatible provider normalization", () => {
     expect(chunks.at(-1)?.error?.kind).toBe("invalid_request");
   });
 
+  it("maps DeepSeek effort and off selections to its thinking wire fields", async () => {
+    const deepSeekCapability = {
+      control: "effort" as const,
+      efforts: ["low", "high", "xhigh", "max"] as const,
+      budgets: [],
+      source: "provider-metadata" as const,
+      supportsOff: true,
+      wire: "deepseek-thinking" as const,
+    };
+    const provider = new OpenAiCompatibleProvider({ id: "deepseek", apiKey: "k", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-v4-flash" });
+
+    const enabledRef = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
+    await collect(provider, userMessages, {
+      reasoning: { mode: "effort", effort: "max" },
+      reasoningCapability: { ...deepSeekCapability, efforts: [...deepSeekCapability.efforts] },
+    });
+    const enabledBody = JSON.parse(enabledRef.captured!.init.body);
+    expect(enabledBody.reasoning_effort).toBe("max");
+    expect(enabledBody.thinking).toEqual({ type: "enabled" });
+
+    const disabledRef = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
+    await collect(provider, userMessages, {
+      reasoning: { mode: "off" },
+      reasoningCapability: { ...deepSeekCapability, efforts: [...deepSeekCapability.efforts] },
+    });
+    expect(JSON.parse(disabledRef.captured!.init.body).thinking).toEqual({ type: "disabled" });
+  });
+
   it("classifies HTTP errors into typed kinds", async () => {
     const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "k", baseUrl: "https://api.openai.com/v1", defaultModel: "m" });
 

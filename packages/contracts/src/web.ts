@@ -169,6 +169,7 @@ export const WebActivityKindSchema = z.enum([
   "checkpoint",
   "context",
   "provider",
+  "memory",
   "recovery",
   "validation",
   "evidence",

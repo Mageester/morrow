@@ -23,6 +23,15 @@ function mapAgent(row: Record<string, unknown>): Agent {
     providerOverride: row.provider_override ?? null,
     modelOverride: row.model_override ?? null,
     enabled: Boolean(row.enabled),
+    teamId: row.team_id ?? null,
+    memoryReadScopes: JSON.parse(String(row.memory_read_scopes_json ?? "[]")),
+    memoryWriteScopes: JSON.parse(String(row.memory_write_scopes_json ?? "[]")),
+    maxProviderCalls: row.max_provider_calls ?? null,
+    maxTokenBudget: row.max_token_budget ?? null,
+    maxWallClockMs: row.max_wall_clock_ms ?? null,
+    maxChildTasks: row.max_child_tasks ?? null,
+    approvalRequired: Boolean(row.approval_required),
+    createdBy: row.created_by ?? "user",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
@@ -67,12 +76,26 @@ export function agentsRepository(db: Database.Database) {
       return row ? mapAgent(row) : undefined;
     },
 
-    create(input: { id: string; projectId: string } & CreateAgentInput): Agent {
+    create(input: { id: string; projectId: string; createdBy?: string } & CreateAgentInput): Agent {
       const ts = now();
       db.prepare(
-        `INSERT INTO agents(id,schema_version,project_id,name,role,instructions,provider_override,model_override,enabled,created_at,updated_at)
-         VALUES(?,1,?,?,?,?,?,?,1,?,?)`
-      ).run(input.id, input.projectId, input.name, input.role, input.instructions ?? null, input.providerOverride ?? null, input.modelOverride ?? null, ts, ts);
+        `INSERT INTO agents(
+           id,schema_version,project_id,name,role,instructions,provider_override,model_override,enabled,
+           team_id,memory_read_scopes_json,memory_write_scopes_json,
+           max_provider_calls,max_token_budget,max_wall_clock_ms,max_child_tasks,approval_required,created_by,
+           created_at,updated_at
+         ) VALUES(?,1,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?)`
+      ).run(
+        input.id, input.projectId, input.name, input.role,
+        input.instructions ?? null, input.providerOverride ?? null, input.modelOverride ?? null,
+        input.teamId ?? null,
+        JSON.stringify(input.memoryReadScopes ?? []),
+        JSON.stringify(input.memoryWriteScopes ?? []),
+        input.maxProviderCalls ?? null, input.maxTokenBudget ?? null, input.maxWallClockMs ?? null, input.maxChildTasks ?? null,
+        input.approvalRequired ? 1 : 0,
+        input.createdBy ?? "user",
+        ts, ts,
+      );
       return this.get(input.id)!;
     },
 
@@ -88,6 +111,14 @@ export function agentsRepository(db: Database.Database) {
       if (input.providerOverride !== undefined) { sets.push("provider_override=?"); vals.push(input.providerOverride); }
       if (input.modelOverride !== undefined) { sets.push("model_override=?"); vals.push(input.modelOverride); }
       if (input.enabled !== undefined) { sets.push("enabled=?"); vals.push(input.enabled ? 1 : 0); }
+      if (input.teamId !== undefined) { sets.push("team_id=?"); vals.push(input.teamId); }
+      if (input.memoryReadScopes !== undefined) { sets.push("memory_read_scopes_json=?"); vals.push(JSON.stringify(input.memoryReadScopes)); }
+      if (input.memoryWriteScopes !== undefined) { sets.push("memory_write_scopes_json=?"); vals.push(JSON.stringify(input.memoryWriteScopes)); }
+      if (input.maxProviderCalls !== undefined) { sets.push("max_provider_calls=?"); vals.push(input.maxProviderCalls); }
+      if (input.maxTokenBudget !== undefined) { sets.push("max_token_budget=?"); vals.push(input.maxTokenBudget); }
+      if (input.maxWallClockMs !== undefined) { sets.push("max_wall_clock_ms=?"); vals.push(input.maxWallClockMs); }
+      if (input.maxChildTasks !== undefined) { sets.push("max_child_tasks=?"); vals.push(input.maxChildTasks); }
+      if (input.approvalRequired !== undefined) { sets.push("approval_required=?"); vals.push(input.approvalRequired ? 1 : 0); }
       vals.push(id, projectId);
       db.prepare(`UPDATE agents SET ${sets.join(", ")} WHERE id=? AND project_id=?`).run(...vals);
       return this.get(id);

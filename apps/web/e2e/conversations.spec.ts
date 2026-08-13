@@ -19,6 +19,24 @@ test.describe.configure({ mode: "serial" });
 
 test.describe("durable conversation workspace", () => {
   test("desktop sends once, reconciles the canonical answer, and survives refresh", async ({ page, request }) => {
+    let reasoningRequests = 0;
+    await page.route("**/reasoning", async (route) => {
+      reasoningRequests += 1;
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          version: 1,
+          taskId: "browser-reasoning-proof",
+          providerSupplied: true,
+          entries: [{
+            turnKey: "turn-browser-proof",
+            providerId: "mock",
+            content: "Inspect the durable state before answering.",
+            createdAt: "2026-07-22T12:00:00.000Z",
+          }],
+        }),
+      });
+    });
     const conversationId = await createConversation(request, "Desktop conversation proof");
     await openConversation(page, conversationId);
 
@@ -30,14 +48,23 @@ test.describe("durable conversation workspace", () => {
     await expect(page.getByText("Is the local mock runtime operational?")).toBeVisible();
     await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
     await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
-    await expect(page.getByText(/Ask · mock-model via mock/i)).toBeVisible();
-    await expect(page.getByRole("region", { name: "Morrow activity" }).getByRole("listitem").first()).toBeVisible();
+    await expect(page.getByText(/Build .* mock-model via mock/i)).toBeVisible();
+    await expect(page.getByTestId("conversation-message-assistant").getByRole("listitem").first()).toBeVisible();
+    expect(reasoningRequests).toBe(0);
+
+    const reasoningToggle = page.getByRole("checkbox", { name: "Reasoning" });
+    await expect(reasoningToggle).not.toBeChecked();
+    await reasoningToggle.check();
+    await expect(page.getByRole("region", { name: "Model reasoning" })).toContainText("Inspect the durable state before answering.");
+    expect(reasoningRequests).toBeGreaterThan(0);
 
     await page.reload();
     await expect(page.getByText("Is the local mock runtime operational?")).toBeVisible();
     await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
     await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
-    await expect(page.getByRole("region", { name: "Morrow activity" }).getByRole("listitem").first()).toBeVisible();
+    await expect(page.getByTestId("conversation-message-assistant").getByRole("listitem").first()).toBeVisible();
+    await expect(page.getByRole("checkbox", { name: "Reasoning" })).toBeChecked();
+    await expect(page.getByRole("region", { name: "Model reasoning" })).toContainText("Provider-supplied");
   });
 
   test("active refresh and disconnect resume from the durable cursor before one cancellation", async ({ page, context }) => {
@@ -93,13 +120,13 @@ test.describe("durable conversation workspace", () => {
       await page.getByRole("button", { name: "Retry response" }).click();
       await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
       await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
-      await expect(page.getByRole("region", { name: "Morrow activity" }).getByRole("listitem").first()).toBeVisible();
+      await expect(page.getByTestId("conversation-message-assistant").getByRole("listitem").first()).toBeVisible();
       await expect.poll(() => streamAfters.some((cursor) => cursor > 0)).toBe(true);
       page.off("request", observe);
     }
   });
 
-  test("mobile touch path keeps Plan truthful, readable, and durable", async ({ browser, request }) => {
+  test("mobile touch path keeps Chat truthful, readable, and durable", async ({ browser, request }) => {
     const conversationId = await createConversation(request, "Mobile conversation proof");
     const context = await browser.newContext({
       ...devices["Pixel 7"],
@@ -111,17 +138,17 @@ test.describe("durable conversation workspace", () => {
     try {
       await openConversation(page, conversationId);
       await expect(page.getByRole("heading", { name: "Mobile conversation proof" })).toBeVisible();
-      await page.getByRole("button", { name: "Plan" }).click();
-      await page.getByRole("textbox", { name: "Message Morrow" }).fill("Plan how to check the local runtime.");
+      await page.getByRole("button", { name: "Chat", exact: true }).click();
+      await page.getByRole("textbox", { name: "Message Morrow" }).fill("Explain how to check the local runtime.");
       await page.getByRole("button", { name: "Send message" }).click();
 
-      await expect(page.getByText("Plan how to check the local runtime.")).toBeVisible();
+      await expect(page.getByText("Explain how to check the local runtime.")).toBeVisible();
       await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
-      await expect(page.getByText(/Plan · mock-model via mock/i)).toBeVisible();
+      await expect(page.getByText(/Ask · mock-model via mock/i)).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
       await page.reload();
-      await expect(page.getByText("Plan how to check the local runtime.")).toBeVisible();
+      await expect(page.getByText("Explain how to check the local runtime.")).toBeVisible();
       await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
 
       await page.getByRole("button", { name: "Rename conversation" }).click();
@@ -132,7 +159,7 @@ test.describe("durable conversation workspace", () => {
       await expect(page.getByRole("heading", { name: "Mobile renamed proof" })).toBeVisible();
 
       await page.getByRole("button", { name: "Archive conversation" }).click();
-      await expect(page.getByRole("status")).toHaveText("Conversation archived.");
+      await expect(page.getByText("Conversation archived.", { exact: true })).toBeVisible();
       await expect(page.getByRole("button", { name: "Restore conversation" })).toBeVisible();
 
       const deleteButton = page.getByRole("button", { name: "Delete conversation" });

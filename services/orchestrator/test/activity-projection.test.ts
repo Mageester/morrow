@@ -14,6 +14,21 @@ function event(sequence: number, type: TaskEvent["type"], payload: Record<string
 }
 
 describe("conversation activity projection", () => {
+  it("shows automatic learning as a subtle inspectable activity step", () => {
+    const activity = projectConversationActivity({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      tasks: [{
+        taskId: "task-1",
+        events: [event(1, "memory.learned", { count: 2 })],
+      }],
+    });
+
+    expect(activity.entries).toMatchObject([
+      { kind: "memory", status: "completed", summary: "Updated memory", detail: "2 useful details learned" },
+    ]);
+  });
+
   it("keeps compact reasoning, tool, file, and skill records while hiding lifecycle noise", () => {
     const activity = projectConversationActivity({
       projectId: "project-1",

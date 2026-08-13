@@ -365,6 +365,7 @@ const WRAPPER_KEYS = ["arguments", "args", "input", "parameters", "params", "too
 
 const ALIAS_RULES: Record<string, Array<{ canonical: string; aliases: string[] }>> = {
   create_file: [{ canonical: "path", aliases: PATH_ALIASES }, { canonical: "content", aliases: CONTENT_ALIASES }],
+  append_file: [{ canonical: "path", aliases: PATH_ALIASES }, { canonical: "content", aliases: CONTENT_ALIASES }],
   create_directory: [{ canonical: "path", aliases: PATH_ALIASES }],
   read_file: [{ canonical: "path", aliases: PATH_ALIASES }],
   propose_patch: [{ canonical: "patch", aliases: PATCH_ALIASES }],
@@ -414,7 +415,7 @@ export function normalizeToolArguments(toolName: string, input: Record<string, u
 
   // create_file content emitted as an array of lines. Lossless only when every
   // element is a string; a mixed array stays a type error.
-  if (toolName === "create_file" && Array.isArray(args.content) && args.content.every((line) => typeof line === "string")) {
+  if ((toolName === "create_file" || toolName === "append_file") && Array.isArray(args.content) && args.content.every((line) => typeof line === "string")) {
     args.content = (args.content as string[]).join("\n");
     applied.push({ field: "content", from: "string[]", kind: "joined_lines" });
   }
@@ -491,6 +492,7 @@ export function validateToolArguments(
   tool: ToolSchemaLike,
   args: Record<string, unknown>,
   requiredOverride?: string[],
+  allowBlankRequired: readonly string[] = [],
 ): ToolArgSchemaProblem | null {
   const props = tool.parameters?.properties ?? {};
   // The executor has always tolerated some advertised-required fields being
@@ -505,7 +507,12 @@ export function validateToolArguments(
       return { field, expected: `${type} (required)`, problem: "missing" };
     }
     // A required string that is present but empty/blank is effectively missing.
-    if (props[field]?.type === "string" && typeof value === "string" && value.trim() === "") {
+    if (
+      props[field]?.type === "string"
+      && typeof value === "string"
+      && value.trim() === ""
+      && !allowBlankRequired.includes(field)
+    ) {
       return { field, expected: "non-empty string (required)", problem: "missing" };
     }
   }

@@ -110,7 +110,7 @@ describe("create_file → edit safety", () => {
     expect(readFileSync(backupFile, "utf8")).toBe(original); // byte-exact recoverability
   });
 
-  it("refuses to overwrite a non-empty file with empty content (file preserved, call fails)", async () => {
+  it("allows an intentional empty whole-file replacement and keeps the original recoverable", async () => {
     seedYolo(db, ws);
     await run([
       [tool("f1", "create_file", { path: "keep.txt", content: "important data\n" }), done],
@@ -118,17 +118,14 @@ describe("create_file → edit safety", () => {
       [text("done"), done],
     ]);
 
-    // Safety outcome: the non-empty file is untouched and the blank overwrite
-    // failed. Blank content is rejected by the tool-argument validator first
-    // (invalid_tool_arguments); the create→edit path also carries a dedicated
-    // unsafe_overwrite_rejected guard as defense in depth.
-    expect(readFileSync(join(ws, "keep.txt"), "utf8")).toBe("important data\n");
+    expect(readFileSync(join(ws, "keep.txt"), "utf8")).toBe("");
     const calls = createCalls();
-    expect(calls[1]!.status).toBe("failed");
-    expect(JSON.parse(calls[1]!.resultJson!).kind).toMatch(/unsafe_overwrite_rejected|invalid_tool_arguments/);
+    expect(calls[1]!.status).toBe("completed");
+    const editCs = changeSetsRepository(db).listByTask("t").find((cs) => Object.keys(cs.backupReferences ?? {}).includes("keep.txt"));
+    expect(readFileSync(join(home, "backups", `${editCs!.backupReferences!["keep.txt"]}.bak`), "utf8")).toBe("important data\n");
   });
 
-  it("refuses to overwrite a non-empty file with whitespace-only content (truncation guard)", async () => {
+  it("allows a whitespace-only whole-file replacement", async () => {
     seedYolo(db, ws);
     await run([
       [tool("f1", "create_file", { path: "keep.txt", content: "real content here\n" }), done],
@@ -136,10 +133,9 @@ describe("create_file → edit safety", () => {
       [text("done"), done],
     ]);
 
-    expect(readFileSync(join(ws, "keep.txt"), "utf8")).toBe("real content here\n");
+    expect(readFileSync(join(ws, "keep.txt"), "utf8")).toBe("   \n\t\n");
     const calls = createCalls();
-    expect(calls[1]!.status).toBe("failed");
-    expect(JSON.parse(calls[1]!.resultJson!).kind).toMatch(/unsafe_overwrite_rejected|invalid_tool_arguments/);
+    expect(calls[1]!.status).toBe("completed");
   });
 
   it("applies a non-blank shorter rewrite but keeps the original recoverable (not silently destroyed)", async () => {

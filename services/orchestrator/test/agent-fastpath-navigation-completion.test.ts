@@ -4,8 +4,11 @@ import { TaskRunner } from "../src/runner.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
+import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { processesRepository } from "../src/repositories/processes.js";
+import { ProcessSupervisor } from "../src/processes/supervisor.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask, isForwardLookingNarration } from "../src/execution/agent.js";
 import type { BrowserController, BrowserViewport, PageSnapshot } from "../src/browser/types.js";
@@ -14,19 +17,18 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 /**
- * Live regression (Pomodoro build, deepseek-v4-flash): the completion "fast
- * path" treats any completed browser-evidence tool call in the current turn
- * as proof that the turn's accompanying text is a trustworthy final answer.
- * That is correct for click/snapshot/console/screenshot, which report on
- * page state the model already saw before writing its narration — but wrong
- * for browser_open, which is exploratory: the model writes its text BEFORE
+ * Hermes-style loop regression: any assistant turn containing tool calls is
+ * provisional because the model has not yet seen those tool results.
+ * Tool-bearing turns remain provisional even when they contain click,
+ * snapshot, console, screenshot, or browser_open calls; the model must see
+ * their results before providing the canonical final.
+ * browser_open is especially exploratory: the model writes its text BEFORE
  * knowing what the navigation will show. A turn saying "Final check: reload
  * the page to confirm clean route health after all interactions." plus a
- * browser_open call was accepted as the canonical final answer purely
+ * browser_open call must not be accepted as the canonical final answer merely
  * because the frontend evidence contract was already otherwise satisfied —
- * the model never got a chance to react to what the reload actually
- * revealed, and the task silently "completed" with that throwaway sentence
- * as its entire final report.
+ * the model never got a chance to react to what the reload actually revealed.
+ * A later tool-free provider turn owns the canonical final.
  */
 
 function seed(db: any, workspacePath: string, prompt: string) {
@@ -71,7 +73,7 @@ class FrontendBrowser implements BrowserController {
   async close() {}
 }
 
-describe("completion fast path — browser_open exclusion", () => {
+describe("Hermes-style tool-turn finality", () => {
   let db: any;
   let ws: string;
   let home: string;
@@ -134,16 +136,11 @@ describe("completion fast path — browser_open exclusion", () => {
     expect(finalMessage?.content ?? "").toContain("Verified: the reload showed a clean, working page.");
   });
 
-  it("requests a tool-free summary turn instead of shipping forward-looking narration as the report", async () => {
-    // Live bug (Pomodoro build, deepseek-v4-flash): the task completed green
-    // but its entire final report was "All three viewports captured. Final
-    // check: confirm the controls still render correctly on mobile and grab
-    // final console evidence." — forward-looking narration written alongside a
-    // browser_snapshot + browser_console pair, accepted by the fast path
-    // because those evidence tools satisfied the contract. browser_open is not
-    // involved, so the earlier browser_open-only exclusion cannot catch it.
-    // The framework must recognize the narration is not a conclusion and spend
-    // one directed, tool-free turn getting a real summary.
+  it("does not accept forward-looking prose adjacent to tool calls as the final", async () => {
+    // A model can emit narration before its tool calls. The tool results are
+    // not observations available to that same assistant turn, so execution
+    // must continue to the next provider turn without injecting a controller
+    // summary request.
     const provider = new MockProvider({
       chunks: [
         [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body><button id=e1>Inspect</button></body></html>\n" }), done],
@@ -166,9 +163,9 @@ describe("completion fast path — browser_open exclusion", () => {
           },
           done,
         ],
-        // Forward-looking narration paired with same-turn evidence tools (NOT
-        // browser_open). The contract is already satisfiable, so the fast path
-        // would otherwise ship this sentence as the report.
+        // Forward-looking narration paired with same-turn evidence tools. The
+        // contract is already satisfiable, but this turn is not final because
+        // the model has not yet seen these tool results.
         [text("All three viewports captured. Final check: confirm the controls still render correctly on mobile and grab final console evidence."),
           {
             type: "tool_call" as const,
@@ -178,7 +175,7 @@ describe("completion fast path — browser_open exclusion", () => {
             ].map((call, index) => ({ ...call, index })),
           },
           done],
-        // The directed summary turn: a genuine, tool-free closing report.
+        // The subsequent tool-free model turn is the only canonical final.
         [text("Built the Pomodoro timer (index.html): a 25:00 countdown with working Start, Pause, and Reset controls, verified in the browser with a clean console across desktop, tablet, and mobile."), done],
       ],
       delayMs: 1,
@@ -189,13 +186,142 @@ describe("completion fast path — browser_open exclusion", () => {
     await runner.waitFor("t");
 
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(provider.requests).toHaveLength(4);
     const finalMessage = conversationsRepository(db).getMessage("ma");
-    // The throwaway narration must not be the report; the genuine summary must.
-    expect(finalMessage?.content ?? "").not.toContain("Final check: confirm the controls");
     expect(finalMessage?.content ?? "").toContain("Built the Pomodoro timer");
-    // And the directed-summary turn must have actually been requested.
+    expect(finalMessage?.content ?? "").not.toContain("Final check: confirm the controls");
+    expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.content).toContain("Built the Pomodoro timer");
     const events = taskRecordsRepository(db).listEvents("t");
-    expect(events.some((e: any) => e.type === "task.progress_warning" && e.payload?.reason === "final_summary_requested")).toBe(true);
+    expect(events.some((e: any) => e.type === "task.progress_warning" && e.payload?.reason === "final_summary_requested")).toBe(false);
+  });
+
+  it("does not request a tool-free final summary while explicitly required process cleanup remains", async () => {
+    seed(db, ws, "Build a small website, verify it in the browser, then stop the background process before finishing.");
+    const supervisor = new ProcessSupervisor(processesRepository(db), join(home, "process-logs"));
+    const started = await supervisor.start({
+      projectId: "p",
+      taskId: "t",
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwd: ws,
+    });
+    const provider = new MockProvider({
+      chunks: [
+        [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body><button id=e1>Inspect</button></body></html>\n" }), done],
+        [{
+          type: "tool_call" as const,
+          toolCalls: [
+            tool("bo1", "browser_open", { url: "http://127.0.0.1:4173/" }).toolCalls[0]!,
+            tool("bs", "browser_snapshot", {}).toolCalls[0]!,
+            tool("bc", "browser_console", {}).toolCalls[0]!,
+            tool("bi", "browser_click", { ref: "e1" }).toolCalls[0]!,
+            tool("bd", "browser_viewport", { preset: "desktop" }).toolCalls[0]!,
+            tool("bds", "browser_screenshot", { label: "desktop" }).toolCalls[0]!,
+            tool("bt", "browser_viewport", { preset: "tablet" }).toolCalls[0]!,
+            tool("bts", "browser_screenshot", { label: "tablet" }).toolCalls[0]!,
+            tool("bm", "browser_viewport", { preset: "mobile" }).toolCalls[0]!,
+            tool("bms", "browser_screenshot", { label: "mobile" }).toolCalls[0]!,
+          ].map((call, index) => ({ ...call, index })),
+        }, done],
+        [text("All three screenshots captured. Final DOM and console check:"), {
+          type: "tool_call" as const,
+          toolCalls: [
+            tool("fs", "browser_snapshot", {}).toolCalls[0]!,
+            tool("fc", "browser_console", {}).toolCalls[0]!,
+          ].map((call, index) => ({ ...call, index })),
+        }, done],
+        [tool("stop", "stop_process", { processId: started.id, force: true }), done],
+        [text("Built and browser-verified the website, then stopped its background server."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, supervisor, browserFactory: () => new FrontendBrowser(), maxTurns: 16 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(processesRepository(db).get(started.id)?.status).not.toBe("running");
+    expect(conversationsRepository(db).listToolCallsForTask("t").some((call) => call.id === "stop" && call.status === "completed")).toBe(true);
+    const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((event: any) => event.type === "task.progress_warning" && event.payload?.reason === "final_summary_requested")).toBe(false);
+  });
+
+  it("records a task-owned running process without forcing cleanup turns", async () => {
+    seed(db, ws, "Create the requested file, then stop the background process before finishing.");
+    const supervisor = new ProcessSupervisor(processesRepository(db), join(home, "process-logs"));
+    const started = await supervisor.start({
+      projectId: "p",
+      taskId: "t",
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwd: ws,
+    });
+    const provider = new MockProvider({
+      chunks: [
+        [tool("create", "create_file", { path: "artifact.txt", content: "delivered\n" }), done],
+        [text("The file is ready, but the background process is still running."), done],
+        [tool("stop", "stop_process", { processId: started.id, force: true }), done],
+        [text("Created the requested file and stopped the task-owned background process."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, supervisor, maxTurns: 8 }));
+
+    try {
+      runner.run("t");
+      await runner.waitFor("t");
+
+      expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+      expect(processesRepository(db).get(started.id)?.status).toBe("running");
+      const calls = conversationsRepository(db).listToolCallsForTask("t");
+      expect(calls.map((call) => call.id)).toEqual(["create"]);
+      expect(provider.requests).toHaveLength(2);
+      expect(taskRecordsRepository(db).listEvents("t").filter((event: any) => event.payload?.reason === "completion_contract_recovery")).toHaveLength(0);
+      expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({
+        completion: { complete: false, blockers: expect.arrayContaining([expect.objectContaining({ code: "background_process_running" })]) },
+      });
+    } finally {
+      await supervisor.terminate(started.id, { force: true });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  });
+
+  it("completes with an honest cleanup blocker when the model leaves the process running", async () => {
+    seed(db, ws, "Create the requested file, then stop the background process before finishing.");
+    const supervisor = new ProcessSupervisor(processesRepository(db), join(home, "process-logs"));
+    const started = await supervisor.start({
+      projectId: "p",
+      taskId: "t",
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwd: ws,
+    });
+    const provider = new MockProvider({
+      chunks: [
+        [tool("create", "create_file", { path: "artifact.txt", content: "delivered\n" }), done],
+        [text("The file is ready, but the background process is still running."), done],
+        [text("The file is ready, but the background process is still running."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, supervisor, maxTurns: 8 }));
+
+    try {
+      runner.run("t");
+      await runner.waitFor("t");
+
+      expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+      expect(processesRepository(db).get(started.id)?.status).toBe("running");
+      expect(provider.requests).toHaveLength(2);
+      const events = taskRecordsRepository(db).listEvents("t");
+      expect(events.filter((event: any) => event.payload?.reason === "completion_contract_recovery")).toHaveLength(0);
+      expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({
+        completion: { complete: false, blockers: expect.arrayContaining([expect.objectContaining({ code: "background_process_running" })]) },
+      });
+    } finally {
+      await supervisor.terminate(started.id, { force: true });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
   });
 });
 

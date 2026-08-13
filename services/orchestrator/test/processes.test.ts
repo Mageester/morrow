@@ -272,11 +272,11 @@ describe("process API", () => {
     expect(again.statusCode).toBe(409);
   });
 
-  it("refuses denied commands, bad cwd, and unknown executables", async () => {
+  it("refuses hard-denied commands, bad cwd, and unknown executables", async () => {
     const denied = await app.inject({
       method: "POST",
       url: "/api/projects/p1/processes",
-      payload: { command: "powershell", args: ["-c", "echo hi"] },
+      payload: { command: "sudo", args: ["node", "script.mjs"] },
     });
     expect(denied.statusCode).toBe(403);
 

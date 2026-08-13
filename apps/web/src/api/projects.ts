@@ -45,4 +45,7 @@ export const projectApi = {
   create(input: { name: string; workspacePath: string }): Promise<ProjectSelection> {
     return api.post("/api/projects", input, ProjectSchema);
   },
+  delete(projectId: string): Promise<{ ok: boolean; deletedId: string }> {
+    return api.delete(`/api/projects/${encodeURIComponent(projectId)}`, z.object({ ok: z.boolean(), deletedId: z.string() }));
+  },
 };

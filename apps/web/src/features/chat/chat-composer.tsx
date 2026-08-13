@@ -1,4 +1,4 @@
-import type { AgentMode, ModelStatus, PresetId, PresetStatus, ProviderId } from "@morrow/contracts";
+import { normalizeReasoningForRoute, type AgentMode, type ModelStatus, type PresetId, type PresetStatus, type ProviderId, type ReasoningConfiguration, type RouteReasoningCapability } from "@morrow/contracts";
 import { Send, Square } from "lucide-react";
 import { ContextMeter } from "./context-meter.js";
 import { ModelPicker } from "./model-picker.js";
@@ -33,13 +33,16 @@ interface ComposerModePreference {
 function loadComposerModePreference(): ComposerModePreference {
   try {
     const saved = JSON.parse(localStorage.getItem(COMPOSER_MODE_STORAGE_KEY) ?? "null") as Partial<ComposerModePreference> | null;
+    if (saved?.mode === "chat") {
+      return { mode: "chat", autoApprove: false };
+    }
     if (saved?.mode === "build") {
       return { mode: "build", autoApprove: saved.autoApprove === true };
     }
   } catch {
     // Corrupt or unavailable browser storage must not block chat.
   }
-  return { mode: "chat", autoApprove: false };
+  return { mode: "build", autoApprove: true };
 }
 
 function saveComposerModePreference(preference: ComposerModePreference): void {
@@ -56,6 +59,7 @@ export interface ChatComposerModelRoute {
   preset?: PresetId | undefined;
   providerId?: ProviderId | undefined;
   model?: string | undefined;
+  reasoning?: RouteReasoningCapability | undefined;
 }
 
 export interface ChatComposerSubmission {
@@ -67,6 +71,7 @@ export interface ChatComposerSubmission {
   preset?: PresetId | undefined;
   providerId?: ProviderId | undefined;
   model?: string | undefined;
+  reasoning?: ReasoningConfiguration | undefined;
 }
 
 export interface ChatComposerSubmitResult {
@@ -94,6 +99,10 @@ export interface ChatComposerProps {
    * to know how much of the window that turn consumed. */
   contextTaskId?: string | undefined;
   onStop?: ((taskId: string) => Promise<void>) | undefined;
+  showReasoning?: boolean | undefined;
+  onShowReasoningChange?: ((show: boolean) => void) | undefined;
+  reasoningConfig?: ReasoningConfiguration | undefined;
+  onReasoningConfigChange?: ((config: ReasoningConfiguration) => void) | undefined;
 }
 
 const DEFAULT_ROUTE: ChatComposerModelRoute = {
@@ -110,7 +119,7 @@ const DEFAULT_ROUTE: ChatComposerModelRoute = {
  * mode differing only by `autoApprove`, which is a question about supervision,
  * not about what Morrow should do; and Plan sat between them describing an
  * output format rather than a capability. What is left is the one real choice
- * (may Morrow change my files?) with approval as its own visible switch.
+ * (may Morrow change my files?) with workspace trust as its own visible switch.
  *
  * The wire contract is unchanged: the orchestrator still receives
  * read-only / plan-only / agent plus autoApprove.
@@ -126,6 +135,111 @@ function mapMode(
 ): Pick<ChatComposerSubmission, "mode" | "autoApprove"> {
   if (mode === "chat") return { mode: "read-only", autoApprove: false };
   return { mode: "agent", autoApprove };
+}
+
+interface ReasoningSliderOption {
+  label: string;
+  config: ReasoningConfiguration;
+}
+
+function reasoningSliderOptions(capability: RouteReasoningCapability | undefined): ReasoningSliderOption[] {
+  const auto: ReasoningSliderOption = { label: "Auto", config: { mode: "auto" } };
+  if (!capability) return [auto];
+  switch (capability.control) {
+    case "none":
+    case "fixed":
+      return [auto];
+    case "effort":
+      return [
+        auto,
+        ...(capability.supportsOff ? [{ label: "Off", config: { mode: "off" } as ReasoningConfiguration }] : []),
+        ...capability.efforts.map((effort): ReasoningSliderOption => ({
+          label: effort === "xhigh" ? "xHigh" : effort[0]!.toUpperCase() + effort.slice(1),
+          config: { mode: "effort", effort },
+        })),
+      ];
+    case "budget":
+      return [
+        auto,
+        { label: "Off", config: { mode: "off" } },
+        ...capability.budgets.map((tokens): ReasoningSliderOption => ({
+          label: tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(tokens),
+          config: { mode: "budget", tokens },
+        })),
+      ];
+  }
+}
+
+function sameReasoningConfig(left: ReasoningConfiguration, right: ReasoningConfiguration): boolean {
+  if (left.mode !== right.mode) return false;
+  if (left.mode === "effort" && right.mode === "effort") return left.effort === right.effort;
+  if (left.mode === "budget" && right.mode === "budget") return left.tokens === right.tokens;
+  return true;
+}
+
+function ReasoningSlider({
+  capability,
+  disabled,
+  onChange,
+  value,
+}: {
+  capability: RouteReasoningCapability | undefined;
+  disabled: boolean;
+  onChange: (config: ReasoningConfiguration) => void;
+  value: ReasoningConfiguration;
+}) {
+  const options = reasoningSliderOptions(capability);
+  const normalized = capability
+    ? normalizeReasoningForRoute(value, capability).config
+    : { mode: "auto" as const };
+  const selectedIndex = Math.max(0, options.findIndex((option) => sameReasoningConfig(option.config, normalized)));
+  const progress = options.length <= 1 ? 0 : (selectedIndex / (options.length - 1)) * 100;
+  const isAdjustable = capability?.control === "effort" || capability?.control === "budget";
+  const selectedLabel = options[selectedIndex]?.label ?? "Auto";
+  const description = !capability
+    ? "Select a model to adjust reasoning"
+    : capability.control === "fixed"
+      ? "Reasoning is fixed by the provider"
+      : capability.control === "none"
+        ? "This model does not expose reasoning controls"
+        : "Set reasoning effort / thinking depth for the model";
+
+  return (
+    <div
+      aria-label="Reasoning effort"
+      className={`morrow-reasoning-slider${isAdjustable ? "" : " is-static"}`}
+      title={description}
+    >
+      <span className="morrow-reasoning-slider__label">Reasoning</span>
+      <div className="morrow-reasoning-slider__control">
+        <div className="morrow-reasoning-slider__track" aria-hidden="true">
+          <span className="morrow-reasoning-slider__fill" style={{ width: `${progress}%` }} />
+        </div>
+        <input
+          aria-label="Reasoning effort"
+          aria-valuetext={selectedLabel}
+          className="morrow-reasoning-slider__input"
+          data-adjustable={isAdjustable ? "true" : "false"}
+          data-value={selectedLabel.toLowerCase()}
+          disabled={disabled || !isAdjustable}
+          max={Math.max(0, options.length - 1)}
+          min={0}
+          onChange={(event) => {
+            const option = options[Number(event.target.value)];
+            if (option) onChange(option.config);
+          }}
+          type="range"
+          value={selectedIndex}
+        />
+        <span aria-atomic="true" aria-live="polite" className="morrow-reasoning-slider__value">
+          {selectedLabel}
+        </span>
+        <div className="morrow-reasoning-slider__labels" aria-hidden="true">
+          {options.map((option) => <span key={option.label}>{option.label}</span>)}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function scopeId(scope: ChatDraftScope): string {
@@ -152,6 +266,10 @@ export function ChatComposer({
   activeTaskId,
   contextTaskId,
   onStop,
+  showReasoning = false,
+  onShowReasoningChange,
+  reasoningConfig,
+  onReasoningConfigChange,
 }: ChatComposerProps) {
   const id = useId();
   const inputId = `morrow-chat-message-${id}`;
@@ -180,6 +298,15 @@ export function ChatComposer({
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const selectedRoute = modelCatalogue
+    ? catalogueRoute
+    : availableRoutes.find((route) => route.id === routeId) ?? availableRoutes[0];
+  const selectedReasoningCapability = selectedRoute?.reasoning;
+  const selectedReasoning = onReasoningConfigChange
+    ? selectedReasoningCapability
+      ? normalizeReasoningForRoute(reasoningConfig, selectedReasoningCapability).config
+      : { mode: "auto" as const }
+    : undefined;
 
   useEffect(() => {
     saveComposerModePreference({ mode, autoApprove: mode === "build" && autoApprove });
@@ -263,16 +390,13 @@ export function ChatComposer({
       end: textarea.selectionEnd,
       start: textarea.selectionStart,
     };
-    const effectiveRoute = modelCatalogue
-      ? catalogueRoute
-      : availableRoutes.find((route) => route.id === routeId) ?? availableRoutes[0];
-    const routing = effectiveRoute?.providerId
+    const routing = selectedRoute?.providerId
       ? {
-          providerId: effectiveRoute.providerId,
-          ...(effectiveRoute.model ? { model: effectiveRoute.model } : {}),
+          providerId: selectedRoute.providerId,
+          ...(selectedRoute.model ? { model: selectedRoute.model } : {}),
         }
-      : effectiveRoute?.preset
-        ? { preset: effectiveRoute.preset }
+      : selectedRoute?.preset
+        ? { preset: selectedRoute.preset }
         : {};
 
     try {
@@ -284,6 +408,7 @@ export function ChatComposer({
           : {}),
         ...mapMode(mode, autoApprove),
         ...routing,
+        ...(selectedReasoning ? { reasoning: selectedReasoning } : {}),
       });
       if (!result.accepted) {
         if (submittedScopeId === committedScope.current.id) {
@@ -408,15 +533,15 @@ export function ChatComposer({
               onChange={(event) => setAutoApprove(event.target.checked)}
               type="checkbox"
             />
-            <span>Approve changes automatically</span>
+            <span>Trusted workspace</span>
           </label>
         ) : null}
       </div>
       <p className="morrow-chat-composer__mode-hint">
         {mode === "build"
           ? autoApprove
-            ? "Morrow will edit files and run commands without stopping to ask."
-            : "Morrow will ask before it applies changes."
+            ? "Morrow can edit files and run ordinary workspace commands without stopping."
+            : "Morrow will ask before workspace changes and commands."
           : "Morrow will answer and read your project, but will not change anything."}
       </p>
 
@@ -460,6 +585,30 @@ export function ChatComposer({
         )}
 
         <ContextMeter taskId={contextTaskId ?? activeTaskId} />
+
+        {onReasoningConfigChange ? (
+          <ReasoningSlider
+            capability={selectedReasoningCapability}
+            disabled={interactionDisabled}
+            onChange={onReasoningConfigChange}
+            value={reasoningConfig ?? { mode: "auto" }}
+          />
+        ) : null}
+
+        {onShowReasoningChange ? (
+          <label
+            className="morrow-chat-composer__reasoning-toggle"
+            title="Show reasoning text supplied by the model provider"
+          >
+            <input
+              checked={showReasoning}
+              disabled={disabled}
+              onChange={(event) => onShowReasoningChange(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Reasoning</span>
+          </label>
+        ) : null}
 
         {activeTaskId && onStop ? (
           <button

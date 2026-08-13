@@ -11,6 +11,7 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { TaskRunner } from "../src/runner.js";
 import { buildServer } from "../src/server.js";
 import { buildProviderProjection } from "../src/execution/provider-projection.js";
+import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 
 const NOW = "2026-07-22T12:00:00.000Z";
 
@@ -153,6 +154,72 @@ describe("project-scoped conversation API", () => {
     expect(JSON.stringify(body)).not.toContain("must-not-leak");
     expect(JSON.stringify(body)).not.toContain("private artifact contents");
     expect(JSON.stringify(body)).not.toContain("secret.txt");
+  });
+
+  it("returns only redacted provider-supplied reasoning for a task owned by this conversation", async () => {
+    const conversation = await create("Reasoning projection");
+    taskRepository(db).createTask({ id: "task-reasoning", projectId: "project-a", kind: "agent_chat", status: "completed", createdAt: NOW });
+    conversationsRepository(db).appendMessage({
+      id: "assistant-reasoning",
+      conversationId: conversation.id,
+      role: "assistant",
+      content: "Finished",
+      taskId: "task-reasoning",
+      streamingState: "completed",
+      provider: "deepseek",
+      model: "deepseek-reasoner",
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    const continuity = executionContinuityRepository(db);
+    const segment = continuity.openSegment({
+      taskId: "task-reasoning",
+      missionId: null,
+      providerId: "deepseek",
+      model: "deepseek-reasoner",
+      routeJson: {},
+      ownerId: "worker-reasoning",
+      now: NOW,
+    });
+    continuity.saveProviderContinuation({
+      id: "continuation-reasoning",
+      taskId: "task-reasoning",
+      segmentId: segment.id,
+      providerId: "deepseek",
+      routeFingerprint: "route-reasoning",
+      turnKey: "turn-1",
+      state: {
+        reasoningContent: "Inspect first; credential sk-abcdefghijklmnop",
+        opaque: { continuation: "must-not-reach-browser" },
+      },
+      ownerId: "worker-reasoning",
+      generation: segment.generation,
+      now: NOW,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/projects/project-a/conversations/${conversation.id}/tasks/task-reasoning/reasoning`,
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({
+      version: 1,
+      taskId: "task-reasoning",
+      providerSupplied: true,
+      entries: [{
+        turnKey: "turn-1",
+        providerId: "deepseek",
+        content: "Inspect first; credential ***redacted***",
+        createdAt: NOW,
+      }],
+    });
+    expect(response.body).not.toContain("must-not-reach-browser");
+
+    const foreign = await app.inject({
+      method: "GET",
+      url: `/api/projects/project-b/conversations/${conversation.id}/tasks/task-reasoning/reasoning`,
+    });
+    expect(foreign.statusCode).toBe(404);
   });
 
   it("redacts tool-call JSON on writes, legacy reads, task APIs, and provider projection", async () => {

@@ -18,14 +18,33 @@ import { projectQueries } from "../../api/projects.js";
 import { missionKeys, missionQueries } from "../../api/query-keys.js";
 import { api, ApiClientError } from "../../api/client.js";
 import { ChatComposer, type ChatComposerSubmission } from "./chat-composer.js";
+import { toConversationMessageInput } from "./conversation-submit.js";
 import { MissionCard } from "./mission-card.js";
 import { MissionPanel } from "./mission-panel.js";
 import { ActivityPanel, ConversationActivity, ConversationTranscript } from "./activity-panel.js";
 import { PendingApprovals } from "./pending-approvals.js";
 import { useConversationAutoscroll } from "./use-conversation-autoscroll.js";
+import { ReasoningDisclosure } from "./reasoning-disclosure.js";
 
 const ACTIVE_STATES = new Set(["queued", "streaming"]);
 const RETRYABLE_STATES = new Set(["failed", "interrupted"]);
+const REASONING_VISIBILITY_STORAGE_KEY = "morrow.chat.show-reasoning.v1";
+
+function loadReasoningVisibility(): boolean {
+  try {
+    return localStorage.getItem(REASONING_VISIBILITY_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function saveReasoningVisibility(show: boolean): void {
+  try {
+    localStorage.setItem(REASONING_VISIBILITY_STORAGE_KEY, String(show));
+  } catch {
+    // Storage can be disabled; the current conversation still updates.
+  }
+}
 
 function routingLabel(message: WebConversationMessage): string | null {
   const routing = message.routing;
@@ -141,6 +160,8 @@ export function ConversationPageContent({
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [showReasoning, setShowReasoning] = useState(loadReasoningVisibility);
+  const [reasoningConfig, setReasoningConfig] = useState<import("@morrow/contracts").ReasoningConfiguration>({ mode: "auto" });
   const activityButtonRef = useRef<HTMLButtonElement>(null);
   const renameButtonRef = useRef<HTMLButtonElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -196,6 +217,10 @@ export function ConversationPageContent({
     () => new Set(history.flatMap((message) => (message.taskId ? [message.taskId] : []))),
     [history],
   );
+
+  useEffect(() => {
+    saveReasoningVisibility(showReasoning);
+  }, [showReasoning]);
 
   useEffect(() => {
     if (renameOpen) {
@@ -260,14 +285,11 @@ export function ConversationPageContent({
   async function submit(submission: ChatComposerSubmission) {
     resumeAutoscroll();
     try {
-      const result = await conversationApi.sendMessage(projectId, conversationId, {
-        content: submission.content,
-        mode: submission.mode,
-        autoApprove: submission.autoApprove,
-        ...(submission.preset ? { preset: submission.preset } : {}),
-        ...(submission.providerId ? { providerId: submission.providerId } : {}),
-        ...(submission.model ? { model: submission.model } : {}),
-      });
+      const result = await conversationApi.sendMessage(
+        projectId,
+        conversationId,
+        toConversationMessageInput(submission),
+      );
       queryClient.setQueryData<WebConversationMessage[]>(
         conversationKeys.messages(projectId, conversationId),
         (current = []) => {
@@ -498,6 +520,14 @@ export function ConversationPageContent({
                   </div>
                 </>
               )}
+              {showReasoning && message.role === "assistant" && message.taskId ? (
+                <ReasoningDisclosure
+                  active={ACTIVE_STATES.has(message.streamingState)}
+                  conversationId={conversationId}
+                  projectId={projectId}
+                  taskId={message.taskId}
+                />
+              ) : null}
               {label ? <p className="morrow-conversation-message__route">{label}</p> : null}
               {message.taskId && RETRYABLE_STATES.has(message.streamingState) ? (
                 <button disabled={actionBusy} onClick={() => { void retry(message.taskId!); }} type="button">Retry response</button>
@@ -526,7 +556,11 @@ export function ConversationPageContent({
           draftScope={{ projectId, conversationId }}
           modelCatalogue={modelCatalogue}
           onStop={stop}
+          onShowReasoningChange={setShowReasoning}
+          onReasoningConfigChange={setReasoningConfig}
+          reasoningConfig={reasoningConfig}
           onSubmit={submit}
+          showReasoning={showReasoning}
           placeholder="Reply to Morrow…"
         />
       </div>

@@ -4,8 +4,8 @@ export type CommandRisk = "auto_approvable" | "approval_required" | "denied";
 export type CommandPolicyDecision = { risk: CommandRisk; pattern: string; reason: string };
 
 const PACKAGE_MANAGERS = new Set(["pnpm", "npm", "yarn"]);
-const VERIFY_SCRIPTS = new Set(["test", "check", "typecheck", "lint", "build"]);
-const SHELLS = new Set(["cmd", "powershell", "pwsh", "bash", "sh", "zsh", "sudo", "runas", "su"]);
+const SHELLS = new Set(["cmd", "powershell", "pwsh", "bash", "sh", "zsh"]);
+const PRIVILEGE_ESCALATION = new Set(["sudo", "runas", "su", "doas"]);
 const POWERSHELLS = new Set(["powershell", "pwsh"]);
 const SHELL_BUILT_INS = new Set(["dir", "cd", "copy", "del", "set", "cls"]);
 // `mkdir`/`md` are shell built-ins on Windows, not real executables, so running
@@ -44,6 +44,20 @@ function isSafePowerShellNewItem(args: string[]): boolean {
   if (/^([a-zA-Z]:[\\/]|[\\/]{1,2})/.test(path)) return false; // C:\, \\server, /abs
   return true;
 }
+
+/** Shell payloads cannot use the structured executor's argv containment. Keep
+ * the shell available for legitimate work, but categorically reject payloads
+ * whose text already proves a host-destructive or intentionally opaque action. */
+function isDangerousShellInvocation(args: string[]): boolean {
+  const payload = args.join(" ");
+  if (/(?:-encodedcommand|--encoded-command|\biex\b|invoke-expression)/i.test(payload)) return true;
+  if (/\b(?:remove-item|format-volume|clear-disk|initialize-disk|stop-computer|restart-computer)\b/i.test(payload)) return true;
+  if (/\b(?:mimikatz|credentials?|passwords?|api[_ -]?keys?|secrets?|tokens?)\b/i.test(payload) && /\b(?:get-content|type|cat|print|echo|upload|send)\b/i.test(payload)) return true;
+  // A failed New-Item safety match with chaining, traversal, or an absolute
+  // host path is an attempted escape, not merely an unknown shell command.
+  if (/\bNew-Item\b/i.test(payload) && (/[;&|`\r\n]/.test(payload) || /(?:\.\.[\\/]|[A-Za-z]:[\\/]|['"]\/[A-Za-z])/i.test(payload))) return true;
+  return false;
+}
 const DELETE_COMMANDS = new Set(["rm", "del", "rmdir", "remove-item", "erase", "rd", "sdelete"]);
 
 /**
@@ -74,10 +88,11 @@ function killsByImageName(command: string, args: string[]): boolean {
   return false;
 }
 const DENIED_COMMANDS = new Set(["mimikatz", "psexec", "shutdown", "reboot", "halt", "poweroff", "init", "format"]);
-// Direct network-transfer tools are an exfiltration vector. They are denied
-// outright; legitimate dependency installation flows through the package
-// managers below, which still require explicit approval for mutations.
-const NETWORK_EXFIL = new Set(["curl", "wget", "nc", "ncat", "netcat", "telnet", "scp", "sftp", "ftp", "tftp", "socat", "ssh", "rsync"]);
+// Direct network tools are useful for real development, but can move data
+// beyond the workspace. They are available behind an explicit human boundary
+// rather than being categorically removed from the model's hands.
+const NETWORK_TRANSFER = new Set(["curl", "wget", "nc", "ncat", "netcat", "telnet", "scp", "sftp", "ftp", "tftp", "socat", "ssh", "rsync"]);
+const DEPLOY_EXECUTABLES = new Set(["vercel", "netlify", "wrangler", "firebase", "fly", "flyctl", "railway", "render", "heroku"]);
 
 /** A directory-redirect flag escapes the project workspace; precise to avoid clashing with read-only flags like `git log -C`. */
 function redirectsWorkspace(command: string, args: string[]): boolean {
@@ -112,8 +127,8 @@ export function canonicalCommandTrustKey(executable: string, args: string[], cwd
   return `cmd|${executableName(executable)}|${JSON.stringify(args)}|${cwd || "."}`;
 }
 
-const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
-const LONG_COMMAND_TIMEOUT_MS = 300_000; // 5 minutes for installs/builds/tests
+const DEFAULT_COMMAND_TIMEOUT_MS = 300_000;
+const LONG_COMMAND_TIMEOUT_MS = 1_800_000; // 30 minutes for installs/builds/tests
 const LONG_RUNNING_SCRIPTS = new Set(["install", "ci", "build", "test", "check", "typecheck", "lint"]);
 
 /**
@@ -149,16 +164,13 @@ export function classifyCommand(executable: string, args: string[]): CommandPoli
   if (SHELL_BUILT_INS.has(command)) {
     return decision("denied", command, "Shell built-in commands are unsupported. Use Morrow inspection tools or /project for workspace switching.");
   }
-  // Narrow, safe exception: PowerShell used only to create a workspace directory
-  // or file via New-Item. General PowerShell/shell invocation stays denied below.
+  // Narrow, workspace-relative PowerShell creation is equivalent to the native
+  // file tools and can proceed in trusted-workspace mode.
   if (POWERSHELLS.has(command) && isSafePowerShellNewItem(args)) {
-    return decision("approval_required", `${command} New-Item`, "Creating a workspace file or directory via PowerShell New-Item is allowed with approval.");
+    return decision("auto_approvable", `${command} New-Item`, "Workspace-contained file and directory creation is ordinary trusted work.");
   }
-  if (!command || SHELLS.has(command) || DELETE_COMMANDS.has(command) || DENIED_COMMANDS.has(command)) {
+  if (!command || PRIVILEGE_ESCALATION.has(command) || DELETE_COMMANDS.has(command) || DENIED_COMMANDS.has(command)) {
     return decision("denied", command || "unknown", "Shell invocation, privilege escalation, filesystem deletion, credential extraction, format, and shutdown are denied. To create files or directories, use the create_file / create_directory tools.");
-  }
-  if (NETWORK_EXFIL.has(command)) {
-    return decision("denied", command, "Direct network-transfer tools are denied to prevent unauthorized data transfer and exfiltration.");
   }
   if (PROCESS_KILLERS.has(command)) {
     if (killsByImageName(command, args)) {
@@ -177,7 +189,7 @@ export function classifyCommand(executable: string, args: string[]): CommandPoli
   if (redirectsWorkspace(command, args)) {
     return decision("denied", `${command} workspace-redirect`, "Redirecting a command outside the project workspace is denied.");
   }
-  if (command === "git" && (normalizedArgs[0] === "reset" || normalizedArgs.includes("--hard") || normalizedArgs[0] === "clean" || normalizedArgs[0] === "rebase" || normalizedArgs[0] === "filter-branch")) {
+  if (command === "git" && (normalizedArgs.includes("--hard") || normalizedArgs[0] === "clean" || normalizedArgs[0] === "filter-branch")) {
     return decision("denied", "git destructive-history", "Destructive Git history rewrites are denied.");
   }
   if (command === "git" && normalizedArgs[0] === "push" && (normalizedArgs.includes("-f") || normalizedArgs.some((a) => a.startsWith("--force")))) {
@@ -186,19 +198,43 @@ export function classifyCommand(executable: string, args: string[]): CommandPoli
 
   if (command === "git") {
     const subcommand = normalizedArgs[0] ?? "";
-    if (subcommand === "status" || subcommand === "diff" || subcommand === "log") {
-      return decision("auto_approvable", `git ${subcommand}`, "Read-only Git inspection may be trusted per project.");
+    if (subcommand === "push" && normalizedArgs.includes("--delete")) {
+      return decision("approval_required", "git push-delete", "Deleting a remote ref is a material external effect and requires explicit approval.");
     }
-    return decision("approval_required", `git ${subcommand || "command"}`, "Git mutations require explicit approval.");
+    return decision("auto_approvable", `git ${subcommand || "command"}`, "Ordinary Git work is permitted in a trusted workspace.");
   }
 
   if (PACKAGE_MANAGERS.has(command)) {
     const script = normalizedArgs[0] === "run" ? normalizedArgs[1] : normalizedArgs[0];
-    if (script && VERIFY_SCRIPTS.has(script)) {
-      return decision("auto_approvable", `${command} ${script}`, "Project verification commands may be trusted per project.");
+    if (script === "publish" || script === "unpublish" || script === "deprecate") {
+      return decision("approval_required", `${command} ${script}`, "Publishing or removing a package is a material external effect and requires explicit approval.");
     }
-    return decision("approval_required", `${command} ${script || "command"}`, "Package-manager mutation or unknown scripts require explicit approval.");
+    return decision("auto_approvable", `${command} ${script || "command"}`, "Package installation, scripts, builds, and tests are ordinary trusted-workspace work.");
   }
 
-  return decision("approval_required", display || "unknown", "Unknown command patterns require explicit approval.");
+  if (NETWORK_TRANSFER.has(command)) {
+    return decision("approval_required", command, "Direct network transfer crosses the workspace boundary and requires explicit approval.");
+  }
+
+  if (SHELLS.has(command)) {
+    if (isDangerousShellInvocation(args)) {
+      return decision("denied", `${command} dangerous-payload`, "The shell payload is destructive, credential-seeking, opaque, chained, or escapes the workspace boundary.");
+    }
+    return decision("approval_required", command, "A general shell can address the whole host and requires explicit approval.");
+  }
+
+  if (command === "gh" && normalizedArgs[0] === "release") {
+    return decision("approval_required", "gh release", "Creating, changing, or deleting a public release is a material external effect.");
+  }
+  if (command === "gh" && normalizedArgs[0] === "pr" && normalizedArgs[1] === "merge") {
+    return decision("approval_required", "gh pr merge", "Merging a remote pull request is a material external effect.");
+  }
+  if (command === "docker" && normalizedArgs[0] === "push") {
+    return decision("approval_required", "docker push", "Publishing an image is a material external effect.");
+  }
+  if (DEPLOY_EXECUTABLES.has(command) && normalizedArgs.some((arg) => arg === "deploy" || arg === "publish" || arg === "--prod" || arg === "--production")) {
+    return decision("approval_required", `${command} deploy`, "Deploying or publishing is a material external effect.");
+  }
+
+  return decision("auto_approvable", display || "unknown", "Ordinary structured developer commands are permitted in a trusted workspace.");
 }

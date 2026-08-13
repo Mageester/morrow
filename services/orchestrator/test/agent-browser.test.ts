@@ -15,6 +15,7 @@ import { projectRepository } from "../src/repositories/projects.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { taskRepository } from "../src/repositories/tasks.js";
+import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 
 const done = { type: "done" as const };
 const tool = (id: string, name: string, args: unknown) => ({
@@ -122,7 +123,7 @@ describe("agent browser and vision bridge", () => {
     else process.env.MORROW_HOME = priorHome;
   });
 
-  it("requires an origin-scoped approval, persists screenshot evidence, and sends only ephemeral image bytes to a verified vision route", async () => {
+  it("uses trusted navigation, persists screenshot evidence, and sends only ephemeral image bytes to a verified vision route", async () => {
     const provider = new CapturingProvider();
     const browser = new FakeBrowser();
 
@@ -131,10 +132,7 @@ describe("agent browser and vision bridge", () => {
     expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
     expect(browser.closed).toBe(true);
     expect(browser.viewport).toEqual({ width: 390, height: 844 });
-    expect(approvalsRepository(db).listByTask("t")).toMatchObject([{
-      status: "approved",
-      details: { tool: "browser_session", origin: "http://127.0.0.1:4173", risk: "network-interaction" },
-    }]);
+    expect(approvalsRepository(db).listByTask("t")).toHaveLength(0);
 
     const evidence = taskRecordsRepository(db).listEvidence("t").find((item) => item.metadata.kind === "browser_screenshot");
     expect(evidence?.metadata).toMatchObject({ label: "home-mobile", viewport: { width: 390, height: 844 }, vision: "attached" });
@@ -147,7 +145,7 @@ describe("agent browser and vision bridge", () => {
     expect(durableToolResult).not.toContain(imageMessage!.images![0]!.data);
   });
 
-  it("refuses to complete a frontend change without responsive DOM, console, interaction, screenshot, and vision evidence", async () => {
+  it("completes model output while recording missing responsive frontend evidence", async () => {
     db.prepare("UPDATE conversation_messages SET content=? WHERE id='u'").run("Build a responsive frontend page and verify it.");
     const provider = new ScriptedProvider([
       [tool("write", "create_file", { path: "index.html", content: "<main>hello</main>" }), done],
@@ -157,9 +155,10 @@ describe("agent browser and vision bridge", () => {
 
     await executeAgentChatTask({ db, taskId: "t", provider, browserFactory: () => new FakeBrowser(), maxTurns: 6 });
 
-    expect(taskRepository(db).getTaskById("t")?.status).toBe("interrupted");
-    expect(conversationsRepository(db).getMessage("a")?.content).toMatch(/browser validation|responsive/i);
-    expect(taskRecordsRepository(db).listEvents("t").some((event) => event.type === "task.completed")).toBe(false);
+    expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
+    expect(conversationsRepository(db).getMessage("a")?.content).toContain("The responsive frontend is complete.");
+    expect(taskRecordsRepository(db).listEvents("t").some((event) => event.type === "task.completed")).toBe(true);
+    expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({ completion: { complete: false } });
   });
 
   it("completes a frontend change only after the full post-change responsive validation contract passes", async () => {
@@ -304,7 +303,9 @@ describe("agent browser and vision bridge", () => {
     const call = conversationsRepository(db).listToolCallsForTask("t").find((item) => item.toolName === "browser_click");
     expect(call?.status).toBe("failed");
     expect(call?.resultJson).toMatch(/browser_sensitive_action_blocked/);
-    expect(approvalsRepository(db).listByTask("t")).toHaveLength(1);
+    // Trusted workspace navigation is ordinary inspection and does not create
+    // a fake approval record; the sensitive click is still hard-blocked.
+    expect(approvalsRepository(db).listByTask("t")).toHaveLength(0);
   });
 
   it("does not navigate before a manual origin approval is durably resolved", async () => {

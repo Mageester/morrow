@@ -31,6 +31,25 @@ describe("safe remote model catalog", () => {
     expect(merged[0]).toMatchObject({ contextWindow: 999_999, metadataSource: "remote-catalog", builtIn: false });
   });
 
+  it("does not let a silent remote row erase bundled pricing or reasoning capability", () => {
+    const seed = resolveModelMetadata("deepseek", "deepseek-v4-pro");
+    const remote = {
+      ...seed,
+      contextWindow: 999_999,
+      pricing: null,
+      reasoning: { control: "none" as const, efforts: [], budgets: [], source: "unknown" as const },
+      metadataSource: "remote-catalog" as const,
+      capabilitySource: "remote-catalog" as const,
+      builtIn: false,
+    };
+
+    const merged = mergeModelCatalog([seed], [remote]);
+
+    expect(merged[0]?.contextWindow).toBe(999_999);
+    expect(merged[0]?.pricing).toEqual(seed.pricing);
+    expect(merged[0]?.reasoning).toEqual(seed.reasoning);
+  });
+
   it("atomically caches a fully valid catalog and uses conditional refresh", async () => {
     const cacheDir = root();
     const fetcher = vi.fn()

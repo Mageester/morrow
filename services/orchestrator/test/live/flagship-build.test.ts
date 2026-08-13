@@ -3,11 +3,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runFlagshipBuild, type FlagshipBuildRun } from "../../src/acceptance/flagship-build.js";
-import { appendFlagshipRun, evaluateFlagshipGate, isLiveProviderOptedIn, readFlagshipLog } from "../../src/acceptance/flagship-gate.js";
+import { runFlagshipWeb } from "../../src/acceptance/flagship-web.js";
+import { appendFlagshipRun, evaluateFlagshipGate, FLAGSHIP_SCENARIO_IDS, isLiveProviderOptedIn, readFlagshipLog, resolveFlagshipScenarioId } from "../../src/acceptance/flagship-gate.js";
+import type { FlagshipScenarioId } from "../../src/acceptance/flagship-gate.js";
 import { getProviderDefaultModel, isProviderConfigured } from "../../src/provider/registry.js";
 import { hydrateProviderEnvFromSecrets } from "../../src/provider/secrets.js";
 import { resolveMorrowHome } from "../../src/home.js";
 import { ProviderIdSchema, type ProviderId } from "@morrow/contracts";
+import { readFlagshipEvidenceScenarioIds } from "../flagship-evidence.js";
 
 /**
  * The flagship workflow, against real models.
@@ -25,6 +28,7 @@ import { ProviderIdSchema, type ProviderId } from "@morrow/contracts";
  * Environment:
  *   MORROW_FLAGSHIP_RUNS       runs per provider (default 1; the gate needs 10)
  *   MORROW_FLAGSHIP_PROVIDERS  comma-separated provider ids (default: every configured candidate)
+ *   MORROW_FLAGSHIP_SCENARIO   required registered scenario id
  *   MORROW_FLAGSHIP_LOG        run log path (default docs/evidence/flagship-runs.jsonl)
  *   MORROW_SKIP_LIVE_FLAGSHIP=1  skip entirely
  *
@@ -96,6 +100,23 @@ export const FLAGSHIP_PROVIDER_ELIGIBILITY: readonly FlagshipProviderEligibility
   { providerId: "sambanova", eligible: false, requiresLiveModelDiscovery: true, reason: "Inference host; catalog varies and is not gate-declared." },
 ];
 
+/**
+ * Which production-registered flagship scenarios the live suite may prove,
+ * stated beside provider eligibility instead of inferred from the run log.
+ * The scenario coverage tests below assert this table cannot drift from the
+ * production scoring registry or recorded evidence.
+ */
+export interface FlagshipScenarioEligibility {
+  scenarioId: FlagshipScenarioId;
+  eligible: boolean;
+  reason: string;
+}
+
+export const FLAGSHIP_SCENARIO_ELIGIBILITY: readonly FlagshipScenarioEligibility[] = [
+  { scenarioId: "flagship-build-v1", eligible: true, reason: "Existing real-provider command-line build scenario." },
+  { scenarioId: "flagship-web-v1", eligible: true, reason: "Registered real-provider web acceptance scenario." },
+];
+
 /** Providers this gate may actually run against. */
 const CANDIDATES: ProviderId[] = FLAGSHIP_PROVIDER_ELIGIBILITY
   .filter((entry) => entry.eligible)
@@ -164,6 +185,35 @@ describe("flagship provider eligibility is declared, not implied", () => {
   });
 });
 
+describe("flagship scenario eligibility is declared, not implied", () => {
+  it("classifies every production scenario exactly once in the live declaration", () => {
+    const declared = FLAGSHIP_SCENARIO_ELIGIBILITY.map((entry) => entry.scenarioId);
+    expect(new Set(declared).size).toBe(declared.length);
+    const registry = new Set<string>(FLAGSHIP_SCENARIO_IDS);
+    const declaredSet = new Set<string>(declared);
+    const undeclared = [...registry].filter((scenarioId) => !declaredSet.has(scenarioId));
+    expect(undeclared).toEqual([]);
+    const unknown = declared.filter((scenarioId) => !registry.has(scenarioId));
+    expect(unknown).toEqual([]);
+  });
+
+  it("registers and classifies every distinct evidence scenario", () => {
+    const scenarioIds = [...new Set(readFlagshipEvidenceScenarioIds(DEFAULT_LOG))];
+    const registry = new Set<string>(FLAGSHIP_SCENARIO_IDS);
+    const declared = new Set<string>(FLAGSHIP_SCENARIO_ELIGIBILITY.map((entry) => entry.scenarioId));
+
+    expect(scenarioIds.filter((scenarioId) => !registry.has(scenarioId))).toEqual([]);
+    expect(scenarioIds.filter((scenarioId) => !declared.has(scenarioId))).toEqual([]);
+  });
+
+  it("gives every declared scenario a stated eligibility reason", () => {
+    const unexplained = FLAGSHIP_SCENARIO_ELIGIBILITY
+      .filter((entry) => entry.reason.trim().length === 0)
+      .map((entry) => entry.scenarioId);
+    expect(unexplained).toEqual([]);
+  });
+});
+
 describe("live: the flagship workflow against real models", () => {
   it("builds a working app, and records the result whether it passed or not", async () => {
     if (!isLiveProviderOptedIn(process.env, OPT_IN_ENV)) {
@@ -184,6 +234,7 @@ describe("live: the flagship workflow against real models", () => {
     }
 
     const logPath = process.env.MORROW_FLAGSHIP_LOG ?? DEFAULT_LOG;
+    const scenarioId = resolveFlagshipScenarioId(process.env.MORROW_FLAGSHIP_SCENARIO);
     const runsPerProvider = Math.max(1, Number(process.env.MORROW_FLAGSHIP_RUNS ?? 1) || 1);
     const recorded: FlagshipBuildRun[] = [];
 
@@ -197,7 +248,9 @@ describe("live: the flagship workflow against real models", () => {
       for (let attempt = 0; attempt < runsPerProvider; attempt++) {
         const root = mkdtempSync(join(tmpdir(), "morrow-flagship-live-"));
         roots.push(root);
-        const run = await runFlagshipBuild({ root, providerId, model });
+        const run = scenarioId === "flagship-web-v1"
+          ? await runFlagshipWeb({ root, providerId, model })
+          : await runFlagshipBuild({ root, providerId, model });
         if (!run.passed) {
           roots.splice(roots.indexOf(root), 1);
         }
@@ -214,7 +267,7 @@ describe("live: the flagship workflow against real models", () => {
     // Never fabricate: the run log is the deliverable, and every run reached it.
     expect(recorded.length).toBeGreaterThan(0);
 
-    const gate = evaluateFlagshipGate(readFlagshipLog(logPath));
+    const gate = evaluateFlagshipGate(readFlagshipLog(logPath), { scenarioId });
     // eslint-disable-next-line no-console
     console.log(`[live] flagship gate: ${gate.summary}`);
 

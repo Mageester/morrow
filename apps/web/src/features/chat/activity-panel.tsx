@@ -1,12 +1,13 @@
 import type { WebConversationActivityEntry } from "@morrow/contracts";
 import { useQuery } from "@tanstack/react-query";
-import { Brain, ChevronRight, FileCode2, Terminal, Wrench, X } from "lucide-react";
+import { Brain, ChevronRight, FileCode2, Sparkles, Terminal, Wrench, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { conversationQueries } from "../../api/conversations.js";
 import { Markdown } from "../../components/markdown.js";
 
 function activityIcon(kind: WebConversationActivityEntry["kind"]) {
   if (kind === "assistant") return <Brain aria-hidden="true" size={15} />;
+  if (kind === "memory") return <Sparkles aria-hidden="true" size={15} />;
   if (kind === "file" || kind === "diff") return <FileCode2 aria-hidden="true" size={15} />;
   if (kind === "command" || kind === "process") return <Terminal aria-hidden="true" size={15} />;
   return <Wrench aria-hidden="true" size={15} />;

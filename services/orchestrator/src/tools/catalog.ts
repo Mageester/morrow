@@ -36,11 +36,11 @@ export const TOOL_CATALOG: ToolSpec[] = [
     description: "Read the contents of a text file in the workspace.",
     sideEffect: "read-only",
     enabled: true,
-    parameters: { path: { type: "string", description: "Relative file path (e.g. 'package.json')" } },
+    parameters: { path: { type: "string", description: "Relative file path (e.g. 'package.json')" }, offset: { type: "number", description: "UTF-8 byte offset for paged reads" } },
     constraints: [
       "Rejects absolute paths, '..' traversal, and symlink escape",
       "Denies .morrow, .env, secret/credential/key/token files",
-      "Rejects binary content and files larger than 100 KB",
+      "Rejects binary content and pages large files with an explicit next offset",
       "Bounded by the active preset's context budget",
     ],
   },
@@ -182,9 +182,14 @@ export const TOOL_CATALOG: ToolSpec[] = [
     ],
   },
   {
-    name: "create_file", title: "Create file", description: "Create one new plain-text workspace file.", sideEffect: "write", enabled: true,
+    name: "create_file", title: "Create file", description: "Create or completely replace one plain-text workspace file.", sideEffect: "write", enabled: true,
     parameters: { path: { type: "string" }, content: { type: "string" }, purpose: { type: "string" } },
-    constraints: ["Workspace-contained paths only", "Cannot overwrite", "Denied secret names remain blocked", "Requires explicit approval unless agent auto-approval was selected"],
+    constraints: ["Workspace-contained paths only", "Existing content is backed up", "Denied secret names remain blocked", "Runs directly in trusted-workspace mode"],
+  },
+  {
+    name: "append_file", title: "Append file chunk", description: "Append an offset-fenced text chunk to a workspace file.", sideEffect: "write", enabled: true,
+    parameters: { path: { type: "string" }, content: { type: "string" }, expectedOffset: { type: "number" }, purpose: { type: "string" } },
+    constraints: ["Workspace-contained paths only", "Maximum 1 MiB per chunk", "Expected byte offset prevents replay duplication", "Existing content is backed up", "Denied secret names remain blocked"],
   },
   {
     name: "create_directory", title: "Create directory", description: "Create a workspace-contained directory recursively.", sideEffect: "write", enabled: true,
@@ -259,7 +264,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
 /** Tool names the agent runtime actually implements (must match the catalog). */
 export const IMPLEMENTED_TOOL_NAMES = [
   "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols",
-  "git_status", "git_diff", "git_log", "run_command", "read_process_output", "stop_process", "propose_patch", "create_file", "create_directory",
+  "git_status", "git_diff", "git_log", "run_command", "read_process_output", "stop_process", "propose_patch", "create_file", "append_file", "create_directory",
   "read_artifact", "find_skill", "load_skill", "create_skill", "browser_open", "browser_snapshot", "browser_console", "browser_click",
   "browser_type", "browser_key", "browser_select", "browser_viewport", "browser_screenshot", "browser_download", "browser_close",
 ] as const;

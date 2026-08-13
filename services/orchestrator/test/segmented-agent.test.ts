@@ -359,7 +359,11 @@ describe("durable agent segments", () => {
       expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
       expect(requests).toHaveLength(1);
       expect(requests[0]!.filter((message) => message.role === "assistant").map((message) => message.content)).toEqual(["PHASE_ONE"]);
-      expect(requests[0]!.filter((message) => message.role === "tool")).toHaveLength(1);
+      expect(requests[0]!.flatMap((message) => message.toolCalls ?? [])).toHaveLength(0);
+      expect(requests[0]!.filter((message) => message.role === "tool")).toHaveLength(0);
+      expect(requests[0]!.find((message) => message.content.startsWith("Morrow durable write record."))?.content)
+        .toContain("create_file completed for result.txt");
+      expect(JSON.stringify(requests[0])).not.toContain("_morrowAppliedWrite");
       expect(convs.listToolCallsForMessage("a")).toHaveLength(1);
       expect(continuity.listProviderTurns("t")).toHaveLength(2);
       expect(continuity.getCanonicalAnswer("t")?.content).toBe("RESTARTED_FINAL");
@@ -409,9 +413,9 @@ describe("durable agent segments", () => {
 
   it.each([
     { label: "unchanged", mutate: (_path: string) => undefined, expected: "completed" },
-    { label: "changed", mutate: (path: string) => writeFileSync(path, "console.log('changed');\n"), expected: "interrupted" },
-    { label: "missing", mutate: (path: string) => unlinkSync(path), expected: "interrupted" },
-  ])("replays a persisted CLI artifact fingerprint only when the workspace is $label", async ({ mutate, expected }) => {
+    { label: "changed", mutate: (path: string) => writeFileSync(path, "console.log('changed');\n"), expected: "completed" },
+    { label: "missing", mutate: (path: string) => unlinkSync(path), expected: "completed" },
+  ])("replays a persisted CLI artifact fingerprint with honest evidence for $label", async ({ label, mutate, expected }) => {
     const workspace = mkdtempSync(join(tmpdir(), `morrow-artifact-replay-${expected}-`));
     const db = openDatabase(":memory:");
     const taskId = `artifact-replay-${expected}`;
@@ -461,11 +465,11 @@ describe("durable agent segments", () => {
 
       expect(providerCalls).toBe(0);
       expect(taskRepository(db).getTaskById(taskId)?.status).toBe(expected);
-      if (expected === "completed") {
-        expect(continuity.getCanonicalAnswer(taskId)?.content).toBe("The CLI artifact is complete and verified.");
-      } else {
-        expect(continuity.getCanonicalAnswer(taskId)).toBeNull();
-      }
+      const canonical = continuity.getCanonicalAnswer(taskId);
+      expect(canonical?.content).toBe("The CLI artifact is complete and verified.");
+      const evidence = canonical?.evidenceJson as { completion?: { complete?: boolean; blockers?: unknown[] } } | undefined;
+      expect(evidence?.completion?.complete).toBe(label === "unchanged");
+      if (label !== "unchanged") expect(evidence?.completion?.blockers?.length ?? 0).toBeGreaterThan(0);
     } finally {
       db.close();
       rmSync(workspace, { recursive: true, force: true });

@@ -6,6 +6,131 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.42] - 2026-08-12
+
+### Added - premium visual onboarding
+
+- New installs now open into a five-scene, full-screen onboarding journey for
+  privacy, personalization, real setup readiness, and launch. The experience
+  uses a purpose-made smoked-glass continuity visual, restrained motion, and
+  responsive desktop and mobile layouts while preserving a direct skip path.
+- Progress resumes from the durable local onboarding state. Provider and
+  project readiness come from the existing product APIs, and setup links yield
+  to their real destinations before resuming on Home.
+- The onboarding dialog traps keyboard focus, exposes clear error recovery,
+  and disables decorative movement when reduced motion is requested.
+
+### Added - Morrow learns through ordinary work
+
+- Ordinary agent conversations now capture explicit durable preferences and
+  project facts automatically. Temporary chatter, likely secrets, and prompt
+  instructions are rejected before persistence; duplicate statements
+  consolidate and later corrections supersede the earlier fact.
+- Personal memory follows the user across local projects while project,
+  conversation, agent, and team memory remains isolated. The Memory page now
+  exposes automatic-learning opt-out, provenance, editing, pin/forget/restore,
+  permanent deletion, and local export.
+- Repeated successful project validation workflows become private learned
+  skills after two independently verified uses. A newer verified workflow
+  supersedes the older bundle with version and rollback history instead of
+  leaving two active conflicting procedures.
+- Skills is now a first-class product destination. It shows installed and
+  learned procedures, evidence, safety requirements, versions, use counts, and
+  improvement history with calm progressive disclosure.
+- `Ctrl/Cmd K` opens local global search across conversations, messages, tasks,
+  memory, and product destinations. Search spans the user's local projects but
+  does not contact an external service.
+
+### Changed
+
+- The primary navigation is now Home, Projects, Skills, Memory, History,
+  Connections, and Settings. Missions and Teams remain available to product
+  workflows without dominating the default surface; the empty Library
+  placeholder and route were removed.
+- Chats is presented as History, emphasizing durable continuity rather than a
+  transient message list.
+
+### Security and privacy impact
+
+- Onboarding introduces no telemetry or new external service. Its progress and
+  assistant-profile choices use the existing local API and remain in Morrow's
+  local data boundary.
+- Automatic user-memory extraction is deterministic and runs locally. It has no
+  model or network call, requires explicit durable language, rejects
+  secret-like content and instruction-shaped payloads, and can be disabled with
+  a server-enforced setting.
+- Only `user_global` memory crosses projects. All other scopes retain their
+  project boundary, and the full personal-memory vault is exposed only for
+  local inspection and control.
+- Automatically learned skills remain workspace-scoped, network-free,
+  secret-free, checksum-verified, and evidence-gated before activation.
+
+### Rollback
+
+- Reinstall `v0.1.0-beta.41` to remove the visual onboarding. Existing local
+  onboarding and assistant-profile data remains compatible and is not deleted.
+- Turn off **Learn useful memory automatically** on the Memory page to stop new
+  preference capture. Existing entries remain inspectable and removable.
+- Reverting this change restores the prior navigation and skill lifecycle; the
+  additive memory rows remain valid SQLite data and do not require migration.
+
+## [0.1.0-beta.41] - 2026-08-12
+
+### Added
+
+- A premium command workspace with persistent reasoning controls and clearer
+  visibility into active execution.
+- Scoped assistant teams, delegation safeguards, handoff context, and
+  security-tested project boundaries.
+- Deterministic harness-efficiency evidence and reduced provider/tool-loop
+  overhead without weakening completion checks.
+
+### Security and privacy impact
+
+- Team memory, delegation, and assistant context remain project-scoped, while
+  provider and tool execution continue to honor explicit permission policy.
+
+## [0.1.0-beta.40] - 2026-08-09
+
+### Added - trusted workspace agents can finish real builds without being babysat
+
+- **Build mode now starts in Trusted workspace by default.** Ordinary structured
+  file, directory, browser, package, script, and non-destructive Git actions run
+  without an approval stop. A user can still turn Trusted workspace off in the
+  chat bar for the older supervised behavior, and that explicit choice persists.
+- **Large outputs have a resumable delivery path.** `append_file` writes chunks
+  atomically, checks the expected byte offset before every append, records undo
+  metadata, and safely accepts files larger than a single model tool call.
+  `read_file` pages large files instead of truncating them at 100 KB. Complete
+  file replacement no longer rejects legitimate empty content, scratch files,
+  or a model's third coherent rewrite.
+- **The chat bar has an opt-in Reasoning toggle.** When enabled, each assistant
+  response can show reasoning text explicitly supplied by its model provider.
+  The browser makes no reasoning request while the toggle is off, and the
+  preference remains available while a task is running.
+- **Long builds get realistic execution time.** The normal command timeout is
+  five minutes and recognized install, build, and test commands can run for up
+  to thirty minutes instead of being killed while still making progress.
+
+### Security and privacy impact
+
+- Trusted workspace freedom is bounded to the selected project workspace.
+  Privilege escalation, destructive host deletion, force-push/history rewrite,
+  credential-bearing or opaque shell payloads, publishing/deployment, purchases,
+  and destructive browser interactions still require approval or remain denied.
+- The reasoning endpoint returns only a strict provider-supplied text projection.
+  It re-applies secret redaction, sends `Cache-Control: no-store`, verifies task
+  ownership, skips malformed legacy rows, and never exposes opaque continuation
+  state to the browser. It does not manufacture or reveal hidden reasoning that
+  the provider did not supply.
+
+### Rollback
+
+- Turn off **Trusted workspace** in the chat bar to restore supervised approvals
+  for ordinary actions. Turn off **Reasoning** to stop reasoning requests and
+  hide the panel. Reinstall `v0.1.0-beta.39` to roll back the complete release;
+  Morrow's installer preserves user data across that replacement.
+
 ### Fixed - the beta.39 stdin/CI fix had reached one caller, not the boundary
 
 beta.39 fixed "a command that reads stdin or checks CI can hang the task" in the

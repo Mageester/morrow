@@ -152,6 +152,39 @@ describe("reasoning: real send → execution → wire-body pipeline (HTTP)", () 
     expect(fetchState.calls[0]!.body).not.toHaveProperty("reasoning_effort");
   });
 
+  it("normalizes DeepSeek effort aliases to the provider's supported wire levels", async () => {
+    const fetchState = mockFetch();
+    const { conv } = await makeConversation();
+
+    const low = await json("POST", `/api/conversations/${conv.id}/messages`, {
+      content: "low", providerId: "deepseek", model: "deepseek-v4-pro", reasoning: { mode: "effort", effort: "low" },
+    });
+    expect(low.status).toBe(202);
+    await waitForCompletion(low.body.task.id);
+
+    const xhigh = await json("POST", `/api/conversations/${conv.id}/messages`, {
+      content: "xhigh", providerId: "deepseek", model: "deepseek-v4-pro", reasoning: { mode: "effort", effort: "xhigh" },
+    });
+    expect(xhigh.status).toBe(202);
+    await waitForCompletion(xhigh.body.task.id);
+
+    expect(fetchState.calls[0]!.body).toMatchObject({ thinking: { type: "enabled" }, reasoning_effort: "high" });
+    expect(fetchState.calls[1]!.body).toMatchObject({ thinking: { type: "enabled" }, reasoning_effort: "max" });
+  });
+
+  it("sends DeepSeek reasoning off as a disabled thinking toggle without an effort override", async () => {
+    const fetchState = mockFetch();
+    const { conv } = await makeConversation();
+    const send = await json("POST", `/api/conversations/${conv.id}/messages`, {
+      content: "off", providerId: "deepseek", model: "deepseek-v4-pro", reasoning: { mode: "off" },
+    });
+    expect(send.status).toBe(202);
+    await waitForCompletion(send.body.task.id);
+
+    expect(fetchState.calls[0]!.body).toMatchObject({ thinking: { type: "disabled" } });
+    expect(fetchState.calls[0]!.body).not.toHaveProperty("reasoning_effort");
+  });
+
   it("rejects an unsupported reasoning combination at send time — 400, no task created, no request ever issued", async () => {
     const fetchState = refusingFetch();
     const { project, conv } = await makeConversation();

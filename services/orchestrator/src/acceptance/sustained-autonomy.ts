@@ -81,7 +81,11 @@ function scriptedProvider(script: Script, phase: "break" | "fix"): AiProvider {
     route: ROUTE,
     async *streamChat(_messages: ChatMessage[]): AsyncIterable<ProviderChunk> {
       if (phase === "break") {
-        if (script.readUnits === 12 && script.providerFailures === 0) {
+        // The deterministic acceptance fixture injects two transient provider
+        // failures so it exercises both recovery decisions while the model
+        // continues owning the tool loop. This is fixture scheduling only; it
+        // does not add a production budget or change TaskRunner behavior.
+        if ((script.readUnits === 12 || script.readUnits === 40) && script.providerFailures < 2) {
           script.providerFailures += 1;
           throw new Error("Injected transient provider failure");
         }

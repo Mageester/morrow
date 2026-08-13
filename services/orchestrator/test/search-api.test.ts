@@ -16,7 +16,9 @@ describe("GET /api/projects/:projectId/search", () => {
     const projects = projectRepository(db);
     const convs = conversationsRepository(db);
     projects.createProject({ id: "p1", name: "P1", workspacePath: process.cwd(), createdAt: ts(0) });
+    projects.createProject({ id: "p2", name: "P2", workspacePath: process.cwd(), createdAt: ts(0) });
     convs.createConversation({ id: "c1", projectId: "p1", title: "Refactor the database layer", createdAt: ts(1), updatedAt: ts(1) });
+    convs.createConversation({ id: "c2", projectId: "p2", title: "Database release notes", createdAt: ts(1), updatedAt: ts(1) });
     convs.appendMessage({ id: "m1", conversationId: "c1", role: "user", content: "please add full text search", createdAt: ts(2), updatedAt: ts(2) });
   });
 
@@ -54,5 +56,13 @@ describe("GET /api/projects/:projectId/search", () => {
     const res = await app.inject({ method: "GET", url: "/api/projects/p1/search?q=" });
     expect(res.statusCode).toBe(200);
     expect(res.json().total).toBe(0);
+  });
+
+  it("searches every local project through the global command endpoint", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/search?q=database&limit=10" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ query: "database", total: 2, version: 1 });
+    expect(res.json().hits.map((hit: { projectId: string }) => hit.projectId).sort()).toEqual(["p1", "p2"]);
   });
 });

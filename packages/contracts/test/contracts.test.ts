@@ -10,6 +10,7 @@ import {
   DeleteConversationSchema,
   WebConversationRoutingSchema,
   WebConversationMessageSchema,
+  WebTaskReasoningSchema,
 } from "../src/index.js";
 
 function validNode(over: Record<string, unknown> = {}) {
@@ -103,6 +104,25 @@ describe("contracts", () => {
     });
     expect(parsed.toolActivity).toEqual([expect.objectContaining({ toolName: "read_file" })]);
     expect(() => WebConversationMessageSchema.parse({ ...parsed, toolActivity: [{ ...parsed.toolActivity[0], argsJson: "secret" }] })).toThrow();
+  });
+
+  it("exposes only strict provider-supplied reasoning entries", () => {
+    const reasoning = {
+      version: 1,
+      taskId: "task-1",
+      providerSupplied: true,
+      entries: [{
+        turnKey: "turn-1",
+        providerId: "deepseek",
+        content: "Inspect the current implementation before editing.",
+        createdAt: "2026-07-22T12:00:00.000Z",
+      }],
+    };
+    expect(WebTaskReasoningSchema.parse(reasoning)).toEqual(reasoning);
+    expect(() => WebTaskReasoningSchema.parse({
+      ...reasoning,
+      entries: [{ ...reasoning.entries[0], opaque: { continuation: "private" } }],
+    })).toThrow();
   });
 
   it("accepts a complete provider-reported OpenRouter catalogue model", () => {

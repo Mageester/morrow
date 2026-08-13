@@ -37,9 +37,10 @@ test("production composer preserves native editing and collision-free drafts acr
   await expect(input).toHaveValue("alpha draft\n貼り付け 😀");
 
   const stored = await page.evaluate(() => Object.keys(localStorage));
-  expect(stored).toHaveLength(2);
-  expect(stored.every((key) => key.startsWith("morrow.chat-draft.v2."))).toBe(true);
-  expect(new Set(stored).size).toBe(2);
+  const draftKeys = stored.filter((key) => key.startsWith("morrow.chat-draft.v2."));
+  expect(draftKeys).toHaveLength(2);
+  expect(new Set(draftKeys).size).toBe(2);
+  expect(stored).toContain("morrow.chat.composer-mode.v1");
 });
 
 test("production composer handles bounded input, held deletion, autosize, IME 229, selectors, and callback payload", async ({ isMobile, page }) => {
@@ -84,7 +85,8 @@ test("production composer handles bounded input, held deletion, autosize, IME 22
   });
   await expect(page.getByTestId("payload")).toHaveText("none");
 
-  await page.getByRole("button", { name: "Build Auto" }).click();
+  await expect(page.getByRole("button", { name: "Build" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("checkbox", { name: "Trusted workspace" })).toBeChecked();
   await page.getByLabel("Model route").selectOption("direct");
   await page.getByLabel("Project").selectOption("project-2");
   await expect(input).toHaveValue("");

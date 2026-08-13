@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { LearnedSkill, MissionLearning } from "@morrow/contracts";
 import type { LearnedSkillsRepository } from "../repositories/learned-skills.js";
 import { verifySkillDirectory } from "../skills/registry.js";
@@ -37,6 +37,12 @@ function assertNoSymlinkAncestors(path: string): void {
     if (parent === current) return;
     current = parent;
   }
+}
+
+function assertContained(root: string, path: string): void {
+  const offset = relative(resolve(root), resolve(path));
+  if (offset === "" || (!isAbsolute(offset) && offset !== ".." && !offset.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`))) return;
+  throw new Error(`Refusing learned-skill path outside private root: ${path}`);
 }
 
 export class AutomaticSkillService {
@@ -95,7 +101,17 @@ export class AutomaticSkillService {
     const finalDirectory = join(root, candidate.id);
     const staging = join(root, `.staging-${candidate.id}-${Date.now()}`);
     const at = this.now();
-    try { assertNoSymlinkAncestors(root); }
+    const priorActive = this.deps.repo.listByProject(candidate.projectId)
+      .filter((skill) => skill.id !== candidate.id && skill.state === "active" && skill.scope === candidate.scope);
+    if (priorActive.length > 0) {
+      const nextMajor = Math.max(...priorActive.map((skill) => Number.parseInt(skill.version.split(".")[0] ?? "1", 10))) + 1;
+      candidate = this.deps.repo.setVersion(candidate.id, `${nextMajor}.0.0`, at);
+    }
+    try {
+      assertNoSymlinkAncestors(root);
+      assertContained(root, finalDirectory);
+      assertNoSymlinkAncestors(finalDirectory);
+    }
     catch { return this.deps.repo.setValidation(candidate.id, "rejected", null, null, at); }
     const active: LearnedSkill = { ...candidate, state: "active", directory: finalDirectory, lastVerifiedAt: at, updatedAt: at };
     const name = `Validate with ${command}`;
@@ -125,7 +141,27 @@ export class AutomaticSkillService {
       if (!verdict.ok) return this.deps.repo.setValidation(candidate.id, "rejected", null, null, at);
       if (existsSync(finalDirectory)) rmSync(finalDirectory, { recursive: true, force: true });
       renameSync(staging, finalDirectory);
-      return this.deps.repo.setValidation(candidate.id, "active", finalDirectory, at, at);
+      const activated = this.deps.repo.setValidation(candidate.id, "active", finalDirectory, at, at);
+      // Only retire the prior workflow after the replacement bundle has passed
+      // validation and reached its final directory. Moving it preserves local
+      // rollback evidence while removing it from discovery immediately.
+      for (const prior of priorActive) {
+        try {
+          if (prior.directory && existsSync(prior.directory)) {
+            assertContained(root, prior.directory);
+            assertNoSymlinkAncestors(prior.directory);
+            const archive = join(dirname(prior.directory), ".superseded", `${prior.id}-${at.replace(/[:.]/g, "-")}`);
+            assertContained(root, archive);
+            mkdirSync(dirname(archive), { recursive: true });
+            renameSync(prior.directory, archive);
+          }
+        } catch {
+          // A tampered prior path must not touch anything outside Morrow's
+          // private root or prevent the verified replacement from taking over.
+        }
+        this.deps.repo.supersede(prior.id, activated.id, at);
+      }
+      return activated;
     } finally {
       if (existsSync(staging)) rmSync(staging, { recursive: true, force: true });
     }

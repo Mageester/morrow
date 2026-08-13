@@ -217,8 +217,21 @@ export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
       if (terminalPending) void completeTerminal();
       else connect();
     };
+    // A backgrounded browser tab can throttle or silently stall a live
+    // EventSource without ever firing "error" — nothing else here would
+    // notice, and refetchOnWindowFocus is deliberately off globally (see
+    // app/providers.tsx), so there was no other safety net. Reconcile at
+    // least once whenever the tab becomes visible again, unless the task is
+    // already finished.
+    const visibility = () => {
+      if (document.visibilityState !== "visible") return;
+      if (stopped || finished) return;
+      if (terminalPending) void completeTerminal();
+      else void reconcile();
+    };
     window.addEventListener("offline", offline);
     window.addEventListener("online", online);
+    document.addEventListener("visibilitychange", visibility);
     if (navigator.onLine) {
       if (terminalPending) void completeTerminal();
       else connect();
@@ -230,6 +243,7 @@ export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
       close();
       window.removeEventListener("offline", offline);
       window.removeEventListener("online", online);
+      document.removeEventListener("visibilitychange", visibility);
     };
   }, [conversationId, projectId, queryClient, taskId]);
 

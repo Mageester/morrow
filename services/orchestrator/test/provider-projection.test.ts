@@ -126,6 +126,74 @@ describe("durable provider projection", () => {
     });
   });
 
+  it("projects applied-write markers as non-executable history", () => {
+    const messages = providerProjectionModule.buildProviderProjection({
+      prefixMessages: [{ role: "user", content: "mission" }],
+      turns: [{
+        turnKey: "turn-1",
+        assistantText: "Files created.",
+        toolCalls: [
+          { id: "write", name: "create_file", arguments: JSON.stringify({ path: "src/app.ts", content: "export {};" }) },
+          { id: "read", name: "read_file", arguments: JSON.stringify({ path: "src/app.ts" }) },
+        ],
+      }],
+      toolResults: [
+        { id: "write", toolName: "create_file", result: JSON.stringify({ created: true }), status: "completed" },
+        { id: "read", toolName: "read_file", result: "export {};", status: "completed" },
+      ],
+      normalizeToolArguments: (name, args) => name === "create_file"
+        ? JSON.stringify({
+          path: "src/app.ts",
+          _morrowAppliedWrite: { kind: "create_file", contentBytes: 10, contentSha256: "abc" },
+          truncatedForContext: true,
+        })
+        : args,
+    });
+
+    const serialized = JSON.stringify(messages);
+    const calls = messages.flatMap((message) => message.toolCalls ?? []);
+    expect(calls.map((call) => call.id)).toEqual(["read"]);
+    expect(messages.filter((message) => message.role === "tool").map((message) => message.toolCallId)).toEqual(["read"]);
+    expect(serialized).not.toContain("_morrowAppliedWrite");
+    expect(serialized).not.toContain('"created":true');
+    expect(serialized).toContain("create_file completed for src/app.ts");
+    expect(serialized).toContain("historical record, not a tool request");
+  });
+
+  it("projects an applied append_file marker as non-executable history", () => {
+    const messages = providerProjectionModule.buildProviderProjection({
+      prefixMessages: [{ role: "user", content: "mission" }],
+      turns: [{
+        turnKey: "turn-append",
+        assistantText: "Appended the next chunk.",
+        toolCalls: [{ id: "append", name: "append_file", arguments: JSON.stringify({ path: "src/app.ts", content: "export const ready = true;\n", expectedOffset: 0 }) }],
+      }],
+      toolResults: [{
+        id: "append",
+        toolName: "append_file",
+        result: JSON.stringify({ appended: true, totalBytes: 28 }),
+        status: "completed",
+      }],
+      normalizeToolArguments: (name) => name === "append_file"
+        ? JSON.stringify({
+          path: "src/app.ts",
+          expectedOffset: 0,
+          _morrowAppliedWrite: { kind: "append_file", contentBytes: 28, contentSha256: "abc" },
+          truncatedForContext: true,
+        })
+        : JSON.stringify({}),
+    });
+
+    const serialized = JSON.stringify(messages);
+    const calls = messages.flatMap((message) => message.toolCalls ?? []);
+    expect(calls).toHaveLength(0);
+    expect(messages.filter((message) => message.role === "tool")).toHaveLength(0);
+    expect(serialized).not.toContain("_morrowAppliedWrite");
+    expect(serialized).not.toContain('"appended":true');
+    expect(serialized).toContain("append_file completed for src/app.ts");
+    expect(serialized).toContain("historical record, not a tool request");
+  });
+
   it("compacts from the structured checkpoint when the complete envelope crosses the threshold", () => {
     const result = projectProviderRequest({
       checkpoint: snapshot,
@@ -237,6 +305,42 @@ describe("durable provider projection", () => {
     expect(projection).toContain("latest completed execution batch");
     expect(projection).toContain("read_file: completed");
     expect(projection).not.toContain("source contents source contents");
+  });
+
+  it("leaves headroom below the compaction threshold after projecting a large recent batch", () => {
+    const result = projectProviderRequest({
+      checkpoint: snapshot,
+      envelope: {
+        providerId: "deepseek",
+        model: "deepseek-v4-flash",
+        protocol: "openai-chat",
+        messages: [
+          { role: "system", content: "rules" },
+          { role: "user", content: "old context ".repeat(40_000) },
+          { role: "assistant", content: "Inspect the generated page", toolCalls: [{ id: "read-large", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "index.html" }) } }] },
+          { role: "tool", name: "read_file", toolCallId: "read-large", content: "generated page contents ".repeat(14_000) },
+        ],
+        tools: [],
+        outputReserveTokens: 16_384,
+      },
+      resolution,
+      thresholdRatio: 0.8,
+      recentRawGroups: 1,
+    });
+
+    expect(result.compacted).toBe(true);
+    expect(result.admission.ok).toBe(true);
+    expect(result.admission.measurement.inputTokens).toBeLessThan(result.thresholdTokens);
+    expect(result.envelope.messages.map((message) => message.content).join("\n")).toContain("latest completed execution batch");
+
+    const nextTurn = projectProviderRequest({
+      checkpoint: snapshot,
+      envelope: { ...result.envelope, messages: [...result.envelope.messages, { role: "user", content: "Continue with the next required action." }] },
+      resolution,
+      thresholdRatio: 0.8,
+      recentRawGroups: 1,
+    });
+    expect(nextTurn.compacted).toBe(false);
   });
 
   it("bounds dependency-heavy checkpoint file and git status data", () => {

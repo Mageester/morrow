@@ -24,6 +24,13 @@ describe("theme preference", () => {
 
   afterEach(() => vi.restoreAllMocks());
 
+  it("defaults a new install to the graphite dark theme", () => {
+    render(<ThemeProvider><Probe /></ThemeProvider>);
+
+    expect(screen.getByText("dark:dark")).toBeVisible();
+    expect(localStorage.getItem("morrow-theme")).toBeNull();
+  });
+
   it("persists all three explicit choices and follows live OS changes only in system mode", async () => {
     const user = userEvent.setup();
     localStorage.setItem("morrow-theme", "system");

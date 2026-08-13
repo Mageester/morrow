@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { evaluateFlagshipGate, readFlagshipLog } from "../src/acceptance/flagship-gate.js";
+import { evaluateFlagshipGate, FLAGSHIP_SCENARIO_IDS, readFlagshipLog } from "../src/acceptance/flagship-gate.js";
 
 /**
  * Report — and optionally enforce — the flagship workflow release gate.
@@ -31,19 +31,27 @@ const logPath = flag("log", process.env.MORROW_FLAGSHIP_LOG ?? DEFAULT_LOG)!;
 const require = process.argv.includes("--require");
 
 const runs = readFlagshipLog(logPath);
-const gate = evaluateFlagshipGate(runs);
+const gates = FLAGSHIP_SCENARIO_IDS.map((scenarioId) => ({
+  scenarioId,
+  gate: evaluateFlagshipGate(runs, { scenarioId }),
+}));
 
-console.log(`flagship-gate: ${gate.summary}`);
-for (const provider of gate.providers) {
-  const reasons = provider.failureReasons.length > 0 ? ` failures: ${[...new Set(provider.failureReasons)].join(", ")}` : "";
-  console.log(`flagship-gate:   ${provider.providerId}: ${provider.passes}/${provider.runs}${provider.qualified ? " (qualified)" : ""}${reasons}`);
-}
-if (gate.excluded.mockRuns > 0) {
-  console.log(`flagship-gate:   ${gate.excluded.mockRuns} mock run(s) excluded — they prove the harness, not the product.`);
+for (const { scenarioId, gate } of gates) {
+  console.log(`flagship-gate: ${scenarioId}: ${gate.summary}`);
+  for (const provider of gate.providers) {
+    const reasons = provider.failureReasons.length > 0 ? ` failures: ${[...new Set(provider.failureReasons)].join(", ")}` : "";
+    console.log(`flagship-gate:   ${provider.providerId}: ${provider.passes}/${provider.runs}${provider.qualified ? " (qualified)" : ""}${reasons}`);
+  }
+  if (gate.excluded.mockRuns > 0) {
+    console.log(`flagship-gate:   ${gate.excluded.mockRuns} mock run(s) excluded — they prove the harness, not the product.`);
+  }
+  if (gate.excluded.otherScenarios > 0) {
+    console.log(`flagship-gate:   ${gate.excluded.otherScenarios} other scenario run(s) excluded.`);
+  }
 }
 console.log(`flagship-gate: log ${logPath} (${runs.length} run(s) recorded).`);
 
-if (require && !gate.passed) {
+if (require && gates.some(({ gate }) => !gate.passed)) {
   console.error("flagship-gate: refusing to release an unproven flagship workflow.");
   process.exit(1);
 }

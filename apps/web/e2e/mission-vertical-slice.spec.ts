@@ -6,35 +6,34 @@ const state = loadState();
 test.describe.configure({ mode: "serial" });
 
 test.describe("Morrow web vertical slice", () => {
-  test("Home renders the objective-first composer and the reordered navigation", async ({ page }) => {
+  test("Home renders the chat-first start and the reordered navigation", async ({ page }) => {
     await page.goto("/app/");
-    await expect(page.getByRole("heading", { name: "What should Morrow accomplish?" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /Good (morning|afternoon|evening)\./ })).toBeVisible();
+    await expect(page.getByText("What should we work on?")).toBeVisible();
+    const home = page.getByRole("region", { name: /Good (morning|afternoon|evening)\./ });
+    await expect(home.getByRole("button", { name: "New chat" })).toBeEnabled();
     const nav = page.getByRole("navigation", { name: "Primary" });
-    // Ready areas lead; unfinished areas follow and are honestly marked "Soon".
-    for (const label of ["Home", "Missions", "Connections", "Settings", "Library", "Automations", "Workspace"]) {
+    for (const label of ["Home", "Chats", "Projects", "Missions", "Library", "Connections", "Settings"]) {
       await expect(nav.getByRole("link", { name: new RegExp(`^${label}`) })).toBeVisible();
     }
-    await expect(nav.getByRole("link", { name: /^Library/ })).toHaveAttribute("data-preview", "true");
+    await expect(nav.getByRole("button", { name: /Memory .* coming soon/i })).toBeDisabled();
     // No task-type selector — Morrow is a general agent, not a coding-only tool.
     await expect(page.getByText(/Coding|Research|Documents/)).toHaveCount(0);
   });
 
-  test("creates a mission through the composer and lands on its durable workspace", async ({ page }) => {
+  test("creates a conversation from Home and lands on its durable workspace", async ({ page }) => {
     await page.goto("/app/");
-    await page.getByLabel("Mission objective").fill("Compare three note-taking apps and recommend one.");
-    const start = page.getByRole("button", { name: "Start mission" });
-    await expect(start).toBeEnabled();
-    await start.click();
+    const home = page.getByRole("region", { name: /Good (morning|afternoon|evening)\./ });
+    await home.getByRole("button", { name: "New chat" }).click();
+    await expect(page).toHaveURL(/\/app\/chats\/[^/?]+/);
+    const composer = page.getByRole("textbox", { name: "Message Morrow" });
+    await expect(composer).toBeFocused();
+    await composer.fill("Compare three note-taking apps and recommend one.");
+    await page.getByRole("button", { name: "Send message" }).click();
 
-    await expect(page).toHaveURL(/\/app\/missions\/mission-/);
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Compare three note-taking apps and recommend one." }),
-    ).toBeVisible();
-
-    // The live progress stream carries a durable, human-readable activity item
-    // inline — there is no tab to hunt through.
-    await expect(page.getByRole("heading", { name: "Live progress" })).toBeVisible();
-    await expect(page.getByText(/Mission created:/)).toBeVisible();
+    await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
+    await page.reload();
+    await expect(page.getByText("Compare three note-taking apps and recommend one.")).toBeVisible();
   });
 
   test("a refresh recovers the same mission and state", async ({ page }) => {

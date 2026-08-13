@@ -7,23 +7,26 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import { changeSetsRepository } from "../src/repositories/change-sets.js";
+import { agentsRepository } from "../src/repositories/agents.js";
+import { memoryRepository } from "../src/repositories/memory.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import type { AgentMode } from "@morrow/contracts";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-function seed(db: any, workspacePath: string, mode: AgentMode, prompt = "go") {
-  const project = projectRepository(db).createProject({ id: "p", name: "P", workspacePath, createdAt: new Date().toISOString() });
+function seed(db: any, workspacePath: string, mode: AgentMode, prompt = "go", agentId?: string, useMemory = false, autoApprove = false) {
+  const project = projectRepository(db).getProjectById("p") ?? projectRepository(db).createProject({ id: "p", name: "P", workspacePath, createdAt: new Date().toISOString() });
   const conv = conversationsRepository(db).createConversation({ id: "c", projectId: "p", title: "t", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   conversationsRepository(db).appendMessage({ id: "mu", conversationId: "c", role: "user", content: prompt, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-  const task = taskRepository(db).createTask({ id: "t", projectId: "p", kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
+  const task = taskRepository(db).createTask({ id: "t", projectId: "p", kind: "agent_chat", status: "queued", ...(agentId ? { agentId } : {}), createdAt: new Date().toISOString() });
   conversationsRepository(db).appendMessage({ id: "ma", conversationId: "c", role: "assistant", content: "", taskId: "t", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   taskRoutingRepository(db).upsert({
-    taskId: "t", presetId: "best-quality", providerId: "mock", model: "mock-model", useMemory: false,
-    decision: { version: 1, presetId: "best-quality", providerId: "mock", model: "mock-model", reason: "t", fallbackUsed: false, overridden: false, privacy: "cloud", candidates: [], mode },
+    taskId: "t", presetId: "best-quality", providerId: "mock", model: "mock-model", useMemory,
+    decision: { version: 1, presetId: "best-quality", providerId: "mock", model: "mock-model", reason: "t", fallbackUsed: false, overridden: false, privacy: "cloud", candidates: [], mode, autoApprove },
     createdAt: new Date().toISOString(),
   });
   taskRecordsRepository(db).transitionAgentState("t", { id: "s0", state: "idle", details: {}, createdAt: new Date().toISOString() });
@@ -51,6 +54,67 @@ describe("agent security boundaries", () => {
     expect(disc.shellExecution).toBe(true);
   });
 
+  it("enforces the assigned agent tool and memory policy before exposure and side effects", async () => {
+    projectRepository(db).createProject({ id: "p", name: "P", workspacePath: ws, createdAt: new Date().toISOString() });
+    const agent = agentsRepository(db).create({
+      id: "policy-agent", projectId: "p", name: "Policy agent", role: "researcher",
+      memoryReadScopes: ["agent"], memoryWriteScopes: ["agent"],
+    });
+    agentsRepository(db).upsertToolPermission(agent.id, { toolName: "create_file", effect: "deny", priority: 10 });
+    // Keep the user prompt distinct from the memory sentinel. Reusing the
+    // sentinel as the prompt makes its presence in the provider request
+    // inevitable and cannot prove whether project-scoped memory leaked.
+    seed(db, ws, "agent", "Attempt the assigned file operation without project memory.", agent.id, true);
+    memoryRepository(db).create({
+      id: "project-memory", projectId: "p", scope: "project", content: "PROTECTED_PROJECT_MEMORY",
+      source: "user", createdAt: new Date().toISOString(),
+    });
+
+    const provider = new MockProvider({
+      chunks: [
+        [tool("blocked-write", "create_file", { path: "blocked.txt", content: "must not be written" }), done],
+        [text("The policy prevented the write."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(existsSync(join(ws, "blocked.txt"))).toBe(false);
+    const call = conversationsRepository(db).listToolCallsForTask("t").find((item: any) => item.toolName === "create_file");
+    expect(call?.status).toBe("failed");
+    expect(JSON.parse(call!.resultJson!).error).toMatch(/agent policy|not permitted/i);
+    expect(provider.requests[0]?.some((message) => message.content.includes("PROTECTED_PROJECT_MEMORY"))).toBe(false);
+  });
+
+  it("enforces the assigned agent provider-call budget across tool turns", async () => {
+    projectRepository(db).createProject({ id: "p", name: "P", workspacePath: ws, createdAt: new Date().toISOString() });
+    const agent = agentsRepository(db).create({
+      id: "budget-agent", projectId: "p", name: "Budget agent", role: "researcher",
+      maxProviderCalls: 1,
+    });
+    seed(db, ws, "agent", "Use one provider call only", agent.id);
+
+    const provider = new MockProvider({
+      chunks: [
+        [tool("read-once", "read_file", { path: "evidence.txt" }), done],
+        [text("This second provider response must never be requested."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(provider.requests).toHaveLength(1);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    const budgetEvent = taskRecordsRepository(db).listEvents("t").find(
+      (event) => event.type === "task.progress_warning" && event.payload.signal === "explicit_budget_exhausted",
+    );
+    expect(budgetEvent?.payload.budget).toBe("provider_calls");
+  });
+
   it("inspect (read-only) mode discloses read-only and refuses execution tools", async () => {
     seed(db, ws, "read-only");
     // The model attempts run_command, which inspect mode never exposes.
@@ -71,14 +135,17 @@ describe("agent security boundaries", () => {
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
-  it("does not complete an inspection request from a denied tool call alone", async () => {
+  it("preserves a denied inspection action while recording incomplete evidence", async () => {
     seed(db, ws, "read-only", "Inspect the workspace and report what you find.");
     const provider = new MockProvider({ chunks: [[tool("x1", "run_command", { executable: "node", args: ["-e", "1"], purpose: "inspect" }), done], [text("The inspection is complete."), done]], delayMs: 1 });
     const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
     runner.run("t");
     await runner.waitFor("t");
 
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    const evidence = executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson as { completion?: { complete?: boolean; blockers?: Array<{ code?: string }> } } | undefined;
+    expect(evidence?.completion?.complete).toBe(false);
+    expect(evidence?.completion?.blockers?.some((blocker) => blocker.code === "missing_read_only_observation")).toBe(true);
   });
 
   // Regression: a model can violate run_command's declared `args: string[]`
@@ -101,10 +168,9 @@ describe("agent security boundaries", () => {
     expect(JSON.parse(runCall!.resultJson!).error).toMatch(/args.*must be an array/i);
     // The task itself must not be left crashed/stuck by the host-side
     // TypeError this used to throw — it must reach a real terminal status.
-    // A genuine schema-violating tool call from the model (unlike a
-    // permission-mode boundary) is correctly surfaced as "interrupted" for
-    // review rather than silently treated as a clean completion.
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    // A recoverable schema violation is returned to the model as a structured
+    // observation; the model's later final answer remains authoritative.
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
   it("does not resurrect a cancelled task when its approval is later resolved", async () => {

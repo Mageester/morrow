@@ -38,6 +38,37 @@ const routes = [
 beforeEach(() => localStorage.clear());
 
 describe("ChatComposer", () => {
+  it("defaults a fresh install to Build with a trusted workspace", () => {
+    render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("checkbox", { name: "Trusted workspace" })).toBeChecked();
+    expect(screen.getByText("Morrow can edit files and run ordinary workspace commands without stopping.")).toBeVisible();
+  });
+
+  it("keeps the controlled reasoning toggle available while a task is running", async () => {
+    const user = userEvent.setup();
+    function Parent() {
+      const [showReasoning, setShowReasoning] = useState(false);
+      return (
+        <ChatComposer
+          activeTaskId="task-1"
+          draftScope={scope}
+          onShowReasoningChange={setShowReasoning}
+          onSubmit={vi.fn()}
+          showReasoning={showReasoning}
+        />
+      );
+    }
+    render(<Parent />);
+
+    const toggle = screen.getByRole("checkbox", { name: "Reasoning" });
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toBeEnabled();
+    await user.click(toggle);
+    expect(toggle).toBeChecked();
+  });
+
   it("supports native fast typing, editing, selection, clipboard-shaped input, and stable parent rerenders", async () => {
     const user = userEvent.setup();
     let rerenderParent!: () => void;
@@ -140,10 +171,6 @@ describe("ChatComposer", () => {
       />,
     );
 
-    // Build plus the approval switch is what "Build Auto" used to mean; the
-    // wire payload it produces must be identical.
-    await user.click(screen.getByRole("button", { name: "Build" }));
-    await user.click(screen.getByRole("checkbox", { name: "Approve changes automatically" }));
     await user.selectOptions(screen.getByLabelText("Model route"), "openrouter:model-a");
     await user.selectOptions(screen.getByLabelText("Project"), "project-2");
     expect(onProjectChange).toHaveBeenCalledWith("project-2");
@@ -161,19 +188,82 @@ describe("ChatComposer", () => {
     } satisfies ChatComposerSubmission);
   });
 
-  it("keeps Build supervision selected across composer remounts", async () => {
+  it("animates a capability-aware reasoning slider and submits its normalized selection", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue({ accepted: true });
+    const onReasoningConfigChange = vi.fn();
+    const deepSeekRoute = {
+      id: "deepseek:v4-pro",
+      label: "DeepSeek V4 Pro",
+      providerId: "deepseek" as const,
+      model: "deepseek-v4-pro",
+      reasoning: {
+        control: "effort" as const,
+        efforts: ["low", "high", "xhigh", "max"] as ("low" | "medium" | "high" | "xhigh" | "max")[],
+        budgets: [],
+        source: "provider-metadata" as const,
+        supportsOff: true,
+        wire: "deepseek-thinking" as const,
+      },
+    };
+    function Parent() {
+      const [reasoningConfig, setReasoningConfig] = useState<import("@morrow/contracts").ReasoningConfiguration>({ mode: "auto" });
+      return (
+        <ChatComposer
+          draftScope={scope}
+          modelRoutes={[...routes, deepSeekRoute]}
+          onReasoningConfigChange={(config) => {
+            onReasoningConfigChange(config);
+            setReasoningConfig(config);
+          }}
+          onSubmit={onSubmit}
+          reasoningConfig={reasoningConfig}
+        />
+      );
+    }
+    render(<Parent />);
+
+    await user.selectOptions(screen.getByLabelText("Model route"), "deepseek:v4-pro");
+    const slider = screen.getByRole("slider", { name: "Reasoning effort" });
+    expect(slider).toHaveAttribute("aria-valuetext", "Auto");
+    expect(slider).toHaveAttribute("data-value", "auto");
+    expect(slider).toHaveAttribute("data-adjustable", "true");
+    expect(screen.getByText("Auto", { selector: '[aria-live="polite"]' })).toBeVisible();
+    fireEvent.change(slider, { target: { value: "3" } });
+    expect(onReasoningConfigChange).toHaveBeenCalledWith({ mode: "effort", effort: "high" });
+    expect(slider).toHaveAttribute("data-value", "high");
+    expect(screen.getByText("High", { selector: '[aria-live="polite"]' })).toBeVisible();
+
+    await user.type(screen.getByRole("textbox", { name: "Message Morrow" }), "Use DeepSeek");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      reasoning: { mode: "effort", effort: "high" },
+    } satisfies Partial<ChatComposerSubmission>));
+  });
+
+  it("preserves an explicit supervised Build preference across composer remounts", async () => {
     const user = userEvent.setup();
     const first = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
 
-    await user.click(screen.getByRole("button", { name: "Build" }));
-    await user.click(screen.getByRole("checkbox", { name: "Approve changes automatically" }));
+    await user.click(screen.getByRole("checkbox", { name: "Trusted workspace" }));
     first.unmount();
 
     render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
 
     expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("checkbox", { name: "Approve changes automatically" })).toBeChecked();
-    expect(screen.getByText("Morrow will edit files and run commands without stopping to ask.")).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: "Trusted workspace" })).not.toBeChecked();
+    expect(screen.getByText("Morrow will ask before workspace changes and commands.")).toBeVisible();
+  });
+
+  it("preserves an explicit Chat preference across composer remounts", async () => {
+    const user = userEvent.setup();
+    const first = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Chat" }));
+    first.unmount();
+
+    render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Chat" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("checkbox", { name: "Trusted workspace" })).not.toBeInTheDocument();
   });
 
   it("clears draft only after acceptance and blocks rapid duplicate sends", async () => {

@@ -21,6 +21,21 @@ describe("canonical model budget (single source of truth)", () => {
     expect(budget.usableInputTokens).toBeGreaterThan(0);
   });
 
+  it("measures DeepSeek's verified 1M route separately from the preset soft compaction target", () => {
+    const budget = resolveModelBudget({
+      providerId: "deepseek",
+      selectedModel: "deepseek-v4-flash",
+      endpoint: { kind: "default", host: "api.deepseek.com", protocol: "openai-chat", limitTokens: null, limitSource: "unknown" },
+      presetContextBudgetBytes: 524_288,
+      outputBudgetTokens: 4_096,
+    });
+
+    expect(budget.contextWindowTokens).toBe(1_000_000);
+    expect(budget.usableInputTokens).toBeGreaterThan(900_000);
+    expect(budget.compactionTargetTokens).toBe(131_072);
+    expect(budget.compactionTargetTokens).toBeLessThan(budget.usableInputTokens);
+  });
+
   it("labels an unresolved model honestly instead of fabricating a limit", () => {
     const budget = resolveModelBudget({
       providerId: "openai-compatible",

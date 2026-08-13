@@ -2,9 +2,12 @@ import { Surface } from "@morrow/ui";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Check, Circle } from "lucide-react";
+import { assistantProfileQueries } from "../../api/assistant-profile.js";
 import { pairingQueries } from "../../api/pairing.js";
 import { projectQueries } from "../../api/projects.js";
 import { providerQueries } from "../../api/providers.js";
+import { teamQueries } from "../../api/teams.js";
+import { useActiveProject } from "../projects/use-active-project.js";
 
 interface Step {
   id: string;
@@ -14,7 +17,7 @@ interface Step {
   /** Optional steps are shown for discoverability but never hold back the
    * "you are ready" state — Morrow is usable without an account. */
   optional?: boolean;
-  action: { label: string; to: "/connections" | "/projects" | "/pair" };
+  action: { label: string; to: "/connections" | "/projects" | "/pair" | "/settings" | "/teams" };
 }
 
 /**
@@ -37,6 +40,9 @@ export function GettingStarted() {
   const providers = useQuery(providerQueries.list());
   const projects = useQuery(projectQueries.list());
   const pairing = useQuery(pairingQueries.status());
+  const profile = useQuery(assistantProfileQueries.get());
+  const { activeProject } = useActiveProject();
+  const teams = useQuery({ ...teamQueries.list(activeProject?.id ?? ""), enabled: Boolean(activeProject) });
 
   // Nothing is claimed until the underlying query has actually answered.
   // Rendering "not done" against a pending query would flash a setup card at
@@ -58,6 +64,24 @@ export function GettingStarted() {
       body: "Point Morrow at a folder already on this machine. It only ever reads or changes files inside the project you pick.",
       done: projects.data.length > 0,
       action: { label: "Add a project", to: "/projects" },
+    },
+    {
+      id: "privacy",
+      title: "Review your privacy preference",
+      body: profile.data
+        ? `${profile.data.defaultPrivacyMode === "local_only" ? "Prefer local providers" : profile.data.defaultPrivacyMode === "controlled_cloud" ? "Cloud providers available" : "Custom preference"} is saved. It does not enforce provider routing; review it any time in Settings.`
+        : "A local-first preference is saved. It does not enforce provider routing; review it any time in Settings.",
+      done: profile.isSuccess,
+      optional: true,
+      action: { label: "Review privacy settings", to: "/settings" },
+    },
+    {
+      id: "team",
+      title: "Create your Research & verify team",
+      body: "Optional. Two named specialists — a Researcher and a Verifier — with their tools, memory scopes, and budget visible before anything runs.",
+      done: Boolean(activeProject) && (teams.data?.length ?? 0) > 0,
+      optional: true,
+      action: { label: "Create a team", to: "/teams" },
     },
     {
       id: "account",
