@@ -1,0 +1,192 @@
+{
+  "generatedAt": "2026-08-13T17:12:30.585Z",
+  "source": "index.html?screen=<screen>",
+  "sourceOfTruth": [
+    "screenshots",
+    "index.html",
+    "reference.css",
+    "reference.js"
+  ],
+  "viewports": {
+    "desktop": {
+      "width": 1600,
+      "height": 1000
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844
+    }
+  },
+  "results": [
+    {
+      "name": "home-desktop",
+      "screen": "home",
+      "viewport": "desktop",
+      "dimensions": {
+        "width": 1600,
+        "height": 1000
+      },
+      "screenshot": "shots/home-desktop.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "layout": {
+        "horizontalOverflow": false,
+        "title": "Home · Morrow Premium Reference",
+        "bodyTextLength": 766
+      }
+    },
+    {
+      "name": "chat-desktop",
+      "screen": "chat",
+      "viewport": "desktop",
+      "dimensions": {
+        "width": 1600,
+        "height": 1000
+      },
+      "screenshot": "shots/chat-desktop.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "layout": {
+        "horizontalOverflow": false,
+        "title": "Chat · Morrow Premium Reference",
+        "bodyTextLength": 1175
+      }
+    },
+    {
+      "name": "projects-desktop",
+      "screen": "projects",
+      "viewport": "desktop",
+      "dimensions": {
+        "width": 1600,
+        "height": 1000
+      },
+      "screenshot": "shots/projects-desktop.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "layout": {
+        "horizontalOverflow": false,
+        "title": "Projects · Morrow Premium Reference",
+        "bodyTextLength": 917
+      }
+    },
+    {
+      "name": "memory-desktop",
+      "screen": "memory",
+      "viewport": "desktop",
+      "dimensions": {
+        "width": 1600,
+        "height": 1000
+      },
+      "screenshot": "shots/memory-desktop.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "layout": {
+        "horizontalOverflow": false,
+        "title": "Memory · Morrow Premium Reference",
+        "bodyTextLength": 1350
+      }
+    },
+    {
+      "name": "skills-desktop",
+      "screen": "skills",
+      "viewport": "desktop",
+      "dimensions": {
+        "width": 1600,
+        "height": 1000
+      },
+      "screenshot": "shots/skills-desktop.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "layout": {
+        "horizontalOverflow": false,
+        "title": "Skills · Morrow Premium Reference",
+        "bodyTextLength": 1206
+      }
+    },
+    {
+      "name": "history-desktop",
+      "screen": "history",
+      "viewport": "desktop",
+      "dimensions": {
+        "width": 1600,
+        "height": 1000
+      },
+      "screenshot": "shots/history-desktop.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "layout": {
+        "horizontalOverflow": false,
+        "title": "History · Morrow Premium Reference",
+        "bodyTextLength": 1208
+      }
+    },
+    {
+      "name": "connections-desktop",
+      "screen": "connections",
+      "viewport": "desktop",
+      "dimensions": {
+        "width": 1600,
+        "height": 1000
+      },
+      "screenshot": "shots/connections-desktop.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "layout": {
+        "horizontalOverflow": false,
+        "title": "Connections · Morrow Premium Reference",
+        "bodyTextLength": 1138
+      }
+    },
+    {
+      "name": "settings-desktop",
+      "screen": "settings",
+      "viewport": "desktop",
+      "dimensions": {
+        "width": 1600,
+        "height": 1000
+      },
+      "screenshot": "shots/settings-desktop.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "layout": {
+        "horizontalOverflow": false,
+        "title": "Settings · Morrow Premium Reference",
+        "bodyTextLength": 1322
+      }
+    },
+    {
+      "name": "home-mobile",
+      "screen": "home",
+      "viewport": "mobile",
+      "dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "screenshot": "shots/home-mobile.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "layout": {
+        "horizontalOverflow": false,
+        "title": "Home · Morrow Premium Reference",
+        "bodyTextLength": 478
+      }
+    },
+    {
+      "name": "chat-mobile",
+      "screen": "chat",
+      "viewport": "mobile",
+      "dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "screenshot": "shots/chat-mobile.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "layout": {
+        "horizontalOverflow": false,
+        "title": "Chat · Morrow Premium Reference",
+        "bodyTextLength": 599
+      }
+    }
+  ]
+}
