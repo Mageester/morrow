@@ -6,6 +6,42 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.43] - 2026-08-13
+
+### Changed - full product visual refresh
+
+- The complete local application now carries the same warm, editorial visual
+  language as onboarding: an authored navigation rail, integrated workspace
+  and runtime context, ambient copper geometry, refined materials, and
+  restrained route-entry motion in light and dark themes.
+- Home is now a readiness journey with actionable project and provider states,
+  a focused working hero, and calmer recent-work continuity. Fresh installs no
+  longer present a disabled primary action as the way forward.
+- Conversations now read as a focused working document with a viewport-bound
+  transcript, distinct user and Morrow hierarchy, an inspectable activity
+  surface, and a premium command field that stays available on short screens.
+- Projects, History, Memory, Skills, Connections, Teams, Missions, Pairing, and
+  Settings now share one product system instead of separate dashboard-like
+  treatments. Dense configuration remains progressively disclosed.
+- Mobile navigation, short desktop viewports, reduced-motion behavior, semantic
+  route regions, labelled composer forms, focus visibility, and theme contrast
+  were hardened as part of rendered browser QA.
+
+### Security and privacy impact
+
+- This release changes presentation and semantic structure only. It adds no
+  telemetry, hosted dependency, provider request, credential flow, permission,
+  tool capability, or new external data path.
+- Existing privacy-preference wording remains explicit that the saved value is
+  not runtime routing enforcement. Local workspace and runtime state are shown
+  more clearly without exposing credential values.
+
+### Rollback
+
+- Reinstall `v0.1.0-beta.42` to restore the previous product interface and keep
+  the premium onboarding. Existing projects, conversations, memory, skills,
+  settings, and assistant-profile data remain compatible and are not deleted.
+
 ## [0.1.0-beta.42] - 2026-08-12
 
 ### Added - premium visual onboarding
