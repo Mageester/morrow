@@ -310,6 +310,7 @@ export function SettingsPage() {
           <div style={{ display: "grid", gap: "var(--morrow-space-1)" }}>
             <label style={{ fontWeight: 500, fontSize: "0.875rem" }}>Default Chat Mode</label>
             <select
+              aria-label="Default chat mode"
               style={{ padding: "var(--morrow-space-2)", borderRadius: "var(--morrow-radius-sm)", border: "1px solid var(--morrow-border)" }}
               value={settings.defaultMode}
               onChange={(e) => updateSettings({ defaultMode: e.target.value as "chat" | "build" })}
@@ -323,6 +324,7 @@ export function SettingsPage() {
           <div style={{ display: "grid", gap: "var(--morrow-space-1)" }}>
             <label style={{ fontWeight: 500, fontSize: "0.875rem" }}>Default Reasoning Depth</label>
             <select
+              aria-label="Default reasoning depth"
               style={{ padding: "var(--morrow-space-2)", borderRadius: "var(--morrow-radius-sm)", border: "1px solid var(--morrow-border)" }}
               value={settings.defaultReasoning}
               onChange={(e) => updateSettings({ defaultReasoning: e.target.value as any })}

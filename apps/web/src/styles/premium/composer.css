@@ -59,84 +59,143 @@
 
 /* ── The chip bar ────────────────────────────────────────────────────────── */
 
-.morrow-chat-composer__modes-row,
+/*
+ * One row, one metric. Every control on the bar is the same height and sits on
+ * one line; nothing wraps to a second line and nothing grows a heavier
+ * container than its neighbour. Copper is spent once, on send.
+ */
 .morrow-chat-composer__toolbar {
+  --morrow-chip-height: 30px;
+
   display: flex;
   align-items: center;
   padding: 0;
   border: 0;
-  flex-wrap: wrap;
-  gap: 7px;
+  flex-wrap: nowrap;
+  gap: 6px;
 }
 
 .morrow-chat-composer__modes-row {
-  margin-bottom: 7px;
+  display: none;
 }
 
-.morrow-chat-composer__modes {
-  display: flex;
-  padding: 0;
-  border: 0;
-  background: none;
-  gap: 7px;
+/*
+ * The metric is enforced on the bar's children rather than per control: the
+ * shared button primitive and the refresh layer both set their own 44px
+ * minimum, and chasing each class left three different heights on one row.
+ * Touch targets are preserved by the composer's own padding, and every control
+ * here sits inside a 44px-tall band.
+ */
+.morrow-chat-composer__toolbar > * {
+  height: var(--morrow-chip-height);
+  min-height: 0;
+  flex: none;
 }
 
-/* Every inline control in the composer reads as one chip. Scoped through
-   `.morrow-chat-composer` so these win over the refresh layer's pill styling
-   without resorting to !important. */
-.morrow-chat-composer .morrow-chat-composer__modes button,
+.morrow-chat-composer__toolbar > .morrow-context-meter {
+  height: auto;
+}
+
+/* Mode is a segmented control: one border around two choices, not two chips. */
+.morrow-chat-composer .morrow-chat-composer__modes {
+  display: inline-flex;
+  height: var(--morrow-chip-height);
+  flex: none;
+  align-items: stretch;
+  padding: 2px;
+  border: 1px solid #393b34;
+  border-radius: 9px;
+  background: transparent;
+  gap: 2px;
+}
+
+/* Every inline control in the composer reads as one chip at one height. Scoped
+   through `.morrow-chat-composer` so these win over the refresh layer's pill
+   styling without resorting to !important. */
 .morrow-chat-composer .morrow-chat-composer__auto-approve,
 .morrow-chat-composer .morrow-chat-composer__reasoning-toggle,
 .morrow-chat-composer .morrow-chat-composer__select,
-.morrow-chat-composer .morrow-model-picker__trigger,
-.morrow-chat-composer .morrow-chat-composer__advanced-toggle {
+.morrow-chat-composer .morrow-model-picker,
+.morrow-chat-composer .morrow-reasoning-slider {
   display: inline-flex;
-  min-height: 28px;
+  height: var(--morrow-chip-height);
+  flex: none;
   align-items: center;
-  padding: 6px 9px;
+  padding: 0 9px;
   border: 1px solid #393b34;
-  border-radius: 8px;
+  border-radius: 9px;
   background: transparent;
   color: #93958c;
   cursor: pointer;
   font: inherit;
   font-size: 11px;
   gap: 6px;
+  white-space: nowrap;
   transition:
     border-color var(--morrow-premium-control) var(--morrow-product-shift),
     color var(--morrow-premium-control) var(--morrow-product-shift);
 }
 
-.morrow-chat-composer .morrow-chat-composer__modes button:hover:not(:disabled),
+/* Segments sit inside the group's border rather than carrying their own. */
+.morrow-chat-composer .morrow-chat-composer__modes button {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #93958c;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  transition:
+    background-color var(--morrow-premium-control) var(--morrow-product-shift),
+    color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
 .morrow-chat-composer .morrow-chat-composer__auto-approve:hover,
 .morrow-chat-composer .morrow-chat-composer__reasoning-toggle:hover,
 .morrow-chat-composer .morrow-chat-composer__select:hover,
-.morrow-chat-composer .morrow-model-picker__trigger:hover:not(:disabled),
-.morrow-chat-composer .morrow-chat-composer__advanced-toggle:hover {
-  border-color: var(--morrow-product-copper-line);
+.morrow-chat-composer .morrow-model-picker:hover,
+.morrow-chat-composer .morrow-reasoning-slider:hover {
+  border-color: #4d4f46;
   color: var(--morrow-product-copy-soft);
   transform: none;
 }
 
+.morrow-chat-composer .morrow-chat-composer__modes button:hover:not(:disabled) {
+  color: var(--morrow-product-copy-soft);
+}
+
+/*
+ * Selected state is a raised surface, not a copper fill. Four copper chips on
+ * one bar left nothing reading as the primary action; copper is spent once,
+ * on send.
+ */
 .morrow-chat-composer .morrow-chat-composer__modes button.is-active,
+.morrow-chat-composer .morrow-chat-composer__modes button[aria-pressed="true"] {
+  background: #33342d;
+  color: var(--morrow-product-copy);
+  font-weight: 650;
+  box-shadow: none;
+}
+
 .morrow-chat-composer .morrow-chat-composer__reasoning-toggle:has(input:checked),
 .morrow-chat-composer .morrow-chat-composer__auto-approve:has(input:checked) {
-  border-color: #594235;
-  background: var(--morrow-product-copper-soft);
-  color: #ddaa91;
+  border-color: #4d4f46;
+  background: #26272120;
+  color: var(--morrow-product-copy-soft);
 }
 
-/* Checkbox chips carry their state in the chip, not a system control. */
+/* Checkbox chips carry their state in a small copper tick, not a system box. */
 .morrow-chat-composer .morrow-chat-composer__auto-approve input,
 .morrow-chat-composer .morrow-chat-composer__reasoning-toggle input {
-  width: 11px;
-  height: 11px;
+  width: 10px;
+  height: 10px;
+  flex: none;
   margin: 0;
   accent-color: var(--morrow-product-copper);
-}
-
-.morrow-chat-composer .morrow-chat-composer__modes {
-  border-radius: 0;
 }
 
 .morrow-chat-composer__select select,
@@ -156,12 +215,13 @@
 /* The one bright control: send. */
 .morrow-chat-composer__send,
 .morrow-chat-composer__stop {
-  display: inline-grid;
-  width: 33px;
-  height: 33px;
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
   min-width: 0;
   flex: none;
-  place-items: center;
+  align-items: center;
+  justify-content: center;
   margin-left: auto;
   padding: 0;
   border: 0;
@@ -178,6 +238,7 @@
   border: 1px solid var(--morrow-product-line-strong);
   background: var(--morrow-product-field-strong);
   color: #d9d5cd;
+  font-size: 11px;
   gap: 6px;
 }
 
@@ -196,6 +257,7 @@
 .morrow-chat-composer__mode-hint,
 .morrow-chat-composer__meta p,
 .morrow-chat-composer__counter {
+  padding: 0;
   margin: 6px 0 0;
   color: var(--morrow-product-faint);
   font-size: 10px;
@@ -204,6 +266,7 @@
 .morrow-chat-composer__meta {
   display: flex;
   justify-content: space-between;
+  padding: 0;
   gap: 12px;
 }
 
@@ -216,21 +279,14 @@
 /* ── Advanced controls ───────────────────────────────────────────────────── */
 
 /*
- * Reasoning depth and context usage stay on the bar rather than behind a
- * disclosure — both are routing facts the reference itself surfaces as chips,
- * and hiding the reasoning control would bury an explicit provider choice.
- * They are compacted to chip scale instead: the slider loses its stacked label
- * and end captions, keeping its input, its live value, and its accessible name.
+ * Reasoning depth stays on the bar rather than behind a disclosure — it is an
+ * explicit provider choice, and burying it would hide what a send commits to.
+ * It is compacted to chip scale: the stacked label and end captions go, the
+ * input, live value, and accessible name stay.
  */
 .morrow-chat-composer .morrow-reasoning-slider {
-  display: inline-flex;
-  min-height: 28px;
-  align-items: center;
-  padding: 4px 9px;
-  border: 1px solid #393b34;
-  border-radius: 8px;
-  color: #93958c;
-  font-size: 11px;
+  max-width: 168px;
+  padding-inline: 8px;
   gap: 7px;
 }
 
@@ -240,37 +296,78 @@
 }
 
 .morrow-chat-composer .morrow-reasoning-slider__control {
+  position: static;
   display: flex;
-  width: 84px;
+  width: auto;
+  height: 100%;
   align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  gap: 7px;
 }
 
+.morrow-chat-composer .morrow-reasoning-slider__track,
 .morrow-chat-composer .morrow-reasoning-slider__labels {
   display: none;
 }
 
+.morrow-chat-composer .morrow-reasoning-slider__input {
+  width: 66px;
+  height: 3px;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--morrow-product-copper);
+  background: #3a3c34;
+}
+
+/* The value sat absolutely above the track and escaped the chip once the
+   track was hidden; it belongs in the flow, after the input. */
 .morrow-chat-composer .morrow-reasoning-slider__value {
+  position: static;
+  order: 3;
+  min-width: 34px;
   color: var(--morrow-product-copy-soft);
   font-size: 11px;
   white-space: nowrap;
 }
 
+/* The context ring is a reading, not a control: it gets no chip of its own. */
 .morrow-chat-composer .morrow-context-meter {
   flex: none;
+  margin-inline: 2px;
+  opacity: 0.75;
 }
 
-/* The bar holds one line on desktop: the middle may shrink, send never does. */
-.morrow-chat-composer__toolbar {
-  flex-wrap: nowrap;
+/* Stop replaces send in place, at the same size and on one line. */
+.morrow-chat-composer .morrow-chat-composer__stop {
+  height: var(--morrow-chip-height);
+  flex-direction: row;
+  align-items: center;
+  white-space: nowrap;
 }
 
-.morrow-chat-composer__toolbar > * {
+/* The picker's trigger fills the chip that now carries the border. */
+.morrow-chat-composer .morrow-model-picker__trigger {
+  height: 100%;
   min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 860px) {
   .morrow-chat-composer__toolbar {
     flex-wrap: wrap;
+  }
+
+  .morrow-chat-composer .morrow-reasoning-slider__label {
+    display: none;
   }
 }
 

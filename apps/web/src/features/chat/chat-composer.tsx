@@ -590,10 +590,13 @@ export function ChatComposer({
           />
         ) : null}
 
+        {/* Named for what it reveals, not for the same word the depth control
+            uses — two chips both reading "Reasoning" sat side by side and
+            neither said which was which. */}
         {onShowReasoningChange ? (
           <label
             className="morrow-chat-composer__reasoning-toggle"
-            title="Show reasoning text supplied by the model provider"
+            title="Show the reasoning text supplied by the model provider"
           >
             <input
               checked={showReasoning}
@@ -601,7 +604,7 @@ export function ChatComposer({
               onChange={(event) => onShowReasoningChange(event.target.checked)}
               type="checkbox"
             />
-            <span>Reasoning</span>
+            <span>Show thinking</span>
           </label>
         ) : null}
 

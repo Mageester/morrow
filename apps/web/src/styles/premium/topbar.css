@@ -82,7 +82,10 @@
   border: 1px solid #34362f;
   border-radius: 9px;
   background: #1d1e19;
-  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  /* --morrow-product-quiet (#74776e) measures 3.6:1 on this chip, below the
+     4.5:1 AA threshold for its 13px label. The muted step clears it at 6.6:1
+     and still reads as secondary against the breadcrumb. */
+  color: var(--morrow-product-copy-quiet);
   cursor: pointer;
   font: inherit;
   font-size: 13px;
@@ -105,7 +108,9 @@
   padding: 0;
   border: 0;
   background: none;
-  color: var(--morrow-product-faint);
+  /* Dimmer than the label but still above 4.5:1 on the chip: the faint step
+     measures 2.4:1 here, which is decoration rather than a readable shortcut. */
+  color: #8f9289;
   font: inherit;
   font-size: 12px;
 }

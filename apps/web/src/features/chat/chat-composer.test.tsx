@@ -62,7 +62,7 @@ describe("ChatComposer", () => {
     }
     render(<Parent />);
 
-    const toggle = screen.getByRole("checkbox", { name: "Reasoning" });
+    const toggle = screen.getByRole("checkbox", { name: "Show thinking" });
     expect(toggle).not.toBeChecked();
     expect(toggle).toBeEnabled();
     await user.click(toggle);

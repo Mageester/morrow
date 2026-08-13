@@ -495,7 +495,7 @@ describe("ConversationPage interleaved transcript", () => {
     await screen.findByText("Saved answer");
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/reasoning"))).toBe(false);
 
-    await user.click(screen.getByRole("checkbox", { name: "Reasoning" }));
+    await user.click(screen.getByRole("checkbox", { name: "Show thinking" }));
     const disclosure = await screen.findByRole("region", { name: "Model reasoning" });
     expect(within(disclosure).getByText(/smallest coherent change/)).toBeVisible();
     expect(localStorage.getItem("morrow.chat.show-reasoning.v1")).toBe("true");
