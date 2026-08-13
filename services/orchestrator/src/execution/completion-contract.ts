@@ -386,6 +386,27 @@ export function inferTaskShape(prompt: string, mode: "agent" | "ask" | "plan-onl
   return "read_only";
 }
 
+/**
+ * Preserve the task brief when the user sends a short imperative continuation
+ * such as "start building" or "continue". Treating that sentence as an
+ * independent request discards the artifact type, constraints, and validation
+ * requirements declared immediately before it. Self-contained follow-ups and
+ * explicit read-only requests remain independent.
+ */
+export function resolveTaskIntentPrompt(latestPrompt: string, priorUserPrompts: readonly string[]): string {
+  const latest = latestPrompt.trim();
+  if (!latest || latest.length > 320) return latestPrompt;
+  if (/\b(?:do not|don't|without)\s+(?:change|changing|modify|modifying|edit|editing|write|writing)\b/i.test(latest)) return latestPrompt;
+  const isContinuation = /\b(?:continue|resume|carry on|keep going|proceed|go ahead|do it|try again|finish(?: it| this)?|start (?:building|coding|working)|get started|make it happen)\b/i.test(latest);
+  if (!isContinuation) return latestPrompt;
+  const prior = [...priorUserPrompts]
+    .reverse()
+    .map((prompt) => prompt.trim())
+    .find((prompt) => prompt.length >= 40);
+  if (!prior) return latestPrompt;
+  return `${prior}\n\nCurrent follow-up: ${latest}`;
+}
+
 export function evaluateTaskCompletion(input: CompletionInput): CompletionResult {
   const taskShape = input.taskShape ?? input.shape;
   if (!taskShape || !TASK_COMPLETION_CONTRACTS[taskShape]) {
