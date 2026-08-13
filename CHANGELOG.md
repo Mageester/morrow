@@ -6,6 +6,52 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.44] - 2026-08-13
+
+### Changed - premium UI completion
+
+- Home now has a real searchable provider/model picker instead of a static
+  route label or native-looking dropdown. The chosen route carries into the
+  conversation it creates, and connected providers remain clearly identified.
+- Projects, History, Memory, Skills, Connections, and Settings now use the
+  same editorial hierarchy, restrained copper accents, compact controls, and
+  progressively disclosed detail as onboarding and the conversation surface.
+- The conversation composer has a clearer primary action row and a dedicated
+  reasoning row. Show thinking now has a larger labelled target on desktop and
+  mobile, while the composer remains reachable during long-running work.
+- Contrast, keyboard focus, reduced-motion behavior, mobile layouts, console
+  health, and horizontal overflow were re-verified across the primary routes.
+
+### Fixed - long build autonomy
+
+- Successful file writes are now projected back to the model as inert durable
+  history. Morrow no longer exposes its internal `_morrowAppliedWrite` marker
+  as an executable-looking tool call that weaker models can copy without file
+  content.
+- Short continuation prompts such as "start building" inherit the immediately
+  preceding substantive brief, preserving the requested artifact type,
+  constraints, browser tools, and completion contract instead of silently
+  downgrading the task to read-only work.
+- Invented marker-only writes are counted across filenames and hashes. After a
+  bounded correction window Morrow interrupts cleanly rather than letting a
+  model burn dozens of calls by changing the fake target on every attempt.
+
+### Security and privacy impact
+
+- The harness fix changes provider-facing execution history and malformed-write
+  recovery. It does not add a provider, automatic cross-provider handoff,
+  network request, telemetry path, permission, or credential flow.
+- Completed write bodies remain in the local workspace and durable local task
+  records; provider history receives only a bounded statement that the write
+  completed. Failed writes retain their original arguments solely for the next
+  bounded repair attempt.
+
+### Rollback
+
+- Reinstall `v0.1.0-beta.43` to restore the previous interface and execution
+  projection. Projects, conversations, provider configuration, and local data
+  remain schema-compatible and are not deleted.
+
 ## [0.1.0-beta.43] - 2026-08-13
 
 ### Changed - full product visual refresh
