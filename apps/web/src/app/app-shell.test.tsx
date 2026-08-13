@@ -191,6 +191,7 @@ describe("Morrow application shell", () => {
     await waitFor(() => {
       expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     });
+    await user.click(await screen.findByRole("button", { name: /^Appearance/ }));
     const darkChoice = await screen.findByRole("button", { name: "Dark" });
     expect(darkChoice).toHaveAttribute("aria-pressed", "true");
 
@@ -205,8 +206,10 @@ describe("Morrow application shell", () => {
   });
 
   it("defaults new installs to dark and never rewrites an unset preference", async () => {
+    const user = userEvent.setup();
     renderAt("/app/settings");
 
+    await user.click(await screen.findByRole("button", { name: /^Appearance/ }));
     expect(await screen.findByRole("button", { name: "Dark" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -219,8 +222,10 @@ describe("Morrow application shell", () => {
 
   it("ignores an invalid stored theme and keeps the graphite default", async () => {
     localStorage.setItem("morrow-theme", "sepia");
+    const user = userEvent.setup();
     renderAt("/app/settings");
 
+    await user.click(await screen.findByRole("button", { name: /^Appearance/ }));
     expect(await screen.findByRole("button", { name: "Dark" })).toHaveAttribute(
       "aria-pressed",
       "true",

@@ -24,6 +24,12 @@
   align-content: start;
 }
 
+.morrow-library .morrow-library__heading {
+  padding: 18px;
+  margin: 0;
+  border-bottom: 1px solid var(--morrow-product-line);
+}
+
 /* ── Filters ─────────────────────────────────────────────────────────────── */
 
 .morrow-library__filters {
@@ -62,7 +68,7 @@
 .morrow-library__group {
   padding: 19px 18px 8px;
   margin: 0;
-  color: #666960;
+  color: var(--morrow-product-copy-quiet);
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.15em;
@@ -118,7 +124,7 @@
 }
 
 .morrow-library__scope {
-  color: #696c64;
+  color: var(--morrow-product-copy-quiet);
   font-size: 10px;
   white-space: nowrap;
 }
@@ -177,7 +183,7 @@
 
 .morrow-dossier__fact dt,
 .morrow-dossier__fact span {
-  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  color: var(--morrow-product-copy-quiet);
 }
 
 .morrow-dossier__fact dd,
@@ -265,5 +271,85 @@
 
   .morrow-dossier[data-selected="false"] {
     display: none;
+  }
+}
+
+.morrow-memory-commandbar {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 14px;
+  margin-bottom: 7px;
+  background: var(--morrow-product-field);
+  gap: 9px;
+}
+
+.morrow-memory-commandbar__learning {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.morrow-memory-commandbar__learning b,
+.morrow-memory-commandbar__learning small {
+  display: block;
+}
+
+.morrow-memory-commandbar__learning small {
+  margin-top: 2px;
+  color: var(--morrow-product-muted);
+  font-size: 9px;
+}
+
+.morrow-memory-commandbar__note {
+  margin: 0 0 18px;
+  color: var(--morrow-product-faint);
+  font-size: 9px;
+}
+
+.morrow-memory .morrow-memory__add {
+  display: grid;
+  padding: 20px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-lg);
+  margin-bottom: 18px;
+  background: var(--morrow-product-field);
+  gap: 12px;
+}
+
+.morrow-memory .morrow-memory__add textarea {
+  min-height: 110px;
+  padding: 12px;
+  border: 1px solid var(--morrow-product-line-strong);
+  border-radius: 10px;
+  background: var(--morrow-product-field-strong);
+  color: var(--morrow-product-copy);
+  font: inherit;
+  resize: vertical;
+}
+
+.morrow-dossier > .morrow-memory__source-toggle {
+  padding-top: 12px;
+  border-top: 1px solid var(--morrow-product-line-soft);
+  margin-top: 14px;
+}
+
+@media (max-width: 700px) {
+  .morrow-memory-commandbar {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .morrow-memory-commandbar__learning {
+    width: 100%;
+  }
+
+  .morrow-memory-commandbar button,
+  .morrow-memory-commandbar .morrow-switch {
+    min-height: 44px;
   }
 }

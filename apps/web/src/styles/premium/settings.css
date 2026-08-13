@@ -76,7 +76,7 @@
 }
 
 .morrow-settings-chapter small {
-  color: #6f7269;
+  color: var(--morrow-product-copy-quiet);
   font-size: 9px;
 }
 
@@ -142,7 +142,7 @@
 .morrow-settings-label {
   padding: 8px 25px;
   margin: 0;
-  color: #686b63;
+  color: var(--morrow-product-copy-quiet);
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.14em;
@@ -267,5 +267,131 @@
   .morrow-setting-row {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+}
+
+.morrow-setting-row--stacked {
+  grid-template-columns: 1fr;
+}
+
+.morrow-settings-goal-form {
+  display: flex;
+  gap: 8px;
+}
+
+.morrow-settings-goal-form input {
+  min-width: 0;
+  flex: 1;
+}
+
+.morrow-settings-goals {
+  display: grid;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  gap: 8px;
+}
+
+.morrow-settings-goals li {
+  display: flex;
+  align-items: center;
+  color: var(--morrow-product-copy-soft);
+  font-size: 11px;
+  gap: 10px;
+}
+
+.morrow-settings-disclosure {
+  padding: 0 25px 18px;
+}
+
+.morrow-settings-disclosure b {
+  color: var(--morrow-product-copy-soft);
+  font-size: 12px;
+}
+
+.morrow-settings-disclosure p {
+  max-width: 650px;
+  margin: 5px 0 0;
+  color: var(--morrow-product-muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.morrow-settings-radio-list {
+  display: grid;
+  padding: 0 25px 20px;
+  gap: 7px;
+}
+
+.morrow-settings-radio {
+  display: flex;
+  align-items: flex-start;
+  padding: 12px 13px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 11px;
+  background: #1a1b17;
+  cursor: pointer;
+  gap: 10px;
+}
+
+.morrow-settings-radio:has(input:checked) {
+  border-color: #664a3a;
+  background: linear-gradient(90deg, #261f1a, #1b1c18);
+}
+
+.morrow-settings-radio input {
+  margin-top: 2px;
+  accent-color: var(--morrow-product-copper);
+}
+
+.morrow-settings-radio b,
+.morrow-settings-radio small {
+  display: block;
+}
+
+.morrow-settings-radio b {
+  color: var(--morrow-product-copy-soft);
+  font-size: 11px;
+}
+
+.morrow-settings-radio small {
+  margin-top: 3px;
+  color: var(--morrow-product-muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.morrow-settings-status,
+.morrow-settings-saved {
+  margin: 0;
+  padding: 14px 25px;
+  color: var(--morrow-product-muted);
+  font-size: 11px;
+}
+
+.morrow-settings-saved {
+  display: flex;
+  align-items: center;
+  color: var(--morrow-product-success);
+  gap: 7px;
+}
+
+.morrow-settings-value {
+  color: var(--morrow-product-copy-soft);
+  font-size: 11px;
+}
+
+@media (max-width: 700px) {
+  .morrow-settings-head,
+  .morrow-setting-row,
+  .morrow-settings-radio-list,
+  .morrow-settings-disclosure,
+  .morrow-settings-status,
+  .morrow-settings-saved {
+    padding-inline: 18px;
+  }
+
+  .morrow-settings-assurance {
+    margin-inline: 18px;
   }
 }

@@ -148,6 +148,154 @@
   color: var(--morrow-product-faint);
 }
 
+.morrow-home-route-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.morrow-home-route-picker__trigger {
+  display: flex;
+  min-width: 178px;
+  max-width: 260px;
+  height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  border: 1px solid #554439;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #28221d, #201d19);
+  color: #d1c7bf;
+  cursor: pointer;
+  gap: 12px;
+  text-align: left;
+}
+
+.morrow-home-route-picker__trigger span {
+  min-width: 0;
+}
+
+.morrow-home-route-picker__trigger b,
+.morrow-home-route-picker__trigger small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-home-route-picker__trigger b {
+  font-size: 10px;
+}
+
+.morrow-home-route-picker__trigger small {
+  color: var(--morrow-product-copper);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.morrow-home-route-picker__trigger:hover,
+.morrow-home-route-picker__trigger[aria-expanded="true"] {
+  border-color: #77533f;
+  background: linear-gradient(180deg, #30261f, #24201b);
+}
+
+.morrow-home-route-picker__trigger:focus-visible {
+  outline: 2px solid var(--morrow-product-copper);
+  outline-offset: 2px;
+}
+
+.morrow-home-route-picker__panel {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 9px);
+  left: 0;
+  width: min(390px, 78vw);
+  padding: 8px;
+  border: 1px solid #50483f;
+  border-radius: 14px;
+  background: rgb(24 25 21 / 0.98);
+  box-shadow: 0 24px 70px rgb(0 0 0 / 0.62);
+  backdrop-filter: blur(20px);
+}
+
+.morrow-home-route-picker__search {
+  display: flex;
+  height: 39px;
+  align-items: center;
+  padding: 0 11px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 9px;
+  background: #20211c;
+  color: var(--morrow-product-faint);
+  gap: 8px;
+}
+
+.morrow-home-route-picker__search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--morrow-product-copy);
+  font: inherit;
+  font-size: 11px;
+  outline: 0;
+}
+
+.morrow-home-route-picker__list {
+  display: grid;
+  max-height: 275px;
+  padding-top: 6px;
+  overflow: auto;
+  gap: 2px;
+}
+
+.morrow-home-route-picker__option {
+  display: flex;
+  width: 100%;
+  min-height: 45px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--morrow-product-copy-soft);
+  cursor: pointer;
+  gap: 14px;
+  text-align: left;
+}
+
+.morrow-home-route-picker__option:hover,
+.morrow-home-route-picker__option[aria-checked="true"] {
+  background: #29251f;
+}
+
+.morrow-home-route-picker__option b,
+.morrow-home-route-picker__option small {
+  display: block;
+}
+
+.morrow-home-route-picker__option b {
+  font-size: 11px;
+}
+
+.morrow-home-route-picker__option small,
+.morrow-home-route-picker__list p {
+  color: var(--morrow-product-muted);
+  font-size: 9px;
+}
+
+@media (max-width: 700px) {
+  .morrow-home-composer__bar {
+    flex-wrap: wrap;
+  }
+
+  .morrow-home-route-picker__trigger {
+    min-height: 44px;
+  }
+}
+
 .morrow-home-composer__send {
   display: grid;
   width: 33px;
@@ -271,7 +419,7 @@
 .morrow-work-card__label {
   position: relative;
   z-index: 1;
-  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  color: var(--morrow-product-copy-quiet);
   font-size: 9px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -303,7 +451,7 @@
   left: 18px;
   display: flex;
   justify-content: space-between;
-  color: #676a62;
+  color: var(--morrow-product-copy-quiet);
   font-size: 9px;
 }
 

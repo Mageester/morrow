@@ -11,6 +11,34 @@
   padding-left: 112px;
 }
 
+.morrow-history-controls {
+  display: inline-flex;
+  width: max-content;
+  padding: 3px;
+  margin: 0 0 30px 112px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 11px;
+  background: var(--morrow-product-field);
+  gap: 3px;
+}
+
+.morrow-history-controls .morrow-chats__tab {
+  min-height: 36px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--morrow-product-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.morrow-history-controls .morrow-chats__tab[aria-pressed="true"] {
+  background: var(--morrow-product-field-strong);
+  color: var(--morrow-product-copy);
+}
+
 .morrow-chronicle__day {
   position: relative;
   margin-bottom: 30px;
@@ -35,7 +63,7 @@
   top: 2px;
   left: -112px;
   margin: 0;
-  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  color: var(--morrow-product-copy-quiet);
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.12em;
@@ -105,7 +133,7 @@
 
 .morrow-chronicle__project,
 .morrow-chronicle__time {
-  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  color: var(--morrow-product-copy-quiet);
   font-size: 10px;
 }
 
@@ -132,7 +160,7 @@
   margin-top: 14px;
   padding-top: 13px;
   border-top: 1px solid var(--morrow-product-line);
-  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  color: var(--morrow-product-copy-quiet);
   font-size: 10px;
   gap: 16px;
 }
@@ -146,6 +174,10 @@
 }
 
 @media (max-width: 700px) {
+  .morrow-history-controls {
+    margin-left: 25px;
+  }
+
   .morrow-chronicle {
     padding-left: 25px;
   }

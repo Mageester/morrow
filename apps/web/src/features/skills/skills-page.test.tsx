@@ -43,8 +43,8 @@ describe("Skills page", () => {
     const user = userEvent.setup();
     renderPage();
 
-    const workflow = await screen.findByText("Validate with pnpm check");
-    expect(screen.getByText("2 verified uses")).toBeVisible();
+    const workflow = await screen.findByRole("button", { name: /Validate with pnpm check/ });
+    expect(screen.getByText("verified uses").closest("div")).toHaveTextContent("2verified uses");
     await user.click(workflow);
     expect(await screen.findByText("Run `pnpm check` from the repository root.")).toBeVisible();
     expect(screen.getByText("2 verified tasks")).toBeVisible();

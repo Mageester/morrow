@@ -1,15 +1,76 @@
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowUp, Paperclip, ShieldCheck } from "lucide-react";
-import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { ArrowUp, Check, ChevronsUpDown, Paperclip, Search, ShieldCheck } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { conversationApi } from "../../api/conversations.js";
 import { saveChatDraft } from "../chat/draft-store.js";
+import { saveChatRouteHandoff, type ChatComposerModelRoute } from "../chat/chat-composer.js";
+import { providerName } from "../chat/model-picker.js";
 
 export interface HomeComposerProps {
   /** Undefined until a local project is selected; the field explains why. */
   projectId?: string | undefined;
-  /** Model route shown on the resting chip, e.g. "DeepSeek V3.1". */
-  routeLabel?: string | undefined;
+  initialRoute?: ChatComposerModelRoute | undefined;
+  routes?: ReadonlyArray<ChatComposerModelRoute> | undefined;
+}
+
+function HomeRoutePicker({ onChange, routes, value }: {
+  onChange: (route: ChatComposerModelRoute) => void;
+  routes: ReadonlyArray<ChatComposerModelRoute>;
+  value: ChatComposerModelRoute;
+}) {
+  const listId = useId();
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return needle
+      ? routes.filter((route) => `${route.label} ${route.providerId ? providerName(route.providerId) : ""}`.toLowerCase().includes(needle))
+      : routes;
+  }, [query, routes]);
+
+  return (
+    <div className="morrow-home-route-picker">
+      <button
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className="morrow-home-route-picker__trigger"
+        onClick={() => setOpen((current) => !current)}
+        type="button"
+      >
+        <span>
+          <small>{value.providerId ? providerName(value.providerId) : "Model"}</small>
+          <b>{value.label}</b>
+        </span>
+        <ChevronsUpDown aria-hidden="true" size={13} />
+      </button>
+      {open ? (
+        <div className="morrow-home-route-picker__panel">
+          <label className="morrow-home-route-picker__search">
+            <Search aria-hidden="true" size={13} />
+            <span className="morrow-sr-only">Search models</span>
+            <input autoFocus onChange={(event) => setQuery(event.target.value)} placeholder="Search models" value={query} />
+          </label>
+          <div aria-label="Models for new conversation" className="morrow-home-route-picker__list" id={listId} role="menu">
+            {visible.map((route) => (
+              <button
+                aria-checked={route.id === value.id}
+                className="morrow-home-route-picker__option"
+                key={route.id}
+                onClick={() => { onChange(route); setOpen(false); setQuery(""); }}
+                role="menuitemradio"
+                type="button"
+              >
+                <span><b>{route.label}</b><small>{route.providerId ? providerName(route.providerId) : "Preset"}</small></span>
+                {route.id === value.id ? <Check aria-hidden="true" size={14} /> : null}
+              </button>
+            ))}
+            {visible.length === 0 ? <p>No matching connected model.</p> : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -23,12 +84,20 @@ export interface HomeComposerProps {
  * the decision to contact a provider explicit — no message leaves this machine
  * from this field.
  */
-export function HomeComposer({ projectId, routeLabel }: HomeComposerProps) {
+export function HomeComposer({ initialRoute, projectId, routes = [] }: HomeComposerProps) {
   const navigate = useNavigate();
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [selectedRoute, setSelectedRoute] = useState<ChatComposerModelRoute | undefined>(initialRoute ?? routes[0]);
   const inFlight = useRef(false);
   const trimmed = text.trim();
+
+  useEffect(() => {
+    setSelectedRoute((current) => {
+      if (current && routes.some((route) => route.id === current.id)) return current;
+      return initialRoute ?? routes[0];
+    });
+  }, [initialRoute, routes]);
 
   const start = useMutation({
     mutationFn: () => conversationApi.create(projectId!),
@@ -37,6 +106,9 @@ export function HomeComposer({ projectId, routeLabel }: HomeComposerProps) {
       // Hand the words over through the draft the conversation composer already
       // reads, so nothing typed here is lost in the transition.
       saveChatDraft({ conversationId: conversation.id, projectId: projectId! }, trimmed);
+      if (selectedRoute) {
+        saveChatRouteHandoff({ conversationId: conversation.id, projectId: projectId! }, selectedRoute);
+      }
       void navigate({
         params: { conversationId: conversation.id },
         search: { projectId: projectId! },
@@ -93,7 +165,7 @@ export function HomeComposer({ projectId, routeLabel }: HomeComposerProps) {
           <ShieldCheck aria-hidden="true" size={12} />
           Private
         </span>
-        {routeLabel ? <span className="morrow-home-composer__chip">{routeLabel}</span> : null}
+        {routes.length > 0 && selectedRoute ? <HomeRoutePicker onChange={setSelectedRoute} routes={routes} value={selectedRoute} /> : null}
         <button
           aria-label="Start a conversation with this message"
           className="morrow-home-composer__send"

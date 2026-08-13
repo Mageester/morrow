@@ -9,7 +9,9 @@ import {
 } from "@tanstack/react-router";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { loadChatRouteHandoff } from "../chat/chat-composer.js";
 import { loadChatDraft } from "../chat/draft-store.js";
 import { HomeComposer } from "./home-composer.js";
 
@@ -18,12 +20,12 @@ const PROJECT_ID = "project-1";
 /** Mounts the composer on a router, since starting a conversation navigates. */
 function renderComposer(
   fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
-  props: { projectId?: string | undefined; routeLabel?: string } = { projectId: PROJECT_ID },
+  props: ComponentProps<typeof HomeComposer> = { projectId: PROJECT_ID },
 ) {
   vi.stubGlobal("fetch", vi.fn(fetchImpl));
   const root = createRootRoute();
   const home = createRoute({
-    component: () => <HomeComposer projectId={props.projectId} routeLabel={props.routeLabel} />,
+    component: () => <HomeComposer {...props} />,
     getParentRoute: () => root,
     path: "/",
   });
@@ -126,9 +128,19 @@ describe("Home composer", () => {
     );
   });
 
-  it("names the model route on the bar so the destination is explicit before starting", async () => {
-    renderComposer(async () => Response.json(created), { projectId: PROJECT_ID, routeLabel: "deepseek-v4-flash" });
+  it("changes the model from a polished picker and carries that route into the conversation", async () => {
+    const routes = [
+      { id: "model:deepseek:deepseek-v4-flash", label: "deepseek-v4-flash", model: "deepseek-v4-flash", providerId: "deepseek" as const },
+      { id: "model:openrouter:anthropic/claude-sonnet", label: "anthropic/claude-sonnet", model: "anthropic/claude-sonnet", providerId: "openrouter" as const },
+    ];
+    renderComposer(async () => Response.json(created), { initialRoute: routes[0], projectId: PROJECT_ID, routes });
 
-    expect(await screen.findByText("deepseek-v4-flash")).toBeVisible();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /DeepSeek.*deepseek-v4-flash/i }));
+    await user.click(screen.getByRole("menuitemradio", { name: /anthropic\/claude-sonnet/i }));
+    expect(screen.getByRole("button", { name: /OpenRouter.*anthropic\/claude-sonnet/i })).toBeVisible();
+    await user.type(screen.getByRole("textbox"), "Use the selected model");
+    await user.click(screen.getByRole("button", { name: "Start a conversation with this message" }));
+    await waitFor(() => expect(loadChatRouteHandoff({ conversationId: "conv-9", projectId: PROJECT_ID })).toMatchObject({ providerId: "openrouter", model: "anthropic/claude-sonnet" }));
   });
 });

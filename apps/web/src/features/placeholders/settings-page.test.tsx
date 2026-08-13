@@ -32,11 +32,13 @@ describe("Settings page — assistant profile", () => {
       if (url === "/api/assistant-profile") return Response.json(profile);
       return Response.json({});
     }));
+    const user = userEvent.setup();
     renderPage();
-    expect(await screen.findByDisplayValue("Aidan")).toBeVisible();
-    expect(screen.getByRole("radio", { name: /Prefer local providers/ })).toBeChecked();
+    expect(await screen.findByRole("radio", { name: /Prefer local providers/ })).toBeChecked();
     expect(screen.getByText(/does not enforce provider or tool routing/i)).toBeVisible();
     expect(screen.queryByText(/No external model providers/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Personalization/ }));
+    expect(await screen.findByDisplayValue("Aidan")).toBeVisible();
   });
 
   it("adds a goal as a definition only, never claiming it runs automatically", async () => {
@@ -51,6 +53,7 @@ describe("Settings page — assistant profile", () => {
     }));
     const user = userEvent.setup();
     renderPage();
+    await user.click(screen.getByRole("button", { name: /Personalization/ }));
     const input = await screen.findByLabelText("New goal");
     await user.type(input, "Ping me about PRs");
     await user.click(screen.getByRole("button", { name: "Add" }));

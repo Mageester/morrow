@@ -13,6 +13,7 @@ import { resultStateForDelegation } from "../shared/result-state.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 import { GettingStarted } from "../onboarding/getting-started.js";
 import { HomeComposer } from "./home-composer.js";
+import type { ChatComposerModelRoute } from "../chat/chat-composer.js";
 
 const ACTIVE_MISSION_STATES = new Set([
   "draft",
@@ -57,8 +58,22 @@ export function HomePage() {
     ACTIVE_MISSION_STATES.has(mission.state),
   );
 
-  const activeRoute = (providers.data ?? []).find(
-    (provider) => provider.configured && provider.id !== "mock" && provider.defaultModel,
+  const homeRoutes = (providers.data ?? []).flatMap((provider): ChatComposerModelRoute[] => {
+    if (!provider.configured || provider.id === "mock") return [];
+    const models = provider.models.length > 0
+      ? provider.models
+      : provider.defaultModel
+        ? [provider.defaultModel]
+        : [];
+    return models.map((model) => ({
+      id: `model:${provider.id}:${model}`,
+      label: model,
+      model,
+      providerId: provider.id,
+    }));
+  });
+  const defaultRoute = homeRoutes.find((route) =>
+    (providers.data ?? []).some((provider) => provider.id === route.providerId && provider.defaultModel === route.model),
   );
 
   return (
@@ -77,7 +92,7 @@ export function HomePage() {
             checklist below. Repeating it here would put two identical "Connect
             a model" calls to action on one screen — the exact regression the
             checklist was introduced to remove. */}
-        <HomeComposer projectId={activeProject?.id} routeLabel={activeRoute?.defaultModel ?? undefined} />
+        <HomeComposer initialRoute={defaultRoute} projectId={activeProject?.id} routes={homeRoutes} />
       </header>
 
       {/* Setup guidance sits above every other state. The branch below only

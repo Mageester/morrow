@@ -18,12 +18,16 @@ export function ProjectsPage() {
   const [name, setName] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
   const [projectToDelete, setProjectToDelete] = useState<ProjectSelection | null>(null);
+  // Adding a project is a deliberate act, not a form that occupies the page
+  // ahead of the work already in it.
+  const [adding, setAdding] = useState(false);
 
   const createProject = useMutation({
     mutationFn: () => projectApi.create({ name: name.trim(), workspacePath: workspacePath.trim() }),
     onSuccess: (created) => {
       setName("");
       setWorkspacePath("");
+      setAdding(false);
       selectProject(created.id);
       void queryClient.invalidateQueries({ queryKey: ["projects", "available"] });
     },
@@ -54,18 +58,31 @@ export function ProjectsPage() {
   return (
     <section aria-labelledby="projects-heading" className="morrow-page morrow-projects">
       <ProductHeader
-        action={activeProject ? (
-          <Link className="morrow-projects__open-build" to="/chats">
-            Open {activeProject.name} in Build
-          </Link>
-        ) : undefined}
-        description="Point Morrow at a repository already on this machine. Chats and missions only ever read or change files inside the project you select here."
-        eyebrow="Local workspaces"
+        action={
+          <Button
+            aria-controls="projects-add-panel"
+            aria-expanded={adding}
+            onClick={() => setAdding((open) => !open)}
+            variant={adding ? "secondary" : "primary"}
+          >
+            {adding ? "Close" : "＋ New project"}
+          </Button>
+        }
+        description="Living contexts for everything Morrow helps you accomplish. Chats and missions only ever read or change files inside the project you select here."
+        eyebrow="Your work"
         headingId="projects-heading"
         title="Projects"
       />
 
-      <Surface aria-labelledby="projects-add-heading" className="morrow-projects__create">
+      {/* The workspace you are in, as a place to return to rather than a row in
+          a list. Only rendered once a project is actually selected — an empty
+          feature panel would be decoration. */}
+      {activeProject && !adding ? (
+        <ActiveProjectPanel activeProject={activeProject} />
+      ) : null}
+
+      {adding ? (
+        <Surface aria-labelledby="projects-add-heading" className="morrow-projects__create" id="projects-add-panel">
         <h2 id="projects-add-heading">Add a project</h2>
         <p className="morrow-projects__create-note">
           The folder stays on this machine. Morrow registers it as an execution workspace — nothing
@@ -100,7 +117,13 @@ export function ProjectsPage() {
             {safeError(createProject.error, "Morrow could not add this project. Check the path exists and try again.")}
           </p>
         ) : null}
-      </Surface>
+        </Surface>
+      ) : null}
+
+      <div className="morrow-section-head">
+        <h2>Project index</h2>
+        <span>{projects.length} registered</span>
+      </div>
 
       {isPending ? (
         <p aria-live="polite" role="status">
@@ -116,10 +139,12 @@ export function ProjectsPage() {
       ) : projects.length === 0 ? (
         <div className="morrow-empty">
           <h2>No projects yet</h2>
-          <p>Add a project above and Morrow will start working there.</p>
+          <p>Add a project and Morrow will start working there.</p>
         </div>
       ) : (
-        <ul aria-label="Your projects" className="morrow-projects__list">
+        /* A precise editorial index, not a card grid: signature, identity,
+           location, state, and one way in. */
+        <ul aria-label="Your projects" className="morrow-editorial-index">
           {projects.map((project) => (
             <ProjectRow
               isActive={project.id === activeProject?.id}
@@ -131,6 +156,11 @@ export function ProjectsPage() {
           ))}
         </ul>
       )}
+
+      <aside className="morrow-principle">
+        <b>Your workspaces stay local and legible.</b>
+        <span>One active context leads; every other project remains a precise, inspectable entry.</span>
+      </aside>
 
       {projectToDelete ? (
         <div className="morrow-conversation-dialog-backdrop">
@@ -182,63 +212,82 @@ function ProjectRow({
   const status = useQuery(projectQueries.status(project.id));
 
   return (
-    <li className="morrow-projects__row" data-active={isActive || undefined}>
-      <div className="morrow-projects__row-main">
-        <span className="morrow-projects__row-name">{project.name}</span>
-        {isActive ? <span className="morrow-projects__row-badge">Active</span> : null}
+    <li className="morrow-editorial-row" data-active={isActive || undefined}>
+      <span aria-hidden="true" className="morrow-editorial-row__signature">
+        {project.name.slice(0, 1).toUpperCase()}
+      </span>
+      <div className="morrow-editorial-row__identity">
+        <b>{project.name}</b>
+        <small>{isActive ? "Active workspace" : "Local workspace"}</small>
       </div>
-      <div className="morrow-projects__row-detail">
+      <span className="morrow-editorial-row__purpose">
         {status.isPending ? (
-          <span aria-live="polite" className="morrow-projects__row-path" role="status">
-            Checking workspace…
-          </span>
+          <span aria-live="polite" role="status">Checking workspace…</span>
         ) : status.isError || !status.data ? (
-          <span className="morrow-projects__row-path" role="alert">
-            Workspace status unavailable.
-          </span>
+          <span role="alert">Workspace status unavailable.</span>
         ) : (
-          <>
-            <span className="morrow-projects__row-path" title={status.data.workspacePath}>
-              {status.data.workspacePath}
-            </span>
-            {!status.data.accessible ? (
-              <span className="morrow-projects__row-blocker" role="alert">
-                Folder is not accessible right now
-              </span>
-            ) : status.data.gitDetected ? (
-              <span className="morrow-projects__row-branch">{status.data.branch ?? "detached HEAD"}</span>
-            ) : (
-              <span className="morrow-projects__row-branch morrow-projects__row-branch--none">
-                No Git repository detected
-              </span>
-            )}
-          </>
+          <span title={status.data.workspacePath}>{status.data.workspacePath}</span>
         )}
-      </div>
-      <div style={{ display: "flex", gap: "var(--morrow-space-2)", alignItems: "center" }}>
-        {!isActive ? (
-          <Button onClick={onSelect} size="compact" variant="secondary">
-            Use this project
-          </Button>
+      </span>
+      <span className="morrow-editorial-row__time">
+        {/* Honest state: an inaccessible folder is never dressed as a branch. */}
+        {status.data && !status.data.accessible ? (
+          <span className="morrow-projects__row-blocker" role="alert">Not accessible</span>
+        ) : status.data?.gitDetected ? (
+          status.data.branch ?? "detached HEAD"
+        ) : status.data ? (
+          "No Git repository"
         ) : null}
+      </span>
+      <span className="morrow-editorial-row__actions">
+        {!isActive ? (
+          <Button aria-label={`Use this project: ${project.name}`} onClick={onSelect} size="compact" variant="secondary">
+            Open
+          </Button>
+        ) : (
+          <span className="morrow-projects__row-badge">Active</span>
+        )}
+        {/* Removal stays a quiet icon and still routes through confirmation. */}
         <button
-          aria-label={`Delete ${project.name}`}
-          className="morrow-icon-button"
+          aria-label={`Remove ${project.name}`}
+          className="morrow-editorial-row__remove"
           onClick={onDelete}
-          style={{
-            background: "transparent",
-            border: "none",
-            color: "var(--morrow-text-muted)",
-            cursor: "pointer",
-            padding: "var(--morrow-space-1)",
-            borderRadius: "var(--morrow-radius-sm)",
-          }}
           title="Remove project"
           type="button"
         >
-          <Trash2 size={16} />
+          <Trash2 aria-hidden="true" size={15} />
         </button>
-      </div>
+      </span>
     </li>
+  );
+}
+
+/**
+ * The workspace currently in use, given the weight of a place to return to.
+ * Mirrors the reference's continuation panel; the ring is the one ambient form
+ * the premium system allows inside a featured surface.
+ */
+function ActiveProjectPanel({ activeProject }: { activeProject: ProjectSelection }) {
+  const status = useQuery(projectQueries.status(activeProject.id));
+
+  return (
+    <section aria-label={`Current project: ${activeProject.name}`} className="morrow-feature-panel">
+      <p className="morrow-feature-panel__meta">Continue where you left off</p>
+      <h2>{activeProject.name}</h2>
+      <p>
+        {status.data?.accessible === false
+          ? "This folder is not accessible right now. Morrow will not read or change anything until it is."
+          : "Conversations, memory, and work for this project stay anchored to this folder on this machine."}
+      </p>
+      <div className="morrow-feature-panel__foot">
+        <span title={status.data?.workspacePath ?? undefined}>
+          {status.data?.workspacePath ?? "Checking workspace…"}
+        </span>
+        {status.data?.gitDetected ? <span>{status.data.branch ?? "detached HEAD"}</span> : null}
+        <Link className="morrow-feature-panel__open" to="/chats">
+          Open project →
+        </Link>
+      </div>
+    </section>
   );
 }

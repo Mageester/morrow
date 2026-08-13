@@ -62,6 +62,36 @@ export interface ChatComposerModelRoute {
   reasoning?: RouteReasoningCapability | undefined;
 }
 
+const ROUTE_HANDOFF_PREFIX = "morrow.chat-route-handoff.v1";
+
+function routeHandoffKey(scope: ChatDraftScope): string {
+  return `${ROUTE_HANDOFF_PREFIX}.${encodeURIComponent(JSON.stringify([scope.projectId, scope.conversationId ?? null]))}`;
+}
+
+/** Persist only a non-secret route choice for the conversation Home is about
+ * to open. Credentials and message content are stored elsewhere. */
+export function saveChatRouteHandoff(scope: ChatDraftScope, route: ChatComposerModelRoute): void {
+  try {
+    window.localStorage.setItem(routeHandoffKey(scope), JSON.stringify({ route, version: 1 }));
+  } catch {
+    // A denied storage write must not block opening the conversation.
+  }
+}
+
+export function loadChatRouteHandoff(scope: ChatDraftScope): ChatComposerModelRoute | undefined {
+  try {
+    const raw = window.localStorage.getItem(routeHandoffKey(scope));
+    if (!raw) return undefined;
+    const stored: unknown = JSON.parse(raw);
+    if (!stored || typeof stored !== "object" || !("version" in stored) || stored.version !== 1 || !("route" in stored)) return undefined;
+    const route = stored.route;
+    if (!route || typeof route !== "object" || !("id" in route) || typeof route.id !== "string" || !("label" in route) || typeof route.label !== "string") return undefined;
+    return route as ChatComposerModelRoute;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface ChatComposerSubmission {
   content: string;
   projectId: string;
@@ -287,12 +317,17 @@ export function ChatComposer({
   } | null>(null);
 
   const availableRoutes = modelRoutes.length > 0 ? modelRoutes : [DEFAULT_ROUTE];
+  const [initialRoute] = useState(() => loadChatRouteHandoff(draftScope));
   const [initialModePreference] = useState(loadComposerModePreference);
   const [mode, setMode] = useState<ComposerMode>(initialModePreference.mode);
   const [autoApprove, setAutoApprove] = useState(initialModePreference.autoApprove);
-  const [routeId, setRouteId] = useState(availableRoutes[0]!.id);
+  const [routeId, setRouteId] = useState(
+    availableRoutes.some((route) => route.id === initialRoute?.id) ? initialRoute!.id : availableRoutes[0]!.id,
+  );
   // Selection from the searchable catalogue; undefined means "Auto — recommended".
-  const [catalogueRoute, setCatalogueRoute] = useState<ChatComposerModelRoute | undefined>(undefined);
+  const [catalogueRoute, setCatalogueRoute] = useState<ChatComposerModelRoute | undefined>(
+    modelCatalogue ? initialRoute : undefined,
+  );
   const [length, setLength] = useState(() => initialDraft.length);
   const [hasContent, setHasContent] = useState(() => Boolean(initialDraft.trim()));
   const [sending, setSending] = useState(false);
@@ -581,6 +616,7 @@ export function ChatComposer({
 
         <ContextMeter taskId={contextTaskId ?? activeTaskId} />
 
+        <div aria-label="Thinking controls" className="morrow-chat-composer__thinking-controls">
         {onReasoningConfigChange ? (
           <ReasoningSlider
             capability={selectedReasoningCapability}
@@ -604,9 +640,11 @@ export function ChatComposer({
               onChange={(event) => onShowReasoningChange(event.target.checked)}
               type="checkbox"
             />
+            <span aria-hidden="true" className="morrow-chat-composer__toggle-mark" />
             <span>Show thinking</span>
           </label>
         ) : null}
+        </div>
 
         {activeTaskId && onStop ? (
           <button
