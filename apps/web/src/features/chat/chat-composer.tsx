@@ -506,7 +506,10 @@ export function ChatComposer({
         rows={1}
       />
 
-      <div className="morrow-chat-composer__modes-row">
+      {/* One bar of chips, as in the premium reference: how Morrow should work,
+          how far it may go, and where it thinks — then send. Everything that
+          was on a second row is still here and still reachable in tab order. */}
+      <div className="morrow-chat-composer__toolbar">
         <div aria-label="How Morrow should work" className="morrow-chat-composer__modes" role="group">
           {MODES.map((item) => (
             <button
@@ -537,16 +540,7 @@ export function ChatComposer({
             <span>Trusted workspace</span>
           </label>
         ) : null}
-      </div>
-      <p className="morrow-chat-composer__mode-hint">
-        {mode === "build"
-          ? autoApprove
-            ? "Morrow can edit files and run ordinary workspace commands without stopping."
-            : "Morrow will ask before workspace changes and commands."
-          : "Morrow will answer and read your project, but will not change anything."}
-      </p>
 
-      <div className="morrow-chat-composer__toolbar">
         {projects.length > 1 && onProjectChange ? (
           <label className="morrow-chat-composer__select">
             <span>Project</span>
@@ -633,6 +627,15 @@ export function ChatComposer({
           </button>
         )}
       </div>
+
+      {/* The consequence of the current mode, stated plainly under the bar. */}
+      <p className="morrow-chat-composer__mode-hint">
+        {mode === "build"
+          ? autoApprove
+            ? "Morrow can edit files and run ordinary workspace commands without stopping."
+            : "Morrow will ask before workspace changes and commands."
+          : "Morrow will answer and read your project, but will not change anything."}
+      </p>
 
       <div className="morrow-chat-composer__meta">
         <p id={helpId}>

@@ -81,13 +81,15 @@
   gap: 7px;
 }
 
-/* Every inline control in the composer reads as one chip. */
-.morrow-chat-composer__modes button,
-.morrow-chat-composer__auto-approve,
-.morrow-chat-composer__reasoning-toggle,
-.morrow-chat-composer__select,
+/* Every inline control in the composer reads as one chip. Scoped through
+   `.morrow-chat-composer` so these win over the refresh layer's pill styling
+   without resorting to !important. */
+.morrow-chat-composer .morrow-chat-composer__modes button,
+.morrow-chat-composer .morrow-chat-composer__auto-approve,
+.morrow-chat-composer .morrow-chat-composer__reasoning-toggle,
+.morrow-chat-composer .morrow-chat-composer__select,
 .morrow-chat-composer .morrow-model-picker__trigger,
-.morrow-chat-composer__advanced-toggle {
+.morrow-chat-composer .morrow-chat-composer__advanced-toggle {
   display: inline-flex;
   min-height: 28px;
   align-items: center;
@@ -105,23 +107,36 @@
     color var(--morrow-premium-control) var(--morrow-product-shift);
 }
 
-.morrow-chat-composer__modes button:hover:not(:disabled),
-.morrow-chat-composer__auto-approve:hover,
-.morrow-chat-composer__reasoning-toggle:hover,
-.morrow-chat-composer__select:hover,
+.morrow-chat-composer .morrow-chat-composer__modes button:hover:not(:disabled),
+.morrow-chat-composer .morrow-chat-composer__auto-approve:hover,
+.morrow-chat-composer .morrow-chat-composer__reasoning-toggle:hover,
+.morrow-chat-composer .morrow-chat-composer__select:hover,
 .morrow-chat-composer .morrow-model-picker__trigger:hover:not(:disabled),
-.morrow-chat-composer__advanced-toggle:hover {
+.morrow-chat-composer .morrow-chat-composer__advanced-toggle:hover {
   border-color: var(--morrow-product-copper-line);
   color: var(--morrow-product-copy-soft);
   transform: none;
 }
 
-.morrow-chat-composer__modes button.is-active,
-.morrow-chat-composer__reasoning-toggle:has(input:checked),
-.morrow-chat-composer__auto-approve:has(input:checked) {
+.morrow-chat-composer .morrow-chat-composer__modes button.is-active,
+.morrow-chat-composer .morrow-chat-composer__reasoning-toggle:has(input:checked),
+.morrow-chat-composer .morrow-chat-composer__auto-approve:has(input:checked) {
   border-color: #594235;
   background: var(--morrow-product-copper-soft);
   color: #ddaa91;
+}
+
+/* Checkbox chips carry their state in the chip, not a system control. */
+.morrow-chat-composer .morrow-chat-composer__auto-approve input,
+.morrow-chat-composer .morrow-chat-composer__reasoning-toggle input {
+  width: 11px;
+  height: 11px;
+  margin: 0;
+  accent-color: var(--morrow-product-copper);
+}
+
+.morrow-chat-composer .morrow-chat-composer__modes {
+  border-radius: 0;
 }
 
 .morrow-chat-composer__select select,
@@ -200,21 +215,63 @@
 
 /* ── Advanced controls ───────────────────────────────────────────────────── */
 
-/* Reasoning depth and context usage are advanced; they stay in the DOM and in
-   the tab order, grouped behind one chip so the resting composer matches the
-   reference density. */
-.morrow-chat-composer__advanced {
-  display: contents;
+/*
+ * Reasoning depth and context usage stay on the bar rather than behind a
+ * disclosure — both are routing facts the reference itself surfaces as chips,
+ * and hiding the reasoning control would bury an explicit provider choice.
+ * They are compacted to chip scale instead: the slider loses its stacked label
+ * and end captions, keeping its input, its live value, and its accessible name.
+ */
+.morrow-chat-composer .morrow-reasoning-slider {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 4px 9px;
+  border: 1px solid #393b34;
+  border-radius: 8px;
+  color: #93958c;
+  font-size: 11px;
+  gap: 7px;
 }
 
-.morrow-chat-composer__advanced-toggle::after {
-  content: "⌄";
+.morrow-chat-composer .morrow-reasoning-slider__label {
   color: var(--morrow-product-faint);
+  font-size: 11px;
 }
 
-.morrow-chat-composer__advanced[data-open="false"] .morrow-reasoning-slider,
-.morrow-chat-composer__advanced[data-open="false"] .morrow-context-meter {
+.morrow-chat-composer .morrow-reasoning-slider__control {
+  display: flex;
+  width: 84px;
+  align-items: center;
+}
+
+.morrow-chat-composer .morrow-reasoning-slider__labels {
   display: none;
+}
+
+.morrow-chat-composer .morrow-reasoning-slider__value {
+  color: var(--morrow-product-copy-soft);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.morrow-chat-composer .morrow-context-meter {
+  flex: none;
+}
+
+/* The bar holds one line on desktop: the middle may shrink, send never does. */
+.morrow-chat-composer__toolbar {
+  flex-wrap: nowrap;
+}
+
+.morrow-chat-composer__toolbar > * {
+  min-width: 0;
+}
+
+@media (max-width: 860px) {
+  .morrow-chat-composer__toolbar {
+    flex-wrap: wrap;
+  }
 }
 
 @media (max-width: 700px) {

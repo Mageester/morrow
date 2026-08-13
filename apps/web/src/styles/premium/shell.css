@@ -6,12 +6,19 @@
  * come from reference.css `.app`, `.rail`, `.workspace`, `.topbar`.
  */
 
+/*
+ * The shell owns the viewport and never scrolls. Scrolling belongs to the
+ * route canvas (and, in chat, to the reading column and rail independently),
+ * so the topbar and rail stay put instead of sliding away with the content.
+ */
 .morrow-app-shell {
   display: grid;
   grid-template-columns: var(--morrow-premium-rail) minmax(0, 1fr);
+  height: 100vh;
   min-height: 100vh;
   gap: 12px;
   padding: var(--morrow-premium-gutter);
+  overflow: hidden;
   background:
     radial-gradient(circle at 78% 4%, var(--morrow-product-glow), transparent 29%),
     var(--morrow-product-canvas);
@@ -242,7 +249,8 @@
 .morrow-main {
   display: flex;
   min-width: 0;
-  min-height: calc(100vh - (var(--morrow-premium-gutter) * 2));
+  height: 100%;
+  min-height: 0;
   flex-direction: column;
   padding: 0;
   overflow: hidden;
@@ -271,6 +279,7 @@
   min-height: 0;
   flex: 1;
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 /* Route change keeps the shell; only the content surface crossfades and rises. */
@@ -308,13 +317,16 @@
 @media (max-width: 700px) {
   .morrow-app-shell {
     display: block;
+    height: auto;
     padding: 0;
+    overflow: visible;
     background:
       radial-gradient(circle at 78% 2%, var(--morrow-product-glow), transparent 34%),
       var(--morrow-product-canvas);
   }
 
   .morrow-main {
+    height: 100svh;
     min-height: 100svh;
     border: 0;
     border-radius: 0;
