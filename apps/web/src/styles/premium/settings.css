@@ -1,0 +1,271 @@
+/*
+ * Premium visual system — Settings as a control book.
+ *
+ * A chapter list beside one open chapter. Reference: `.settings-layout`,
+ * `.settings-book`, `.chapter`, `.settings-page`, `.settings-head`,
+ * `.assurance`, `.settings-section-label`, `.setting-row`, `.value`.
+ */
+
+.morrow-settings-layout {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 15px;
+}
+
+.morrow-settings-book {
+  display: grid;
+  height: max-content;
+  padding: 11px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 17px;
+  background: #171814;
+  gap: 2px;
+}
+
+.morrow-settings-chapter {
+  display: flex;
+  align-items: center;
+  padding: 11px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #85877e;
+  cursor: pointer;
+  font: inherit;
+  gap: 11px;
+  text-align: left;
+  transition:
+    background-color var(--morrow-premium-control) var(--morrow-product-shift),
+    color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-settings-chapter:hover {
+  background: var(--morrow-product-field-strong);
+  color: var(--morrow-product-copy-soft);
+}
+
+.morrow-settings-chapter[aria-current="true"] {
+  background: linear-gradient(90deg, #2b231d, #20211c);
+  color: #eee9df;
+}
+
+.morrow-settings-chapter__icon {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  flex: none;
+  place-items: center;
+  border: 1px solid #35372f;
+  border-radius: 8px;
+  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  font-size: 11px;
+}
+
+.morrow-settings-chapter[aria-current="true"] .morrow-settings-chapter__icon {
+  border-color: #604434;
+  color: var(--morrow-product-copper);
+}
+
+.morrow-settings-chapter b,
+.morrow-settings-chapter small {
+  display: block;
+}
+
+.morrow-settings-chapter b {
+  font-size: 11px;
+}
+
+.morrow-settings-chapter small {
+  color: #6f7269;
+  font-size: 9px;
+}
+
+/* ── Open chapter ────────────────────────────────────────────────────────── */
+
+.morrow-settings-page {
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-lg);
+  background: var(--morrow-product-field);
+  overflow: hidden;
+}
+
+.morrow-settings-head {
+  padding: 24px 25px;
+  border-bottom: 1px solid var(--morrow-product-line);
+}
+
+.morrow-settings-head h2 {
+  margin: 0 0 6px;
+  font: 500 27px var(--morrow-product-display);
+  letter-spacing: -0.02em;
+}
+
+.morrow-settings-head p {
+  margin: 0;
+  color: #8f8c84;
+  font-size: 12px;
+}
+
+/* The one green surface in Settings: a truthful statement about this machine. */
+.morrow-settings-assurance {
+  display: flex;
+  align-items: center;
+  margin: 19px 25px;
+  padding: 15px;
+  border: 1px solid #3a523e;
+  border-radius: 12px;
+  background: linear-gradient(100deg, #1b261d, #1b1c18);
+  gap: 13px;
+}
+
+.morrow-settings-assurance__shield {
+  display: grid;
+  width: 35px;
+  height: 35px;
+  flex: none;
+  place-items: center;
+  border-radius: 10px;
+  background: #263429;
+  color: #9cbea2;
+}
+
+.morrow-settings-assurance b,
+.morrow-settings-assurance span {
+  display: block;
+}
+
+.morrow-settings-assurance span {
+  color: #829185;
+  font-size: 10px;
+}
+
+.morrow-settings-label {
+  padding: 8px 25px;
+  margin: 0;
+  color: #686b63;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.morrow-setting-row {
+  display: grid;
+  align-items: center;
+  padding: 17px 25px;
+  border-top: 1px solid var(--morrow-product-line-soft);
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 20px;
+}
+
+.morrow-setting-row b {
+  display: block;
+  font-size: 12px;
+}
+
+.morrow-setting-row p {
+  max-width: 520px;
+  margin: 3px 0 0;
+  color: #7d8077;
+  font-size: 10px;
+}
+
+.morrow-setting-row select,
+.morrow-setting-row input[type="text"],
+.morrow-setting-row input:not([type]) {
+  padding: 6px 9px;
+  border: 1px solid var(--morrow-product-line-strong);
+  border-radius: 8px;
+  background: var(--morrow-product-field-strong);
+  color: #b4b0a7;
+  font: inherit;
+  font-size: 11px;
+}
+
+.morrow-setting-row__control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Switch: a real checkbox, restyled. */
+.morrow-switch {
+  position: relative;
+  display: inline-flex;
+  width: 34px;
+  height: 19px;
+  flex: none;
+  align-items: center;
+  padding: 2px;
+  border-radius: 999px;
+  background: #3a3c34;
+  cursor: pointer;
+  transition: background-color var(--morrow-premium-status) var(--morrow-product-shift);
+}
+
+.morrow-switch input {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.morrow-switch__thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #8b8d84;
+  transition: transform var(--morrow-premium-status) var(--morrow-product-shift);
+}
+
+.morrow-switch:has(input:checked) {
+  background: #70452f;
+}
+
+.morrow-switch:has(input:checked) .morrow-switch__thumb {
+  background: #eaded4;
+  transform: translateX(15px);
+}
+
+.morrow-switch:has(input:focus-visible) {
+  outline: 2px solid var(--morrow-product-copper);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .morrow-switch,
+  .morrow-switch__thumb {
+    transition: none;
+  }
+}
+
+@media (max-width: 920px) {
+  .morrow-settings-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  /* Chapters become a horizontally scrollable tab list. */
+  .morrow-settings-book {
+    display: flex;
+    overflow: auto;
+    scrollbar-width: thin;
+  }
+
+  .morrow-settings-chapter {
+    min-width: max-content;
+    min-height: 44px;
+  }
+
+  .morrow-settings-chapter small {
+    display: none;
+  }
+
+  .morrow-setting-row {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+}

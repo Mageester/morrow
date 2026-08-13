@@ -1,0 +1,417 @@
+/*
+ * Premium visual system — Home.
+ *
+ * Composer-first: the page opens on a centred statement and one field.
+ * Reference: `.home`, `.home-hero`, `.composer`, `.suggestions`,
+ * `.continuity`, `.work-card`, `.notice`.
+ */
+
+.morrow-home {
+  display: grid;
+  width: 100%;
+  max-width: var(--morrow-premium-content);
+  padding-top: 74px;
+  gap: 0;
+}
+
+/* The refresh layer's Home opened on a full-bleed hero panel. The premium
+   composition is a centred statement over open ground, so the panel's frame,
+   fill, minimum height, and ambient gradient are all removed rather than
+   restyled. */
+.morrow-home__intro {
+  display: block;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  overflow: visible;
+  text-align: center;
+}
+
+.morrow-home__intro .morrow-product-mark,
+.morrow-home__intro::after {
+  display: none;
+  content: none;
+}
+
+.morrow-home .morrow-home__intro h1 {
+  max-width: 760px;
+  margin: 14px auto 13px;
+  font: 500 clamp(44px, 4.2vw, 58px) / 1.04 var(--morrow-product-display);
+  letter-spacing: -0.045em;
+}
+
+.morrow-home .morrow-home__subtitle {
+  max-width: 620px;
+  margin: 0 auto;
+  color: var(--morrow-product-muted);
+  font-size: 15px;
+  font-style: normal;
+}
+
+/* Section heads on Home are the shared 22px editorial rule, not the refresh
+   layer's uppercase display size. */
+.morrow-home .morrow-section-head {
+  margin: 30px 0 12px;
+  padding: 0;
+  border-bottom: 0;
+}
+
+.morrow-home .morrow-section-head h2 {
+  font: 500 22px var(--morrow-product-display);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.morrow-home__route-note {
+  margin: 12px 0 0;
+  color: var(--morrow-product-muted);
+  font-size: 12px;
+}
+
+.morrow-home__route-note a {
+  color: var(--morrow-product-copper);
+}
+
+/* ── Composer ────────────────────────────────────────────────────────────── */
+
+.morrow-home-start {
+  width: 100%;
+  max-width: var(--morrow-premium-composer);
+  margin: 39px auto 0;
+}
+
+.morrow-home-composer {
+  width: 100%;
+  padding: 15px 15px 12px;
+  border: 1px solid #494a41;
+  border-radius: 18px;
+  background: rgb(32 33 28 / 0.88);
+  box-shadow:
+    0 20px 70px rgb(0 0 0 / 0.68),
+    0 0 0 1px rgb(255 255 255 / 0.03);
+  backdrop-filter: blur(18px);
+  text-align: left;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .morrow-home-composer {
+    background: #20211c;
+    backdrop-filter: none;
+  }
+}
+
+.morrow-home-composer:focus-within {
+  border-color: var(--morrow-product-copper-line);
+}
+
+.morrow-home-composer__input {
+  display: block;
+  width: 100%;
+  height: 61px;
+  border: 0;
+  background: transparent;
+  color: #dedad2;
+  font: inherit;
+  font-size: 15px;
+  outline: 0;
+  resize: none;
+}
+
+.morrow-home-composer__input::placeholder {
+  color: #85877e;
+}
+
+.morrow-home-composer__input:disabled {
+  cursor: not-allowed;
+}
+
+.morrow-home-composer__bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.morrow-home-composer__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 9px;
+  border: 1px solid #393b34;
+  border-radius: 8px;
+  color: #93958c;
+  font-size: 11px;
+  gap: 5px;
+}
+
+.morrow-home-composer__chip[data-disabled="true"] {
+  color: var(--morrow-product-faint);
+}
+
+.morrow-home-composer__send {
+  display: grid;
+  width: 33px;
+  height: 33px;
+  place-items: center;
+  margin-left: auto;
+  border: 0;
+  border-radius: 9px;
+  background: var(--morrow-product-copper);
+  color: #21110a;
+  cursor: pointer;
+  transition: background-color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-home-composer__send:hover:not(:disabled) {
+  background: var(--morrow-product-copper-bright);
+}
+
+.morrow-home-composer__send:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.morrow-home-composer__send:disabled {
+  background: #3a3b34;
+  color: #7c7f76;
+  cursor: not-allowed;
+}
+
+.morrow-home-composer__note {
+  margin: 9px 0 0;
+  color: var(--morrow-product-faint);
+  font-size: 11px;
+}
+
+.morrow-home-composer__note[role="alert"] {
+  color: var(--morrow-product-danger);
+}
+
+/* ── Openings ────────────────────────────────────────────────────────────── */
+
+.morrow-home-composer__suggestions {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.morrow-home-composer__suggestion {
+  padding: 7px 10px;
+  border: 1px solid var(--morrow-product-line-soft);
+  border-radius: 999px;
+  background: transparent;
+  color: #777a72;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  transition:
+    border-color var(--morrow-premium-control) var(--morrow-product-shift),
+    color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-home-composer__suggestion:hover:not(:disabled) {
+  border-color: var(--morrow-product-copper-line);
+  color: var(--morrow-product-copy-soft);
+}
+
+.morrow-home-composer__suggestion:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ── Continuation cards ──────────────────────────────────────────────────── */
+
+.morrow-home__continuity {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  grid-template-columns: 1.25fr 1fr 1fr;
+  gap: 10px;
+  list-style: none;
+}
+
+.morrow-work-card {
+  position: relative;
+  display: grid;
+  min-height: 145px;
+  padding: 18px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-md);
+  background: var(--morrow-product-field);
+  color: inherit;
+  overflow: hidden;
+  text-decoration: none;
+  transition:
+    border-color var(--morrow-premium-control) var(--morrow-product-shift),
+    background-color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-work-card:hover {
+  border-color: var(--morrow-product-copper-line);
+}
+
+.morrow-work-card[data-featured="true"] {
+  border-color: #46362e;
+  background: linear-gradient(135deg, #2a211b, #191915);
+}
+
+.morrow-work-card[data-featured="true"]::after {
+  position: absolute;
+  top: -90px;
+  right: -90px;
+  width: 170px;
+  height: 170px;
+  content: "";
+  border: 1px solid rgb(182 112 79 / 0.34);
+  border-radius: 50%;
+  box-shadow: 0 0 0 30px rgb(182 112 79 / 0.04);
+}
+
+.morrow-work-card__label {
+  position: relative;
+  z-index: 1;
+  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.morrow-work-card__title {
+  position: relative;
+  z-index: 1;
+  display: -webkit-box;
+  margin: 21px 0 5px;
+  overflow: hidden;
+  font: 500 19px var(--morrow-product-display);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.morrow-work-card__body {
+  position: relative;
+  z-index: 1;
+  color: #8f8c84;
+  font-size: 11px;
+}
+
+.morrow-work-card__foot {
+  position: absolute;
+  z-index: 1;
+  right: 18px;
+  bottom: 14px;
+  left: 18px;
+  display: flex;
+  justify-content: space-between;
+  color: #676a62;
+  font-size: 9px;
+}
+
+/* ── Notices and secondary sections ──────────────────────────────────────── */
+
+.morrow-home__section {
+  margin: 0;
+}
+
+.morrow-home__missions {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 8px;
+  list-style: none;
+}
+
+/* The deterministic sample task is an aside, not a headline surface: it reads
+   as the reference's notice strip. */
+.morrow-home__sample-task {
+  margin-top: 10px;
+  padding: 16px 19px;
+  border: 1px solid #2f322b;
+  border-radius: 14px;
+  background: #171814;
+  box-shadow: none;
+}
+
+.morrow-home__sample-task .morrow-section-head {
+  margin: 0 0 4px;
+  padding: 0;
+  border-bottom: 0;
+}
+
+.morrow-home__sample-task .morrow-section-head h2 {
+  font: 500 15px var(--morrow-product-display);
+}
+
+.morrow-home__sample-task > p {
+  max-width: 74ch;
+  margin: 0 0 12px;
+  color: #85877e;
+  font-size: 11px;
+}
+
+.morrow-home__sample-task .morrow-button {
+  width: max-content;
+  min-height: 34px;
+}
+
+.morrow-home__sample-result {
+  display: grid;
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid var(--morrow-product-line);
+  gap: 8px;
+}
+
+.morrow-home__sample-result-summary {
+  margin: 0;
+  color: var(--morrow-product-copy-soft);
+  font-size: 12px;
+}
+
+.morrow-home__sample-result-criteria {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 4px;
+  list-style: none;
+}
+
+.morrow-home__sample-result-criteria li {
+  color: #97948b;
+  font-size: 11px;
+}
+
+.morrow-home__sample-result-criteria li[data-met="true"] {
+  color: var(--morrow-product-success);
+}
+
+.morrow-home__sample-result-evidence {
+  margin: 0;
+  color: var(--morrow-product-faint);
+  font-size: 10px;
+}
+
+@media (max-width: 920px) {
+  .morrow-home__continuity {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  .morrow-home {
+    padding-top: 52px;
+  }
+
+  .morrow-home-composer {
+    margin-top: 28px;
+  }
+
+  /* One continuation card; the rest stay reachable through the section link. */
+  .morrow-home__continuity {
+    grid-template-columns: 1fr;
+  }
+
+  .morrow-home__continuity li:not(:first-child) {
+    display: none;
+  }
+}

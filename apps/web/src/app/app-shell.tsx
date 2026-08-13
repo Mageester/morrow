@@ -6,12 +6,10 @@ import {
   Clock3,
   Folder,
   Home,
-  Menu,
   MoreHorizontal,
   Settings,
   Sparkles,
   WandSparkles,
-  X,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -21,8 +19,9 @@ import { NewChatButton } from "../features/chat/new-chat-button.js";
 import { OnboardingExperience } from "../features/onboarding/onboarding-experience.js";
 import { PairingBanner } from "../features/pairing/pairing-banner.js";
 import { useActiveProject } from "../features/projects/use-active-project.js";
-import { CommandPalette } from "../features/search/command-palette.js";
 import { useRuntimeStatus } from "../state/runtime-status.js";
+import { ShellTitleProvider } from "./shell-title.js";
+import { ShellTopbar } from "./shell-topbar.js";
 
 type ImplementedRoute =
   | "/"
@@ -175,27 +174,6 @@ function SidebarRecent({ onNavigate }: { onNavigate: () => void }) {
   );
 }
 
-function WorkspaceContext() {
-  const { activeProject, isPending } = useActiveProject();
-  const workspaceName = isPending ? "Checking workspace" : activeProject?.name ?? "No project selected";
-
-  return (
-    <Link
-      aria-label={`Current workspace: ${workspaceName}`}
-      className="morrow-shell-workspace"
-      data-state={isPending ? "loading" : activeProject ? "ready" : "empty"}
-      to="/projects"
-    >
-      <span aria-hidden="true" className="morrow-shell-workspace__signal" />
-      <span className="morrow-shell-workspace__copy">
-        <span>Workspace</span>
-        <strong>{workspaceName}</strong>
-      </span>
-      <span aria-hidden="true" className="morrow-shell-workspace__arrow">↗</span>
-    </Link>
-  );
-}
-
 function MobileDock({ onMore, onNavigate }: { onMore: () => void; onNavigate: () => void }) {
   return (
     <nav aria-label="Mobile navigation" className="morrow-mobile-dock">
@@ -242,27 +220,13 @@ export function AppShell() {
   }, [pathname]);
 
   return (
+    <ShellTitleProvider>
     <div className="morrow-app-shell" data-nav-open={navOpen ? "true" : undefined}>
       <a className="morrow-skip-link" href="#main-content">
         Skip to content
       </a>
 
       <OnboardingExperience pathname={pathname} />
-
-      <header className="morrow-topbar">
-        <button
-          aria-controls="morrow-sidebar"
-          aria-expanded={navOpen}
-          aria-label={navOpen ? "Close navigation" : "Open navigation"}
-          className="morrow-topbar__menu"
-          onClick={() => setNavOpen((open) => !open)}
-          type="button"
-        >
-          {navOpen ? <X aria-hidden="true" size={20} /> : <Menu aria-hidden="true" size={20} />}
-        </button>
-        <span aria-hidden="true" className="morrow-topbar__brand-mark"><Sparkles size={15} strokeWidth={1.8} /></span>
-        <span className="morrow-topbar__brand">Morrow</span>
-      </header>
 
       {navOpen ? (
         <button
@@ -291,7 +255,6 @@ export function AppShell() {
 
         <div className="morrow-sidebar__new">
           <SidebarNewChat />
-          <CommandPalette />
         </div>
 
         <nav aria-label="Primary" className="morrow-nav">
@@ -325,15 +288,18 @@ export function AppShell() {
         ref={mainRef}
         tabIndex={-1}
       >
-        <div className="morrow-shell-context">
-          <WorkspaceContext />
-          <PairingBanner />
-        </div>
+        <ShellTopbar
+          navOpen={navOpen}
+          onToggleNav={() => setNavOpen((open) => !open)}
+          routeTitle={getRouteTitle(pathname)}
+        />
         <div className="morrow-route-canvas" key={pathname}>
+          <PairingBanner />
           <Outlet />
         </div>
       </main>
       <MobileDock onMore={() => setNavOpen(true)} onNavigate={closeNav} />
     </div>
+    </ShellTitleProvider>
   );
 }

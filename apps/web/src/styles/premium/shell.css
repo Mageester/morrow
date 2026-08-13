@@ -1,0 +1,351 @@
+/*
+ * Premium visual system — application shell.
+ *
+ * The framed charcoal shell: a 14px gutter around two rounded surfaces, a
+ * 210px navigation rail and a workspace carrying a 56px topbar. Measurements
+ * come from reference.css `.app`, `.rail`, `.workspace`, `.topbar`.
+ */
+
+.morrow-app-shell {
+  display: grid;
+  grid-template-columns: var(--morrow-premium-rail) minmax(0, 1fr);
+  min-height: 100vh;
+  gap: 12px;
+  padding: var(--morrow-premium-gutter);
+  background:
+    radial-gradient(circle at 78% 4%, var(--morrow-product-glow), transparent 29%),
+    var(--morrow-product-canvas);
+}
+
+/* Shared framed-surface treatment for both shell panes. */
+.morrow-sidebar,
+.morrow-main {
+  border: 1px solid var(--morrow-product-line-soft);
+  border-radius: var(--morrow-product-radius-xl);
+  background: color-mix(in srgb, var(--morrow-product-shell, var(--morrow-product-rail)) 94%, transparent);
+  box-shadow: var(--morrow-product-shadow-float);
+}
+
+/* ── Navigation rail ─────────────────────────────────────────────────────── */
+
+.morrow-sidebar {
+  position: sticky;
+  top: var(--morrow-premium-gutter);
+  display: flex;
+  /* The refresh layer pinned the rail to a 252px box and a full-viewport
+     height; the framed shell sizes it from the grid column instead. */
+  width: auto;
+  height: calc(100vh - (var(--morrow-premium-gutter) * 2));
+  min-height: 0;
+  flex-direction: column;
+  padding: 20px 15px;
+  border-right: 0;
+  overflow: hidden;
+  gap: 0;
+}
+
+.morrow-brand {
+  display: flex;
+  align-items: center;
+  padding: 2px 7px 23px;
+  gap: 9px;
+  font: 500 19px var(--morrow-product-display);
+  letter-spacing: 0;
+}
+
+.morrow-brand strong {
+  font: inherit;
+  letter-spacing: 0;
+}
+
+.morrow-brand__mark {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  place-items: center;
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--morrow-product-copper-bright), var(--morrow-product-copper-deep));
+  color: #24120b;
+  box-shadow: none;
+}
+
+.morrow-sidebar__new {
+  display: grid;
+  padding-inline: 0;
+  gap: 6px;
+}
+
+/* The one bright control in the rail: a warm-white block, per the reference. */
+.morrow-sidebar__new .morrow-new-chat__button {
+  width: 100%;
+  min-height: 40px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: #ede7dc;
+  color: #171713;
+  font-weight: 750;
+  text-align: left;
+  box-shadow: none;
+  transition:
+    background-color var(--morrow-premium-control) var(--morrow-product-shift),
+    transform var(--morrow-premium-press) var(--morrow-product-shift);
+}
+
+.morrow-sidebar__new .morrow-new-chat__button:hover:not(:disabled) {
+  background: #fbf6ec;
+  box-shadow: none;
+  transform: none;
+}
+
+.morrow-sidebar__new .morrow-new-chat__button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.morrow-nav {
+  display: grid;
+  margin-top: 19px;
+  gap: 4px;
+  color: #8c8e86;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.morrow-nav__group {
+  display: grid;
+  gap: 4px;
+}
+
+.morrow-nav__link {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  padding: 9px 10px;
+  border-radius: 9px;
+  color: inherit;
+  font-size: 13px;
+  text-decoration: none;
+  transition:
+    background-color var(--morrow-premium-control) var(--morrow-product-shift),
+    color var(--morrow-premium-control) var(--morrow-product-shift),
+    transform var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-nav__link svg {
+  width: 23px;
+  flex: none;
+  color: #696c64;
+}
+
+.morrow-nav__link:hover {
+  background: var(--morrow-product-field-strong);
+  color: var(--morrow-product-copy);
+  transform: translateX(2px);
+}
+
+.morrow-nav__link:active {
+  transform: translateX(2px) translateY(1px);
+}
+
+.morrow-nav__link[aria-current="page"] {
+  background: linear-gradient(90deg, #362f27, #25251f);
+  color: #ffffff;
+  box-shadow: inset 2px 0 var(--morrow-product-copper);
+}
+
+.morrow-nav__link[aria-current="page"] svg {
+  color: var(--morrow-product-copper);
+}
+
+/* Runtime identity pinned to the rail floor, above the ambient arc. */
+.morrow-sidebar__footer {
+  position: relative;
+  z-index: 1;
+  margin-top: auto;
+  padding: 0;
+  border-top: 0;
+}
+
+.morrow-shell-runtime {
+  display: flex;
+  align-items: start;
+  padding: 0 0 2px 7px;
+  gap: 0;
+  font-size: 11px;
+}
+
+.morrow-shell-runtime__signal {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  margin: 5px 7px 0 0;
+  border-radius: 50%;
+  background: var(--morrow-product-success);
+  box-shadow: 0 0 9px rgb(130 170 136 / 0.45);
+}
+
+.morrow-shell-runtime__signal[data-state="offline"] {
+  background: var(--morrow-product-danger);
+  box-shadow: none;
+}
+
+.morrow-shell-runtime__signal[data-state="checking"],
+.morrow-shell-runtime__signal[data-state="reconnecting"] {
+  background: var(--morrow-product-warning);
+  box-shadow: none;
+}
+
+.morrow-shell-runtime strong,
+.morrow-shell-runtime small {
+  display: block;
+  font-size: 11px;
+}
+
+.morrow-shell-runtime strong {
+  color: var(--morrow-product-copy);
+  font-weight: 700;
+}
+
+.morrow-shell-runtime small {
+  color: #73766d;
+}
+
+/* The rail's ambient arc — one drawn circle, matching reference `.rail::after`. */
+.morrow-sidebar > .morrow-product-mark {
+  position: absolute;
+  z-index: 0;
+  right: auto;
+  bottom: -110px;
+  left: -180px;
+  width: 300px;
+  height: 300px;
+  opacity: 1;
+  border: 1px solid rgb(161 95 63 / 0.3);
+  border-radius: 50%;
+  background: none;
+  box-shadow:
+    0 0 0 45px rgb(161 95 63 / 0.06),
+    0 0 0 90px rgb(161 95 63 / 0.03);
+}
+
+.morrow-sidebar > .morrow-product-mark span {
+  display: none;
+}
+
+.morrow-sidebar__new {
+  padding-bottom: 0;
+}
+
+/* ── Workspace ───────────────────────────────────────────────────────────── */
+
+.morrow-main {
+  display: flex;
+  min-width: 0;
+  min-height: calc(100vh - (var(--morrow-premium-gutter) * 2));
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--morrow-product-shell, var(--morrow-product-rail)) 94%, transparent);
+}
+
+.morrow-main:focus-visible {
+  outline-offset: -4px;
+}
+
+/* Breadcrumb + command chip. Replaces the floating workspace pill. */
+.morrow-shell-context {
+  display: flex;
+  height: var(--morrow-premium-topbar);
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--morrow-product-line-soft);
+  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  font-size: 13px;
+  gap: 16px;
+}
+
+.morrow-route-canvas {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+/* Route change keeps the shell; only the content surface crossfades and rises. */
+@media (prefers-reduced-motion: no-preference) {
+  .morrow-route-canvas {
+    animation: morrow-premium-route var(--morrow-premium-enter) var(--morrow-product-shift) both;
+  }
+}
+
+@keyframes morrow-premium-route {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.morrow-topbar {
+  display: none;
+}
+
+/* ── Compact desktop / tablet ────────────────────────────────────────────── */
+
+@media (max-width: 1199px) {
+  .morrow-app-shell {
+    grid-template-columns: var(--morrow-premium-rail-compact) minmax(0, 1fr);
+  }
+}
+
+/* ── Mobile ──────────────────────────────────────────────────────────────── */
+
+@media (max-width: 700px) {
+  .morrow-app-shell {
+    display: block;
+    padding: 0;
+    background:
+      radial-gradient(circle at 78% 2%, var(--morrow-product-glow), transparent 34%),
+      var(--morrow-product-canvas);
+  }
+
+  .morrow-main {
+    min-height: 100svh;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .morrow-shell-context {
+    padding: 0 14px;
+  }
+
+  /* The rail becomes the existing accessible drawer, kept framed while open. */
+  .morrow-sidebar {
+    position: fixed;
+    z-index: 9;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(84vw, 300px);
+    height: 100%;
+    border-radius: 0 var(--morrow-product-radius-xl) var(--morrow-product-radius-xl) 0;
+    transform: translateX(-102%);
+    transition: transform var(--morrow-premium-panel) var(--morrow-product-shift);
+  }
+
+  .morrow-app-shell[data-nav-open="true"] .morrow-sidebar {
+    transform: translateX(0);
+  }
+}
+
+@media (max-width: 700px) and (prefers-reduced-motion: reduce) {
+  .morrow-sidebar {
+    transition: none;
+  }
+}

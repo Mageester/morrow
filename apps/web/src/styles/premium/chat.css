@@ -1,0 +1,475 @@
+/*
+ * Premium visual system — conversation workspace.
+ *
+ * An editorial reading column with a contextual live-work rail, not a stack of
+ * bubbles. Reference: `.chat-layout`, `.conversation`, `.conversation-scroll`,
+ * `.conversation-inner`, `.chat-date`, `.user-message`, `.assistant-message`,
+ * `.response`, `.artifact`, `.composer-dock`, `.activity`.
+ */
+
+.morrow-conversation-page {
+  display: grid;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  padding: 0;
+  grid-template-columns: minmax(0, 1fr) var(--morrow-premium-activity);
+}
+
+.morrow-conversation-page[data-rail="closed"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.morrow-conversation {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.morrow-conversation-history {
+  height: 100%;
+  max-width: none;
+  padding: 42px clamp(28px, 6vw, 88px) 190px;
+  overflow: auto;
+}
+
+.morrow-conversation-history__inner {
+  max-width: var(--morrow-premium-reading);
+  margin-inline: auto;
+}
+
+/* ── Conversation actions ────────────────────────────────────────────────── */
+
+/*
+ * Deviation from the still reference, which shows no per-conversation
+ * controls: rename / archive / delete must stay reachable. They sit as a quiet
+ * icon cluster pinned to the reading column's top-right, outside the prose
+ * measure, and only the rail toggle carries a label.
+ */
+.morrow-conversation-header {
+  position: absolute;
+  z-index: 2;
+  top: 14px;
+  right: clamp(16px, 3vw, 28px);
+  display: flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  gap: 4px;
+}
+
+.morrow-conversation-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.morrow-conversation-actions button {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--morrow-product-faint);
+  cursor: pointer;
+  transition:
+    background-color var(--morrow-premium-control) var(--morrow-product-shift),
+    color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-conversation-actions button:hover:not(:disabled) {
+  background: var(--morrow-product-field-strong);
+  border-color: var(--morrow-product-line);
+  color: var(--morrow-product-copy-soft);
+  transform: none;
+}
+
+.morrow-conversation-actions__activity {
+  width: auto !important;
+  padding-inline: 10px;
+  gap: 6px;
+  grid-auto-flow: column;
+  font-size: 11px;
+}
+
+.morrow-conversation-actions__activity[aria-pressed="true"] {
+  border-color: #594235 !important;
+  background: var(--morrow-product-copper-soft) !important;
+  color: #ddaa91 !important;
+}
+
+/* Workspace path: quiet provenance, not a banner. */
+.morrow-conversation-workspace {
+  display: flex;
+  max-width: var(--morrow-premium-reading);
+  margin: 0 auto 26px;
+  color: var(--morrow-product-faint);
+  font-size: 10px;
+  gap: 10px;
+  letter-spacing: 0.06em;
+}
+
+.morrow-conversation-workspace--blocked {
+  color: var(--morrow-product-danger);
+  letter-spacing: 0;
+}
+
+.morrow-conversation-workspace__path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Messages ────────────────────────────────────────────────────────────── */
+
+.morrow-conversation-date {
+  margin: 0 0 39px;
+  color: var(--morrow-product-faint);
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.morrow-conversation-message {
+  padding: 0;
+  border: 0;
+}
+
+.morrow-conversation-message--user {
+  width: max-content;
+  max-width: 75%;
+  margin: 0 0 35px auto;
+  padding: 12px 15px;
+  border: 1px solid var(--morrow-product-line-strong);
+  border-radius: 15px 15px 4px 15px;
+  background: #23241f;
+  color: #e9e5dc;
+  box-shadow: none;
+}
+
+.morrow-conversation-message--user .morrow-conversation-message__content p {
+  margin: 0;
+}
+
+.morrow-conversation-message--assistant {
+  display: grid;
+  margin-bottom: 35px;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 14px;
+}
+
+/* The copper mark replaces the "MORROW" label as the speaker signal. */
+.morrow-conversation-message--assistant .morrow-conversation-message__author {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  margin: 0;
+  border: 1px solid #4b3b31;
+  border-radius: 10px;
+  background: #221914;
+  color: var(--morrow-product-copper);
+  font-size: 0;
+  grid-row: span 4;
+}
+
+.morrow-conversation-message--assistant .morrow-conversation-message__author::before {
+  content: "✦";
+  font-size: 13px;
+}
+
+.morrow-conversation-message--assistant > *:not(.morrow-conversation-message__author) {
+  grid-column: 2;
+}
+
+.morrow-conversation-message__content--markdown p {
+  margin: 0 0 14px;
+  color: var(--morrow-product-copy-soft);
+  font-size: 15px;
+  line-height: 1.68;
+}
+
+.morrow-conversation-message__content--markdown h1,
+.morrow-conversation-message__content--markdown h2,
+.morrow-conversation-message__content--markdown h3 {
+  margin: 0 0 13px;
+  font-family: var(--morrow-product-display);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.morrow-conversation-message__content--markdown h1,
+.morrow-conversation-message__content--markdown h2 {
+  font-size: 26px;
+  line-height: 1.18;
+}
+
+.morrow-conversation-message__content--markdown ul {
+  margin: 20px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.morrow-conversation-message__content--markdown ul li {
+  display: flex;
+  padding: 10px 0;
+  border-top: 1px solid var(--morrow-product-line-soft);
+  color: #b6b3aa;
+  gap: 11px;
+}
+
+.morrow-conversation-message__content--markdown ul li:last-child {
+  border-bottom: 1px solid var(--morrow-product-line-soft);
+}
+
+.morrow-conversation-message__content--markdown ul li::before {
+  content: "✓";
+  color: var(--morrow-product-success);
+}
+
+.morrow-conversation-message__route {
+  margin: 10px 0 0;
+  color: var(--morrow-product-faint);
+  font-size: 10px;
+}
+
+/* ── Composer dock ───────────────────────────────────────────────────────── */
+
+.morrow-conversation-composer {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  max-width: none;
+  padding: 45px clamp(28px, 6vw, 88px) 22px;
+  background: linear-gradient(transparent, var(--morrow-product-shell, #151612) 40%);
+}
+
+.morrow-conversation-composer .morrow-chat-composer {
+  max-width: var(--morrow-premium-composer);
+  margin-inline: auto;
+}
+
+/* ── Live-work rail ──────────────────────────────────────────────────────── */
+
+.morrow-conversation-rail {
+  padding: 20px 17px;
+  border-left: 1px solid var(--morrow-product-line-soft);
+  background: var(--morrow-product-shell, #151612);
+  overflow: auto;
+}
+
+.morrow-conversation-rail__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.morrow-conversation-rail__head b {
+  font: 500 17px var(--morrow-product-display);
+}
+
+.morrow-conversation-rail__live {
+  color: var(--morrow-product-success);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.morrow-conversation-rail__live::before {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  content: "";
+  border-radius: 50%;
+  background: var(--morrow-product-success);
+}
+
+/* Only genuinely live status pulses. */
+@media (prefers-reduced-motion: no-preference) {
+  .morrow-conversation-rail__live[data-state="active"]::before {
+    animation: morrow-premium-pulse 1.8s infinite;
+  }
+}
+
+@keyframes morrow-premium-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+.morrow-conversation-rail__live[data-state="idle"] {
+  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+}
+
+.morrow-conversation-rail__live[data-state="idle"]::before {
+  background: #656860;
+}
+
+.morrow-conversation-rail__stage {
+  position: relative;
+  padding-bottom: 22px;
+  padding-left: 20px;
+}
+
+.morrow-conversation-rail__stage::before {
+  position: absolute;
+  top: 6px;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  content: "";
+  background: #36372f;
+}
+
+.morrow-conversation-rail__stage:last-of-type::before {
+  display: none;
+}
+
+.morrow-conversation-rail__node {
+  position: absolute;
+  top: 5px;
+  left: 0;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--morrow-product-shell, #151612);
+  border-radius: 50%;
+  background: var(--morrow-product-success);
+  box-shadow: 0 0 10px rgb(130 170 136 / 0.4);
+}
+
+.morrow-conversation-rail__stage[data-state="queued"] .morrow-conversation-rail__node,
+.morrow-conversation-rail__stage[data-state="pending"] .morrow-conversation-rail__node {
+  background: #656860;
+  box-shadow: none;
+}
+
+.morrow-conversation-rail__stage[data-state="failed"] .morrow-conversation-rail__node {
+  background: var(--morrow-product-danger);
+  box-shadow: none;
+}
+
+.morrow-conversation-rail__stage b {
+  display: block;
+  font-size: 12px;
+}
+
+.morrow-conversation-rail__stage p {
+  margin: 4px 0;
+  color: #85877e;
+  font-size: 11px;
+}
+
+.morrow-conversation-rail__stage time {
+  color: var(--morrow-product-faint);
+  font-size: 10px;
+}
+
+.morrow-conversation-rail__context {
+  margin-top: 15px;
+  padding: 14px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 13px;
+  background: #1a1b17;
+}
+
+.morrow-conversation-rail__context h3 {
+  margin: 7px 0 5px;
+  font: 500 16px var(--morrow-product-display);
+}
+
+.morrow-conversation-rail__context p {
+  margin: 0;
+  color: #7f8278;
+  font-size: 11px;
+}
+
+.morrow-conversation-rail__metrics {
+  display: grid;
+  margin-top: 10px;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+.morrow-conversation-rail__metric {
+  padding: 9px;
+  border-radius: 9px;
+  background: var(--morrow-product-field-strong);
+}
+
+.morrow-conversation-rail__metric b,
+.morrow-conversation-rail__metric span {
+  display: block;
+}
+
+.morrow-conversation-rail__metric span {
+  color: #70736a;
+  font-size: 9px;
+}
+
+.morrow-conversation-rail__empty {
+  color: var(--morrow-product-faint);
+  font-size: 11px;
+}
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+
+/* The rail is contextual: below 1200px it collapses behind the Activity
+   control rather than squeezing the reading column. */
+@media (max-width: 1199px) {
+  .morrow-conversation-page,
+  .morrow-conversation-page[data-rail="open"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .morrow-conversation-page[data-rail="open"] .morrow-conversation-rail {
+    position: absolute;
+    z-index: 5;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(86vw, var(--morrow-premium-activity));
+    border-left: 1px solid var(--morrow-product-line);
+    box-shadow: var(--morrow-product-shadow-float);
+  }
+
+  .morrow-conversation-page[data-rail="closed"] .morrow-conversation-rail {
+    display: none;
+  }
+}
+
+@media (min-width: 1200px) {
+  .morrow-conversation-page[data-rail="closed"] .morrow-conversation-rail {
+    display: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .morrow-conversation-history {
+    padding: 34px 18px 175px;
+  }
+
+  .morrow-conversation-composer {
+    padding: 42px 18px 15px;
+  }
+
+  .morrow-conversation-message--user {
+    max-width: 88%;
+  }
+
+  .morrow-conversation-header {
+    top: 8px;
+    right: 10px;
+  }
+}

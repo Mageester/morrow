@@ -1,0 +1,130 @@
+/*
+ * Premium visual system — topbar breadcrumb and command entry.
+ * Reference: `.topbar`, `.topbar strong`, `.command`.
+ */
+
+.morrow-shell-crumb {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.morrow-shell-crumb__root {
+  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+}
+
+.morrow-shell-crumb__sep {
+  color: var(--morrow-product-faint);
+}
+
+.morrow-shell-crumb__here {
+  overflow: hidden;
+  color: #d6d2c9;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The workspace reads as a quiet trailing segment, not a second heading. */
+.morrow-shell-crumb__workspace {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  text-decoration: none;
+  transition: color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-shell-crumb__workspace span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-shell-crumb__workspace:hover {
+  color: var(--morrow-product-copper);
+}
+
+.morrow-shell-crumb__workspace[data-state="empty"] {
+  color: var(--morrow-product-faint);
+}
+
+/* Hidden until the rail collapses; a 44px target when it appears. */
+.morrow-shell-crumb__menu {
+  display: none;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  margin-left: -10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--morrow-product-copy-soft);
+  cursor: pointer;
+}
+
+.morrow-shell-crumb__menu:hover {
+  background: var(--morrow-product-field-strong);
+  color: var(--morrow-product-copy);
+}
+
+/* Search / command entry, styled as the reference's ⌘K chip. */
+.morrow-command__trigger {
+  display: flex;
+  width: auto;
+  min-height: 34px;
+  flex: none;
+  align-items: center;
+  padding: 7px 10px;
+  border: 1px solid #34362f;
+  border-radius: 9px;
+  background: #1d1e19;
+  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  gap: 8px;
+  transition:
+    border-color var(--morrow-premium-control) var(--morrow-product-shift),
+    color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-command__trigger:hover {
+  border-color: var(--morrow-product-copper-line);
+  color: var(--morrow-product-copy-soft);
+}
+
+.morrow-command__trigger svg {
+  flex: none;
+}
+
+.morrow-command__trigger kbd {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--morrow-product-faint);
+  font: inherit;
+  font-size: 12px;
+}
+
+@media (max-width: 700px) {
+  .morrow-shell-crumb__menu {
+    display: inline-flex;
+  }
+
+  /* The chip keeps its target size but sheds its label on narrow screens. */
+  .morrow-command__trigger span,
+  .morrow-command__trigger kbd {
+    display: none;
+  }
+
+  .morrow-command__trigger {
+    width: 44px;
+    height: 44px;
+    justify-content: center;
+    padding: 0;
+  }
+}

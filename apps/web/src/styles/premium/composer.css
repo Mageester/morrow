@@ -1,0 +1,229 @@
+/*
+ * Premium visual system — composer.
+ *
+ * One field, one bar of chips, one copper send. Reference: `.composer`,
+ * `.composer textarea`, `.composer-bar`, `.chip`, `.send`.
+ *
+ * The production composer carries more controls than the reference sketch
+ * (mode, supervision, model route, context, reasoning). They are all kept and
+ * all reachable; the reference's chip grammar is applied to them, and the
+ * advanced ones sit behind a disclosure so the default state stays as calm as
+ * the reference while nothing becomes unreachable.
+ */
+
+.morrow-chat-composer {
+  display: grid;
+  padding: 15px 15px 12px;
+  border: 1px solid #494a41;
+  border-radius: 18px;
+  background: rgb(32 33 28 / 0.88);
+  box-shadow:
+    0 20px 70px rgb(0 0 0 / 0.68),
+    0 0 0 1px rgb(255 255 255 / 0.03);
+  backdrop-filter: blur(18px);
+  gap: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .morrow-chat-composer {
+    backdrop-filter: none;
+    background: #20211c;
+  }
+}
+
+.morrow-chat-composer:focus-within {
+  border-color: var(--morrow-product-copper-line);
+  box-shadow:
+    0 20px 70px rgb(0 0 0 / 0.68),
+    0 0 0 1px var(--morrow-product-copper-line);
+}
+
+.morrow-chat-composer__input {
+  display: block;
+  width: 100%;
+  min-height: 61px;
+  max-height: 40vh;
+  padding: 0 0 10px;
+  border: 0;
+  background: transparent;
+  color: #dedad2;
+  font-size: 15px;
+  line-height: 1.5;
+  outline: 0;
+  resize: none;
+}
+
+.morrow-chat-composer__input::placeholder {
+  color: #85877e;
+}
+
+/* ── The chip bar ────────────────────────────────────────────────────────── */
+
+.morrow-chat-composer__modes-row,
+.morrow-chat-composer__toolbar {
+  display: flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.morrow-chat-composer__modes-row {
+  margin-bottom: 7px;
+}
+
+.morrow-chat-composer__modes {
+  display: flex;
+  padding: 0;
+  border: 0;
+  background: none;
+  gap: 7px;
+}
+
+/* Every inline control in the composer reads as one chip. */
+.morrow-chat-composer__modes button,
+.morrow-chat-composer__auto-approve,
+.morrow-chat-composer__reasoning-toggle,
+.morrow-chat-composer__select,
+.morrow-chat-composer .morrow-model-picker__trigger,
+.morrow-chat-composer__advanced-toggle {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 6px 9px;
+  border: 1px solid #393b34;
+  border-radius: 8px;
+  background: transparent;
+  color: #93958c;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  gap: 6px;
+  transition:
+    border-color var(--morrow-premium-control) var(--morrow-product-shift),
+    color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-chat-composer__modes button:hover:not(:disabled),
+.morrow-chat-composer__auto-approve:hover,
+.morrow-chat-composer__reasoning-toggle:hover,
+.morrow-chat-composer__select:hover,
+.morrow-chat-composer .morrow-model-picker__trigger:hover:not(:disabled),
+.morrow-chat-composer__advanced-toggle:hover {
+  border-color: var(--morrow-product-copper-line);
+  color: var(--morrow-product-copy-soft);
+  transform: none;
+}
+
+.morrow-chat-composer__modes button.is-active,
+.morrow-chat-composer__reasoning-toggle:has(input:checked),
+.morrow-chat-composer__auto-approve:has(input:checked) {
+  border-color: #594235;
+  background: var(--morrow-product-copper-soft);
+  color: #ddaa91;
+}
+
+.morrow-chat-composer__select select,
+.morrow-chat-composer .morrow-model-picker__trigger {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  outline: 0;
+}
+
+.morrow-chat-composer__select > span {
+  color: var(--morrow-product-faint);
+}
+
+/* The one bright control: send. */
+.morrow-chat-composer__send,
+.morrow-chat-composer__stop {
+  display: inline-grid;
+  width: 33px;
+  height: 33px;
+  min-width: 0;
+  flex: none;
+  place-items: center;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: var(--morrow-product-copper);
+  color: #21110a;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.morrow-chat-composer__stop {
+  width: auto;
+  padding: 0 11px;
+  border: 1px solid var(--morrow-product-line-strong);
+  background: var(--morrow-product-field-strong);
+  color: #d9d5cd;
+  gap: 6px;
+}
+
+.morrow-chat-composer__send:hover:not(:disabled) {
+  background: var(--morrow-product-copper-bright);
+}
+
+.morrow-chat-composer__send:disabled {
+  background: #3a3b34;
+  color: #7c7f76;
+  opacity: 1;
+}
+
+/* ── Honest state text, kept quiet ───────────────────────────────────────── */
+
+.morrow-chat-composer__mode-hint,
+.morrow-chat-composer__meta p,
+.morrow-chat-composer__counter {
+  margin: 6px 0 0;
+  color: var(--morrow-product-faint);
+  font-size: 10px;
+}
+
+.morrow-chat-composer__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.morrow-chat-composer [role="alert"] {
+  margin: 6px 0 0;
+  color: var(--morrow-product-danger);
+  font-size: 11px;
+}
+
+/* ── Advanced controls ───────────────────────────────────────────────────── */
+
+/* Reasoning depth and context usage are advanced; they stay in the DOM and in
+   the tab order, grouped behind one chip so the resting composer matches the
+   reference density. */
+.morrow-chat-composer__advanced {
+  display: contents;
+}
+
+.morrow-chat-composer__advanced-toggle::after {
+  content: "⌄";
+  color: var(--morrow-product-faint);
+}
+
+.morrow-chat-composer__advanced[data-open="false"] .morrow-reasoning-slider,
+.morrow-chat-composer__advanced[data-open="false"] .morrow-context-meter {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .morrow-chat-composer {
+    border-radius: 16px;
+  }
+
+  .morrow-chat-composer__input {
+    min-height: 52px;
+    font-size: 16px; /* prevents iOS zoom-on-focus */
+  }
+}

@@ -1,0 +1,22 @@
+/*
+ * Premium visual system — entry point.
+ *
+ * Implements docs/redesign/premium-reference against the real application.
+ * Imported after product-refresh.css so this layer retunes that system rather
+ * than competing with it; ordering here is the only place the cascade between
+ * the two is decided.
+ *
+ * Each module owns one surface. Add a module rather than growing one.
+ */
+@import "./tokens.css";
+@import "./shell.css";
+@import "./topbar.css";
+@import "./editorial.css";
+@import "./composer.css";
+@import "./home.css";
+@import "./chat.css";
+@import "./library.css";
+@import "./chronicle.css";
+@import "./providers.css";
+@import "./settings.css";
+@import "./states.css";
