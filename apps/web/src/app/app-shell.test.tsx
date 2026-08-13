@@ -237,6 +237,17 @@ describe("Morrow application shell", () => {
 
     expect(await screen.findByText("Runtime online")).toBeInTheDocument();
   });
+
+  it("integrates workspace and runtime context into the shell without a dashboard status strip", async () => {
+    renderAt("/app/");
+
+    expect(
+      await screen.findByRole("link", { name: "Current workspace: No project selected" }),
+    ).toHaveAttribute("href", "/app/projects");
+    expect(screen.getByRole("status", { name: "Morrow runtime: Runtime online" })).toBeVisible();
+    expect(screen.queryByText("Choose a project to begin")).not.toBeInTheDocument();
+    expect(document.querySelector(".morrow-workspace-context")).toBeNull();
+  });
 });
 
 describe("unknown addresses", () => {
