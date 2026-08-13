@@ -233,6 +233,16 @@ describe("evidence-driven task completion contracts", () => {
     )).toBe("Explain why the previous attempt failed, but do not change any files.");
   });
 
+  it("does not resurrect an older build brief across a short revocation", async () => {
+    const completion = await loadCompletionContractModule();
+    if (!completion) return;
+
+    expect(completion.resolveTaskIntentPrompt(
+      "Continue.",
+      ["Build a responsive browser OS web app with desktop and mobile verification.", "Stop. Do not change files."],
+    )).toBe("Continue.");
+  });
+
   it("completes a verified CLI artifact before repeated read-only process polling can stall it", async () => {
     const completion = await loadCompletionContractModule();
     if (!completion) return;

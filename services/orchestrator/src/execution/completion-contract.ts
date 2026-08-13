@@ -399,12 +399,17 @@ export function resolveTaskIntentPrompt(latestPrompt: string, priorUserPrompts: 
   if (/\b(?:do not|don't|without)\s+(?:change|changing|modify|modifying|edit|editing|write|writing)\b/i.test(latest)) return latestPrompt;
   const isContinuation = /\b(?:continue|resume|carry on|keep going|proceed|go ahead|do it|try again|finish(?: it| this)?|start (?:building|coding|working)|get started|make it happen)\b/i.test(latest);
   if (!isContinuation) return latestPrompt;
-  const prior = [...priorUserPrompts]
-    .reverse()
-    .map((prompt) => prompt.trim())
-    .find((prompt) => prompt.length >= 40);
-  if (!prior) return latestPrompt;
-  return `${prior}\n\nCurrent follow-up: ${latest}`;
+  for (const rawPrior of [...priorUserPrompts].reverse()) {
+    const prior = rawPrior.trim();
+    if (prior.length >= 40) return `${prior}\n\nCurrent follow-up: ${latest}`;
+    // A short revocation or change-of-direction is still authoritative. Never
+    // skip over it and resurrect an older build brief just because the next
+    // message says "continue".
+    if (/\b(?:stop|cancel|abort|never\s*mind|forget (?:that|it)|do not|don't|instead|new task|change of plans)\b/i.test(prior)) {
+      return latestPrompt;
+    }
+  }
+  return latestPrompt;
 }
 
 export function evaluateTaskCompletion(input: CompletionInput): CompletionResult {
