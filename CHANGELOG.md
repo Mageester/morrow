@@ -6,6 +6,29 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.45] - 2026-08-14
+
+### Fixed - chat control recovery
+
+- Approval cards now occupy their own action shelf above the composer, so the
+  decision controls remain visible and clickable while a task is waiting.
+- The chat composer is now a single calm writing surface: its focus treatment
+  no longer creates a second textarea outline, routing reflows before controls
+  collide in narrow live-work layouts, and thinking controls recede into a
+  quieter utility row.
+
+### Security and privacy impact
+
+- This release changes only chat layout, visual presentation, and truthful
+  trusted-workspace copy. It does not expand the approval policy, tools,
+  provider requests, credentials, telemetry, or external data flow.
+
+### Rollback
+
+- Reinstall `v0.1.0-beta.44` to restore the prior chat presentation. Projects,
+  conversations, provider configuration, and local data remain compatible and
+  are not deleted.
+
 ## [0.1.0-beta.44] - 2026-08-13
 
 ### Changed - premium UI completion
