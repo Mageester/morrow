@@ -269,6 +269,12 @@ export const IMPLEMENTED_TOOL_NAMES = [
   "browser_type", "browser_key", "browser_select", "browser_viewport", "browser_screenshot", "browser_download", "browser_close",
 ] as const;
 
+/** Safety/read tools that remain present in every capability-scoped profile. */
+export const TOOL_PROFILE_SAFETY_TOOLS = ["inspect_workspace", "read_file", "git_diff"] as const;
+
+/** Stable labels used by the optimization selector and browser-safe review UI. */
+export const TOOL_PROFILE_NAMES = ["read-only-workspace", "research", "coding", "browser", "full-agent"] as const;
+
 export function getTool(name: string): ToolSpec | undefined {
   return TOOL_CATALOG.find((t) => t.name === name);
 }

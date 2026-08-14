@@ -94,6 +94,7 @@ import { isSafeSkillInstructionDirectory, verifySkillDirectory, SKILL_MATCH_STOP
 import { createExecutionPolicy, type ExecutionPolicy } from "./execution-policy.js";
 import { createConvergenceGuard, type ConvergenceCall, type ConvergenceDecision, type ConvergenceProgress } from "./convergence-guard.js";
 import { buildAgentExecutionPolicy, type AgentExecutionPolicy } from "../security/agent-execution-policy.js";
+import { ToolProfileSelector, type ToolTaskClassification } from "../optimization/tool-profile-selector.js";
 
 /**
  * Best-effort human-readable target for a tool call, included in the
@@ -489,6 +490,19 @@ export const READ_ONLY_TOOL_NAMES = new Set([
   "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols",
   "git_status", "git_diff", "git_log", "read_artifact", "find_skill", "load_skill",
 ]);
+
+/** Select an optimization classification only when the request makes the
+ * required capability clear. Ambiguous agent work deliberately keeps the
+ * complete catalog so efficiency controls can never become a hidden safety or
+ * capability regression. */
+export function classifyOptimizationTask(prompt: string, agentMode: AgentMode): ToolTaskClassification {
+  if (agentMode !== "agent") return "workspace_read";
+  if (/\b(?:build|implement|code|write|edit|patch|create|fix|refactor|test|develop)\b/i.test(prompt)) return "coding";
+  if (/\b(?:research|sources?|citations?|current|latest|news|web\s+search)\b/i.test(prompt)) return "research";
+  if (/\b(?:browser|webpage|web\s+page|dom|screenshot|viewport|console\s+error|url)\b/i.test(prompt)) return "browser";
+  if (/\b(?:inspect|list|read|search|review|analy[sz]e)\b/i.test(prompt)) return "workspace_read";
+  return "full_agent";
+}
 
 // Read-only observations share the same epoch-wide guard. The measured
 // read/list/inspect interleaving is the primary case, while search and artifact
@@ -1672,13 +1686,34 @@ export async function executeAgentChatTask({
   const allowedWriteFiles = extractOnlyFileContract(taskIntentPrompt);
   const browserToolsRequested = requestsFrontendBrowserValidation(taskIntentPrompt)
     || /\b(?:browser|webpage|web\s+page|site|dom|screenshot|viewport|console\s+error|url)\b/i.test(taskIntentPrompt);
+  // Capability-scoped tool profile: the complete catalog schema is the single
+  // largest measured input-token cost on a simple request (~12.3k of ~12.9k
+  // tokens, see docs/harness-efficiency-report-2026-08-11.md). Classification
+  // only narrows the exposed schema list; it never narrows what the execution
+  // policy or approval boundary permits, and any ambiguous or unrecognized
+  // capability need falls back to the complete catalog.
+  const optimizationClassification = classifyOptimizationTask(taskIntentPrompt, agentMode);
+  const optimizationToolSelection = new ToolProfileSelector().select({
+    classification: optimizationClassification,
+    ...(browserToolsRequested ? { requiredTools: ["browser_open"] } : {}),
+  });
   const exposedTools: ToolDefinition[] = activeToolProfile === "none"
     ? []
     : activeToolProfile === "agent"
       ? tools.filter((tool) => (!BROWSER_TOOL_NAMES.has(tool.name) || browserToolsRequested)
+        && optimizationToolSelection.tools.includes(tool.name)
         && (agentExecutionPolicy === null || agentExecutionPolicy.canUseTool(tool.name)))
       : tools.filter((tool) => READ_ONLY_TOOL_NAMES.has(tool.name)
+        && optimizationToolSelection.tools.includes(tool.name)
         && (agentExecutionPolicy === null || agentExecutionPolicy.canUseTool(tool.name)));
+  event("optimization.tool_profile_selected", {
+    classification: optimizationClassification,
+    profile: activeToolProfile === "none" ? "none" : optimizationToolSelection.profile,
+    toolCount: exposedTools.length,
+    tools: exposedTools.map((tool) => tool.name),
+    reason: optimizationToolSelection.reason,
+    fallbackPath: optimizationToolSelection.fallbackPath,
+  });
   
   // System instructions.
   //
