@@ -5,6 +5,7 @@ import type { ProviderContinuationState } from "../provider/base.js";
 import { redactJsonText, redactSecrets, redactSecretsDeep } from "../provider/credentials.js";
 import { boundExecutionCheckpointSnapshot } from "../execution/checkpoint-snapshot.js";
 import type { ExecutionRequirement, RequirementEvaluation } from "../execution/requirements.js";
+import type { ConvergenceSnapshot } from "../execution/convergence-guard.js";
 
 export interface ExecutionSegment {
   id: string;
@@ -89,6 +90,8 @@ export interface ExecutionCheckpointSnapshot {
   requirementEvaluations?: RequirementEvaluation[];
   /** Task-owned artifact fingerprints used to validate completion after replay. */
   taskArtifactFingerprints?: Array<{ path: string; contentHash: string }>;
+  /** Durable convergence state used to resume a loop-stalled task safely. */
+  convergence?: ConvergenceSnapshot | undefined;
 }
 
 export interface ExecutionCheckpoint {

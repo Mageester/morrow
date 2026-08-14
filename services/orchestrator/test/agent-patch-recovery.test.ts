@@ -152,7 +152,6 @@ describe("agent patch recovery", () => {
       "understanding",
       "planning",
       "executing_tool",
-      "proposing_changes",
       "applying_changes",
       "observing",
       "executing_tool",

@@ -6,6 +6,34 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.46] - 2026-08-14
+
+### Fixed - bounded harness convergence
+
+- Replaced unbounded same-target rewrite churn with a durable convergence guard
+  that distinguishes exact repeats, operation identity, legitimate edits, new
+  artifacts, verification, diagnostics, and application milestones.
+- Pauses a stalled task with a visible `loop-stalled` warning and resumable
+  checkpoint instead of consuming dozens of provider turns.
+- Made `create_file` an explicit atomic whole-file write for existing and new
+  regular files, with hash-fenced backups, undo evidence, idempotent replay, and
+  no automatic `target_exists` create-to-edit switch.
+- Bounded provider fallback attempts and preserved tool-only turns as valid
+  responses while retaining explicit incomplete behavior for empty responses.
+
+### Security and privacy impact
+
+- Workspace containment, denied-name checks, approval boundaries, provider
+  choice, local persistence, cancellation, browser policy, and process cleanup
+  remain enforced. The change adds no telemetry, hosted inference, or new
+  external data flow.
+
+### Rollback
+
+- Reinstall `v0.1.0-beta.45` to restore the preceding release. Existing
+  projects, conversations, provider configuration, local task records, and
+  workspace backups remain data-preserving and schema-compatible.
+
 ## [0.1.0-beta.45] - 2026-08-14
 
 ### Fixed - chat control recovery

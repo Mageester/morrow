@@ -57,6 +57,24 @@ export interface AtomicAppendResult {
   backupHash: string | null;
 }
 
+export interface AtomicWriteInput {
+  workspaceRoot: string;
+  relativePath: string;
+  content: string;
+  backupDir: string;
+  expectedOriginalHash?: string;
+}
+
+export interface AtomicWriteResult {
+  path: string;
+  created: boolean;
+  changed: boolean;
+  totalBytes: number;
+  sha256: string;
+  originalHash: string;
+  backupHash: string | null;
+}
+
 const digest = (content: Buffer | string): string => createHash("sha256").update(content).digest("hex");
 
 /**
@@ -147,6 +165,104 @@ export function appendWorkspaceFileAtomic(input: AtomicAppendInput): AtomicAppen
     path: relative(input.workspaceRoot, destination).split(sep).join("/"),
     created,
     appendedBytes: contentBytes,
+    totalBytes: finalContent.length,
+    sha256: digest(finalContent),
+    originalHash,
+    backupHash,
+  };
+}
+
+/**
+ * Explicit whole-file overwrite semantics for create_file.
+ *
+ * The caller may use create_file for both absent and existing targets. This
+ * function never synthesizes a patch or changes the operation class. Existing
+ * bytes are fenced, backed up by content hash, and replaced atomically; an
+ * identical payload is reported as a successful no-op so progress accounting
+ * cannot mistake it for a fresh mutation.
+ */
+export function writeWorkspaceFileAtomic(input: AtomicWriteInput): AtomicWriteResult {
+  if (typeof input.content !== "string" || input.content.includes("\0")) {
+    throw new AtomicAppendError("INVALID_CONTENT", "create_file accepts text only; binary null bytes are rejected");
+  }
+  if (isDeniedWorkspacePath(input.relativePath)) {
+    throw new AtomicAppendError("UNSAFE_PATH", "Access to secret or credential files is forbidden");
+  }
+
+  let destination: string;
+  try {
+    destination = assertContainedRealPath(input.workspaceRoot, input.relativePath);
+  } catch (error) {
+    throw new AtomicAppendError("UNSAFE_PATH", error instanceof Error ? error.message : String(error));
+  }
+
+  const created = !existsSync(destination);
+  if (!created && !statSync(destination).isFile()) {
+    throw new AtomicAppendError("UNSAFE_PATH", `Cannot overwrite non-file path: ${input.relativePath}`);
+  }
+  const original = created ? Buffer.alloc(0) : readFileSync(destination);
+  if (original.includes(0)) {
+    throw new AtomicAppendError("INVALID_CONTENT", "create_file accepts text files only; the existing file contains binary null bytes");
+  }
+  const originalHash = created ? "" : digest(original);
+  if (input.expectedOriginalHash !== undefined && input.expectedOriginalHash !== originalHash) {
+    throw new AtomicAppendError(
+      "CONCURRENT_MODIFICATION",
+      `File changed before create_file could apply ${input.relativePath}; inspect it and retry with the current content`,
+    );
+  }
+
+  const next = Buffer.from(input.content, "utf8");
+  const nextHash = digest(next);
+  if (!created && nextHash === originalHash) {
+    return {
+      path: relative(input.workspaceRoot, destination).split(sep).join("/"),
+      created: false,
+      changed: false,
+      totalBytes: original.length,
+      sha256: originalHash,
+      originalHash,
+      backupHash: null,
+    };
+  }
+
+  let backupHash: string | null = null;
+  if (!created) {
+    mkdirSync(input.backupDir, { recursive: true });
+    const backupPath = join(input.backupDir, `${originalHash}.bak`);
+    if (!existsSync(backupPath)) writeFileSync(backupPath, original);
+    backupHash = originalHash;
+  }
+
+  mkdirSync(dirname(destination), { recursive: true });
+  try {
+    destination = assertContainedRealPath(input.workspaceRoot, input.relativePath);
+  } catch (error) {
+    throw new AtomicAppendError("UNSAFE_PATH", error instanceof Error ? error.message : String(error));
+  }
+
+  const temporary = `${dirname(destination)}/.${basename(destination)}.morrow-write-${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, next);
+    const handle = openSync(temporary, "r+");
+    try { fsyncSync(handle); } finally { closeSync(handle); }
+
+    const changedSinceRead = created
+      ? existsSync(destination)
+      : !existsSync(destination) || digest(readFileSync(destination)) !== originalHash;
+    if (changedSinceRead) {
+      throw new AtomicAppendError("CONCURRENT_MODIFICATION", `File changed while create_file was preparing ${input.relativePath}; inspect it and retry`);
+    }
+    renameSync(temporary, destination);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+
+  const finalContent = readFileSync(destination);
+  return {
+    path: relative(input.workspaceRoot, destination).split(sep).join("/"),
+    created,
+    changed: true,
     totalBytes: finalContent.length,
     sha256: digest(finalContent),
     originalHash,

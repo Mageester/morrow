@@ -265,7 +265,6 @@ describe("agent tool-argument recovery", () => {
       "executing_tool",
       "observing",
       "executing_tool",
-      "proposing_changes",
       "applying_changes",
       "observing",
       "completed",

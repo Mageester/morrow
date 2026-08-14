@@ -80,13 +80,14 @@ describe("create_file → edit safety", () => {
     expect(readFileSync(join(ws, "app.txt"), "utf8")).toBe(v2); // exact, complete content
     const calls = createCalls();
     expect(calls[1]!.status).toBe("completed");
-    // Item 10: the result reports the create→edit conversion.
+    // Existing targets retain explicit create_file overwrite semantics.
     const res = JSON.parse(calls[1]!.resultJson!);
-    expect(res.convertedToEdit).toBe(true);
-    expect(res.strategy).toBe("create_to_edit");
-    // Item 9: the strategy-switch event is persisted and schema-valid (it loaded).
+    expect(res.convertedToEdit).toBeUndefined();
+    expect(res.strategy).toBe("overwrite");
+    expect(res.changed).toBe(true);
+    // No hidden create→edit strategy switch is emitted.
     const events = taskRecordsRepository(db).listEvents("t");
-    expect(events.some((e: any) => e.type === "tool.strategy_switch" && e.payload.to === "edit")).toBe(true);
+    expect(events.some((e: any) => e.type === "tool.strategy_switch" && e.payload.reason === "target_exists")).toBe(false);
   });
 
   it("backs up the exact original bytes before mutating (undo is a byte-exact restore)", async () => {
@@ -170,8 +171,8 @@ describe("create_file → edit safety", () => {
 
     expect(readFileSync(join(ws, "same.txt"), "utf8")).toBe("same\n");
     const calls = createCalls();
-    expect(calls[1]!.status).toBe("failed");
-    expect(JSON.parse(calls[1]!.resultJson!).kind).toBe("patch_no_effect");
+    expect(calls[1]!.status).toBe("completed");
+    expect(JSON.parse(calls[1]!.resultJson!)).toMatchObject({ status: "already_applied", strategy: "overwrite", changed: false });
   });
 
   it("keeps repeated identical create_file calls bounded (no unbounded loop)", async () => {
