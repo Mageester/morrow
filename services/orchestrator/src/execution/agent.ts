@@ -914,6 +914,38 @@ export async function executeAgentChatTask({
     return records.appendEvent({ id: randomUUID(), taskId, type, payload, createdAt: now() });
   };
 
+  // A task-owned background process (a dev server started with run_command
+  // background:true) has no lifetime tied to the task by default: nothing
+  // terminates it just because the task reaches a genuinely final state. Live
+  // evidence recorded exactly this leak (flagship-web-v1, 2026-08-09): a task
+  // completed while its dev server kept running, because the only existing
+  // protection â€” the background_process_running completion blocker â€” fires
+  // only when the user's prompt happens to contain explicit "stop it before
+  // finishing" phrasing. Most prompts don't say that. This funnel makes
+  // cleanup unconditional at the one place every genuinely terminal
+  // transition (completed/failed/cancelled â€” not interrupted, which can
+  // resume and legitimately keep talking to the same process) already goes
+  // through, instead of depending on every call site to remember it.
+  // Deliberately synchronous and non-blocking: several call sites run inside
+  // a better-sqlite3 db.transaction() callback, which must stay synchronous.
+  // Termination is kicked off here and finishes independently; the task
+  // transition itself never waits on it.
+  const transitionToTerminalStatus = (
+    status: "completed" | "failed" | "cancelled",
+    transitionEvent: Parameters<typeof records.transitionTask>[2],
+  ): ReturnType<typeof records.transitionTask> => {
+    const orphaned = processesRepo.listByProject(projectId, "running").filter((process) => process.taskId === taskId);
+    for (const process of orphaned) {
+      void procSupervisor.terminate(process.id, { force: true })
+        .then(() => { event("workspace.inspected", { kind: "auto_stop_process", processId: process.id, reason: `task_${status}` }); })
+        .catch(() => {
+          // Best-effort: a task reaching a terminal state must not fail on
+          // cleanup of a process that may have already exited on its own.
+        });
+    }
+    return records.transitionTask(taskId, status, transitionEvent);
+  };
+
   // A mission-linked task feeds meaningful tool failures into the mission's
   // failure ledger (loop detection, recovery ladder, /failures). Non-mission
   // tasks get a no-op reporter.
@@ -1166,7 +1198,7 @@ export async function executeAgentChatTask({
       providerType = providerId;
     } catch (e: any) {
       transitionAgentState("failed", { message: e.message || "Provider not configured" });
-      records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: e.message || "Provider not configured" } });
+      transitionToTerminalStatus("failed", { id: randomUUID(), createdAt: now(), payload: { message: e.message || "Provider not configured" } });
       convs.updateMessageContentAndState(assistantMessageRow.id, `Provider not available: ${e.message || "not configured"}`, "failed", now());
       return;
     }
@@ -4127,7 +4159,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const preCompletionState = records.getAgentState(taskId)?.state;
       if (preCompletionState === "waiting_for_approval" || preCompletionState === "executing_tool") transitionAgentState("observing", { event: "canonical_completion_resume" });
       if (records.getAgentState(taskId)?.state !== "completed") transitionAgentState("completed");
-      records.transitionTask(taskId, "completed", { id: randomUUID(), createdAt: now(), payload: {} });
+      transitionToTerminalStatus("completed", { id: randomUUID(), createdAt: now(), payload: {} });
       convs.updateMessageContentAndState(assistantMessageRow.id, safeFinalText, "completed", now());
     })();
   };
@@ -4144,7 +4176,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     closeCurrentTurn({ final: false, aborted: true });
     const currentTask = tasks.getTaskById(taskId);
     if (currentTask && currentTask.status !== "cancelled") {
-      records.transitionTask(taskId, "cancelled", { id: randomUUID(), createdAt: now(), payload: {} });
+      transitionToTerminalStatus("cancelled", { id: randomUUID(), createdAt: now(), payload: {} });
     }
     transitionAgentState("cancelled");
     failCurrentSegment("cancelled");
@@ -4414,7 +4446,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         if (await returnMissionWorkerOutcome("context_rollover_required", preparedContext.actionableMessage)) return;
         failCurrentSegment("context_preflight_failed");
         transitionAgentState("failed", { message: preparedContext.actionableMessage });
-        records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: preparedContext.actionableMessage } });
+        transitionToTerminalStatus("failed", { id: randomUUID(), createdAt: now(), payload: { message: preparedContext.actionableMessage } });
         convs.updateMessageContentAndState(assistantMessageRow.id, preparedContext.actionableMessage, "failed", now());
         if (activeStepId) records.updatePlanStepStatus(activeStepId, "failed", now());
         return;
@@ -4956,7 +4988,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       })) return;
       failCurrentSegment("provider_failure");
       transitionAgentState("failed", { message: errMessage });
-      records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: errMessage } });
+      transitionToTerminalStatus("failed", { id: randomUUID(), createdAt: now(), payload: { message: errMessage } });
       convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Error: ${errMessage}]`, "failed", now());
       if (activeStepId) {
         records.updatePlanStepStatus(activeStepId, "failed", now());

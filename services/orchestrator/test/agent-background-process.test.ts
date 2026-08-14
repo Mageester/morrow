@@ -326,6 +326,39 @@ describe("agent background processes (full-stack dev-server capability)", () => 
     rmSync(logsDir, { recursive: true, force: true });
   });
 
+  it("stops a task-owned background process left running when the task completes, even without explicit cleanup wording in the prompt", async () => {
+    // Deliberately the default "go" prompt (seed()'s default) — it contains
+    // none of the "stop it before finishing" phrasing that
+    // requiresBackgroundProcessCleanup() looks for, reproducing the live gap
+    // (flagship-web-v1, 2026-08-09) where a task completed while its dev
+    // server kept running because that heuristic never fired.
+    seed(db, ws);
+    const logsDir = mkdtempSync(join(tmpdir(), "morrow-bgproc-logs3-"));
+    const supervisor = new ProcessSupervisor(processesRepository(db), logsDir);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("x1", "run_command", { executable: "node", args: ["-e", LONG_RUNNING_SCRIPT], purpose: "start dev server", background: true }), done],
+        [text("started, and the server is verified working"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, supervisor, maxTurns: 4 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    const call = conversationsRepository(db).listToolCallsForTask("t").find((c: any) => c.toolName === "run_command")!;
+    const result = JSON.parse(call.resultJson!);
+
+    // The model never called stop_process — the task-completion funnel must
+    // terminate the process on its own instead of leaving it orphaned.
+    expect(conversationsRepository(db).listToolCallsForTask("t").some((c: any) => c.toolName === "stop_process")).toBe(false);
+    await new Promise((r) => setTimeout(r, 300));
+    const record = processesRepository(db).get(result.processId);
+    expect(record?.status).not.toBe("running");
+    rmSync(logsDir, { recursive: true, force: true });
+  });
+
   it("denies stop_process outside agent mode, same as run_command", async () => {
     seed(db, ws, "read-only");
     const provider = new MockProvider({
