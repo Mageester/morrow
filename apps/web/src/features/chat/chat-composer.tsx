@@ -673,7 +673,7 @@ export function ChatComposer({
       <p className="morrow-chat-composer__mode-hint">
         {mode === "build"
           ? autoApprove
-            ? "Morrow can edit files and run ordinary workspace commands without stopping."
+            ? "Ordinary workspace actions can continue without stopping; other actions still ask."
             : "Morrow will ask before workspace changes and commands."
           : "Morrow will answer and read your project, but will not change anything."}
       </p>

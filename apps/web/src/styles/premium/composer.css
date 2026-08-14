@@ -12,13 +12,14 @@
  */
 
 .morrow-chat-composer {
+  container-type: inline-size;
   display: grid;
-  padding: 15px 15px 12px;
-  border: 1px solid #494a41;
-  border-radius: 18px;
-  background: rgb(32 33 28 / 0.88);
+  padding: 18px 18px 13px;
+  border: 1px solid #3f4039;
+  border-radius: 20px;
+  background: rgb(29 30 25 / 0.94);
   box-shadow:
-    0 20px 70px rgb(0 0 0 / 0.68),
+    0 24px 76px rgb(0 0 0 / 0.62),
     0 0 0 1px rgb(255 255 255 / 0.03);
   backdrop-filter: blur(18px);
   gap: 0;
@@ -32,18 +33,18 @@
 }
 
 .morrow-chat-composer:focus-within {
-  border-color: var(--morrow-product-copper-line);
+  border-color: color-mix(in srgb, var(--morrow-product-copper) 31%, #3f4039);
   box-shadow:
-    0 20px 70px rgb(0 0 0 / 0.68),
-    0 0 0 1px var(--morrow-product-copper-line);
+    0 24px 76px rgb(0 0 0 / 0.62),
+    0 0 0 1px rgb(190 123 82 / 0.05);
 }
 
 .morrow-chat-composer__input {
   display: block;
   width: 100%;
-  min-height: 61px;
+  min-height: 78px;
   max-height: 40vh;
-  padding: 0 0 10px;
+  padding: 1px 2px 16px;
   border: 0;
   background: transparent;
   color: #dedad2;
@@ -51,6 +52,15 @@
   line-height: 1.5;
   outline: 0;
   resize: none;
+}
+
+/* The surrounding composer carries focus. A second bright textarea outline
+   made the writing surface look like a form error and visually split it in two. */
+.morrow-chat-composer .morrow-chat-composer__input:focus {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
 }
 
 .morrow-chat-composer__input::placeholder {
@@ -69,8 +79,8 @@
 
   display: flex;
   align-items: center;
-  padding: 0;
-  border: 0;
+  padding-top: 10px;
+  border-top: 1px solid rgb(255 255 255 / 0.065);
   flex-wrap: nowrap;
   gap: 6px;
 }
@@ -122,9 +132,9 @@
   flex: none;
   align-items: center;
   padding: 0 9px;
-  border: 1px solid #393b34;
-  border-radius: 9px;
-  background: transparent;
+  border: 1px solid #363831;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 0.018);
   color: #93958c;
   cursor: pointer;
   font: inherit;
@@ -175,7 +185,7 @@
  */
 .morrow-chat-composer .morrow-chat-composer__modes button.is-active,
 .morrow-chat-composer .morrow-chat-composer__modes button[aria-pressed="true"] {
-  background: #33342d;
+  background: #373831;
   color: var(--morrow-product-copy);
   font-weight: 650;
   box-shadow: none;
@@ -258,7 +268,7 @@
 .morrow-chat-composer__meta p,
 .morrow-chat-composer__counter {
   padding: 0;
-  margin: 6px 0 0;
+  margin: 8px 2px 0;
   color: var(--morrow-product-faint);
   font-size: 10px;
 }
@@ -332,6 +342,29 @@
   white-space: nowrap;
 }
 
+/* A narrow live-work layout still needs a legible model choice. The model is
+   promoted to its own quiet line before controls begin to collide. */
+@container (max-width: 560px) {
+  .morrow-chat-composer .morrow-model-picker,
+  .morrow-chat-composer .morrow-chat-composer__select {
+    order: 2;
+    width: calc(100% - 42px);
+  }
+
+  .morrow-chat-composer .morrow-model-picker__trigger,
+  .morrow-chat-composer .morrow-chat-composer__select select {
+    width: 100%;
+  }
+
+  .morrow-chat-composer .morrow-context-meter {
+    display: none;
+  }
+
+  .morrow-chat-composer .morrow-chat-composer__thinking-controls {
+    order: 3;
+  }
+}
+
 /* The context ring is a reading, not a control: it gets no chip of its own. */
 .morrow-chat-composer .morrow-context-meter {
   flex: none;
@@ -403,22 +436,22 @@
   flex: 1 0 100%;
   order: 2;
   align-items: center;
-  padding-top: 9px;
-  border-top: 1px solid rgb(255 255 255 / 0.055);
-  margin-top: 3px;
+  padding-top: 8px;
+  border-top: 0;
+  margin-top: 0;
   gap: 8px;
 }
 
 .morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-reasoning-slider,
 .morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-chat-composer__reasoning-toggle {
   display: inline-flex;
-  height: 40px;
-  min-height: 40px;
+  height: 32px;
+  min-height: 32px;
   align-items: center;
   padding: 0 11px;
-  border: 1px solid #393b34;
-  border-radius: 11px;
-  background: #1b1c18;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
   color: #a19f97;
   cursor: pointer;
   font: inherit;
@@ -438,7 +471,8 @@
 }
 
 .morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-chat-composer__reasoning-toggle:hover {
-  border-color: #5e493d;
+  border-color: #45463e;
+  background: rgb(255 255 255 / 0.025);
   color: var(--morrow-product-copy-soft);
 }
 
@@ -461,8 +495,8 @@
 }
 
 .morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-chat-composer__reasoning-toggle:has(input:checked) {
-  border-color: #704d38;
-  background: #28201b;
+  border-color: #5c4436;
+  background: rgb(190 123 82 / 0.09);
   color: var(--morrow-product-copy-soft);
 }
 

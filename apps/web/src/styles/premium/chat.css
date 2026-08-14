@@ -33,14 +33,19 @@
 
 .morrow-conversation {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   min-width: 0;
   overflow: hidden;
 }
 
 .morrow-conversation-history {
-  height: 100%;
+  height: auto;
+  min-height: 0;
+  flex: 1 1 auto;
   max-width: none;
-  padding: 42px clamp(28px, 6vw, 88px) 190px;
+  padding: 42px clamp(28px, 6vw, 88px) 28px;
   overflow: auto;
 }
 
@@ -263,17 +268,34 @@
 
 /* ── Composer dock ───────────────────────────────────────────────────────── */
 
+.morrow-conversation-action-shelf {
+  z-index: 4;
+  flex: none;
+  max-height: min(42vh, 360px);
+  padding-inline: clamp(28px, 6vw, 88px);
+  overflow: auto;
+  background: linear-gradient(to bottom, transparent, var(--morrow-product-shell, #151612) 28%);
+}
+
+.morrow-conversation-action-shelf:empty {
+  display: none;
+}
+
+.morrow-conversation-action-shelf .morrow-approvals {
+  width: 100%;
+  max-width: var(--morrow-premium-composer);
+  margin: 0 auto;
+}
+
 .morrow-conversation-composer {
-  position: absolute;
+  position: relative;
   z-index: 3;
-  right: 0;
-  bottom: 0;
-  left: 0;
+  flex: none;
   width: auto;
   max-width: none;
-  padding: 45px clamp(28px, 6vw, 88px) 22px;
+  padding: 18px clamp(28px, 6vw, 88px) 22px;
   border: 0;
-  background: linear-gradient(transparent, var(--morrow-product-shell, #151612) 40%);
+  background: var(--morrow-product-shell, #151612);
 }
 
 .morrow-conversation-composer .morrow-chat-composer {
@@ -507,11 +529,16 @@
 
 @media (max-width: 700px) {
   .morrow-conversation-history {
-    padding: 34px 18px 175px;
+    padding: 34px 18px 20px;
+  }
+
+  .morrow-conversation-action-shelf {
+    max-height: 44vh;
+    padding-inline: 18px;
   }
 
   .morrow-conversation-composer {
-    padding: 42px 18px 15px;
+    padding: 14px 18px 15px;
   }
 
   .morrow-conversation-message--user {

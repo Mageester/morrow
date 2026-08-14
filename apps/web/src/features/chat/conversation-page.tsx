@@ -578,15 +578,17 @@ export function ConversationPageContent({
           <TaskStream conversationId={conversationId} key={message.taskId} projectId={projectId} taskId={message.taskId!} />
         ))}
 
+        <div aria-hidden="true" className="morrow-conversation-autoscroll-sentinel" ref={sentinelRef} />
+        </div>
+      </div>
+
+      <div className="morrow-conversation-action-shelf">
         <PendingApprovals
           active={activeTaskId !== undefined}
           conversationId={conversationId}
           conversationTaskIds={conversationTaskIds}
           projectId={projectId}
         />
-
-        <div aria-hidden="true" className="morrow-conversation-autoscroll-sentinel" ref={sentinelRef} />
-        </div>
       </div>
 
       <div className="morrow-conversation-composer">

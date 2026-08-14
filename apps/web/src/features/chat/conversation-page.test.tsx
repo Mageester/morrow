@@ -210,6 +210,7 @@ describe("ConversationPage", () => {
     renderPage();
 
     const region = await screen.findByRole("region", { name: "Approvals waiting for your decision" });
+    expect(region.closest(".morrow-conversation-action-shelf")).not.toBeNull();
     expect(within(region).getByText("Apply patch: Create the landing page structure.")).toBeVisible();
     expect(within(region).getByText("index.html")).toBeVisible();
     expect(within(region).queryByText("Apply patch: unrelated task.")).not.toBeInTheDocument();
