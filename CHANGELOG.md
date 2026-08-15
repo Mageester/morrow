@@ -6,6 +6,26 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.47] - 2026-08-15
+
+### Added - NVIDIA NIM and TokenRouter providers
+
+- Added **NVIDIA NIM** as an OpenAI-compatible inference provider, defaulting to
+  NVIDIA's hosted endpoint (`https://integrate.api.nvidia.com/v1`) and
+  configured with `NVIDIA_API_KEY`. A self-hosted NIM container is reachable by
+  pointing `NVIDIA_NIM_BASE_URL` at it. Only the provider-specific
+  `NVIDIA_API_KEY` is accepted: `NGC_API_KEY` is an NGC *registry* credential
+  used for pulling containers, so honouring it would mark a hosted network
+  provider as configured for users who only authenticated a container pull.
+- Added **TokenRouter** as an OpenAI-compatible gateway
+  (`https://api.tokenrouter.com/v1`), configured with `TOKENROUTER_API_KEY`.
+- Both entries follow the catalog's existing honesty constraints: no hardcoded
+  model ids (models come from each endpoint's own `/models` response via live
+  discovery) and no invented auth. NVIDIA's model list is served without
+  authentication, so a connectivity test against it reports the endpoint as
+  reachable while stating plainly that the credential itself was not verified,
+  rather than implying an invalid key is good.
+
 ## [0.1.0-beta.46] - 2026-08-14
 
 ### Added - premium terminal mission experience

@@ -5,9 +5,9 @@ export const ProviderIdSchema=z.enum([
   "deterministic-local","mock","openai","anthropic","gemini","openrouter","deepseek","openai-compatible","opencode-go","ollama",
   // Catalog providers — all OpenAI-compatible. Kept in sync with
   // services/orchestrator/src/provider/catalog.ts (a test asserts both lists match).
-  "opencode-zen","vercel-ai-gateway","github-models",
+  "opencode-zen","tokenrouter","vercel-ai-gateway","github-models",
   "xai","mistral","moonshot","zai","dashscope","perplexity","cohere",
-  "groq","cerebras","together","fireworks","deepinfra","nebius","novita","hyperbolic","sambanova",
+  "groq","cerebras","together","fireworks","deepinfra","nebius","novita","hyperbolic","sambanova","nvidia-nim",
   "lmstudio","llamacpp","vllm","jan",
 ]);
 export const TaskStatusSchema=z.enum(["queued","running","completed","verified","failed","cancelled","interrupted"]);

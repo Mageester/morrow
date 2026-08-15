@@ -98,6 +98,8 @@ export const FLAGSHIP_PROVIDER_ELIGIBILITY: readonly FlagshipProviderEligibility
   { providerId: "novita", eligible: false, requiresLiveModelDiscovery: true, reason: "Inference host; catalog varies and is not gate-declared." },
   { providerId: "hyperbolic", eligible: false, requiresLiveModelDiscovery: true, reason: "Inference host; catalog varies and is not gate-declared." },
   { providerId: "sambanova", eligible: false, requiresLiveModelDiscovery: true, reason: "Inference host; catalog varies and is not gate-declared." },
+  { providerId: "nvidia-nim", eligible: false, requiresLiveModelDiscovery: true, reason: "Inference host; catalog varies and is not gate-declared." },
+  { providerId: "tokenrouter", eligible: false, requiresLiveModelDiscovery: true, reason: "Gateway; available ids vary by account and are not gate-declared." },
 ];
 
 /**
