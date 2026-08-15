@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: 'pnpm'
@@ -44,7 +44,7 @@ jobs:
       # Match the bundled runtime ABI (package-release bundles Node 24) so the
       # host that packages native modules agrees with the runtime that loads
       # them. package-release also pins the prebuild target as a backstop.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: 'pnpm'
