@@ -225,8 +225,10 @@ describe("fresh Pulse acceptance", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  it("completes the full SQLite/SSE/browser Pulse task from an empty workspace", { timeout: 60_000 }, async () => {
-    expect(existsSync(chromium.executablePath())).toBe(true);
+  // Requires a real Playwright browser; CI runs without one (see ci.yml), so
+  // skip there like the other browser-dependent suites (agent-browser,
+  // browser-injection) rather than hard-failing on a missing executable.
+  it.skipIf(!existsSync(chromium.executablePath()))("completes the full SQLite/SSE/browser Pulse task from an empty workspace", { timeout: 60_000 }, async () => {
     const port = 41737;
     const provider = new PulseProvider(port);
     await executeAgentChatTask({
