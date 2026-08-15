@@ -1,0 +1,446 @@
+/*
+ * Premium visual system — shared states.
+ *
+ * Empty, loading, notice, approval, recovery, error, and dialog surfaces, so
+ * every non-happy path inherits the same materials as the routes above.
+ * Reference: `.notice`, `.principle`, `.trust`, and the interaction-state
+ * contract in MOTION_AND_RESPONSIVE.md.
+ */
+
+/* ── Focus ───────────────────────────────────────────────────────────────── */
+
+:focus-visible {
+  outline: 2px solid var(--morrow-product-copper);
+  outline-offset: 3px;
+}
+
+.morrow-skip-link:focus {
+  z-index: 20;
+  border-radius: 10px;
+  background: var(--morrow-product-copper);
+  color: #21110b;
+}
+
+/* ── Notice strip ────────────────────────────────────────────────────────── */
+
+.morrow-notice {
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+  padding: 14px 17px;
+  border: 1px solid #2f322b;
+  border-radius: 14px;
+  background: #171814;
+  gap: 12px;
+}
+
+.morrow-notice__glyph {
+  display: grid;
+  width: 33px;
+  height: 33px;
+  flex: none;
+  place-items: center;
+  border-radius: 10px;
+  background: #231c17;
+  color: var(--morrow-product-copper);
+}
+
+.morrow-notice b {
+  display: block;
+  font-size: 12px;
+}
+
+.morrow-notice span {
+  color: #85877e;
+  font-size: 11px;
+}
+
+.morrow-notice__action {
+  margin-left: auto;
+  color: #b3afa6;
+  white-space: nowrap;
+}
+
+/* ── Empty / state scenes ────────────────────────────────────────────────── */
+
+.morrow-product-state,
+.morrow-empty {
+  display: grid;
+  padding: 44px 33px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-lg);
+  background: var(--morrow-product-field);
+  justify-items: start;
+  gap: 8px;
+  text-align: left;
+}
+
+.morrow-product-state h2,
+.morrow-empty h2 {
+  margin: 0;
+  font: 500 26px var(--morrow-product-display);
+  letter-spacing: -0.02em;
+  text-transform: none;
+}
+
+.morrow-product-state p,
+.morrow-empty p {
+  max-width: 58ch;
+  margin: 0;
+  color: var(--morrow-product-muted);
+  font-size: 13px;
+}
+
+.morrow-product-state__action,
+.morrow-empty__action,
+.morrow-empty__actions {
+  margin-top: 10px;
+}
+
+.morrow-product-state[data-tone="error"] {
+  border-color: color-mix(in srgb, var(--morrow-product-danger) 40%, transparent);
+}
+
+.morrow-empty--soft {
+  padding: 24px;
+  border-style: dashed;
+  background: transparent;
+}
+
+/* ── Inline error and warning ────────────────────────────────────────────── */
+
+.morrow-inline-error {
+  display: flex;
+  align-items: center;
+  padding: 14px 17px;
+  border: 1px solid color-mix(in srgb, var(--morrow-product-danger) 38%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--morrow-product-danger) 8%, transparent);
+  gap: 12px;
+}
+
+.morrow-inline-error p {
+  margin: 0;
+  color: var(--morrow-product-copy-soft);
+  font-size: 12px;
+}
+
+.morrow-inline-error button {
+  margin-left: auto;
+  padding: 7px 10px;
+  border: 1px solid var(--morrow-product-line-strong);
+  border-radius: 8px;
+  background: var(--morrow-product-field-strong);
+  color: #cbc7be;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.morrow-chat-warning,
+.morrow-chat-sync {
+  margin: 0 auto 18px;
+  max-width: var(--morrow-premium-reading);
+  color: var(--morrow-product-warning);
+  font-size: 11px;
+}
+
+/* ── Dialogs ─────────────────────────────────────────────────────────────── */
+
+.morrow-conversation-dialog-backdrop,
+.morrow-connection-dialog-backdrop,
+.morrow-command__backdrop {
+  position: fixed;
+  z-index: 12;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  background: rgb(6 7 5 / 0.66);
+  place-items: center;
+}
+
+.morrow-command__backdrop {
+  align-items: start;
+  padding-top: 12vh;
+}
+
+.morrow-conversation-dialog,
+.morrow-connection-dialog,
+.morrow-dialog,
+.morrow-command {
+  width: min(100%, 460px);
+  padding: 24px;
+  border: 1px solid var(--morrow-product-line-strong);
+  border-radius: var(--morrow-product-radius-lg);
+  background: var(--morrow-product-field-strong);
+  box-shadow: var(--morrow-product-shadow-float);
+}
+
+.morrow-command {
+  width: min(100%, 640px);
+  padding: 0;
+  overflow: hidden;
+}
+
+.morrow-conversation-dialog h2,
+.morrow-connection-dialog h2,
+.morrow-dialog h2 {
+  margin: 0 0 10px;
+  font: 500 23px var(--morrow-product-display);
+  letter-spacing: -0.02em;
+}
+
+.morrow-conversation-dialog p,
+.morrow-connection-dialog p,
+.morrow-dialog p {
+  margin: 0;
+  color: var(--morrow-product-muted);
+  font-size: 13px;
+}
+
+.morrow-conversation-dialog label {
+  display: grid;
+  margin-top: 16px;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.morrow-conversation-dialog input {
+  padding: 11px 13px;
+  border: 1px solid #40413a;
+  border-radius: 10px;
+  background: #121310;
+  color: var(--morrow-product-copy);
+  font: inherit;
+}
+
+.morrow-conversation-dialog__actions,
+.morrow-connection-dialog__actions,
+.morrow-dialog__actions {
+  display: flex;
+  justify-content: end;
+  margin-top: 20px;
+  gap: 8px;
+}
+
+/* The confirming action in a delete dialog is the only place red leads. */
+.morrow-conversation-dialog__actions button:last-child,
+.morrow-connection-dialog__actions button:last-child {
+  border: 1px solid color-mix(in srgb, var(--morrow-product-danger) 50%, transparent);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--morrow-product-danger);
+  cursor: pointer;
+  font: inherit;
+  padding: 8px 11px;
+}
+
+.morrow-conversation-dialog__actions button:last-child:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--morrow-product-danger) 15%, transparent);
+}
+
+.morrow-conversation-dialog__actions button:first-child,
+.morrow-connection-dialog__actions button:first-child {
+  padding: 8px 11px;
+  border: 1px solid var(--morrow-product-line-strong);
+  border-radius: 9px;
+  background: var(--morrow-product-field-strong);
+  color: #d9d5cd;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* ── Command palette ─────────────────────────────────────────────────────── */
+
+.morrow-command__input-wrap {
+  display: flex;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--morrow-product-line);
+  gap: 11px;
+}
+
+.morrow-command__input-wrap input {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--morrow-product-copy);
+  font: inherit;
+  font-size: 15px;
+  outline: 0;
+}
+
+.morrow-command__input-wrap button {
+  border: 0;
+  background: transparent;
+  color: var(--morrow-product-faint);
+  cursor: pointer;
+}
+
+.morrow-command__results {
+  max-height: 52vh;
+  overflow: auto;
+}
+
+.morrow-command__group p {
+  padding: 14px 16px 6px;
+  margin: 0;
+  color: #666960;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.morrow-command__destination,
+.morrow-command__result {
+  display: flex;
+  align-items: center;
+  padding: 11px 16px;
+  color: inherit;
+  gap: 11px;
+  text-decoration: none;
+}
+
+.morrow-command__destination:hover,
+.morrow-command__result:hover {
+  background: var(--morrow-product-field-strong);
+}
+
+.morrow-command__destination strong,
+.morrow-command__result strong {
+  display: block;
+  font-size: 13px;
+}
+
+.morrow-command__destination small,
+.morrow-command__result-meta,
+.morrow-command__result-snippet,
+.morrow-command__state {
+  display: block;
+  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  font-size: 11px;
+}
+
+.morrow-command__state {
+  padding: 8px 16px;
+}
+
+.morrow-command__footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--morrow-product-line);
+  color: var(--morrow-product-faint);
+  font-size: 10px;
+}
+
+/* ── Approvals and recovery ──────────────────────────────────────────────── */
+
+.morrow-approvals,
+.morrow-recovery {
+  max-width: var(--morrow-premium-reading);
+  margin: 0 auto 18px;
+  padding: 16px 19px;
+  border: 1px solid var(--morrow-product-copper-line);
+  border-radius: 14px;
+  background: var(--morrow-product-copper-soft);
+}
+
+.morrow-approvals h2,
+.morrow-recovery h2 {
+  margin: 0 0 6px;
+  font: 500 17px var(--morrow-product-display);
+}
+
+/* ── Status pills ────────────────────────────────────────────────────────── */
+
+.morrow-status-pill {
+  padding: 5px 9px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.morrow-status-pill[data-variant="success"] {
+  border-color: #35513a;
+  background: var(--morrow-product-success-soft, #19251b);
+  color: #a9bfac;
+}
+
+.morrow-status-pill[data-variant="accent"] {
+  border-color: #594235;
+  background: var(--morrow-product-copper-soft);
+  color: #ddaa91;
+}
+
+.morrow-status-pill[data-variant="warning"] {
+  border-color: color-mix(in srgb, var(--morrow-product-warning) 45%, transparent);
+  color: var(--morrow-product-warning);
+}
+
+.morrow-status-pill[data-variant="danger"] {
+  border-color: color-mix(in srgb, var(--morrow-product-danger) 45%, transparent);
+  color: var(--morrow-product-danger);
+}
+
+/* ── Mobile dock ─────────────────────────────────────────────────────────── */
+
+.morrow-mobile-dock {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .morrow-mobile-dock {
+    position: fixed;
+    z-index: 8;
+    right: 10px;
+    bottom: 10px;
+    left: 10px;
+    display: grid;
+    padding: 6px;
+    border: 1px solid var(--morrow-product-line-strong);
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--morrow-product-field-strong) 94%, transparent);
+    box-shadow: var(--morrow-product-shadow-float);
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+    backdrop-filter: blur(18px);
+  }
+
+  .morrow-mobile-dock__link {
+    display: grid;
+    min-height: 50px;
+    align-content: center;
+    justify-items: center;
+    padding: 4px;
+    border: 0;
+    border-radius: 13px;
+    background: transparent;
+    color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+    font: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    gap: 2px;
+    text-decoration: none;
+  }
+
+  .morrow-mobile-dock__link[aria-current="page"] {
+    background: var(--morrow-product-copper-soft);
+    color: #ddaa91;
+  }
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

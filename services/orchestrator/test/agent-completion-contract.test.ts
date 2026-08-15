@@ -209,6 +209,40 @@ describe("evidence-driven task completion contracts", () => {
     expect(completion.inferTaskShape(prompt, "agent")).toBe(expectedShape);
   });
 
+  it("inherits the prior build brief for a short continuation instead of downgrading it to read-only", async () => {
+    const completion = await loadCompletionContractModule();
+    if (!completion) return;
+
+    const prompt = completion.resolveTaskIntentPrompt(
+      "What are you doing? Start building.",
+      ["Build a responsive browser OS web app with desktop and mobile browser verification."],
+    );
+
+    expect(prompt).toContain("Build a responsive browser OS web app");
+    expect(prompt).toContain("Start building");
+    expect(completion.inferTaskShape(prompt, "agent")).toBe("frontend_application");
+  });
+
+  it("does not inherit an old build brief for a self-contained new request", async () => {
+    const completion = await loadCompletionContractModule();
+    if (!completion) return;
+
+    expect(completion.resolveTaskIntentPrompt(
+      "Explain why the previous attempt failed, but do not change any files.",
+      ["Build a responsive browser OS web app."],
+    )).toBe("Explain why the previous attempt failed, but do not change any files.");
+  });
+
+  it("does not resurrect an older build brief across a short revocation", async () => {
+    const completion = await loadCompletionContractModule();
+    if (!completion) return;
+
+    expect(completion.resolveTaskIntentPrompt(
+      "Continue.",
+      ["Build a responsive browser OS web app with desktop and mobile verification.", "Stop. Do not change files."],
+    )).toBe("Continue.");
+  });
+
   it("completes a verified CLI artifact before repeated read-only process polling can stall it", async () => {
     const completion = await loadCompletionContractModule();
     if (!completion) return;

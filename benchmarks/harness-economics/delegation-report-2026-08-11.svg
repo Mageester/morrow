@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-labelledby="benchmark-title benchmark-subtitle">
+<rect width="1280" height="720" fill="#11110f"/>
+<style>text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif} .axis{fill:#8d8980;font-size:14px} .title{fill:#f4f0e7;font-size:21px;font-weight:600} .value{fill:#f4f0e7;font-size:17px;font-weight:700} .harness{fill:#b7b1a7;font-size:14px} .meta{fill:#77736b;font-size:12px}</style>
+<text id="benchmark-title" x="58" y="54" fill="#f4f0e7" font-size="27" font-weight="700">Morrow delegation-slice efficiency · 2026-08-11</text>
+<text id="benchmark-subtitle" x="58" y="82" fill="#858078" font-size="14">3 measured tasks · personal benchmark artifact</text>
+<text class="title" x="242.66666666666666" y="124" text-anchor="middle">Pass rate</text>
+<line x1="58" y1="602.00" x2="427.33" y2="602.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="46" y="607.00" text-anchor="end">0%</text>
+<line x1="58" y1="493.00" x2="427.33" y2="493.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="46" y="498.00" text-anchor="end">25%</text>
+<line x1="58" y1="384.00" x2="427.33" y2="384.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="46" y="389.00" text-anchor="end">50%</text>
+<line x1="58" y1="275.00" x2="427.33" y2="275.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="46" y="280.00" text-anchor="end">75%</text>
+<line x1="58" y1="166.00" x2="427.33" y2="166.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="46" y="171.00" text-anchor="end">100%</text>
+<rect x="211.67" y="166.00" width="62.00" height="436.00" rx="2" fill="#f5b532"/>
+<text class="value" x="242.67" y="184.00" text-anchor="middle">100%</text>
+<text class="harness" x="242.67" y="630.00" text-anchor="middle">delegation-sample</text>
+<text class="meta" x="242.67" y="665.00" text-anchor="middle">n=3</text>
+<text class="title" x="640" y="124" text-anchor="middle">Median cost per task</text>
+<line x1="455.3333333333333" y1="602.00" x2="824.67" y2="602.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="443.3333333333333" y="607.00" text-anchor="end">$0.000</text>
+<line x1="455.3333333333333" y1="493.00" x2="824.67" y2="493.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="443.3333333333333" y="498.00" text-anchor="end">$0.003</text>
+<line x1="455.3333333333333" y1="384.00" x2="824.67" y2="384.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="443.3333333333333" y="389.00" text-anchor="end">$0.006</text>
+<line x1="455.3333333333333" y1="275.00" x2="824.67" y2="275.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="443.3333333333333" y="280.00" text-anchor="end">$0.009</text>
+<line x1="455.3333333333333" y1="166.00" x2="824.67" y2="166.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="443.3333333333333" y="171.00" text-anchor="end">$0.012</text>
+<rect x="609.00" y="602.00" width="62.00" height="1.00" rx="2" fill="#f5b532"/>
+<text class="value" x="640.00" y="590.00" text-anchor="middle">$0.000</text>
+<text class="harness" x="640.00" y="630.00" text-anchor="middle">delegation-sample</text>
+<text class="meta" x="640.00" y="665.00" text-anchor="middle">n=3</text>
+<text class="title" x="1037.3333333333333" y="124" text-anchor="middle">Median time per task</text>
+<line x1="852.6666666666666" y1="602.00" x2="1222.00" y2="602.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="840.6666666666666" y="607.00" text-anchor="end">0.0s</text>
+<line x1="852.6666666666666" y1="493.00" x2="1222.00" y2="493.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="840.6666666666666" y="498.00" text-anchor="end">0.3s</text>
+<line x1="852.6666666666666" y1="384.00" x2="1222.00" y2="384.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="840.6666666666666" y="389.00" text-anchor="end">0.6s</text>
+<line x1="852.6666666666666" y1="275.00" x2="1222.00" y2="275.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="840.6666666666666" y="280.00" text-anchor="end">0.9s</text>
+<line x1="852.6666666666666" y1="166.00" x2="1222.00" y2="166.00" stroke="#2b2926" stroke-width="1"/>
+<text class="axis" x="840.6666666666666" y="171.00" text-anchor="end">1.2s</text>
+<rect x="1006.33" y="600.96" width="62.00" height="1.04" rx="2" fill="#f5b532"/>
+<text class="value" x="1037.33" y="588.96" text-anchor="middle">0.0s</text>
+<text class="harness" x="1037.33" y="630.00" text-anchor="middle">delegation-sample</text>
+<text class="meta" x="1037.33" y="665.00" text-anchor="middle">n=3</text>
+<text x="1222" y="692" fill="#77736b" font-size="12" text-anchor="end">Source: supplied benchmark records · costs are measured or token-estimated</text>
+</svg>

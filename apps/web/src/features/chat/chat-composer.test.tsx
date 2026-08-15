@@ -43,7 +43,7 @@ describe("ChatComposer", () => {
 
     expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("checkbox", { name: "Trusted workspace" })).toBeChecked();
-    expect(screen.getByText("Morrow can edit files and run ordinary workspace commands without stopping.")).toBeVisible();
+    expect(screen.getByText("Ordinary workspace actions can continue without stopping; other actions still ask.")).toBeVisible();
   });
 
   it("keeps the controlled reasoning toggle available while a task is running", async () => {
@@ -62,7 +62,7 @@ describe("ChatComposer", () => {
     }
     render(<Parent />);
 
-    const toggle = screen.getByRole("checkbox", { name: "Reasoning" });
+    const toggle = screen.getByRole("checkbox", { name: "Show thinking" });
     expect(toggle).not.toBeChecked();
     expect(toggle).toBeEnabled();
     await user.click(toggle);

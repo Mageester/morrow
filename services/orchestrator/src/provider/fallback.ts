@@ -28,6 +28,9 @@ export interface FallbackCandidate {
   request?: { messages: ChatMessage[]; options: StreamOptions; routeFingerprint: string };
 }
 
+/** Keep provider recovery observable and bounded even if routing supplies a noisy candidate list. */
+export const MAX_PROVIDER_FALLBACK_ATTEMPTS = 4;
+
 export interface OpenStreamResult {
   /** The candidate id that successfully began streaming. */
   servedBy: string;
@@ -36,6 +39,8 @@ export interface OpenStreamResult {
   /** Candidate ids tried last because the rate guard had them cooling down. */
   deprioritizedRateLimited: string[];
   routeFingerprint: string | null;
+  /** Candidate ids intentionally left untouched by the bounded recovery cap. */
+  omittedCandidates: string[];
   stream: AsyncIterable<ProviderChunk>;
 }
 
@@ -110,7 +115,10 @@ export async function openStreamWithFallback(
   onAttempt?: (candidate: FallbackCandidate) => void,
 ): Promise<OpenStreamResult> {
   if (candidates.length === 0) throw new Error("No providers available to stream");
-  const { ordered, deprioritized } = orderByRateGuard(candidates, rateGuard);
+  const uniqueCandidates = [...new Map(candidates.map((candidate) => [candidate.id, candidate])).values()];
+  const boundedCandidates = uniqueCandidates.slice(0, MAX_PROVIDER_FALLBACK_ATTEMPTS);
+  const omittedCandidates = uniqueCandidates.slice(MAX_PROVIDER_FALLBACK_ATTEMPTS).map((candidate) => candidate.id);
+  const { ordered, deprioritized } = orderByRateGuard(boundedCandidates, rateGuard);
   const fellBackFrom: string[] = [];
   let lastError: unknown;
 
@@ -134,7 +142,7 @@ export async function openStreamWithFallback(
         });
       }
       rateGuard?.reportSuccess(candidate.id);
-      return { servedBy: candidate.id, fellBackFrom, deprioritizedRateLimited: deprioritized, routeFingerprint: candidate.request?.routeFingerprint ?? null, stream: prepend(first, iterator) };
+      return { servedBy: candidate.id, fellBackFrom, deprioritizedRateLimited: deprioritized, routeFingerprint: candidate.request?.routeFingerprint ?? null, omittedCandidates, stream: prepend(first, iterator) };
     } catch (err) {
       if (candidateOptions.abortSignal?.aborted) throw err;
       if (isRateLimitError(err)) {
@@ -147,7 +155,10 @@ export async function openStreamWithFallback(
   }
 
   const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown error");
-  const message = `All ${candidates.length} provider(s) failed; last error: ${detail}`;
+  const boundedNote = omittedCandidates.length > 0
+    ? ` within bounded fallback (${omittedCandidates.length} candidate(s) omitted)`
+    : "";
+  const message = `All ${boundedCandidates.length} provider(s) failed${boundedNote}; last error: ${detail}`;
   if (lastError instanceof ProviderError) {
     throw new ProviderError(lastError.type, message, {
       kind: lastError.kind,

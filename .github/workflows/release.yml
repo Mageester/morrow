@@ -80,6 +80,11 @@ jobs:
         with:
           tag_name: v${{ inputs.version }}
           name: Morrow v${{ inputs.version }}
+          # workflow_dispatch defaults the release target to the repository's
+          # default branch even when the workflow itself was dispatched on a
+          # release branch. Bind the tag to the exact clean revision that built
+          # and passed installer integration.
+          target_commitish: ${{ github.sha }}
           prerelease: true
           body_path: dist/RELEASE_NOTES.md
           files: |

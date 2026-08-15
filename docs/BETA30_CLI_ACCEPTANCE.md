@@ -324,23 +324,27 @@ regressions confirmed in `docs/BETA29_UX_INVENTORY.md` defect 4).
 
 ## 5. Main Interaction Layout
 
-- **Compact header** (fixed, top) — identity, repository, branch/dirty,
-  model, mode, approval state. Redraws in place; never scrolls.
-- **Mission area** (fixed, below header) — active mission objective and
-  high-level progress, shown only when a mission is active.
-- **Bounded activity feed** (scrolls) — the structured activity lines from
-  §6, most recent at the bottom, normal terminal scrollback applies.
-- **Progress summary** (fixed, appears only during active work) — current
-  meaningful action.
-- **Input box** (fixed, bottom) — the one obvious input.
-- **Status line** (fixed, bottom-most) — identity glyph, current action word,
-  change count, cost.
+- **Mission Deck chrome** (fixed, top) — one row owns identity, project,
+  branch/dirty, model, privacy, and effective permission. Secondary fields
+  collapse by terminal width; the project and permission mode survive.
+- **Mission transcript** (scrolls) — an uppercase `MISSION` label, a derived
+  editorial title, the original request, structured progress, evidence-backed
+  completion, and the final answer in that order.
+- **Live-work rail** (fixed alongside the transcript at wide widths) — Focus,
+  Plan, observed Artifacts, observed References, and Permissions. It is a
+  projection of existing state, never a second source of truth; it must not
+  invent file sizes, timestamps, or verification claims.
+- **Input box** (fixed, bottom) — the one obvious input, with a copper border
+  and the same editing, approval, slash-command, and palette behavior as the
+  narrow layout.
+- **Status line** (fixed, bottom-most) — identity glyph and current action;
+  detailed usage and cost remain behind `/stats`.
 
-**Fixed:** header, mission area (when present), progress summary (when
-present), input box, status line. **Scrolls:** the activity feed and the
-conversational transcript above it — ordinary terminal scrollback and
-selection must work over this region exactly as it would over any other CLI
-output.
+At 112 columns and above, the live-work rail is shown when a mission is
+active. Below that threshold the transcript becomes one column and keeps the
+project, mission, permission, and task state readable. The rail and the
+transcript share the same bounded viewport, so overlays, transcript scrolling,
+approvals, and normal terminal selection remain usable at every width.
 
 ## 6. Activity Grammar
 

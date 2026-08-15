@@ -6,6 +6,112 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.46] - 2026-08-14
+
+### Added - premium terminal mission experience
+
+- Refined the CLI terminal presentation toward a calmer, more premium feel:
+  mission-deck rendering, live-work presentation, and app-view composition are
+  quieter by default with completed work receding and the active mission kept in
+  focus.
+- Expanded terminal rendering coverage (new mission-deck suite; 535 terminal
+  tests green) so the presentation stays stable across state transitions.
+
+### Fixed - bounded harness convergence
+
+- Replaced unbounded same-target rewrite churn with a durable convergence guard
+  that distinguishes exact repeats, operation identity, legitimate edits, new
+  artifacts, verification, diagnostics, and application milestones.
+- Pauses a stalled task with a visible `loop-stalled` warning and resumable
+  checkpoint instead of consuming dozens of provider turns.
+- Made `create_file` an explicit atomic whole-file write for existing and new
+  regular files, with hash-fenced backups, undo evidence, idempotent replay, and
+  no automatic `target_exists` create-to-edit switch.
+- Bounded provider fallback attempts and preserved tool-only turns as valid
+  responses while retaining explicit incomplete behavior for empty responses.
+
+### Security and privacy impact
+
+- Workspace containment, denied-name checks, approval boundaries, provider
+  choice, local persistence, cancellation, browser policy, and process cleanup
+  remain enforced. The change adds no telemetry, hosted inference, or new
+  external data flow.
+
+### Rollback
+
+- Reinstall `v0.1.0-beta.45` to restore the preceding release. Existing
+  projects, conversations, provider configuration, local task records, and
+  workspace backups remain data-preserving and schema-compatible.
+
+## [0.1.0-beta.45] - 2026-08-14
+
+### Fixed - chat control recovery
+
+- Approval cards now occupy their own action shelf above the composer, so the
+  decision controls remain visible and clickable while a task is waiting.
+- The chat composer is now a single calm writing surface: its focus treatment
+  no longer creates a second textarea outline, routing reflows before controls
+  collide in narrow live-work layouts, and thinking controls recede into a
+  quieter utility row.
+
+### Security and privacy impact
+
+- This release changes only chat layout, visual presentation, and truthful
+  trusted-workspace copy. It does not expand the approval policy, tools,
+  provider requests, credentials, telemetry, or external data flow.
+
+### Rollback
+
+- Reinstall `v0.1.0-beta.44` to restore the prior chat presentation. Projects,
+  conversations, provider configuration, and local data remain compatible and
+  are not deleted.
+
+## [0.1.0-beta.44] - 2026-08-13
+
+### Changed - premium UI completion
+
+- Home now has a real searchable provider/model picker instead of a static
+  route label or native-looking dropdown. The chosen route carries into the
+  conversation it creates, and connected providers remain clearly identified.
+- Projects, History, Memory, Skills, Connections, and Settings now use the
+  same editorial hierarchy, restrained copper accents, compact controls, and
+  progressively disclosed detail as onboarding and the conversation surface.
+- The conversation composer has a clearer primary action row and a dedicated
+  reasoning row. Show thinking now has a larger labelled target on desktop and
+  mobile, while the composer remains reachable during long-running work.
+- Contrast, keyboard focus, reduced-motion behavior, mobile layouts, console
+  health, and horizontal overflow were re-verified across the primary routes.
+
+### Fixed - long build autonomy
+
+- Successful file writes are now projected back to the model as inert durable
+  history. Morrow no longer exposes its internal `_morrowAppliedWrite` marker
+  as an executable-looking tool call that weaker models can copy without file
+  content.
+- Short continuation prompts such as "start building" inherit the immediately
+  preceding substantive brief, preserving the requested artifact type,
+  constraints, browser tools, and completion contract instead of silently
+  downgrading the task to read-only work.
+- Invented marker-only writes are counted across filenames and hashes. After a
+  bounded correction window Morrow interrupts cleanly rather than letting a
+  model burn dozens of calls by changing the fake target on every attempt.
+
+### Security and privacy impact
+
+- The harness fix changes provider-facing execution history and malformed-write
+  recovery. It does not add a provider, automatic cross-provider handoff,
+  network request, telemetry path, permission, or credential flow.
+- Completed write bodies remain in the local workspace and durable local task
+  records; provider history receives only a bounded statement that the write
+  completed. Failed writes retain their original arguments solely for the next
+  bounded repair attempt.
+
+### Rollback
+
+- Reinstall `v0.1.0-beta.43` to restore the previous interface and execution
+  projection. Projects, conversations, provider configuration, and local data
+  remain schema-compatible and are not deleted.
+
 ## [0.1.0-beta.43] - 2026-08-13
 
 ### Changed - full product visual refresh

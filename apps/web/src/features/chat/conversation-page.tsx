@@ -22,6 +22,8 @@ import { toConversationMessageInput } from "./conversation-submit.js";
 import { MissionCard } from "./mission-card.js";
 import { MissionPanel } from "./mission-panel.js";
 import { ActivityPanel, ConversationActivity, ConversationTranscript } from "./activity-panel.js";
+import { ConversationRail } from "./conversation-rail.js";
+import { usePublishShellTitle } from "../../app/shell-title.js";
 import { PendingApprovals } from "./pending-approvals.js";
 import { useConversationAutoscroll } from "./use-conversation-autoscroll.js";
 import { ReasoningDisclosure } from "./reasoning-disclosure.js";
@@ -81,6 +83,26 @@ function reconcileConversationLists(
         );
       },
     );
+  }
+}
+
+/** Publishes the conversation's name to the shell breadcrumb. */
+function ConversationTitle({ title }: { title: string }) {
+  usePublishShellTitle(title);
+  return null;
+}
+
+/**
+ * True when the viewport is wide enough to show the live-work rail beside the
+ * conversation rather than over it. Matches the 1200px desktop breakpoint in
+ * MOTION_AND_RESPONSIVE.md.
+ */
+function railFitsViewport(): boolean {
+  try {
+    return window.matchMedia("(min-width: 1200px)").matches;
+  } catch {
+    // No matchMedia (jsdom, older engines): default to the calmer state.
+    return false;
   }
 }
 
@@ -159,7 +181,12 @@ export function ConversationPageContent({
   const [renameTitle, setRenameTitle] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const [activityOpen, setActivityOpen] = useState(false);
+  // The live-work rail is contextual: it opens with the conversation where
+  // there is room for it, and stays behind the Activity control below the
+  // reference's desktop breakpoint, where it would otherwise cover the reading
+  // column it is meant to accompany.
+  const [activityOpen, setActivityOpen] = useState(railFitsViewport);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [showReasoning, setShowReasoning] = useState(loadReasoningVisibility);
   const [reasoningConfig, setReasoningConfig] = useState<import("@morrow/contracts").ReasoningConfiguration>({ mode: "auto" });
   const activityButtonRef = useRef<HTMLButtonElement>(null);
@@ -427,61 +454,63 @@ export function ConversationPageContent({
   }
 
   return (
-    <section aria-label="Conversation workspace" className="morrow-conversation-page">
+    <section
+      aria-label={`Conversation: ${value.title}`}
+      className="morrow-conversation-page"
+      data-rail={activityOpen ? "open" : "closed"}
+    >
+      {/* The conversation's name goes to the shell breadcrumb instead of being
+          repeated as a page heading, so the reading column opens on the
+          conversation itself. */}
+      <ConversationTitle title={value.title} />
+
+      <div className="morrow-conversation">
       <header className="morrow-conversation-header">
-        <h1 id="conversation-heading">{value.title}</h1>
         <div aria-label="Conversation actions" className="morrow-conversation-actions">
           <button
-            aria-label="Activity / Inspect"
+            aria-label={activityOpen ? "Hide live work" : "Show live work"}
             aria-pressed={activityOpen}
             className="morrow-conversation-actions__activity"
             onClick={() => setActivityOpen((open) => !open)}
             ref={activityButtonRef}
             type="button"
           >
-            <ListTree aria-hidden="true" size={16} />
+            <ListTree aria-hidden="true" size={15} />
             <span>Activity</span>
           </button>
-          <button aria-label="Rename conversation" disabled={actionBusy} onClick={openRename} ref={renameButtonRef} type="button"><Pencil aria-hidden="true" size={16} /></button>
-          <button aria-label={value.archived ? "Restore conversation" : "Archive conversation"} disabled={actionBusy} onClick={() => { void toggleArchive(); }} type="button"><Archive aria-hidden="true" size={16} /></button>
-          <button aria-label="Delete conversation" disabled={actionBusy} onClick={() => { setActionMessage(null); setDeleteOpen(true); }} ref={deleteButtonRef} type="button"><Trash2 aria-hidden="true" size={16} /></button>
+          <button aria-label="Rename conversation" disabled={actionBusy} onClick={openRename} ref={renameButtonRef} type="button"><Pencil aria-hidden="true" size={15} /></button>
+          <button aria-label={value.archived ? "Restore conversation" : "Archive conversation"} disabled={actionBusy} onClick={() => { void toggleArchive(); }} type="button"><Archive aria-hidden="true" size={15} /></button>
+          <button aria-label="Delete conversation" disabled={actionBusy} onClick={() => { setActionMessage(null); setDeleteOpen(true); }} ref={deleteButtonRef} type="button"><Trash2 aria-hidden="true" size={15} /></button>
         </div>
       </header>
 
-      <WorkspaceStatusLine projectId={projectId} />
-
-      {activityOpen ? (
-        <ActivityPanel
-          conversationId={conversationId}
-          onClose={closeActivity}
-          projectId={projectId}
-        />
-      ) : null}
-
-      {(conversation.isRefetchError && conversation.data) || (messages.isRefetchError && messages.data) ? (
-        <p className="morrow-chat-warning" role="status">Morrow could not refresh this conversation. Showing saved history.</p>
-      ) : null}
-      {actionMessage ? <p aria-live="polite" role={actionMessage.includes("could not") ? "alert" : "status"}>{actionMessage}</p> : null}
-
-      {linkedMission ? (
-        <ConversationMissionSurface fallbackSummary={linkedMission} missionId={linkedMission.id} />
-      ) : missionsEnabled ? (
-        <div className="morrow-conversation-mission">
-          <button
-            className="morrow-conversation-mission__start"
-            disabled={startMission.isPending}
-            onClick={startMissionFromChat}
-            type="button"
-          >
-            {startMission.isPending ? "Starting a mission…" : "Start a mission from this chat"}
-          </button>
-          {startMission.isError ? (
-            <p role="alert">Morrow could not start a mission. Check the connection and try again.</p>
-          ) : null}
-        </div>
-      ) : null}
-
       <div aria-live="polite" className="morrow-conversation-history">
+        <div className="morrow-conversation-history__inner">
+        <WorkspaceStatusLine projectId={projectId} />
+
+        {(conversation.isRefetchError && conversation.data) || (messages.isRefetchError && messages.data) ? (
+          <p className="morrow-chat-warning" role="status">Morrow could not refresh this conversation. Showing saved history.</p>
+        ) : null}
+        {actionMessage ? <p aria-live="polite" role={actionMessage.includes("could not") ? "alert" : "status"}>{actionMessage}</p> : null}
+
+        {linkedMission ? (
+          <ConversationMissionSurface fallbackSummary={linkedMission} missionId={linkedMission.id} />
+        ) : missionsEnabled ? (
+          <div className="morrow-conversation-mission">
+            <button
+              className="morrow-conversation-mission__start"
+              disabled={startMission.isPending}
+              onClick={startMissionFromChat}
+              type="button"
+            >
+              {startMission.isPending ? "Starting a mission…" : "Start a mission from this chat"}
+            </button>
+            {startMission.isError ? (
+              <p role="alert">Morrow could not start a mission. Check the connection and try again.</p>
+            ) : null}
+          </div>
+        ) : null}
+
         {history.length === 0 ? (
           <div className="morrow-conversation-empty">
             <h2>Start this conversation</h2>
@@ -514,7 +543,16 @@ export function ConversationPageContent({
                     <ConversationActivity entries={activityByTask.get(message.taskId) ?? []} />
                   ) : null}
                   <div className={`morrow-conversation-message__content${message.role === "assistant" ? " morrow-conversation-message__content--markdown" : ""}`}>
-                    {waiting ? <p>Morrow is responding…</p> : message.role === "assistant" ? (
+                    {waiting ? (
+                      <p className="morrow-typing-indicator" role="status">
+                        Morrow is responding…
+                        <span aria-hidden="true" className="morrow-typing-indicator__dots">
+                          <span />
+                          <span />
+                          <span />
+                        </span>
+                      </p>
+                    ) : message.role === "assistant" ? (
                       <Markdown streaming={ACTIVE_STATES.has(message.streamingState)} text={message.content} />
                     ) : <p>{message.content}</p>}
                   </div>
@@ -535,18 +573,23 @@ export function ConversationPageContent({
             </article>
           );
         })}
+
+        {activeMessages.map((message) => (
+          <TaskStream conversationId={conversationId} key={message.taskId} projectId={projectId} taskId={message.taskId!} />
+        ))}
+
+        <div aria-hidden="true" className="morrow-conversation-autoscroll-sentinel" ref={sentinelRef} />
+        </div>
       </div>
 
-      {activeMessages.map((message) => (
-        <TaskStream conversationId={conversationId} key={message.taskId} projectId={projectId} taskId={message.taskId!} />
-      ))}
-
-      <PendingApprovals
-        active={activeTaskId !== undefined}
-        conversationId={conversationId}
-        conversationTaskIds={conversationTaskIds}
-        projectId={projectId}
-      />
+      <div className="morrow-conversation-action-shelf">
+        <PendingApprovals
+          active={activeTaskId !== undefined}
+          conversationId={conversationId}
+          conversationTaskIds={conversationTaskIds}
+          projectId={projectId}
+        />
+      </div>
 
       <div className="morrow-conversation-composer">
         <ChatComposer
@@ -564,8 +607,29 @@ export function ConversationPageContent({
           placeholder="Reply to Morrow…"
         />
       </div>
+      </div>
 
-      <div aria-hidden="true" className="morrow-conversation-autoscroll-sentinel" ref={sentinelRef} />
+      {activityOpen ? (
+        <ConversationRail
+          active={activeTaskId !== undefined}
+          conversationId={conversationId}
+          onOpenInspector={() => setInspectorOpen(true)}
+          projectId={projectId}
+        />
+      ) : null}
+
+      {/* The rail summarises; the inspector still carries the full, raw,
+          redacted activity record. Opening it stays one click away. */}
+      {inspectorOpen ? (
+        <ActivityPanel
+          conversationId={conversationId}
+          onClose={() => {
+            setInspectorOpen(false);
+            window.setTimeout(() => activityButtonRef.current?.focus(), 0);
+          }}
+          projectId={projectId}
+        />
+      ) : null}
 
       {renameOpen ? (
         <div aria-labelledby="rename-conversation-heading" aria-modal="true" className="morrow-conversation-dialog-backdrop" onKeyDown={(event) => onDialogKeyDown(event, closeRename)} role="dialog">

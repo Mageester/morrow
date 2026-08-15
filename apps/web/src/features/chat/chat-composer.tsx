@@ -62,6 +62,36 @@ export interface ChatComposerModelRoute {
   reasoning?: RouteReasoningCapability | undefined;
 }
 
+const ROUTE_HANDOFF_PREFIX = "morrow.chat-route-handoff.v1";
+
+function routeHandoffKey(scope: ChatDraftScope): string {
+  return `${ROUTE_HANDOFF_PREFIX}.${encodeURIComponent(JSON.stringify([scope.projectId, scope.conversationId ?? null]))}`;
+}
+
+/** Persist only a non-secret route choice for the conversation Home is about
+ * to open. Credentials and message content are stored elsewhere. */
+export function saveChatRouteHandoff(scope: ChatDraftScope, route: ChatComposerModelRoute): void {
+  try {
+    window.localStorage.setItem(routeHandoffKey(scope), JSON.stringify({ route, version: 1 }));
+  } catch {
+    // A denied storage write must not block opening the conversation.
+  }
+}
+
+export function loadChatRouteHandoff(scope: ChatDraftScope): ChatComposerModelRoute | undefined {
+  try {
+    const raw = window.localStorage.getItem(routeHandoffKey(scope));
+    if (!raw) return undefined;
+    const stored: unknown = JSON.parse(raw);
+    if (!stored || typeof stored !== "object" || !("version" in stored) || stored.version !== 1 || !("route" in stored)) return undefined;
+    const route = stored.route;
+    if (!route || typeof route !== "object" || !("id" in route) || typeof route.id !== "string" || !("label" in route) || typeof route.label !== "string") return undefined;
+    return route as ChatComposerModelRoute;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface ChatComposerSubmission {
   content: string;
   projectId: string;
@@ -287,12 +317,17 @@ export function ChatComposer({
   } | null>(null);
 
   const availableRoutes = modelRoutes.length > 0 ? modelRoutes : [DEFAULT_ROUTE];
+  const [initialRoute] = useState(() => loadChatRouteHandoff(draftScope));
   const [initialModePreference] = useState(loadComposerModePreference);
   const [mode, setMode] = useState<ComposerMode>(initialModePreference.mode);
   const [autoApprove, setAutoApprove] = useState(initialModePreference.autoApprove);
-  const [routeId, setRouteId] = useState(availableRoutes[0]!.id);
+  const [routeId, setRouteId] = useState(
+    availableRoutes.some((route) => route.id === initialRoute?.id) ? initialRoute!.id : availableRoutes[0]!.id,
+  );
   // Selection from the searchable catalogue; undefined means "Auto — recommended".
-  const [catalogueRoute, setCatalogueRoute] = useState<ChatComposerModelRoute | undefined>(undefined);
+  const [catalogueRoute, setCatalogueRoute] = useState<ChatComposerModelRoute | undefined>(
+    modelCatalogue ? initialRoute : undefined,
+  );
   const [length, setLength] = useState(() => initialDraft.length);
   const [hasContent, setHasContent] = useState(() => Boolean(initialDraft.trim()));
   const [sending, setSending] = useState(false);
@@ -506,7 +541,10 @@ export function ChatComposer({
         rows={1}
       />
 
-      <div className="morrow-chat-composer__modes-row">
+      {/* One bar of chips, as in the premium reference: how Morrow should work,
+          how far it may go, and where it thinks — then send. Everything that
+          was on a second row is still here and still reachable in tab order. */}
+      <div className="morrow-chat-composer__toolbar">
         <div aria-label="How Morrow should work" className="morrow-chat-composer__modes" role="group">
           {MODES.map((item) => (
             <button
@@ -537,16 +575,7 @@ export function ChatComposer({
             <span>Trusted workspace</span>
           </label>
         ) : null}
-      </div>
-      <p className="morrow-chat-composer__mode-hint">
-        {mode === "build"
-          ? autoApprove
-            ? "Morrow can edit files and run ordinary workspace commands without stopping."
-            : "Morrow will ask before workspace changes and commands."
-          : "Morrow will answer and read your project, but will not change anything."}
-      </p>
 
-      <div className="morrow-chat-composer__toolbar">
         {projects.length > 1 && onProjectChange ? (
           <label className="morrow-chat-composer__select">
             <span>Project</span>
@@ -587,6 +616,7 @@ export function ChatComposer({
 
         <ContextMeter taskId={contextTaskId ?? activeTaskId} />
 
+        <div aria-label="Thinking controls" className="morrow-chat-composer__thinking-controls">
         {onReasoningConfigChange ? (
           <ReasoningSlider
             capability={selectedReasoningCapability}
@@ -596,10 +626,13 @@ export function ChatComposer({
           />
         ) : null}
 
+        {/* Named for what it reveals, not for the same word the depth control
+            uses — two chips both reading "Reasoning" sat side by side and
+            neither said which was which. */}
         {onShowReasoningChange ? (
           <label
             className="morrow-chat-composer__reasoning-toggle"
-            title="Show reasoning text supplied by the model provider"
+            title="Show the reasoning text supplied by the model provider"
           >
             <input
               checked={showReasoning}
@@ -607,9 +640,11 @@ export function ChatComposer({
               onChange={(event) => onShowReasoningChange(event.target.checked)}
               type="checkbox"
             />
-            <span>Reasoning</span>
+            <span aria-hidden="true" className="morrow-chat-composer__toggle-mark" />
+            <span>Show thinking</span>
           </label>
         ) : null}
+        </div>
 
         {activeTaskId && onStop ? (
           <button
@@ -633,6 +668,15 @@ export function ChatComposer({
           </button>
         )}
       </div>
+
+      {/* The consequence of the current mode, stated plainly under the bar. */}
+      <p className="morrow-chat-composer__mode-hint">
+        {mode === "build"
+          ? autoApprove
+            ? "Ordinary workspace actions can continue without stopping; other actions still ask."
+            : "Morrow will ask before workspace changes and commands."
+          : "Morrow will answer and read your project, but will not change anything."}
+      </p>
 
       <div className="morrow-chat-composer__meta">
         <p id={helpId}>

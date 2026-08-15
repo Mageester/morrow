@@ -92,7 +92,7 @@ describe("state matrix: pure reducer states (composeApp)", () => {
     const frame = composeApp(s, initialInputState(), plain, true, ctx, opts);
     assertFourRegionShell(frame.lines, opts.columns);
     const text = frame.lines.join("\n");
-    expect(text).toContain("Mission");
+    expect(text).toContain("MISSION");
     expect(text).toContain("pnpm build");
   });
 
@@ -145,11 +145,11 @@ describe("state matrix: pure reducer states (composeApp)", () => {
     const frame = composeApp(s, initialInputState(), plain, true, ctx, opts);
     assertFourRegionShell(frame.lines, opts.columns);
     const text = frame.lines.join("\n");
-    expect(text).toContain("Task completed");
+    expect(text).toContain("VERIFICATION RESULT");
     expect(text).not.toMatch(/no (new )?progress/i);
     expect(text).not.toContain("↻");
     // No duplicate completion block.
-    expect((text.match(/Task completed/g) ?? []).length).toBe(1);
+    expect((text.match(/VERIFICATION RESULT/g) ?? []).length).toBe(1);
   });
 
   it("11. completed with recovery — the recovered story survives into the completion card, never a bare 'Recovered' with no detail", () => {

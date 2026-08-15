@@ -197,13 +197,10 @@ describe("agent file creation under YOLO", () => {
         "understanding",
         "planning",
         "executing_tool",
-        "proposing_changes",
         "applying_changes",
         "observing",
-        "proposing_changes",
         "applying_changes",
         "observing",
-        "proposing_changes",
         "applying_changes",
         "observing",
         "executing_tool",
@@ -216,7 +213,7 @@ describe("agent file creation under YOLO", () => {
     }
   });
 
-  it("automatically switches create_file to a backed-up edit when the target already exists", async () => {
+  it("overwrites an existing create_file target directly with a backed-up undoable change set", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -230,17 +227,16 @@ describe("agent file creation under YOLO", () => {
     runner.run("t");
     await runner.waitFor("t");
 
-    // The second create_file switched strategy to an edit and overwrote cleanly,
-    // rather than dead-ending on "it already exists".
+    // The second create_file keeps its explicit overwrite operation class.
     expect(readFileSync(join(ws, "keep.txt"), "utf8")).toBe("overwrite\n");
     const calls = conversationsRepository(db).listToolCallsForTask("t").filter((c: any) => c.toolName === "create_file");
     expect(calls[0]!.status).toBe("completed");
     expect(calls[1]!.status).toBe("completed");
 
-    // The strategy switch was observable and the overwrite is an undoable change set
-    // (the original content is backed up so /undo can restore it).
+    // The overwrite is an undoable change set (the original content is backed up
+    // so /undo can restore it), without an implicit strategy switch.
     const events = taskRecordsRepository(db).listEvents("t");
-    expect(events.some((e: any) => e.type === "tool.strategy_switch" && (e.payload as any).to === "edit")).toBe(true);
+    expect(events.some((e: any) => e.type === "tool.strategy_switch" && (e.payload as any).reason === "target_exists")).toBe(false);
     const changeSets = changeSetsRepository(db).listByTask("t");
     const editChange = changeSets.find((cs) => Object.keys(cs.postApplyHashes ?? {}).includes("keep.txt") && Object.keys(cs.backupReferences ?? {}).includes("keep.txt"));
     expect(editChange, "the overwrite should be captured as a backed-up change set").toBeTruthy();

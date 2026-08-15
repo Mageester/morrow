@@ -1,14 +1,19 @@
 import type { Conversation, WebMissionSummary } from "@morrow/contracts";
+import { Button, StatusPill, Surface } from "@morrow/ui";
 import { providerQueries } from "../../api/providers.js";
-import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import { useMutation, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { MessageSquare, Workflow } from "lucide-react";
 import { conversationQueries } from "../../api/conversations.js";
 import { missionQueries } from "../../api/query-keys.js";
-import { AmbientMark, StateScene } from "../../components/product-frame.js";
+import { StateScene } from "../../components/product-frame.js";
+import { ApiClientError } from "../../api/client.js";
+import { teamApi } from "../../api/teams.js";
+import { resultStateForDelegation } from "../shared/result-state.js";
 import { useActiveProject } from "../projects/use-active-project.js";
-import { NewChatButton } from "../chat/new-chat-button.js";
 import { GettingStarted } from "../onboarding/getting-started.js";
+import { HomeComposer } from "./home-composer.js";
+import type { ChatComposerModelRoute } from "../chat/chat-composer.js";
 
 const ACTIVE_MISSION_STATES = new Set([
   "draft",
@@ -36,10 +41,6 @@ function formatWhen(iso: string): string {
 export function HomePage() {
   const projects = useActiveProject();
   const providers = useQuery(providerQueries.list());
-  // A brand-new install has neither a project nor a provider; the empty state
-  // must be able to point at whichever is still missing.
-  const noProviderConnected =
-    providers.isSuccess && providers.data.filter((provider) => provider.configured && provider.id !== "mock").length === 0;
   const activeProject = projects.activeProject;
   const conversations = useQuery({
     ...conversationQueries.list(activeProject?.id ?? "", false),
@@ -57,22 +58,41 @@ export function HomePage() {
     ACTIVE_MISSION_STATES.has(mission.state),
   );
 
+  const homeRoutes = (providers.data ?? []).flatMap((provider): ChatComposerModelRoute[] => {
+    if (!provider.configured || provider.id === "mock") return [];
+    const models = provider.models.length > 0
+      ? provider.models
+      : provider.defaultModel
+        ? [provider.defaultModel]
+        : [];
+    return models.map((model) => ({
+      id: `model:${provider.id}:${model}`,
+      label: model,
+      model,
+      providerId: provider.id,
+    }));
+  });
+  const defaultRoute = homeRoutes.find((route) =>
+    (providers.data ?? []).some((provider) => provider.id === route.providerId && provider.defaultModel === route.model),
+  );
+
   return (
     <section aria-labelledby="home-heading" className="morrow-page morrow-home">
       <header className="morrow-home__intro">
-        <AmbientMark />
-        <p className="morrow-product-eyebrow">Private workspace</p>
-        <h1 id="home-heading">{greeting(new Date())}</h1>
+        <p className="morrow-product-eyebrow">{greeting(new Date())}</p>
+        <h1 id="home-heading">
+          {activeProject ? "What should we move forward?" : "A quieter place for ambitious work."}
+        </h1>
         <p className="morrow-home__subtitle">
-          {activeProject ? "What should we work on?" : "A quieter place for ambitious work."}
+          {activeProject
+            ? "Start with an outcome. Morrow will shape the work around you."
+            : "Choose a local project and Morrow will anchor its work there."}
         </p>
-        {activeProject && !noProviderConnected ? (
-          <div className="morrow-home__start">
-            <NewChatButton className="morrow-new-chat__button--large" projectId={activeProject.id} />
-          </div>
-        ) : activeProject && noProviderConnected ? (
-          <Link className="morrow-home__primary-action" to="/connections">Connect a model</Link>
-        ) : null}
+        {/* The missing-provider prompt deliberately lives only in the setup
+            checklist below. Repeating it here would put two identical "Connect
+            a model" calls to action on one screen — the exact regression the
+            checklist was introduced to remove. */}
+        <HomeComposer initialRoute={defaultRoute} projectId={activeProject?.id} routes={homeRoutes} />
       </header>
 
       {/* Setup guidance sits above every other state. The branch below only
@@ -114,9 +134,71 @@ export function HomePage() {
           {activeMissions.length > 0 ? (
             <ActiveWorkSection missions={activeMissions} />
           ) : null}
+          <SampleTaskSection projectId={activeProject.id} />
         </>
       )}
     </section>
+  );
+}
+
+function safeError(error: unknown, fallback: string): string {
+  return error instanceof ApiClientError ? error.message : fallback;
+}
+
+/**
+ * The onboarding mission's step 6: "run a safe deterministic sample task."
+ * Local, no-network, no live model — Researcher reads README.md, Verifier
+ * checks the result, and the full evidence trail (acceptance criteria,
+ * artifact hash, verification note) renders right here, not just a "done"
+ * toast.
+ */
+function SampleTaskSection({ projectId }: { projectId: string }) {
+  const runSample = useMutation({
+    mutationFn: () => teamApi.runReadmeSummarySample(projectId),
+  });
+
+  return (
+    <Surface aria-labelledby="sample-task-heading" className="morrow-home__sample-task" padding="large">
+      <div className="morrow-section-head">
+        <h2 id="sample-task-heading">Try a safe deterministic sample task</h2>
+      </div>
+      <p>
+        Summarizes this project's README through a Researcher → Verifier handoff. Local only — no
+        network request, no live model call, nothing written outside this evidence trail.
+      </p>
+      <Button
+        disabled={runSample.isPending}
+        onClick={() => runSample.mutate()}
+        variant="secondary"
+      >
+        {runSample.isPending ? "Running…" : "Run sample task"}
+      </Button>
+      {runSample.isError ? (
+        <p role="alert">{safeError(runSample.error, "The sample task could not run — is there a README.md in this project?")}</p>
+      ) : null}
+      {runSample.isSuccess ? (
+        <div aria-live="polite" className="morrow-home__sample-result" role="status">
+          {(() => {
+            const info = resultStateForDelegation(
+              runSample.data.delegation.status as "completed",
+              runSample.data.handoff.acceptanceCriteriaStatus,
+            );
+            return <StatusPill variant={info.variant}>{info.label}</StatusPill>;
+          })()}
+          <p className="morrow-home__sample-result-summary">{runSample.data.handoff.resultSummary}</p>
+          <ul aria-label="Acceptance criteria" className="morrow-home__sample-result-criteria">
+            {runSample.data.handoff.acceptanceCriteriaStatus.map((criterion) => (
+              <li data-met={criterion.met} key={criterion.criterion}>
+                {criterion.met ? "✓" : "✗"} {criterion.criterion}
+              </li>
+            ))}
+          </ul>
+          {runSample.data.handoff.verificationEvidence ? (
+            <p className="morrow-home__sample-result-evidence">{runSample.data.handoff.verificationEvidence}</p>
+          ) : null}
+        </div>
+      ) : null}
+    </Surface>
   );
 }
 
@@ -150,24 +232,32 @@ function ContinueSection({
         </div>
       ) : recent.length === 0 ? (
         <div className="morrow-empty morrow-empty--soft">
-          <p>No conversations yet. Start a new chat and it will appear here.</p>
+          <p>No conversations yet. Describe an outcome above and it will appear here.</p>
         </div>
       ) : (
-        <ul className="morrow-home__tiles">
-          {recent.map((conversation) => (
+        /* Three continuation cards, the first weighted. A living surface for
+           picking work back up — not a card dashboard: no metrics, no chrome,
+           each card is one destination. */
+        <ul className="morrow-home__continuity">
+          {recent.slice(0, 3).map((conversation, index) => (
             <li key={conversation.id}>
               <Link
-                className="morrow-tile"
+                className="morrow-work-card"
+                data-featured={index === 0 ? "true" : undefined}
                 params={{ conversationId: conversation.id }}
                 search={{ projectId }}
                 to="/chats/$conversationId"
               >
-                <span className="morrow-tile__icon" aria-hidden="true">
-                  <MessageSquare size={16} strokeWidth={1.8} />
+                <span className="morrow-work-card__label">
+                  {index === 0 ? "Last active" : formatWhen(conversation.updatedAt)}
                 </span>
-                <span className="morrow-tile__body">
-                  <span className="morrow-tile__title">{conversation.title}</span>
-                  <span className="morrow-tile__meta">Chat · {formatWhen(conversation.updatedAt)}</span>
+                <span className="morrow-work-card__title">{conversation.title}</span>
+                <span className="morrow-work-card__body">
+                  {index === 0 ? "Pick up where you stopped" : "Conversation"}
+                </span>
+                <span className="morrow-work-card__foot">
+                  <span>{formatWhen(conversation.updatedAt)}</span>
+                  <span aria-hidden="true">Open →</span>
                 </span>
               </Link>
             </li>

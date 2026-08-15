@@ -2159,7 +2159,7 @@ export class InteractiveSession {
     if (mode === "shutting_down" || mode === "output_report") return;
     this.lastPaintAt = this.now();
     const { io, out, unicode } = this.deps;
-    const promptLabel = out.green(unicode ? "› " : "> ");
+    const promptLabel = out.copper(unicode ? "› " : "> ");
     // While busy the elapsed timer feeds the footer; after a task it feeds
     // the completion card's "N tools · 18s" line.
     const elapsedMs = this.busy ? this.now() - this.streamStart : this.lastTaskElapsedMs;

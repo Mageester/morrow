@@ -1,0 +1,440 @@
+/*
+ * Premium visual system — shared editorial page grammar.
+ *
+ * The vocabulary every route composes from: page frame, hero, section head,
+ * editorial index rows, feature panel, and the principle strip.
+ * Reference: `.page`, `.eyebrow`, `.display`, `.subtitle`, `.page-hero`,
+ * `.section-head`, `.editorial-index`, `.editorial-row`, `.feature-project`,
+ * `.principle`, `.primary`, `.secondary`, `.search`.
+ */
+
+.morrow-page,
+.morrow-conversation-page {
+  display: grid;
+  width: 100%;
+  max-width: var(--morrow-premium-content);
+  padding: 44px 52px 80px;
+  margin-inline: auto;
+  /* The reference paces a page with its own section margins, not a large
+     uniform grid gap. */
+  gap: 0;
+  align-content: start;
+  animation: none;
+}
+
+/* Section headings that are not inside a `.morrow-section-head` still belong to
+   the same 22px editorial rule rather than the display size. */
+.morrow-page > div > h2,
+.morrow-connections-page__group > h2,
+.morrow-connections-page__category > h3 {
+  margin: 30px 0 12px;
+  color: var(--morrow-product-copy);
+  font: 500 22px var(--morrow-product-display);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.morrow-connections-page__category > h3 {
+  font-size: 15px;
+}
+
+/* ── Page hero ───────────────────────────────────────────────────────────── */
+
+.morrow-product-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  margin-bottom: 31px;
+  padding: 0;
+  border: 0;
+  gap: 28px;
+  animation: none;
+}
+
+.morrow-product-section,
+.morrow-product-state {
+  animation: none;
+}
+
+.morrow-product-header__copy {
+  min-width: 0;
+  max-width: 760px;
+  gap: 0;
+}
+
+/*
+ * The reference draws exactly two ambient forms: the arc in the navigation
+ * rail and the ring inside a featured panel. The refresh layer's page-level
+ * concentric marks are decoration beyond that vocabulary, so they are removed
+ * rather than restyled — everywhere except the rail, which shell.css owns.
+ */
+.morrow-page .morrow-product-mark,
+.morrow-conversation-page .morrow-product-mark,
+.morrow-product-header::after,
+.morrow-product-header::before {
+  display: none;
+  content: none;
+}
+
+.morrow-product-eyebrow {
+  margin: 0;
+  color: var(--morrow-product-copper);
+  font-family: var(--morrow-product-utility);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.morrow-product-header__title-line {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.morrow-product-header h1 {
+  margin: 7px 0;
+  font: 500 clamp(44px, 4vw, 58px) / 0.98 var(--morrow-product-display);
+  letter-spacing: -0.045em;
+  text-transform: none;
+}
+
+.morrow-product-header__description {
+  max-width: 68ch;
+  margin: 0;
+  color: var(--morrow-product-muted);
+  font-size: 15px;
+}
+
+.morrow-product-header__action {
+  flex: none;
+}
+
+/* ── Actions ─────────────────────────────────────────────────────────────── */
+
+/* One copper action per context; everything routine stays neutral. */
+.morrow-button[data-variant="primary"] {
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--morrow-product-copper);
+  color: #21110b;
+  font-weight: 800;
+  box-shadow: none;
+}
+
+.morrow-button[data-variant="primary"]:hover:not(:disabled) {
+  background: var(--morrow-product-copper-bright);
+  transform: none;
+}
+
+.morrow-button[data-variant="secondary"],
+.morrow-button[data-variant="ghost"] {
+  padding: 8px 11px;
+  border: 1px solid var(--morrow-product-line-strong);
+  border-radius: 9px;
+  background: var(--morrow-product-field-strong);
+  color: #d9d5cd;
+  font-weight: 650;
+}
+
+.morrow-button[data-variant="secondary"]:hover:not(:disabled),
+.morrow-button[data-variant="ghost"]:hover:not(:disabled) {
+  border-color: var(--morrow-product-copper-line);
+  color: var(--morrow-product-copy);
+}
+
+/* Destructive intent stays neutral until the user opens a danger path. */
+.morrow-button[data-variant="danger"] {
+  border: 1px solid color-mix(in srgb, var(--morrow-product-danger) 45%, transparent);
+  background: transparent;
+  color: var(--morrow-product-danger);
+}
+
+.morrow-button[data-variant="danger"]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--morrow-product-danger) 14%, transparent);
+  color: var(--morrow-product-danger);
+}
+
+.morrow-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* ── Search field ────────────────────────────────────────────────────────── */
+
+.morrow-premium-search {
+  display: flex;
+  width: 320px;
+  max-width: 100%;
+  align-items: center;
+  padding: 11px 13px;
+  border: 1px solid var(--morrow-product-line-strong);
+  border-radius: 11px;
+  background: #1d1e19;
+  color: var(--morrow-product-copy);
+  gap: 9px;
+}
+
+.morrow-premium-search svg {
+  flex: none;
+  color: var(--morrow-product-faint);
+}
+
+.morrow-premium-search input {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  outline: 0;
+}
+
+.morrow-premium-search input::placeholder {
+  color: #85877e;
+}
+
+.morrow-premium-search:focus-within {
+  border-color: var(--morrow-product-copper-line);
+}
+
+/* ── Section head ────────────────────────────────────────────────────────── */
+
+.morrow-section-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  margin: 30px 0 12px;
+  padding: 0;
+  border: 0;
+  gap: 16px;
+}
+
+.morrow-section-head h2 {
+  margin: 0;
+  color: var(--morrow-product-copy);
+  font: 500 22px var(--morrow-product-display);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.morrow-section-head > span,
+.morrow-section-head__link {
+  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.morrow-section-head__link:hover {
+  color: var(--morrow-product-copper);
+}
+
+/* ── Editorial index ─────────────────────────────────────────────────────── */
+
+.morrow-editorial-index {
+  border-top: 1px solid var(--morrow-product-line);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.morrow-editorial-row {
+  display: grid;
+  align-items: center;
+  padding: 17px 4px;
+  border-bottom: 1px solid var(--morrow-product-line);
+  grid-template-columns: 42px minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 0.75fr) auto;
+  gap: 17px;
+}
+
+.morrow-editorial-row__signature {
+  display: grid;
+  width: 39px;
+  height: 39px;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--morrow-product-field-strong);
+  color: #c78a6d;
+  font: 600 16px var(--morrow-product-display);
+}
+
+.morrow-editorial-row__identity {
+  min-width: 0;
+}
+
+.morrow-editorial-row__identity b,
+.morrow-editorial-row__identity small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-editorial-row__identity b {
+  color: var(--morrow-product-copy);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.morrow-editorial-row__identity small,
+.morrow-editorial-row__purpose,
+.morrow-editorial-row__time {
+  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+  font-size: 11px;
+}
+
+.morrow-editorial-row__purpose,
+.morrow-editorial-row__time {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-editorial-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Feature panel ───────────────────────────────────────────────────────── */
+
+.morrow-feature-panel {
+  position: relative;
+  min-height: 270px;
+  padding: 33px;
+  border: 1px solid #47372e;
+  border-radius: var(--morrow-product-radius-xl);
+  background: linear-gradient(115deg, #2a211b, #1a1915 55%, #171814);
+  overflow: hidden;
+}
+
+.morrow-feature-panel::after {
+  position: absolute;
+  top: -110px;
+  right: -70px;
+  width: 330px;
+  height: 330px;
+  content: "";
+  border: 1px solid rgb(177 108 73 / 0.32);
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 50px rgb(177 108 73 / 0.05),
+    0 0 0 100px rgb(177 108 73 / 0.025);
+}
+
+.morrow-feature-panel__meta {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  color: #bd8265;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.morrow-feature-panel h2 {
+  position: relative;
+  z-index: 1;
+  margin: 47px 0 8px;
+  font: 500 36px var(--morrow-product-display);
+  letter-spacing: -0.02em;
+  text-transform: none;
+}
+
+.morrow-feature-panel p {
+  position: relative;
+  z-index: 1;
+  max-width: 500px;
+  margin: 0;
+  color: #b5b0a7;
+}
+
+.morrow-feature-panel__foot {
+  position: absolute;
+  z-index: 1;
+  right: 33px;
+  bottom: 27px;
+  left: 33px;
+  display: flex;
+  align-items: center;
+  color: #807e76;
+  font-size: 11px;
+  gap: 20px;
+}
+
+.morrow-feature-panel__foot > *:last-child {
+  margin-left: auto;
+}
+
+/* ── Principle strip ─────────────────────────────────────────────────────── */
+
+.morrow-principle {
+  margin-top: 25px;
+  padding: 16px 19px;
+  border-left: 2px solid var(--morrow-product-copper);
+  background: #191a16;
+}
+
+.morrow-principle b {
+  display: block;
+  font: 500 18px var(--morrow-product-display);
+}
+
+.morrow-principle span {
+  color: var(--morrow-product-muted);
+  font-size: 12px;
+}
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 920px) {
+  .morrow-page,
+  .morrow-conversation-page {
+    padding: 40px 32px 72px;
+  }
+}
+
+@media (max-width: 700px) {
+  .morrow-page,
+  .morrow-conversation-page {
+    padding: 32px 18px 96px;
+  }
+
+  .morrow-product-header {
+    flex-direction: column;
+    align-items: start;
+    gap: 20px;
+  }
+
+  .morrow-premium-search {
+    width: 100%;
+  }
+
+  /* Secondary metadata is dropped before a title is allowed to truncate. */
+  .morrow-editorial-row {
+    grid-template-columns: 42px minmax(0, 1fr) auto;
+  }
+
+  .morrow-editorial-row__purpose,
+  .morrow-editorial-row__time {
+    display: none;
+  }
+
+  .morrow-feature-panel {
+    min-height: 0;
+    padding: 24px;
+  }
+
+  .morrow-feature-panel h2 {
+    margin-top: 28px;
+    font-size: 30px;
+  }
+
+  .morrow-feature-panel__foot {
+    position: static;
+    margin-top: 22px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+}

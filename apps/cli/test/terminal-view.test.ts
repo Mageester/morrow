@@ -76,10 +76,12 @@ describe("terminal views (ASCII, no color)", () => {
       { type: "task.completed" },
     ]);
     const text = completionCard(s, plain, { unicode: false, elapsedMs: 18_000 }).join("\n");
-    expect(text).toContain("+ Task completed");
+    expect(text).toContain("+ VERIFICATION RESULT");
+    expect(text).toContain("1 check passed");
+    expect(text).toContain("VERIFIED");
     expect(text).toContain("Changed");
     expect(text).toContain("a.ts");
-    expect(text).toContain("Verified");
+    expect(text).toContain("VERIFIED");
     expect(text).toContain("pnpm test");
     expect(text).toContain("exit 0");
     expect(text).toContain("1 tool - 18.0s");

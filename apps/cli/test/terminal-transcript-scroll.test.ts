@@ -72,7 +72,7 @@ describe("interactive transcript viewport", () => {
 
       expect(top.lines.length, `${columns}×${rows} top rows`).toBeLessThanOrEqual(rows);
       expect(live.lines.length, `${columns}×${rows} live rows`).toBeLessThanOrEqual(rows);
-      expect(stripAnsi(top.lines.join("\n"))).toContain("Mission");
+      expect(stripAnsi(top.lines.join("\n"))).toContain("MISSION");
       expect(stripAnsi(live.lines.join("\n"))).toContain("earliest answer row 160");
       expect(top.transcriptAtLive).toBe(false);
       expect(live.transcriptAtLive).toBe(true);

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ExecutionCheckpointSnapshot } from "../repositories/execution-continuity.js";
 import { redactSecrets, redactSecretsDeep } from "../provider/credentials.js";
 import { sanitizeExecutionRequirement, sanitizeRequirementEvaluation, type ExecutionRequirement, type RequirementEvaluation } from "./requirements.js";
+import type { ConvergenceSnapshot } from "./convergence-guard.js";
 
 /** Hard upper bound for one serialized internal recovery checkpoint. */
 export const MAX_EXECUTION_CHECKPOINT_BYTES = 131_072;
@@ -172,6 +173,28 @@ function boundedArtifactFingerprints(values: unknown): Array<{ path: string; con
     .slice(-MAX_ARRAY_ENTRIES);
 }
 
+function boundedConvergence(value: ConvergenceSnapshot | undefined): ConvergenceSnapshot | undefined {
+  if (!value || value.version !== 1) return undefined;
+  return {
+    version: 1,
+    nonProgressCycles: Number.isSafeInteger(value.nonProgressCycles) && value.nonProgressCycles >= 0 ? value.nonProgressCycles : 0,
+    exactCounts: value.exactCounts.slice(-MAX_ARRAY_ENTRIES).flatMap((entry) =>
+      typeof entry.signature === "string" && Number.isSafeInteger(entry.count) && entry.count > 0
+        ? [{ signature: boundedString(entry.signature, 240), count: entry.count }]
+        : []),
+    targets: value.targets.slice(-MAX_ARRAY_ENTRIES).flatMap((entry) =>
+      typeof entry.key === "string" && Number.isSafeInteger(entry.callCount) && entry.callCount >= 0
+        ? [{
+            key: boundedString(entry.key, 512),
+            callCount: entry.callCount,
+            uniqueArgumentCount: Math.max(0, Number.isSafeInteger(entry.uniqueArgumentCount) ? entry.uniqueArgumentCount : 0),
+            changedCallCount: Math.max(0, Number.isSafeInteger(entry.changedCallCount) ? entry.changedCallCount : 0),
+            noOpCallCount: Math.max(0, Number.isSafeInteger(entry.noOpCallCount) ? entry.noOpCallCount : 0),
+          }]
+        : []),
+  };
+}
+
 function boundedBaselinePaths(values: string[], maxBytes = 24 * 1024): { paths: string[]; complete: boolean; count: number; identityHash: string } {
   const unique = [...new Set(values)].map((value) => boundedString(redactSecrets(value)));
   const paths: string[] = [];
@@ -313,6 +336,7 @@ function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionChec
     ...(snapshot.taskArtifactFingerprints
       ? { taskArtifactFingerprints: boundedArtifactFingerprints(snapshot.taskArtifactFingerprints) }
       : {}),
+    ...(boundedConvergence(snapshot.convergence) ? { convergence: boundedConvergence(snapshot.convergence) } : {}),
   };
 }
 
@@ -388,6 +412,7 @@ export function boundExecutionCheckpointSnapshot(snapshot: ExecutionCheckpointSn
       ...(bounded.taskArtifactFingerprints
         ? { taskArtifactFingerprints: bounded.taskArtifactFingerprints }
         : {}),
+      ...(bounded.convergence ? { convergence: bounded.convergence } : {}),
     };
   }
 

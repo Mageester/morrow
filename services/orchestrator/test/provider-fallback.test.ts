@@ -86,6 +86,22 @@ describe("openStreamWithFallback", () => {
     await expect(openStreamWithFallback(candidates, [], {})).rejects.toThrow(/provider\(s\) failed/i);
   });
 
+  it("bounds fallback attempts and reports candidates omitted by the cap", async () => {
+    const attempts: string[] = [];
+    const candidates: FallbackCandidate[] = Array.from({ length: 6 }, (_, index) => ({
+      id: `provider-${index}`,
+      provider: {
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          attempts.push(`provider-${index}`);
+          throw new Error("503 unavailable");
+        },
+      } as AiProvider,
+    }));
+
+    await expect(openStreamWithFallback(candidates, [], {})).rejects.toThrow(/bounded fallback.*2 candidate/i);
+    expect(attempts).toHaveLength(4);
+  });
+
   it("respects a pre-aborted signal", async () => {
     const controller = new AbortController();
     controller.abort();

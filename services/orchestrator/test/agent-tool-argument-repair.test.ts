@@ -265,7 +265,6 @@ describe("agent tool-argument recovery", () => {
       "executing_tool",
       "observing",
       "executing_tool",
-      "proposing_changes",
       "applying_changes",
       "observing",
       "completed",
@@ -456,6 +455,25 @@ describe("agent tool-argument recovery", () => {
     expect(readFileSync(join(ws, "src/App.tsx"), "utf8")).toContain("export default function App");
   });
 
+  it("never exposes Morrow's applied-write marker to the provider after a successful write", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("real", "create_file", { path: "src/App.tsx", content: "export default function App(){return null}\n" }), done],
+        [text("all done"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    expect(provider.requests).toHaveLength(2);
+    const secondRequest = JSON.stringify(provider.requests[1]);
+    expect(secondRequest).not.toContain("_morrowAppliedWrite");
+    expect(secondRequest).not.toContain("export default function App");
+    expect(secondRequest).toContain("create_file completed for src/App.tsx");
+    expect(secondRequest).toContain("historical record, not a tool request");
+  });
+
   it("does NOT no-op an applied-write placeholder for a file that was never written", async () => {
     // A model that has learned the placeholder shape can emit it for a file it
     // never actually created. Skipping it as "already applied" would silently
@@ -525,6 +543,35 @@ describe("agent tool-argument recovery", () => {
       taskRecordsRepository(db).listEvents("t").some((e: any) => e.payload.reason === "tool_arguments_unrecoverable"),
     ).toBe(false);
     expect(existsSync(join(ws, "src/Ghost.tsx"))).toBe(true);
+  });
+
+  it("bounds invented applied-write placeholders across changing file targets", async () => {
+    seedYolo(db, ws);
+    const ph = (path: string, bytes: number) => ({
+      path,
+      _morrowAppliedWrite: { kind: "create_file", contentBytes: bytes, contentSha256: `fake-${bytes}`, instruction: "Historical applied write." },
+      truncatedForContext: true,
+    });
+    const provider = new MockProvider({
+      chunks: [
+        [tool("g1", "create_file", ph("_part_wm.js", 100)), done],
+        [tool("g2", "create_file", ph("_part_a_wm.js", 200)), done],
+        [tool("g3", "create_file", ph("_part01.js", 300)), done],
+        [tool("g4", "create_file", ph("_part02.js", 400)), done],
+        [tool("should-not-run", "create_file", { path: "late.txt", content: "late" }), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider, 12);
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(calls(db).some((call: any) => call.id === "should-not-run")).toBe(false);
+    expect(taskRecordsRepository(db).listEvents("t")).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "task.progress_warning",
+        payload: expect.objectContaining({ reason: "tool_arguments_unrecoverable", toolName: "create_file" }),
+      }),
+    ]));
   });
 
   it("does not let an echoed propose_patch placeholder loop kill the whole task", async () => {

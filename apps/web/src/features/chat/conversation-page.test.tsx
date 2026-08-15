@@ -75,7 +75,7 @@ describe("ConversationPage", () => {
 
     renderPage();
 
-    expect(await screen.findByRole("region", { name: "Conversation workspace" })).toBeVisible();
+    expect(await screen.findByRole("region", { name: `Conversation: ${conversation.title}` })).toBeVisible();
     expect(screen.getByRole("form", { name: "Message Morrow" })).toBeVisible();
   });
 
@@ -150,10 +150,11 @@ describe("ConversationPage", () => {
     const user = userEvent.setup();
     renderPage();
 
-    await screen.findByRole("heading", { name: conversation.title });
+    await screen.findByRole("region", { name: `Conversation: ${conversation.title}` });
     await screen.findByRole("region", { name: "Morrow activity" });
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/activity"))).toBe(true);
-    await user.click(screen.getByRole("button", { name: "Activity / Inspect" }));
+    await user.click(screen.getByRole("button", { name: "Show live work" }));
+    await user.click(await screen.findByRole("button", { name: "Open full activity ↗" }));
 
     const panel = await screen.findByRole("complementary", { name: "Activity / Inspect" });
     const items = within(panel).getAllByRole("listitem");
@@ -209,6 +210,7 @@ describe("ConversationPage", () => {
     renderPage();
 
     const region = await screen.findByRole("region", { name: "Approvals waiting for your decision" });
+    expect(region.closest(".morrow-conversation-action-shelf")).not.toBeNull();
     expect(within(region).getByText("Apply patch: Create the landing page structure.")).toBeVisible();
     expect(within(region).getByText("index.html")).toBeVisible();
     expect(within(region).queryByText("Apply patch: unrelated task.")).not.toBeInTheDocument();
@@ -353,7 +355,7 @@ describe("ConversationPage", () => {
     queryClient.setQueryData(conversationKeys.list("project-1", false), [conversation]);
     queryClient.setQueryData(conversationKeys.list("project-1", true), [conversation]);
     const { onDeleted } = renderPage(queryClient);
-    await screen.findByRole("heading", { name: "Local model research" });
+    await screen.findByRole("region", { name: "Conversation: Local model research" });
 
     const renameButton = screen.getByRole("button", { name: "Rename conversation" });
     await user.click(renameButton);
@@ -367,7 +369,7 @@ describe("ConversationPage", () => {
     await user.clear(title);
     await user.type(title, "Renamed chat");
     await user.click(within(renameDialog).getByRole("button", { name: "Save name" }));
-    expect(await screen.findByRole("heading", { name: "Renamed chat" })).toBeVisible();
+    expect(await screen.findByRole("region", { name: "Conversation: Renamed chat" })).toBeVisible();
     await waitFor(() => expect(renameButton).toHaveFocus());
     expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", false))?.[0]?.title).toBe("Renamed chat");
     expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", true))?.[0]?.title).toBe("Renamed chat");
@@ -494,7 +496,7 @@ describe("ConversationPage interleaved transcript", () => {
     await screen.findByText("Saved answer");
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/reasoning"))).toBe(false);
 
-    await user.click(screen.getByRole("checkbox", { name: "Reasoning" }));
+    await user.click(screen.getByRole("checkbox", { name: "Show thinking" }));
     const disclosure = await screen.findByRole("region", { name: "Model reasoning" });
     expect(within(disclosure).getByText(/smallest coherent change/)).toBeVisible();
     expect(localStorage.getItem("morrow.chat.show-reasoning.v1")).toBe("true");

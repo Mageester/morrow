@@ -1,0 +1,198 @@
+/*
+ * Premium visual system — Connections.
+ *
+ * Compact provider rows with progressive detail, not stacked cards.
+ * Reference: `.provider-list`, `.provider-row`, `.provider-logo`, `.healthy`,
+ * `.provider-detail`, `.field-label`, `.select-control`, `.catalog`.
+ */
+
+.morrow-provider-list {
+  /* The refresh layer grids lists inside a connections group into columns;
+     provider rows are a single stacked index. */
+  display: block;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-lg);
+  background: var(--morrow-product-field);
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.morrow-provider-row {
+  display: grid;
+  align-items: center;
+  padding: 17px 19px;
+  border-bottom: 1px solid var(--morrow-product-line);
+  grid-template-columns: minmax(210px, 1.2fr) minmax(220px, 1.1fr) minmax(170px, 0.8fr) auto;
+  gap: 18px;
+}
+
+.morrow-provider-list > li:last-child .morrow-provider-row {
+  border-bottom: 0;
+}
+
+.morrow-provider-row[data-open="true"] {
+  background: var(--morrow-product-field-strong);
+}
+
+.morrow-provider-id {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.morrow-provider-logo {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  place-items: center;
+  border: 1px solid #3d3d36;
+  border-radius: 11px;
+  background: #11120f;
+  color: var(--morrow-product-copper);
+  font: 700 17px var(--morrow-product-display);
+}
+
+.morrow-provider-row b,
+.morrow-provider-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.morrow-provider-row small {
+  color: var(--morrow-product-muted);
+  font-size: 12px;
+}
+
+.morrow-provider-health {
+  color: var(--morrow-product-success);
+  font-size: 12px;
+}
+
+.morrow-provider-health::before {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  content: "";
+  border-radius: 50%;
+  background: currentcolor;
+}
+
+.morrow-provider-health[data-state="unverified"] {
+  color: var(--morrow-product-warning);
+}
+
+.morrow-provider-health[data-state="idle"] {
+  color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
+}
+
+/* ── Expanded detail ─────────────────────────────────────────────────────── */
+
+.morrow-provider-detail {
+  display: grid;
+  margin-top: 12px;
+  padding: 23px;
+  border: 1px solid #3a3a33;
+  border-radius: var(--morrow-product-radius-lg);
+  background: linear-gradient(135deg, #21221e, #181916);
+  grid-template-columns: 1.15fr 1fr;
+  gap: 26px;
+}
+
+.morrow-provider-detail h3 {
+  margin: 0 0 6px;
+  font: 500 23px var(--morrow-product-display);
+}
+
+.morrow-provider-detail p {
+  margin: 0;
+  color: var(--morrow-product-muted);
+  font-size: 13px;
+}
+
+.morrow-field-label {
+  display: block;
+  margin-bottom: 7px;
+  color: #8f8c84;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.morrow-provider-detail select,
+.morrow-provider-detail input {
+  width: 100%;
+  padding: 11px 13px;
+  border: 1px solid #40413a;
+  border-radius: 10px;
+  background: #121310;
+  color: var(--morrow-product-copy);
+  font: inherit;
+}
+
+.morrow-provider-detail__actions {
+  display: flex;
+  justify-content: end;
+  padding-top: 16px;
+  border-top: 1px solid var(--morrow-product-line);
+  flex-wrap: wrap;
+  gap: 8px;
+  grid-column: 1 / -1;
+}
+
+/* ── Catalogue ───────────────────────────────────────────────────────────── */
+
+.morrow-provider-catalog {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  list-style: none;
+}
+
+.morrow-provider-catalog li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 15px;
+  background: #171815;
+  gap: 12px;
+}
+
+.morrow-provider-catalog b {
+  display: block;
+  font-size: 13px;
+}
+
+.morrow-provider-catalog span {
+  display: block;
+  color: var(--morrow-product-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 1199px) {
+  .morrow-provider-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .morrow-provider-catalog {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 700px) {
+  .morrow-provider-row,
+  .morrow-provider-detail,
+  .morrow-provider-catalog {
+    grid-template-columns: 1fr;
+  }
+}

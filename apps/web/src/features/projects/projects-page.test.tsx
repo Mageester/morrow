@@ -68,11 +68,12 @@ describe("ProjectsPage", () => {
     expect(await screen.findByText(/No projects yet/i)).toBeVisible();
 
     const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /new project/i }));
     await user.type(screen.getByRole("textbox", { name: /project name/i }), "Alpha");
     await user.type(screen.getByRole("textbox", { name: /folder path/i }), "C:\\code\\alpha");
     await user.click(screen.getByRole("button", { name: /add project/i }));
 
-    expect(await screen.findByText("Alpha")).toBeVisible();
+    expect(await screen.findByRole("region", { name: "Current project: Alpha" })).toBeVisible();
     expect(screen.getByText("Active")).toBeVisible();
   });
 

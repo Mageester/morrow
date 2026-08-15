@@ -1,0 +1,355 @@
+/*
+ * Premium visual system — split library (Memory, Skills).
+ *
+ * A curated index beside a dossier for the selected item: readable, traceable,
+ * scoped. Reference: `.split-library`, `.library`, `.filters`, `.filter`,
+ * `.group-label`, `.library-row`, `.dossier`, `.quote`, `.fact`, `.trust`.
+ */
+
+.morrow-split-library {
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(320px, 0.72fr);
+  gap: 13px;
+}
+
+.morrow-library,
+.morrow-dossier {
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-lg);
+  background: var(--morrow-product-field);
+  overflow: hidden;
+}
+
+.morrow-library {
+  align-content: start;
+}
+
+.morrow-library .morrow-library__heading {
+  padding: 18px;
+  margin: 0;
+  border-bottom: 1px solid var(--morrow-product-line);
+}
+
+/* ── Filters ─────────────────────────────────────────────────────────────── */
+
+.morrow-library__filters {
+  display: flex;
+  padding: 15px 16px;
+  border-bottom: 1px solid var(--morrow-product-line);
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.morrow-library__filter {
+  padding: 6px 9px;
+  border: 1px solid #353730;
+  border-radius: 8px;
+  background: transparent;
+  color: #85877e;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  transition:
+    border-color var(--morrow-premium-control) var(--morrow-product-shift),
+    color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-library__filter:hover {
+  border-color: var(--morrow-product-copper-line);
+  color: var(--morrow-product-copy-soft);
+}
+
+.morrow-library__filter[aria-pressed="true"] {
+  border-color: #594235;
+  background: var(--morrow-product-copper-soft);
+  color: #ddaa91;
+}
+
+.morrow-library__group {
+  padding: 19px 18px 8px;
+  margin: 0;
+  color: var(--morrow-product-copy-quiet);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+/* ── Rows ────────────────────────────────────────────────────────────────── */
+
+.morrow-library__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.morrow-library__row {
+  display: grid;
+  width: 100%;
+  padding: 14px 18px;
+  border: 0;
+  border-top: 1px solid var(--morrow-product-line-soft);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  grid-template-columns: 25px minmax(0, 1fr) auto;
+  gap: 12px;
+  text-align: left;
+  transition: background-color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-library__row:hover {
+  background: var(--morrow-product-field-strong);
+}
+
+.morrow-library__row[aria-current="true"] {
+  background: linear-gradient(90deg, #27221c, #1b1b17);
+}
+
+.morrow-library__glyph {
+  color: var(--morrow-product-copper);
+  font: 17px var(--morrow-product-display);
+}
+
+.morrow-library__row b {
+  display: block;
+  font-size: 12px;
+}
+
+.morrow-library__row p {
+  margin: 4px 0 0;
+  color: #959289;
+  font-size: 12px;
+}
+
+.morrow-library__scope {
+  color: var(--morrow-product-copy-quiet);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.morrow-library__scope[data-tone="proven"] {
+  color: var(--morrow-product-success);
+}
+
+/* Skills rows lead with a signature letter rather than a glyph. */
+.morrow-library__row[data-lead="signature"] {
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+}
+
+/* ── Dossier ─────────────────────────────────────────────────────────────── */
+
+.morrow-dossier {
+  align-content: start;
+  padding: 24px;
+}
+
+.morrow-dossier__tag {
+  margin: 0;
+  color: var(--morrow-product-copper);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.morrow-dossier h2 {
+  margin: 25px 0 14px;
+  font: 500 28px / 1.18 var(--morrow-product-display);
+  letter-spacing: -0.02em;
+}
+
+.morrow-dossier__quote {
+  padding: 15px 0 18px;
+  border-block: 1px solid var(--morrow-product-line);
+  color: var(--morrow-product-copy-soft);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.morrow-dossier__facts {
+  margin: 0;
+}
+
+.morrow-dossier__fact {
+  display: flex;
+  justify-content: space-between;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--morrow-product-line-soft);
+  font-size: 11px;
+  gap: 16px;
+}
+
+.morrow-dossier__fact dt,
+.morrow-dossier__fact span {
+  color: var(--morrow-product-copy-quiet);
+}
+
+.morrow-dossier__fact dd,
+.morrow-dossier__fact b {
+  margin: 0;
+  font-weight: 700;
+  text-align: right;
+}
+
+/* Trust note — the one green surface in the library. */
+.morrow-dossier__trust {
+  display: flex;
+  margin-top: 17px;
+  padding: 12px;
+  border: 1px solid #35513a;
+  border-radius: 10px;
+  background: var(--morrow-product-success-soft, #19251b);
+  color: #a9bfac;
+  font-size: 11px;
+  gap: 9px;
+}
+
+.morrow-dossier__steps {
+  padding: 15px 0 18px;
+  border-block: 1px solid var(--morrow-product-line);
+  margin: 0;
+  color: var(--morrow-product-copy-soft);
+  font-size: 14px;
+  line-height: 1.7;
+  list-style: none;
+  counter-reset: morrow-step;
+}
+
+.morrow-dossier__steps li {
+  counter-increment: morrow-step;
+}
+
+.morrow-dossier__steps li::before {
+  content: counter(morrow-step) " · ";
+  color: var(--morrow-product-faint);
+}
+
+.morrow-dossier__metrics {
+  display: grid;
+  margin: 22px 0;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+}
+
+.morrow-dossier__metric {
+  padding: 9px;
+  border-radius: 9px;
+  background: var(--morrow-product-field-strong);
+}
+
+.morrow-dossier__metric b,
+.morrow-dossier__metric span {
+  display: block;
+}
+
+.morrow-dossier__metric span {
+  color: #70736a;
+  font-size: 9px;
+}
+
+.morrow-dossier__actions {
+  display: flex;
+  margin-top: 18px;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.morrow-dossier__empty {
+  color: var(--morrow-product-faint);
+  font-size: 12px;
+}
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+
+/* The dossier becomes a sheet below the index rather than a squeezed column. */
+@media (max-width: 1199px) {
+  .morrow-split-library {
+    grid-template-columns: 1fr;
+  }
+
+  .morrow-dossier[data-selected="false"] {
+    display: none;
+  }
+}
+
+.morrow-memory-commandbar {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 14px;
+  margin-bottom: 7px;
+  background: var(--morrow-product-field);
+  gap: 9px;
+}
+
+.morrow-memory-commandbar__learning {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.morrow-memory-commandbar__learning b,
+.morrow-memory-commandbar__learning small {
+  display: block;
+}
+
+.morrow-memory-commandbar__learning small {
+  margin-top: 2px;
+  color: var(--morrow-product-muted);
+  font-size: 9px;
+}
+
+.morrow-memory-commandbar__note {
+  margin: 0 0 18px;
+  color: var(--morrow-product-faint);
+  font-size: 9px;
+}
+
+.morrow-memory .morrow-memory__add {
+  display: grid;
+  padding: 20px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-lg);
+  margin-bottom: 18px;
+  background: var(--morrow-product-field);
+  gap: 12px;
+}
+
+.morrow-memory .morrow-memory__add textarea {
+  min-height: 110px;
+  padding: 12px;
+  border: 1px solid var(--morrow-product-line-strong);
+  border-radius: 10px;
+  background: var(--morrow-product-field-strong);
+  color: var(--morrow-product-copy);
+  font: inherit;
+  resize: vertical;
+}
+
+.morrow-dossier > .morrow-memory__source-toggle {
+  padding-top: 12px;
+  border-top: 1px solid var(--morrow-product-line-soft);
+  margin-top: 14px;
+}
+
+@media (max-width: 700px) {
+  .morrow-memory-commandbar {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .morrow-memory-commandbar__learning {
+    width: 100%;
+  }
+
+  .morrow-memory-commandbar button,
+  .morrow-memory-commandbar .morrow-switch {
+    min-height: 44px;
+  }
+}

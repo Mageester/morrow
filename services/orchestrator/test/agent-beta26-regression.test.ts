@@ -165,7 +165,9 @@ describe("beta.26 public failure — deterministic regression", () => {
     // create_file against the existing style.css switched to a backed-up edit.
     const styleCreate = calls.find((c: any) => c.id === "c4");
     expect(styleCreate!.status).toBe("completed");
-    expect(JSON.parse(styleCreate!.resultJson!).convertedToEdit).toBe(true);
+    const styleResult = JSON.parse(styleCreate!.resultJson!);
+    expect(styleResult.strategy).toBe("overwrite");
+    expect(styleResult.convertedToEdit).toBeUndefined();
 
     // Exactly one terminal outcome, and it is "completed": no interrupted,
     // failed, or cancelled terminal event, and the final status is completed.
