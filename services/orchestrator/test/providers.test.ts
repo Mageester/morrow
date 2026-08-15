@@ -84,6 +84,26 @@ describe("OpenAI-compatible provider normalization", () => {
     expect(JSON.stringify(chunks)).not.toContain("sk-secret-key");
   });
 
+  it("moves a mid-conversation system message (e.g. a convergence advisory) to the front and merges it with the leading one", async () => {
+    const ref = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
+    const provider = new OpenAiCompatibleProvider({ id: "tokenrouter", apiKey: "k", baseUrl: "https://api.tokenrouter.com/v1", defaultModel: "qwen/qwen3.8-max-free" });
+    await collect(provider, [
+      { role: "system", content: "You are Morrow." },
+      { role: "user", content: "Read a file" },
+      { role: "assistant", content: "Reading now." },
+      { role: "system", content: "Morrow convergence advisory: repeated edit detected." },
+      { role: "user", content: "Try again" },
+    ]);
+
+    const sent = JSON.parse(ref.captured!.init.body).messages;
+    // Several OpenAI-compatible backends reject any system message that is
+    // not the first entry ("System message must be at the beginning.") —
+    // both system messages must land in one leading slot, in the original
+    // relative order, with every other message's order otherwise unchanged.
+    expect(sent[0]).toEqual({ role: "system", content: "You are Morrow.\n\nMorrow convergence advisory: repeated edit detected." });
+    expect(sent.slice(1).map((m: { role: string }) => m.role)).toEqual(["user", "assistant", "user"]);
+  });
+
   it("preserves DeepSeek reasoning continuation fields without rendering them as text", async () => {
     const ref = mockFetch(sseResponse([
       `data: {"choices":[{"delta":{"reasoning_content":"private-step"}}]}\n\n`,

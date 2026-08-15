@@ -57,9 +57,26 @@ export class OpenAiCompatibleProvider implements AiProvider {
     }
 
     const model = options.model || this.config.defaultModel;
+    // Agent turns can inject `system`-role messages mid-conversation
+    // (convergence advisories, compaction notices, reminders) — valid input
+    // for the Anthropic and Gemini adapters, which already pull all system
+    // content out of the transcript and merge it into one field regardless of
+    // position. The OpenAI chat-completions wire format instead expects a
+    // system message, if any, to be the first entry; several backends
+    // (observed via TokenRouter) reject a later one outright with "System
+    // message must be at the beginning." Consolidate the same way the other
+    // adapters do, so ordering never depends on where in the loop the system
+    // content was appended.
+    const systemContent = messages
+      .filter((m) => m.role === "system" && m.content)
+      .map((m) => m.content)
+      .join("\n\n");
+    const orderedMessages = systemContent
+      ? [{ role: "system" as const, content: systemContent }, ...messages.filter((m) => m.role !== "system")]
+      : messages;
     const body: Record<string, any> = {
       model,
-      messages: messages.map((m) => ({
+      messages: orderedMessages.map((m) => ({
         role: m.role,
         content: m.images?.length
           ? [
