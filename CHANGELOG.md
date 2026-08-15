@@ -8,6 +8,15 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [0.1.0-beta.46] - 2026-08-14
 
+### Added - premium terminal mission experience
+
+- Refined the CLI terminal presentation toward a calmer, more premium feel:
+  mission-deck rendering, live-work presentation, and app-view composition are
+  quieter by default with completed work receding and the active mission kept in
+  focus.
+- Expanded terminal rendering coverage (new mission-deck suite; 535 terminal
+  tests green) so the presentation stays stable across state transitions.
+
 ### Fixed - bounded harness convergence
 
 - Replaced unbounded same-target rewrite churn with a durable convergence guard
