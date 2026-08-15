@@ -1,42 +1,61 @@
 # Project Progress
 
-## Active package: RPR-5 - fresh artifact recovery
+## Active package: ALS-1 - agent loop simplification
 
-**State:** paused at a verified safe boundary on `codex/flagship-web-v1`.
+**State:** active on `codex/behavioral-loop-simplification`, using the approved
+current uncommitted working tree as the baseline.
 
-**Goal:** Prevent a provider's false missing-task narrative from poisoning later artifact recovery, and stop reasoning-only escalation immediately if one trusted fresh-context attempt still cannot act.
+**Goal:** Delete cognitive babysitting from the normal provider/tool loop while
+preserving objective security, durability, provider, context, cancellation,
+budget, and Mission Guardian invariants. Verify with the real UI and unchanged
+Qwen website task, then other configured real models.
 
-**Current evidence:** Treat [CHANGELOG.md](../CHANGELOG.md) `[Unreleased]` and [docs/evidence/flagship-runs.jsonl](../docs/evidence/flagship-runs.jsonl) as the durable campaign record. Do not copy run counts, streak outcomes, or landed-fix lists here.
+**Design:** [agent-loop-simplification-design.md](../docs/superpowers/specs/2026-08-15-agent-loop-simplification-design.md)
 
-**Current state:** RPR-5 is implemented and committed at `dd15b0e`. A trusted one-shot artifact recovery now drops poisoned assistant/tool/provider-private context while preserving durable audit rows, conservatively refuses reset after a successful `run_command`, survives restart and context-segment rollover through an exact durable turn key, and interrupts immediately if the fresh response is empty or reasoning-only. Independent Luna Max review returned `APPROVED`. Main verification passed the focused file (24/24), adjacent agent/projection tests (31/31), the complete non-live orchestrator suite (175 files / 1,921 tests), and orchestrator TypeScript. The user stopped the campaign at this boundary; no post-fix live canary, corpus work, or OpenCode Zen run was started.
+**Plan:** [agent-loop-simplification.md](../docs/superpowers/plans/2026-08-15-agent-loop-simplification.md)
 
 ## Acceptance criteria
 
-1. Add a failing full-agent regression for the retained false missing-task transcript.
-2. Rebuild one trusted provider request from system context plus the original request at artifact recovery.
-3. Drop mistaken assistant/tool/provider-continuation history from that request while preserving durable audit rows.
-4. Interrupt immediately if the fresh response is still reasoning-only/empty.
-5. Obtain independent review and full deterministic verification before exactly one new canary.
+1. Normal execution reconstructs durable history, calls the exact adapter,
+   persists streamed responses and tool results, repeats only for requested
+   tools, and finalizes through Mission Guardian.
+2. Progress epochs, observation exhaustion, generic stagnation/convergence
+   interruption, forced strategy change, and behavioral mission pauses are
+   absent from the hot path.
+3. Exact repeated calls receive durable model-visible advice without mission
+   interruption.
+4. Successful tool results appear exactly once in the next canonical request,
+   including restart and segment rollover.
+5. Permission, containment, argument validation, replay safety, provider/context
+   limits, cancellation, bounded retry, persistence, explicit budgets, and
+   Guardian evidence remain hard.
+6. Existing provider capability/context/stream work and unrelated dirty edits
+   remain preserved.
+7. The exact Qwen website task and the same task on other configured real models
+   are run through the real UI with Activity evidence; threshold changes and
+   warning suppression do not count as fixes.
 
 ## Ordered work packages
 
 | ID | Role | Package | Dependency | Verification gate | Status |
 | --- | --- | --- | --- | --- | --- |
-| RPR-5.1 | explorer companion | Classify prompt continuity and retry amplification | retained failed run | read-only event/projection report | complete |
-| RPR-5.2 | Luna Max implementer | Add red regression and trusted fresh-context recovery | approved plan | focused green evidence | complete |
-| RPR-5.3 | independent Luna Max reviewer | Review isolation, audit preservation, restart identity, and retry termination | implementation diff | `APPROVED` after two repair rounds | complete |
-| RPR-5.4 | main | Integrate and verify the full non-live suite | approved green change | commit `dd15b0e`; 175 files / 1,921 tests | complete |
-| RPR-5.5 | main | Run one serialized post-fix DeepSeek canary | explicit future authorization | append-only evidence row | paused by user; not started |
+| ALS-1.0 | explorer companion | Map Morrow/DeepSeek loop, history, repeat, cancellation, Guardian seams | approved request | read-only evidence brief | complete |
+| ALS-1.1 | Luna Max executor | Delete behavioral control and implement advisory repeats | design/plan | RED/GREEN focused tests | pending |
+| ALS-1.2 | Luna Max executor | Make durable tool-result reconstruction authoritative | ALS-1.1 | restart/rollover projection tests | pending |
+| ALS-1.3 | Luna Max tester/reviewer | Verify objective invariants and security-sensitive diff | ALS-1.2 | focused + integration verdict | pending |
+| ALS-1.4 | main + real UI | Serialized Qwen and cross-model trials; iterate on root cause | deterministic green + review | Activity/run evidence | pending |
+| ALS-1.5 | Luna Max doc-writer | Verified architecture/evidence documentation | live evidence | durable report/ADR/changelog | pending |
 
 ## Constraints and parallel boundaries
 
-- All implementation, review, integration, and live work is sequential because the runtime files and live resources overlap.
-- The persistent Luna Max explorer task remains read-only and may investigate supplementary call sites.
-- Workers must not edit Git state, `project_progress.md`, or `latest_session_work.md`.
-- Do not weaken assertions, extend sleeps, raise timeouts, or skip tests to obtain green.
-- Do not add features, UI work, or aesthetic refactors.
-- Every live run must append to the existing evidence log before assertion, whether it passes or fails.
+- Workers are sequential because `execution/agent.ts` and related tests overlap.
+- Workers do not mutate Git state or main-owned status/handoff documents.
+- Existing uncommitted provider/context/stream work is baseline, not worker-owned.
+- Unrelated UI/CLI edits and protected prototype surfaces remain untouched.
+- Live runs are serialized and append truthful evidence whether they pass or fail.
+- Security-sensitive changes require independent review before completion.
 
 ## Blockers and next action
 
-The deterministic repair gate is complete, but the campaign is intentionally stopped. Do not start a live run, corpus work, OpenCode Zen qualification, or new subagent without fresh user authorization. If the campaign is resumed, the next and only action is preflight followed by one serialized DeepSeek `flagship-web-v1` canary whose result is appended unchanged to `docs/evidence/flagship-runs.jsonl`; stop again immediately on failure.
+Commit the approved design/plan/status files only, then dispatch ALS-1.1 to a
+fresh Luna Max executor with strict file ownership and TDD evidence requirements.
