@@ -401,7 +401,7 @@ describe("Interactive Mission Console: Mission/Activity body structure", () => {
     let s = reduce(initialState(), { type: "session.started", meta });
     s = reduce(s, { type: "user.message", text: "fix the flaky retry logic" });
     const frame = composeApp(s, initialInputState(), plain, false, ctx, opts).lines.join("\n");
-    expect(frame).toContain("Mission");
+    expect(frame).toContain("MISSION");
     expect(frame).toContain("fix the flaky retry logic");
     // Only one occurrence of the objective text — the Mission heading owns
     // it, the ordinary "you ›" transcript line does not also repeat it.
@@ -429,7 +429,7 @@ describe("Interactive Mission Console: Mission/Activity body structure", () => {
     s = reduce(s, { type: "tool.start", id: "t1", name: "run_command", purpose: "pnpm test" });
     s = reduce(s, { type: "tool.end", id: "t1", status: "completed", summary: "33 passed" });
     const activeFrame = composeApp(s, initialInputState(), plain, false, ctx, opts).lines.join("\n");
-    expect(activeFrame).toContain("Activity");
+    expect(activeFrame).toContain("ACTIVITY");
     expect(activeFrame).toContain("pnpm test");
   });
 });

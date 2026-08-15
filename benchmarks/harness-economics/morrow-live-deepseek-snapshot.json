@@ -1,0 +1,47 @@
+{
+  "title": "Morrow / DeepSeek V4 / bounded live route check",
+  "records": [
+    {
+      "harness": "Morrow / V4 Flash route",
+      "model": "deepseek-v4-flash",
+      "taskId": "cbc57c96-3b21-48e6-b780-9f4575103449",
+      "passed": false,
+      "durationMs": 8828,
+      "inputTokens": 7285,
+      "cachedInputTokens": 3712,
+      "outputTokens": 804,
+      "providerCalls": 2,
+      "toolCalls": 1,
+      "duplicateObservations": 0,
+      "contextCompactions": 0,
+      "recoveryAttempts": 0,
+      "interventions": 0,
+      "pricing": {
+        "inputUsdPerMillion": 0.14,
+        "cachedInputUsdPerMillion": 0.0028,
+        "outputUsdPerMillion": 0.28
+      }
+    },
+    {
+      "harness": "Morrow / V4 Pro route",
+      "model": "deepseek-v4-pro",
+      "taskId": "596a7075-6405-4b09-aace-de029c875724",
+      "passed": false,
+      "durationMs": 13628,
+      "inputTokens": 10236,
+      "cachedInputTokens": 6656,
+      "outputTokens": 496,
+      "providerCalls": 3,
+      "toolCalls": 2,
+      "duplicateObservations": 0,
+      "contextCompactions": 0,
+      "recoveryAttempts": 0,
+      "interventions": 0,
+      "pricing": {
+        "inputUsdPerMillion": 0.435,
+        "cachedInputUsdPerMillion": 0.003625,
+        "outputUsdPerMillion": 0.87
+      }
+    }
+  ]
+}

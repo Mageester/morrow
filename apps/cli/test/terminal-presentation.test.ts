@@ -12,7 +12,8 @@ function fakeOutput(): Output {
     write: noop, diag: noop, info: noop, warn: noop, error: noop,
     gray: (s: string) => s, bold: (s: string) => s, green: (s: string) => s,
     red: (s: string) => s, yellow: (s: string) => s, cyan: (s: string) => s,
-    magenta: (s: string) => s, stripAnsi: (s: string) => s,
+    magenta: (s: string) => s, copper: (s: string) => s, sage: (s: string) => s,
+    stripAnsi: (s: string) => s,
   } as unknown as Output;
 }
 

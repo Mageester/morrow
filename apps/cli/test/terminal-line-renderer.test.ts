@@ -203,8 +203,8 @@ describe("LineRenderer (non-interactive)", () => {
       ]),
       { showActivity: true, showSummary: true }
     );
-    expect(stderr).toContain("Task completed");
-    expect(stderr).toContain("Verified");
+    expect(stderr).toContain("VERIFICATION RESULT");
+    expect(stderr).toContain("VERIFIED");
     expect(stderr).toContain("Details: /output");
   });
 

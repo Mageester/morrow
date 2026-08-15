@@ -23,6 +23,8 @@ const ANSI = {
   magenta: "\x1b[35m",
   cyan: "\x1b[36m",
   gray: "\x1b[90m",
+  copper: "\x1b[38;5;173m",
+  sage: "\x1b[38;5;108m",
 } as const;
 
 export class Output {
@@ -50,6 +52,8 @@ export class Output {
   cyan(s: string) { return this.wrap(ANSI.cyan, s); }
   magenta(s: string) { return this.wrap(ANSI.magenta, s); }
   gray(s: string) { return this.wrap(ANSI.gray, s); }
+  copper(s: string) { return this.wrap(ANSI.copper, s); }
+  sage(s: string) { return this.wrap(ANSI.sage, s); }
   underline(s: string) { return this.wrap(ANSI.underline, s); }
 
   /**
@@ -60,7 +64,7 @@ export class Output {
    * undefined (reading 'wrap')` the moment it runs. Callers that need to
    * pick a color by name should call this instead of `out[name](s)`.
    */
-  colorize(name: "bold" | "italic" | "dim" | "red" | "green" | "yellow" | "blue" | "cyan" | "magenta" | "gray" | "underline", s: string): string {
+  colorize(name: "bold" | "italic" | "dim" | "red" | "green" | "yellow" | "blue" | "cyan" | "magenta" | "gray" | "copper" | "sage" | "underline", s: string): string {
     switch (name) {
       case "bold": return this.bold(s);
       case "italic": return this.italic(s);
@@ -72,6 +76,8 @@ export class Output {
       case "cyan": return this.cyan(s);
       case "magenta": return this.magenta(s);
       case "gray": return this.gray(s);
+      case "copper": return this.copper(s);
+      case "sage": return this.sage(s);
       case "underline": return this.underline(s);
     }
   }

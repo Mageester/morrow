@@ -29,6 +29,8 @@ export interface Glyphs {
   queued: string;
   /** The stable Morrow identity mark (state-independent). */
   mark: string;
+  /** The open ring used by the Mission Deck chrome. */
+  ring?: string;
   spinner: string[];
 }
 
@@ -436,55 +438,58 @@ export interface HeaderOptions {
   elapsedMs?: number;
 }
 
-/** `branch · clean` / `branch · dirty` — the two git facts a user steers by.
- *  Ahead/behind and file lists live in /branch and /stats. */
-function gitShortLabel(state: TerminalState): string | null {
-  const g = state.git;
-  if (g) return `${g.branch} ${DOT} ${g.dirty ? "dirty" : "clean"}`;
-  return state.meta?.branch ?? null;
-}
-
 const DOT = "·";
 
 /**
- * The session header — identity only, one fact per line, nothing the footer
- * or /stats already owns:
+ * The session header — a single Mission Deck chrome row. Detailed metrics
+ * remain in /stats so the live frame stays calm and readable.
  *
- *   ◇ MORROW
- *   ProjectName · branch · clean
- *   model · Build · YOLO
+ *   ○ MORROW │ ProjectName │ branch · clean │ model │ Private local │ Build · approval required
  *
- * Narrow terminals keep the project and the mode (the footer keeps task
- * state); everything else collapses. Detailed metrics live in /stats.
+ * Narrow terminals progressively drop secondary fields while preserving the
+ * project and effective permission mode.
  */
-export function headerLines(state: TerminalState, out: Output, opts: HeaderOptions = {}): string[] {
-  const m = state.meta;
-  if (!m) return [];
-  const unicode = opts.unicode ?? true;
-  const columns = opts.columns ?? 80;
+const TOP_SEPARATOR = "\u2502";
+
+function shortPrivacyLabel(value: string): string {
+  const lower = value.toLowerCase();
+  if (lower.includes("local")) return "Private local";
+  if (lower.includes("cloud")) return "Cloud";
+  return value;
+}
+
+function renderHeaderParts(parts: string[], out: Output, unicode: boolean): string {
+  return parts.join(out.gray(unicode ? ` ${TOP_SEPARATOR} ` : "|"));
+}
+
+function missionDeckHeaderLines(state: TerminalState, out: Output, unicode: boolean, columns: number): string[] {
+  const meta = state.meta;
+  if (!meta) return [];
   const g = glyphs(unicode);
-  const dot = out.gray(` ${g.dot} `);
-  const mode = plainMode(m.mode);
-  const perm = permissionChip(mode, Boolean(m.autoApprove));
-  const modeChip = `${out.cyan(mode)}${dot}${perm.auto ? out.yellow(perm.text) : out.gray(perm.text)}`;
-  const git = gitShortLabel(state);
-
-  if (columns < 56) {
-    return [
-      clipToWidth(`  ${g.mark} ${out.bold("MORROW")}${dot}${out.cyan(m.projectName)}`, columns),
-      clipToWidth(`  ${modeChip}`, columns),
-    ];
-  }
-
-  const gitPart = git ? `${dot}${out.gray(git.replace(/ · /g, ` ${g.dot} `))}` : "";
-  // Reasoning is shown only when active (non-Auto), so the default route's
-  // header stays clean and unchanged.
-  const reasoningPart = m.reasoning ? `${dot}${out.gray(`reasoning ${m.reasoning}`)}` : "";
-  return [
-    `  ${g.mark} ${out.bold("MORROW")}`,
-    clipToWidth(`  ${out.cyan(m.projectName)}${gitPart}`, columns),
-    clipToWidth(`  ${out.gray(m.model)}${reasoningPart}${dot}${modeChip}`, columns),
+  const mode = plainMode(meta.mode);
+  const permission = permissionChip(mode, Boolean(meta.autoApprove));
+  const separator = unicode ? "\u00b7" : "-";
+  const identity = `${out.copper(g.ring ?? (unicode ? "\u25cb" : "o"))} ${out.bold(out.copper("MORROW"))}`;
+  const git = state.git ? `${state.git.branch} ${separator} ${state.git.dirty ? "dirty" : "clean"}` : meta.branch;
+  const privacy = shortPrivacyLabel(meta.privacy);
+  const model = meta.reasoning ? `${meta.model} ${separator} reasoning ${meta.reasoning}` : meta.model;
+  const modeFull = `${mode} ${separator} ${permission.text}`;
+  const modeCompact = `${mode}${separator}${permission.text}`;
+  const colorMode = (text: string) => permission.auto ? out.copper(text) : out.gray(text);
+  const candidates = [
+    [identity, out.cyan(meta.projectName), out.gray(git), out.gray(model), out.gray(privacy), colorMode(modeFull)],
+    [identity, out.cyan(meta.projectName), out.gray(git), out.gray(meta.model), out.gray(privacy), colorMode(modeCompact)],
+    [identity, out.cyan(meta.projectName), out.gray(git), out.gray(meta.model), colorMode(modeCompact)],
+    [identity, out.cyan(meta.projectName), out.gray(git), colorMode(modeCompact)],
+    [identity, out.cyan(meta.projectName), colorMode(modeCompact)],
   ];
+  const budget = Math.max(8, columns - 2);
+  const chosen = candidates.find((parts) => stripAnsi(renderHeaderParts(parts, out, unicode)).length <= budget) ?? candidates[candidates.length - 1]!;
+  return [clipToWidth(`  ${renderHeaderParts(chosen, out, unicode)}`, columns)];
+}
+
+export function headerLines(state: TerminalState, out: Output, opts: HeaderOptions = {}): string[] {
+  return missionDeckHeaderLines(state, out, opts.unicode ?? true, opts.columns ?? 80);
 }
 
 // ── /stats — the detailed statistics view ─────────────────────────────────────
@@ -657,16 +662,16 @@ export function actionLine(card: ToolCard, out: Output, unicode: boolean, worksp
   if (card.status === "failed") return null;
   const target = toolTarget(card, workspace);
   if (card.status === "running") {
-    return `  ${out.cyan(g.spinner[0]!)} ${presentVerb(card)}${target ? " " + target : ""}`;
+    return `  ${out.copper(g.spinner[0]!)} ${out.copper(presentVerb(card))}${target ? " " + target : ""}`;
   }
-  return `  ${out.green(g.ok)} ${toolVerb(card.name, 1)}${target ? " " + out.gray(target) : ""}`;
+  return `  ${out.sage(g.ok)} ${toolVerb(card.name, 1)}${target ? " " + out.gray(target) : ""}`;
 }
 
 /** The running-tool line with a live spinner tick. */
 export function runningActionLine(card: ToolCard, out: Output, unicode: boolean, tick: number, workspace?: string): string {
   const g = glyphs(unicode);
   const target = toolTarget(card, workspace);
-  return `  ${out.cyan(g.spinner[tick % g.spinner.length]!)} ${presentVerb(card)}${target ? " " + target : ""}`;
+  return `  ${out.copper(g.spinner[tick % g.spinner.length]!)} ${out.copper(presentVerb(card))}${target ? " " + target : ""}`;
 }
 
 // ── Recovery lines ────────────────────────────────────────────────────────────
@@ -775,23 +780,28 @@ export function completionCard(state: TerminalState, out: Output, opts: Completi
   const totals = `${state.tools.length} tool${state.tools.length === 1 ? "" : "s"}${opts.elapsedMs !== undefined ? dot + formatElapsed(opts.elapsedMs) : ""}`;
 
   if (state.status === "completed") {
-    lines.push(`  ${out.green(g.ok)} ${out.green("Task completed")}`);
-    const files = [...new Set(state.patches.filter((p) => p.applied).flatMap((p) => p.files))];
-    if (files.length > 0) {
-      lines.push(`  ${out.bold("Changed")}`);
-      for (const f of files.slice(0, 8)) lines.push(`    ${f}`);
-      if (files.length > 8) lines.push(`    ${out.gray(`+${files.length - 8} more`)}`);
-    }
-    const verify = [...state.tools].reverse().find((tool) =>
+    const checks = state.tools.filter((tool) =>
       tool.name === "run_command" &&
       tool.status === "completed" &&
       tool.verification === true &&
       /^exit 0(?:\b|$)/i.test(tool.summary ?? ""),
     );
-    if (verify) {
-      lines.push(`  ${out.bold("Verified")}`);
-      const detail = verify.summary ? dot + truncate(verify.summary, 48) : "";
-      lines.push(`    ${truncate(toolTarget(verify) || "command", 48)}${out.gray(detail)}`);
+    lines.push(`  ${out.sage(g.ok)} ${out.sage("VERIFICATION RESULT")}`);
+    if (checks.length > 0) {
+      lines.push(`  ${out.sage(`${checks.length} check${checks.length === 1 ? "" : "s"} passed`)}`);
+      for (const check of checks.slice(-4)) {
+        const detail = check.summary ? dot + truncate(check.summary, 42) : "";
+        lines.push(`    ${out.sage(g.ok)} ${truncate(toolTarget(check) || "command", 48)}${out.gray(detail)}`);
+      }
+      lines.push(`  ${out.sage("VERIFIED")}`);
+    } else {
+      lines.push(`  ${out.gray("Task completed")}`, `    ${out.gray("Verification not recorded")}`);
+    }
+    const files = [...new Set(state.patches.filter((p) => p.applied).flatMap((p) => p.files))];
+    if (files.length > 0) {
+      lines.push(`  ${out.bold("Changed")}`);
+      for (const f of files.slice(0, 8)) lines.push(`    ${f}`);
+      if (files.length > 8) lines.push(`    ${out.gray(`+${files.length - 8} more`)}`);
     }
     const commit = commitInfo(state);
     if (commit) {

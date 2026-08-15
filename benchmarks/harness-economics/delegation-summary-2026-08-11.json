@@ -1,0 +1,83 @@
+{
+  "evidenceClass": "deterministic-local",
+  "benchmarkRun": "delegation-slice-2026-08-11",
+  "records": [
+    {
+      "harness": "delegation-sample",
+      "scenario": "readme-summary-research-and-verify",
+      "benchmarkRun": "delegation-slice-2026-08-11",
+      "evidenceClass": "deterministic-local",
+      "outcome": "success",
+      "failureReason": null,
+      "passed": true,
+      "durationMs": 8.501600000000053,
+      "providerCalls": 0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "toolCalls": 2,
+      "duplicateObservations": 0,
+      "fallbackEvents": 0,
+      "recoveryAttempts": 0,
+      "interventions": 0,
+      "pricing": null,
+      "measuredCostUsd": 0
+    },
+    {
+      "harness": "delegation-sample",
+      "scenario": "readme-summary-research-and-verify",
+      "benchmarkRun": "delegation-slice-2026-08-11",
+      "evidenceClass": "deterministic-local",
+      "outcome": "success",
+      "failureReason": null,
+      "passed": true,
+      "durationMs": 2.8521999999998116,
+      "providerCalls": 0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "toolCalls": 2,
+      "duplicateObservations": 0,
+      "fallbackEvents": 0,
+      "recoveryAttempts": 0,
+      "interventions": 0,
+      "pricing": null,
+      "measuredCostUsd": 0
+    },
+    {
+      "harness": "delegation-sample",
+      "scenario": "readme-summary-research-and-verify",
+      "benchmarkRun": "delegation-slice-2026-08-11",
+      "evidenceClass": "deterministic-local",
+      "outcome": "success",
+      "failureReason": null,
+      "passed": true,
+      "durationMs": 2.5358000000001084,
+      "providerCalls": 0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "toolCalls": 2,
+      "duplicateObservations": 0,
+      "fallbackEvents": 0,
+      "recoveryAttempts": 0,
+      "interventions": 0,
+      "pricing": null,
+      "measuredCostUsd": 0
+    }
+  ],
+  "summaries": [
+    {
+      "harness": "delegation-sample",
+      "sampleSize": 3,
+      "passRate": 1,
+      "medianCostUsd": 0,
+      "medianTimeMs": 2.8521999999998116,
+      "costSource": "measured",
+      "costSamples": 3,
+      "medianProviderCalls": 0,
+      "medianToolCalls": 2,
+      "medianDuplicateObservations": 0,
+      "medianContextCompactions": null,
+      "medianRecoveryAttempts": 0,
+      "medianInterventions": 0
+    }
+  ]
+}

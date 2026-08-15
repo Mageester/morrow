@@ -20,9 +20,11 @@ import type { SessionMeta } from "./events.js";
 import type { TerminalState } from "./state.js";
 import {
   actionLine,
+  activityGroupLine,
   clipToWidth,
   completionCard,
   glyphs,
+  groupActivities,
   headerLines,
   hardWrapLine,
   recoveryEntryLines,
@@ -31,6 +33,7 @@ import {
   wrapText,
 } from "./view.js";
 import { startupPanelLines, type RecentActivityItem } from "./startup-view.js";
+import { buildLiveWorkLines, buildMissionTimelineLines, missionTitle, railWidth, showsLiveWorkRail } from "./live-work.js";
 
 export interface AppFrameOptions {
   columns: number;
@@ -129,6 +132,10 @@ export function composeApp(
   // moment before any conversation exists — never shown once a task begins.
   const isStartup = isStartupState(term);
   const overlay = ctx.overlayPanel ?? null;
+  const showLiveWork = showsLiveWorkRail(opts.columns, !isStartup && !overlay);
+  const liveWorkColumns = showLiveWork ? railWidth(opts.columns) : 0;
+  const mainColumns = showLiveWork ? Math.max(68, opts.columns - liveWorkColumns - 3) : opts.columns;
+  const mainOpts = showLiveWork ? { ...opts, columns: mainColumns } : opts;
 
   // ── Fixed top: Morrow chrome ───────────────────────────────────────────────
   const top = isStartup
@@ -186,7 +193,8 @@ export function composeApp(
   // An open overlay's body replaces the mission body — the header above and
   // the bordered input below never move, so closing the overlay restores
   // exactly the frame that was showing before it opened.
-  const middle = overlay ? overlay.lines.map((l) => `  ${l}`) : isStartup ? [] : buildMiddle(term, out, unicode, opts, workspace);
+  const middle = overlay ? overlay.lines.map((l) => `  ${l}`) : isStartup ? [] : buildMiddle(term, out, unicode, mainOpts, workspace);
+  const rail = showLiveWork ? buildLiveWorkLines(term, out, unicode, liveWorkColumns, workspace) : [];
   const reserved = top.length + 1 /*blank*/ + bottom.length + footer.length + 1 /*blank*/;
   const available = Math.max(0, opts.rows - reserved);
   // The live mission body is a recency feed — keep the tail (most recent
@@ -194,16 +202,17 @@ export function composeApp(
   // opposite: its lead lines are the title/summary a user opened it to see,
   // so it keeps the head and marks how much was cut instead of silently
   // dropping the start of the content.
-  const overlayWindow = overlay ? scrollClip(middle, available, ctx.overlayScroll ?? 0, out, unicode) : null;
-  const transcriptWindow = overlay ? null : scrollClip(middle, available, ctx.transcriptScroll ?? Number.MAX_SAFE_INTEGER, out, unicode);
+  const overlayWindow = overlay ? scrollClip(middle, available, ctx.overlayScroll ?? 0, out, unicode, opts.columns) : null;
+  const transcriptWindow = overlay ? null : scrollClip(middle, available, ctx.transcriptScroll ?? Number.MAX_SAFE_INTEGER, out, unicode, opts.columns);
   const clippedMiddle = overlayWindow?.shown ?? transcriptWindow?.shown ?? [];
+  const bodyLines = composeBodyColumns(clippedMiddle, rail, available, opts.columns, mainColumns, liveWorkColumns, out, unicode);
 
   // Frames taller than the viewport scroll on every repaint, leaving ghost
   // frames and stale fragments. Recover beta.31's clamp: content yields
   // first, then chrome, and the input/footer tail is always retained.
   const maxRows = Math.max(1, opts.rows);
   let finalTop = top;
-  let finalMiddle = clippedMiddle;
+  let finalMiddle = bodyLines;
   const fixedRows = bottom.length + footer.length + 2;
   const overBudget = () => finalTop.length + finalMiddle.length + fixedRows - maxRows;
   if (overBudget() > 0) finalMiddle = finalMiddle.slice(Math.min(overBudget(), finalMiddle.length));
@@ -238,7 +247,8 @@ export function scrollClip(
   available: number,
   scroll: number,
   out: Output,
-  unicode: boolean
+  unicode: boolean,
+  columns = 80,
 ): { shown: string[]; scroll: number; atLive: boolean } {
   if (available <= 0) return { shown: [], scroll: 0, atLive: lines.length === 0 };
   if (lines.length <= available) return { shown: lines, scroll: 0, atLive: true };
@@ -251,8 +261,57 @@ export function scrollClip(
   const up = unicode ? "▲" : "^";
   const down = unicode ? "▼" : "v";
   const position = `${up} ${above} above · ${down} ${below} below${below === 0 ? " · live" : ""}`;
-  const indicator = out.gray(`  ${position} — ↑/↓ PgUp/PgDn Home/End scroll`);
+  const help = columns < 64
+    ? `${unicode ? "↑↓" : "^v"} PgUp/PgDn`
+    : columns < 96
+      ? `${unicode ? "↑↓" : "^v"} PgUp/PgDn Home/End`
+      : `${unicode ? "↑/↓" : "^/v"} PgUp/PgDn Home/End scroll`;
+  const indicator = out.gray(`  ${position} ${unicode ? "—" : "-"} ${help}`);
   return { shown: [...shown, indicator], scroll: s, atLive: below === 0 };
+}
+
+/** Combine the scrollable mission transcript with the fixed live-work rail. */
+function composeBodyColumns(
+  mainLines: string[],
+  railLines: string[],
+  available: number,
+  columns: number,
+  mainColumns: number,
+  railColumns: number,
+  out: Output,
+  unicode: boolean,
+): string[] {
+  if (railLines.length === 0) return mainLines.map((line) => clipToWidth(line, columns));
+  const rows = Math.min(available, Math.max(mainLines.length, railLines.length));
+  const divider = out.gray(unicode ? "│" : "|");
+  const lines: string[] = [];
+  for (let index = 0; index < rows; index += 1) {
+    const left = clipToWidth(mainLines[index] ?? "", mainColumns);
+    const right = clipToWidth(railLines[index] ?? "", railColumns);
+    const paddedLeft = left + " ".repeat(Math.max(0, mainColumns - stripAnsi(left).length));
+    lines.push(`${paddedLeft} ${divider} ${right}`);
+  }
+  return lines.map((line) => clipToWidth(line, columns));
+}
+
+/** Give the end-of-task evidence a quiet panel treatment in the interactive
+ * frame. The underlying completionCard remains plain for the line renderer;
+ * this wrapper is presentation-only and keeps every line inside the current
+ * mission column. */
+function completionPanelLines(cardLines: string[], columns: number, out: Output, unicode: boolean): string[] {
+  const border = unicode
+    ? { tl: "\u256d", tr: "\u256e", bl: "\u2570", br: "\u256f", h: "\u2500", v: "\u2502" }
+    : { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" };
+  const inner = Math.max(20, columns - 6);
+  const contentWidth = Math.max(1, inner - 2);
+  const top = `  ${out.gray(border.tl + border.h.repeat(inner) + border.tr)}`;
+  const bottom = `  ${out.gray(border.bl + border.h.repeat(inner) + border.br)}`;
+  const body = cardLines.map((line) => {
+    const content = clipToWidth(line.trimStart(), contentWidth);
+    const padding = " ".repeat(Math.max(0, contentWidth - stripAnsi(content).length));
+    return `  ${out.gray(border.v)} ${content}${padding} ${out.gray(border.v)}`;
+  });
+  return [top, ...body, bottom];
 }
 
 /** Build the chrome at the top: MORROW brand, project, and live status. */
@@ -399,9 +458,34 @@ function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: A
   // wrapped rather than clipped, never a fragment reconstructed from
   // provider narration or internal event names.
   if (lastUserIndex >= 0) {
-    lines.push(`  ${out.bold("Mission")}`);
-    for (const l of wrapText(term.conversation[lastUserIndex]!.text, Math.max(20, opts.columns - 6))) lines.push(`    ${l}`);
+    const request = term.conversation[lastUserIndex]!.text;
+    const title = missionTitle(request);
+    const compactMission = opts.columns < 96;
+    const missionWidth = Math.max(20, opts.columns - 4);
+    lines.push(`  ${out.copper("MISSION")}`);
+    for (const l of wrapText(title, missionWidth)) lines.push(`  ${out.bold(l)}`);
+    for (const l of wrapText(request, missionWidth)) lines.push(`  ${out.gray(l)}`);
+    lines.push(`  ${out.copper("\u2500".repeat(Math.min(18, Math.max(8, opts.columns - 4))))}`);
+    if (!compactMission) {
+      lines.push(`  ${out.gray("YOU")}`);
+      for (const [index, l] of wrapText(request, Math.max(20, opts.columns - 8)).entries()) {
+        lines.push(`  ${index === 0 ? out.copper(unicode ? "\u203a" : ">") : " "} ${l}`);
+      }
+      lines.push(`    ${out.gray("Added brief")}`);
+    }
     lines.push("");
+
+    const hasMissionProgress = term.plan.length > 0 || term.activity.length > 0 || term.tools.length > 0 || term.recoveries.length > 0;
+    if (hasMissionProgress && !compactMission) {
+      lines.push(`  ${out.copper("MORROW")}`);
+      const objective = term.progressDetail?.trim() ? `Objective: ${term.progressDetail.trim()}` : `Objective: ${missionTitle(request)}`;
+      for (const [index, row] of wrapText(objective, Math.max(20, opts.columns - 10)).entries()) {
+        lines.push(`  ${index === 0 ? out.copper(unicode ? "→" : ">") : " "} ${out.gray(row)}`);
+      }
+      const timeline = buildMissionTimelineLines(term, out, unicode, opts.columns);
+      if (timeline.length > 0) lines.push(...timeline);
+      lines.push("");
+    }
   }
 
   // Prior transcript stays chronological. The current answer is deferred until
@@ -427,12 +511,15 @@ function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: A
     if (card.status === "running") continue;
     items.push({ at: card.startedAt, render: () => { const l = actionLine(card, out, unicode, workspace); return l ? [l] : []; } });
   }
+  for (const group of groupActivities(term.activity)) {
+    items.push({ at: group.at, render: () => [activityGroupLine(group, out, unicode)] });
+  }
   for (const entry of term.recoveries) {
     items.push({ at: entry.at, render: () => recoveryEntryLines(entry, out, unicode, taskFailed) });
   }
   items.sort((a, b) => a.at - b.at);
   const runningTools = term.status === "streaming" ? term.tools.filter((t) => t.status === "running") : [];
-  if (items.length > 0 || runningTools.length > 0) lines.push(`  ${out.bold("Activity")}`);
+  if (items.length > 0 || runningTools.length > 0) lines.push(`  ${out.copper("ACTIVITY")}`);
   for (const item of items) for (const l of item.render()) lines.push(l);
 
   // Live region: running tools with a spinner — only while genuinely
@@ -458,7 +545,8 @@ function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: A
   // Completion card (compact; the full report stays behind /output).
   if (isTerminalState) {
     lines.push("");
-    for (const cl of completionCard(term, out, { unicode, columns: opts.columns, ...(opts.elapsedMs !== undefined ? { elapsedMs: opts.elapsedMs } : {}) })) lines.push(cl);
+    const card = completionCard(term, out, { unicode, columns: opts.columns, ...(opts.elapsedMs !== undefined ? { elapsedMs: opts.elapsedMs } : {}) });
+    for (const cl of completionPanelLines(card, opts.columns, out, unicode)) lines.push(cl);
 
     const finalEntry = currentAssistantIndex >= 0 ? term.conversation[currentAssistantIndex]! : undefined;
     const finalBody = finalEntry?.text.trim();
@@ -544,8 +632,8 @@ function buildInputBlock(
   const rows = wrapInputRows(input.buffer, wrapWidth);
   const { rowIndex: caretRow, col: caretCol } = caretRowCol(rows, input.cursor);
 
-  const top = out.gray(margin + b.tl + b.h.repeat(outerWidth - 2) + b.tr);
-  const bottom = out.gray(margin + b.bl + b.h.repeat(outerWidth - 2) + b.br);
+  const top = out.copper(margin + b.tl + b.h.repeat(outerWidth - 2) + b.tr);
+  const bottom = out.copper(margin + b.bl + b.h.repeat(outerWidth - 2) + b.br);
   const v = out.gray(b.v);
 
   // A narrow box gets the placeholder clipped rather than forcing the row

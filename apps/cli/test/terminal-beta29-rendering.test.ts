@@ -52,7 +52,7 @@ const busyState = build([
 describe("beta.29 header — one owner per fact", () => {
   it("renders identity, project · branch · dirty, and model · mode — nothing else", () => {
     const lines = headerLines(busyState, plain, { unicode: false, columns: 100 });
-    expect(lines).toHaveLength(3);
+    expect(lines).toHaveLength(1);
     const text = lines.join("\n");
     expect(lines[0]).toContain("MORROW");
     expect(text).toContain("Morrow"); // project
@@ -340,11 +340,11 @@ describe("beta.29 completion card", () => {
     ]);
     const lines = completionCard(s, plain, { unicode: false, elapsedMs: 18_000 }).map(stripAnsi);
     const text = lines.join("\n");
-    expect(lines[0]).toBe("  + Task completed");
+    expect(lines[0]).toBe("  + VERIFICATION RESULT");
     expect(text).toContain("Changed");
     expect(text).toContain("hello.js");
     expect(text).toContain("ACCEPTANCE.md");
-    expect(text).toContain("Verified");
+    expect(text).toContain("VERIFIED");
     expect(text).toContain("node hello.js");
     expect(text).toContain("2 tools - 18.0s");
     expect(text).toContain("Details: /output");
@@ -371,7 +371,7 @@ describe("beta.29 completion card", () => {
 
     expect(completionCard(ordinary, plain).join("\n")).not.toContain("Verified");
     expect(completionCard(failedCheck, plain).join("\n")).not.toContain("Verified");
-    expect(completionCard(passedCheck, plain).join("\n")).toContain("Verified");
+    expect(completionCard(passedCheck, plain).join("\n")).toContain("VERIFIED");
   });
 
   it("renders stalled and budget-reached outcomes as one consistent Paused shape, not failed or contradictory (consumer defect #5)", () => {
