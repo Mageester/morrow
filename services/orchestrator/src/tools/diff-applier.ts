@@ -1,6 +1,7 @@
 import { basename, dirname, join, resolve, relative, posix, win32 } from "node:path";
 import { existsSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { normalizeWorkspacePath } from "../workspace/path-boundary.js";
 
 export interface PatchFile {
   oldPath: string;
@@ -252,11 +253,15 @@ export function validatePatchPaths(
   files: PatchFile[],
   deniedPatterns: string[] = []
 ): void {
-  const check = (relPath: string) => {
-    if (relPath === "/dev/null") return;
-    if (isAnyAbsolutePath(relPath)) {
-      throw new Error(`Absolute paths are rejected: ${relPath}`);
+  const check = (rawPath: string) => {
+    if (rawPath === "/dev/null") return;
+    // A patch header naming a workspace file absolutely still targets that
+    // file; normalize it and let the containment check below decide.
+    const normalization = normalizeWorkspacePath(workspacePath, rawPath);
+    if (!normalization.ok) {
+      throw new Error(`${normalization.message} Example: "${normalization.example}".`);
     }
+    const relPath = normalization.path;
     const normalized = relPath.replace(/\\/g, "/");
     const parts = normalized.split("/");
     if (parts.includes("..") || parts.includes(".git")) {
@@ -308,10 +313,14 @@ export function validatePatchPaths(
  * @returns the resolved absolute path (against the real workspace root).
  */
 export function assertContainedRealPath(workspaceRoot: string, relPath: string): string {
-  if (isAnyAbsolutePath(relPath)) {
-    throw new Error(`Absolute paths are rejected: ${relPath}`);
+  // An absolute path that resolves inside the workspace names a legitimate
+  // write target; normalize it instead of refusing it. The real-root symlink
+  // containment below is unchanged and remains the deciding check.
+  const normalization = normalizeWorkspacePath(workspaceRoot, relPath);
+  if (!normalization.ok) {
+    throw new Error(`${normalization.message} Example: "${normalization.example}".`);
   }
-  const normalized = relPath.replace(/\\/g, "/");
+  const normalized = normalization.path.replace(/\\/g, "/");
   const parts = normalized.split("/").filter(Boolean);
   if (parts.includes("..") || parts.includes(".git")) {
     throw new Error(`Parent traversal and .git paths are rejected: ${relPath}`);

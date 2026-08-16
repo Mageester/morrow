@@ -135,11 +135,18 @@ describe("ambiguous or wrong input is still refused", () => {
     expect(result.problem).toMatchObject({ field: "patch", problem: "wrong_type" });
   });
 
-  it("still refuses an absolute path after normalization", () => {
+  it("leaves the absolute-vs-relative decision to the boundary that knows the workspace root", () => {
+    // This validator has no workspace root, so it cannot tell an absolute path
+    // inside the workspace from one outside it. It therefore passes the value
+    // through unchanged; containment is enforced (and a contained absolute path
+    // is normalized) by validateSafeReadPath / inspectWorkspace /
+    // assertContainedRealPath, which do know the root and can say what a valid
+    // value looks like. See tool-observation-visibility.test.ts for the
+    // end-to-end rejection message the model actually receives.
     const result = throughBoundary("create_file", JSON.stringify({ file_path: "C:\\\\Windows\\\\evil.txt", content: "x" }), ["path", "content"]);
-    expect(result.stage).toBe("validate");
-    if (result.stage !== "validate") return;
-    expect(result.problem).toMatchObject({ field: "path", problem: "absolute_path" });
+    expect(result.stage).toBe("ok");
+    if (result.stage !== "ok") return;
+    expect(result.args.path).toBe("C:\\\\Windows\\\\evil.txt");
   });
 
   it("still reports a genuinely missing field", () => {
@@ -221,6 +228,11 @@ describe("a realistic multi-file build history survives persistence, replay and 
   });
 
   it("keeps arguments intact through the provider projection used by recovery and compaction", () => {
+    // The projection is model-visible history, so an ordinary successful write
+    // keeps its exact arguments. Only a body larger than the projection's
+    // historical byte limit is replaced by a non-executable digest record —
+    // never by a truncated body that could be replayed as content.
+    const HISTORICAL_ARGUMENT_BYTE_LIMIT = 8 * 1024;
     const turns = files.map((file, index) => ({
       turnKey: `turn-${index}`,
       assistantText: `Writing ${file.path}`,
@@ -234,11 +246,29 @@ describe("a realistic multi-file build history survives persistence, replay and 
 
     const projectedCalls = projected.filter((message) => message.role === "assistant").flatMap((message) => message.toolCalls ?? []);
     expect(projectedCalls).toHaveLength(files.length);
+    const oversized = files.filter((file) => Buffer.byteLength(JSON.stringify(file), "utf8") > HISTORICAL_ARGUMENT_BYTE_LIMIT);
+    expect(oversized.length).toBeGreaterThan(0); // the fixture must exercise both sides
     projectedCalls.forEach((call, index) => {
-      const result = throughBoundary("create_file", call.function.arguments, ["path", "content"]);
-      expect(result.stage).toBe("ok");
-      if (result.stage !== "ok") return;
-      expect(result.args.content).toBe(files[index]!.content);
+      const file = files[index]!;
+      const raw = JSON.stringify(file);
+      if (Buffer.byteLength(raw, "utf8") <= HISTORICAL_ARGUMENT_BYTE_LIMIT) {
+        const result = throughBoundary("create_file", call.function.arguments, ["path", "content"]);
+        expect(result.stage, `${file.path} must survive the projection`).toBe("ok");
+        if (result.stage !== "ok") return;
+        expect(result.args.content).toBe(file.content);
+        return;
+      }
+      // Oversized: the target and a durable digest remain, the body does not,
+      // and the record is refused by validation rather than executed.
+      const projectedArgs = JSON.parse(call.function.arguments) as Record<string, any>;
+      expect(projectedArgs.path).toBe(file.path);
+      expect(projectedArgs.content).toBeUndefined();
+      expect(projectedArgs.durable_context).toMatchObject({
+        kind: "completed_tool_arguments",
+        tool: "create_file",
+        payloadBytes: Buffer.byteLength(file.content, "utf8"),
+      });
+      expect(throughBoundary("create_file", call.function.arguments, ["path", "content"]).stage).toBe("validate");
     });
   });
 

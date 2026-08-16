@@ -45,6 +45,7 @@ export function reasoningOptions(cap: RouteReasoningCapability): ReasoningOption
   switch (cap.control) {
     case "none":
     case "fixed":
+    case "unknown":
       return [];
     case "effort":
       return [
@@ -72,6 +73,8 @@ export function describeReasoningControl(cap: RouteReasoningCapability): string 
       return "Effort (Low/Medium/High)";
     case "budget":
       return "Thinking-token budget";
+    case "unknown":
+      return "Capability unknown";
   }
 }
 

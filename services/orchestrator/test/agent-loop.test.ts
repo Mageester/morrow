@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { join } from "node:path";
-import { mkdtempSync, writeFileSync, rmSync, cpSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, cpSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
@@ -17,7 +17,7 @@ import { CortexService } from "../src/cortex/service.js";
 import { intelligenceRepository } from "../src/repositories/intelligence.js";
 import { MAX_PLAN_REVISIONS } from "@morrow/contracts";
 
-describe("agent loop detection", () => {
+describe("agent loop advisory", () => {
   let db: Database.Database;
   let tempDir = "";
 
@@ -69,19 +69,76 @@ describe("agent loop detection", () => {
     expect(runCommandIsVerification({ executable: "npm", args: ["run", "build"], purpose: "Compile project" })).toBe(true);
   });
 
+  it("keeps one already-applied result factual without immediate execution directives", async () => {
+    seed();
+    taskRoutingRepository(db).upsert({
+      taskId: "task-1",
+      presetId: "best-quality",
+      providerId: "mock",
+      model: "mock-model",
+      useMemory: false,
+      decision: {
+        version: 1,
+        presetId: "best-quality",
+        providerId: "mock",
+        model: "mock-model",
+        reason: "already-applied projection regression",
+        fallbackUsed: false,
+        overridden: false,
+        privacy: "cloud",
+        candidates: [],
+        mode: "agent",
+        autoApprove: true,
+      },
+      createdAt: new Date().toISOString(),
+    });
+    const write = (id: string): ProviderChunk[] => [
+      {
+        type: "tool_call",
+        toolCalls: [{
+          id,
+          index: 0,
+          type: "function",
+          function: { name: "create_file", arguments: JSON.stringify({ path: "already.txt", content: "same\n" }) },
+        }],
+      },
+      { type: "done" },
+    ];
+    const provider = new MockProvider({
+      chunks: [
+        write("already-1"),
+        write("already-2"),
+        [{ type: "text", text: "The file is present." }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider });
+
+    const calls = conversationsRepository(db).listToolCallsForTask("task-1").filter((call) => call.toolName === "create_file");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.status).toBe("completed");
+    expect(JSON.parse(calls[1]?.resultJson ?? "{}")).toMatchObject({ status: "already_applied", changed: false });
+    const immediateRequest = provider.requests[2] ?? [];
+    const serialized = JSON.stringify(immediateRequest);
+    expect(serialized).not.toMatch(/execution control|do not call again|forced|read-only verification|next outstanding/i);
+  });
+
   // One turn that always requests the identical tool call. Repeated across turns
-  // this is exactly the pathological loop the detector must catch.
+  // this exercises advisory context while the model still owns continuation.
+  // IDs remain unique because durable tool-call rows are keyed by provider ID;
+  // the tool signature under test is still identical on every turn.
+  let repeatTurnIndex = 0;
   const repeatTurn = (): ProviderChunk[] => [
     {
       type: "tool_call",
       toolCalls: [
-        { id: "c", index: 0, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "readme.md" }) } },
+        { id: `read-repeat-${repeatTurnIndex++}`, index: 0, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "readme.md" }) } },
       ],
     },
     { type: "done" },
   ];
 
-  it("observes a repeated identical tool call and lets the model finish", async () => {
+  it("advises on a repeated identical tool call and lets the model finish", async () => {
     seed();
     const provider = new MockProvider({ chunks: [repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), [{ type: "text", text: "Finished after the repeated inspection." }, { type: "done" }]] });
 
@@ -94,15 +151,21 @@ describe("agent loop detection", () => {
     expect(finalTask?.status).not.toBe("verified");
 
     const events = records.listEvents("task-1") as Array<{ type: string; payload: any }>;
-    expect(events.some((e) => e.payload?.signal === "loop_detected")).toBe(true);
-    expect(events.some((e) => e.payload?.reason === "loop_recovery")).toBe(false);
+    expect(events.some((e) => e.payload?.reason === "exact_repeat_advisory")).toBe(true);
+    expect(events.some((e) => e.payload?.signal === "loop_detected")).toBe(false);
+    const reads = conversationsRepository(db).listToolCallsForTask("task-1").filter((call) => call.toolName === "read_file");
+    expect(reads.length).toBeGreaterThanOrEqual(4);
+    expect(reads.every((call) => call.status === "completed")).toBe(true);
+    const requestText = (index: number) => provider.requests[index]?.map((message) => message.content).join("\n") ?? "";
+    expect(requestText(3)).toMatch(/Morrow repeat advisory: the exact read_file call has repeated 3 times/i);
+    expect(requestText(4)).toMatch(/Prior durable result or artifact reference/i);
 
     const msg = conversationsRepository(db).getMessage("msg-assistant");
     expect(msg?.streamingState).toBe("completed");
     expect(msg?.content).toContain("Finished after the repeated inspection");
   });
 
-  it("uses one bounded recovery turn when the provider changes strategy", async () => {
+  it("keeps executing when the provider changes strategy after a repeat", async () => {
     seed();
     writeFileSync(join(tempDir, "other.md"), "Other");
     const provider = new MockProvider({
@@ -121,7 +184,9 @@ describe("agent loop detection", () => {
     await executeAgentChatTask({ db, taskId: "task-1", provider });
 
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
-    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.signal === "loop_detected")).toBe(true);
+    const events = taskRecordsRepository(db).listEvents("task-1");
+    expect(events.some((event) => event.payload.reason === "exact_repeat_advisory")).toBe(true);
+    expect(events.some((event) => event.payload.signal === "loop_detected")).toBe(false);
   });
 
   it("does not interrupt when the model varies its tool calls and then answers", async () => {
@@ -171,7 +236,7 @@ describe("agent loop detection", () => {
       .toBe(false);
   });
 
-  it("reuses a read observation when only JSON key order changes", async () => {
+  it("executes semantically equivalent reads when only JSON key order changes", async () => {
     seed();
     const provider = new MockProvider({
       chunks: [
@@ -199,8 +264,77 @@ describe("agent loop detection", () => {
 
     await executeAgentChatTask({ db, taskId: "task-1", provider });
 
+    const calls = conversationsRepository(db).listToolCallsForTask("task-1")
+      .filter((call) => call.toolName === "search_text");
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.status === "completed")).toBe(true);
     const events = taskRecordsRepository(db).listEvents("task-1") as Array<{ type: string; payload: any }>;
-    expect(events.filter((event) => event.type === "workspace.inspected" && event.payload?.duplicate === true)).toHaveLength(1);
+    expect(events.some((event) => event.type === "workspace.inspected" && event.payload?.duplicate === true)).toBe(false);
+  });
+
+  it("executes repeated successful writes and projects durable repeat advice without interruption", async () => {
+    seed();
+    taskRoutingRepository(db).upsert({
+      taskId: "task-1",
+      presetId: "best-quality",
+      providerId: "mock",
+      model: "mock-model",
+      useMemory: false,
+      decision: {
+        version: 1,
+        presetId: "best-quality",
+        providerId: "mock",
+        model: "mock-model",
+        reason: "repeated-write advisory regression",
+        fallbackUsed: false,
+        overridden: false,
+        privacy: "cloud",
+        candidates: [],
+        mode: "agent",
+        autoApprove: true,
+      },
+      createdAt: new Date().toISOString(),
+    });
+
+    const writeTurn = (id: string): ProviderChunk[] => [
+      {
+        type: "tool_call",
+        toolCalls: [{
+          id,
+          index: 0,
+          type: "function",
+          function: { name: "create_file", arguments: JSON.stringify({ path: "repeated.txt", content: "same\n" }) },
+        }],
+      },
+      { type: "done" },
+    ];
+    const provider = new MockProvider({
+      chunks: [
+        writeTurn("write-1"),
+        writeTurn("write-2"),
+        writeTurn("write-3"),
+        writeTurn("write-4"),
+        [{ type: "text", text: "Finished after the repeated writes." }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider });
+
+    const calls = conversationsRepository(db).listToolCallsForTask("task-1")
+      .filter((call) => call.toolName === "create_file");
+    expect(calls).toHaveLength(4);
+    expect(calls.every((call) => call.status === "completed")).toBe(true);
+    expect(calls.map((call) => call.argsJson)).toEqual([calls[0]?.argsJson, calls[0]?.argsJson, calls[0]?.argsJson, calls[0]?.argsJson]);
+    expect(readFileSync(join(tempDir, "repeated.txt"), "utf8")).toBe("same\n");
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+
+    const events = taskRecordsRepository(db).listEvents("task-1") as Array<{ type: string; payload: any }>;
+    const forbiddenReasons = new Set(["loop_stalled", "no_progress", "observation_epoch_exhausted", "strategy_change_required"]);
+    expect(events.some((event) => forbiddenReasons.has(event.payload?.reason))).toBe(false);
+
+    const requestText = (index: number) => provider.requests[index]?.map((message) => message.content).join("\n") ?? "";
+    expect(requestText(3)).toMatch(/Morrow repeat advisory: the exact create_file call has repeated 3 times/i);
+    expect(requestText(4)).toMatch(/Prior durable result or artifact reference/i);
   });
 
   it("keeps a mission loop in the observation ledger until the model answers", async () => {
@@ -211,7 +345,7 @@ describe("agent loop detection", () => {
 
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
     expect(db.prepare("SELECT status FROM missions WHERE id='mission-1'").get()).toEqual({ status: "running" });
-    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.signal === "loop_detected"))
+    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.reason === "exact_repeat_advisory"))
       .toBe(true);
   });
 
@@ -231,8 +365,79 @@ describe("agent loop detection", () => {
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
     expect(db.prepare("SELECT status FROM missions WHERE id='mission-1'").get()).toEqual({ status: "running" });
     expect(provider.requests).toHaveLength(6);
-    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.type === "task.progress_warning" && event.payload.signal === "loop_detected"))
-      .toBe(true);
+    const events = taskRecordsRepository(db).listEvents("task-1");
+    expect(events.some((event) => event.payload.signal === "loop_detected")).toBe(false);
+    expect(events.some((event) => ["loop_stalled", "no_progress", "observation_epoch_exhausted", "strategy_change_required"].includes((event.payload as { reason?: unknown }).reason as string))).toBe(false);
+  });
+
+  it("advises on repeated failures from the prior durable result without suppressing execution", async () => {
+    seed(true);
+    taskRoutingRepository(db).upsert({
+      taskId: "task-1",
+      presetId: "best-quality",
+      providerId: "mock",
+      model: "mock-model",
+      useMemory: false,
+      decision: {
+        version: 1,
+        presetId: "best-quality",
+        providerId: "mock",
+        model: "mock-model",
+        reason: "repeated failure advisory regression",
+        fallbackUsed: false,
+        overridden: false,
+        privacy: "cloud",
+        candidates: [],
+        mode: "agent",
+        autoApprove: true,
+      },
+      createdAt: new Date().toISOString(),
+    });
+    writeFileSync(join(tempDir, "counter.txt"), "0\n");
+    const failingCommand = (id: string): ProviderChunk[] => [
+      {
+        type: "tool_call",
+        toolCalls: [{
+          id,
+          index: 0,
+          type: "function",
+          function: {
+            name: "run_command",
+            arguments: JSON.stringify({
+              executable: "node",
+              args: ["-e", "const fs=require('fs');const p='counter.txt';const n=Number(fs.readFileSync(p,'utf8'));fs.writeFileSync(p,String(n+1));process.stderr.write('failure-'+(n+1));process.exit(1)"],
+            }),
+          },
+        }],
+      },
+      { type: "done" },
+    ];
+    const provider = new MockProvider({
+      chunks: [
+        failingCommand("failing-command-1"),
+        failingCommand("failing-command-2"),
+        failingCommand("failing-command-3"),
+        failingCommand("failing-command-4"),
+        [{ type: "text", text: "The repeated command failure was inspected and the task is complete." }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider });
+
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    const calls = conversationsRepository(db).listToolCallsForTask("task-1")
+      .filter((call) => call.toolName === "run_command");
+    expect(calls).toHaveLength(4);
+    expect(calls.every((call) => call.status === "failed")).toBe(true);
+    const events = taskRecordsRepository(db).listEvents("task-1") as Array<{ type: string; payload: any }>;
+    expect(events.some((event) => event.payload?.reason === "exact_repeat_advisory" && event.payload?.count === 3)).toBe(true);
+    expect(events.some((event) => event.payload?.signal === "loop_detected")).toBe(false);
+    expect(events.some((event) => event.payload?.reason === "strategy_change_required")).toBe(false);
+    const requestText = (index: number) => provider.requests[index]?.map((message) => message.content).join("\n") ?? "";
+    expect(requestText(3)).toMatch(/Morrow repeat advisory: the exact run_command call has repeated 3 times/i);
+    const fourthAdvice = requestText(4).split("Morrow repeat advisory:").at(-1) ?? "";
+    expect(fourthAdvice).toMatch(/failure-3/);
+    expect(fourthAdvice).not.toMatch(/failure-4/);
   });
 
   it("does not let the revision ledger interrupt an active model loop", async () => {
@@ -258,7 +463,7 @@ describe("agent loop detection", () => {
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
     expect(db.prepare("SELECT status FROM missions WHERE id='mission-1'").get()).toEqual({ status: "running" });
     expect(provider.requests).toHaveLength(4);
-    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.signal === "loop_detected")).toBe(true);
+    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.signal === "loop_detected")).toBe(false);
   });
 
   it("automatically continues a productive Coding-preset task beyond 18 turns", async () => {
@@ -376,11 +581,12 @@ describe("empty-response recovery forces a bounded, tool-call-required continuat
 
   // Defaults to openai/gpt-5.5, a reasoning-capable model
   // (`reasoning: effort(...)`) — the same shape of route as the live
-  // deepseek-v4-flash failure this suite reproduces. Pass
+  // deepseek-v4-flash failure this suite reproduces. Pass DeepSeek directly
+  // to exercise the route's verified thinking-off recovery capability, or
   // providerId "openrouter" / model "deepseek/deepseek-v4-pro" (declared
   // with no reasoning surface in the catalog) for the tests that need a
   // route where tool_choice is actually sendable.
-  function seedReasoningOnlyTask(db: Database.Database, tempDir: string, providerId: "openai" | "openrouter" = "openai", model = "gpt-5.5") {
+  function seedReasoningOnlyTask(db: Database.Database, tempDir: string, providerId: "openai" | "openrouter" | "deepseek" = "openai", model = "gpt-5.5") {
     const ts = new Date().toISOString();
     projectRepository(db).createProject({ id: "p1", name: "B", workspacePath: tempDir, createdAt: ts });
     conversationsRepository(db).createConversation({ id: "c1", projectId: "p1", title: "B", createdAt: ts, updatedAt: ts });
@@ -409,6 +615,88 @@ describe("empty-response recovery forces a bounded, tool-call-required continuat
       },
     } as never;
   }
+
+  it("disables DeepSeek thinking before requiring an action after a reasoning-only turn", async () => {
+    const calls: Array<{ reasoningMode?: string; toolChoice?: string }> = [];
+    seedReasoningOnlyTask(db, tempDir, "deepseek", "deepseek-v4-flash");
+    writeFileSync(join(tempDir, "seed.txt"), "seed\n");
+
+    const provider = {
+      id: "deepseek",
+      async *streamChat(_messages: unknown, options: { reasoning?: { mode?: string }; toolChoice?: string }): AsyncIterable<ProviderChunk> {
+        const call: { reasoningMode?: string; toolChoice?: string } = {};
+        if (options.reasoning?.mode !== undefined) call.reasoningMode = options.reasoning.mode;
+        if (options.toolChoice !== undefined) call.toolChoice = options.toolChoice;
+        calls.push(call);
+        if (calls.length === 1 || options.reasoning?.mode !== "off" || options.toolChoice !== "required") {
+          yield { type: "text", providerContinuation: { reasoningContent: "thinking without ever producing an action..." } };
+          yield { type: "done", finishReason: "length" };
+          return;
+        }
+        if (calls.length === 2) {
+          yield {
+            type: "tool_call",
+            toolCalls: [{
+              id: "recovery-read",
+              index: 0,
+              type: "function",
+              function: { name: "read_file", arguments: JSON.stringify({ path: "seed.txt" }) },
+            }],
+          };
+          yield { type: "done", finishReason: "tool_calls" };
+          return;
+        }
+        yield { type: "text", text: "Recovered by acting after the DeepSeek reasoning-only turn." };
+        yield { type: "done", finishReason: "stop" };
+      },
+    } as never;
+
+    await executeAgentChatTask({ db, taskId: "t1", provider });
+
+    expect(taskRepository(db).getTaskById("t1")?.status).toBe("completed");
+    expect(calls[0]).toEqual({});
+    expect(calls[1]).toEqual({ reasoningMode: "off", toolChoice: "required" });
+  });
+
+  it("recovers a provider-classified empty stop in the same logical turn", async () => {
+    const calls: Array<{ reasoningMode?: string; toolChoice?: string }> = [];
+    seedReasoningOnlyTask(db, tempDir, "deepseek", "deepseek-v4-flash");
+    const provider = {
+      id: "deepseek",
+      async *streamChat(_messages: unknown, options: { reasoning?: { mode?: string }; toolChoice?: string }): AsyncIterable<ProviderChunk> {
+        const call: { reasoningMode?: string; toolChoice?: string } = {};
+        if (options.reasoning?.mode !== undefined) call.reasoningMode = options.reasoning.mode;
+        if (options.toolChoice !== undefined) call.toolChoice = options.toolChoice;
+        calls.push(call);
+        if (calls.length === 1) {
+          yield { type: "done", finishReason: "stop" };
+          yield { type: "error", error: { type: "empty_response", kind: "provider", message: "Provider returned a completed response with no content", retryable: true } };
+          return;
+        }
+        if (calls.length === 2) {
+          yield {
+            type: "tool_call",
+            toolCalls: [{
+              id: "empty-stop-recovery",
+              index: 0,
+              type: "function",
+              function: { name: "read_file", arguments: JSON.stringify({ path: "seed.txt" }) },
+            }],
+          };
+          yield { type: "done", finishReason: "tool_calls" };
+          return;
+        }
+        yield { type: "text", text: "Recovered after the provider marked the empty stop." };
+        yield { type: "done", finishReason: "stop" };
+      },
+    } as never;
+
+    await executeAgentChatTask({ db, taskId: "t1", provider });
+
+    expect(taskRepository(db).getTaskById("t1")?.status).toBe("completed");
+    expect(calls[0]).toEqual({});
+    expect(calls[1]).toEqual({ reasoningMode: "off", toolChoice: "required" });
+  });
 
   it("reproduces the old unbounded behavior when replayed against the pre-fix escalation shape", async () => {
     // This test documents what the OLD code did (raw escalation with no

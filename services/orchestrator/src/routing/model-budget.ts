@@ -35,6 +35,14 @@ export interface ModelBudget {
    * advertised model capacity and any configured endpoint override), before
    * any reserve is subtracted. */
   contextWindowTokens: number;
+  /** The model/adapter-owned native capacity before route overrides. */
+  nativeContextWindowTokens: number | null;
+  nativeContextWindowSource: ContextLimitSource;
+  /** Configured/provider-reported route ceiling before choosing the effective minimum. */
+  routeLimitTokens: number | null;
+  routeLimitSource: ContextLimitSource;
+  /** Alias with explicit semantics for diagnostics and future schema consumers. */
+  effectiveContextWindowTokens: number;
   contextWindowSource: ContextLimitSource;
   /** "verified" ONLY for built-in model metadata (routing/models.ts) or
    * genuinely provider-reported metadata ("model-metadata" /
@@ -53,6 +61,7 @@ export interface ModelBudget {
   safetyMarginTokens: number;
   toolReserveTokens: number;
   framingReserveTokens: number;
+  harnessReserveTokens: number;
   totalReserveTokens: number;
 
   /** contextWindowTokens - totalReserveTokens: the real provider-capacity
@@ -66,6 +75,10 @@ export interface ModelBudget {
    * target for the first-pass deterministic history trim, never a provider
    * constraint — it must never be used to reject a request outright. */
   compactionTargetTokens: number;
+  currentModelVisibleTokens: number | null;
+  remainingInputTokens: number | null;
+  compactionThresholdTokens: number;
+  compactionThresholdRatio: number;
 
   /**
    * Demarcates which unverified-route category the conservative fallback was
@@ -89,6 +102,8 @@ export function resolveModelBudget(input: {
   userContextWindowTokens?: number | null;
   safetyMarginTokens?: number;
   fallbackLimitTokens?: number;
+  currentModelVisibleTokens?: number;
+  compactionThresholdRatio?: number;
 }): ModelBudget {
   const metadata = resolveModelMetadata(input.providerId, input.selectedModel);
   // outputReserveTokens is 1 here (the minimum resolveEffectiveContext accepts):
@@ -125,6 +140,7 @@ export function resolveModelBudget(input: {
   // stable disclosure shape; the exact-envelope gate is authoritative.
   const toolReserveTokens = 0;
   const framingReserveTokens = 512;
+  const harnessReserveTokens = safetyMarginTokens + toolReserveTokens + framingReserveTokens;
   const totalReserveTokens = outputReserveTokens + safetyMarginTokens + toolReserveTokens + framingReserveTokens;
 
   const usableInputTokens = Math.max(1, contextWindowTokens - totalReserveTokens);
@@ -132,6 +148,14 @@ export function resolveModelBudget(input: {
     ? Math.max(1, Math.floor(input.presetContextBudgetBytes / 4))
     : usableInputTokens;
   const compactionTargetTokens = Math.max(1, Math.min(presetBudget, usableInputTokens));
+  const compactionThresholdRatio = input.compactionThresholdRatio ?? 0.8;
+  if (!(compactionThresholdRatio > 0 && compactionThresholdRatio <= 1)) {
+    throw new Error("Compaction threshold ratio must be in (0, 1]");
+  }
+  const currentModelVisibleTokens = input.currentModelVisibleTokens ?? null;
+  const remainingInputTokens = currentModelVisibleTokens === null
+    ? null
+    : Math.max(0, usableInputTokens - currentModelVisibleTokens);
 
   return {
     providerId: input.providerId,
@@ -144,6 +168,11 @@ export function resolveModelBudget(input: {
     endpointKind: input.endpoint.kind,
     endpointHost: input.endpoint.host,
     contextWindowTokens,
+    nativeContextWindowTokens: effective.advertisedModelCapacityTokens,
+    nativeContextWindowSource: effective.advertisedModelCapacitySource,
+    routeLimitTokens: effective.configuredEndpointLimitTokens,
+    routeLimitSource: effective.endpointLimitSource,
+    effectiveContextWindowTokens: contextWindowTokens,
     contextWindowSource,
     contextWindowConfidence,
     endpointLimitTokens: effective.configuredEndpointLimitTokens,
@@ -152,9 +181,36 @@ export function resolveModelBudget(input: {
     safetyMarginTokens,
     toolReserveTokens,
     framingReserveTokens,
+    harnessReserveTokens,
     totalReserveTokens,
     usableInputTokens,
     compactionTargetTokens,
+    currentModelVisibleTokens,
+    remainingInputTokens,
+    compactionThresholdTokens: Math.max(1, Math.floor(usableInputTokens * compactionThresholdRatio)),
+    compactionThresholdRatio,
     routeFallbackIdentity: effective.routeFallbackIdentity,
+  };
+}
+
+/** Attach the measured model-visible request total without re-resolving the
+ * route. This keeps native capacity, route limits, and their provenance
+ * stable while the exact envelope measurement supplies current pressure. */
+export function withCurrentModelVisibleTokens(
+  budget: ModelBudget,
+  currentModelVisibleTokens: number | null,
+  compactionThresholdRatio = budget.compactionThresholdRatio,
+): ModelBudget {
+  if (!(compactionThresholdRatio > 0 && compactionThresholdRatio <= 1)) {
+    throw new Error("Compaction threshold ratio must be in (0, 1]");
+  }
+  return {
+    ...budget,
+    currentModelVisibleTokens,
+    remainingInputTokens: currentModelVisibleTokens === null
+      ? null
+      : Math.max(0, budget.usableInputTokens - currentModelVisibleTokens),
+    compactionThresholdRatio,
+    compactionThresholdTokens: Math.floor(budget.usableInputTokens * compactionThresholdRatio),
   };
 }

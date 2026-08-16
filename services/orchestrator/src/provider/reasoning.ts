@@ -1,5 +1,6 @@
 import type { ReasoningConfiguration, RouteReasoningCapability } from "@morrow/contracts";
 import type { ProviderProtocol } from "./base.js";
+import type { ReasoningCapability } from "./model-capabilities.js";
 
 /**
  * Reasoning is not a uniform API across providers. This module is the single
@@ -25,11 +26,70 @@ function deepSeekWireEffort(effort: NonNullable<Extract<ReasoningConfiguration, 
   return effort === "xhigh" || effort === "max" ? "max" : "high";
 }
 
+function isExactCapability(capability: RouteReasoningCapability | ReasoningCapability): capability is ReasoningCapability {
+  return "mode" in capability;
+}
+
+function translateExactReasoning(
+  config: ReasoningConfiguration,
+  protocol: ProviderProtocol,
+  capability: ReasoningCapability,
+): ReasoningTranslation {
+  if (config.mode === "auto") return { ok: true, params: {} };
+  const disable = (): ReasoningTranslation => {
+    if (capability.supportsOff !== true) {
+      return { ok: false, reason: "This exact route does not report that reasoning can be disabled." };
+    }
+    return capability.wire === "deepseek-thinking"
+      ? { ok: true, params: { thinking: { type: "disabled" } } }
+      : protocol === "anthropic-messages"
+        ? { ok: true, params: { thinking: { type: "disabled" } } }
+        : { ok: true, params: {} };
+  };
+
+  switch (capability.mode) {
+    case "unknown":
+      return { ok: false, reason: "This route has not reported a reasoning capability; choose Auto or configure the provider metadata first." };
+    case "none":
+      return config.mode === "off"
+        ? { ok: true, params: {} }
+        : { ok: false, reason: "This exact route does not expose reasoning controls." };
+    case "fixed":
+      if (config.mode === "provider-fixed") return { ok: true, params: {} };
+      if (config.mode === "off") return disable();
+      return { ok: false, reason: "This exact route reports fixed reasoning and cannot be tuned." };
+    case "selectable": {
+      if (config.mode === "off") return disable();
+      if (config.mode !== "effort") return { ok: false, reason: "This exact route configures reasoning with an opaque effort selector." };
+      const selected = capability.efforts.find((effort) => effort.id === config.effort);
+      if (!selected) return { ok: false, reason: `Unsupported reasoning effort "${config.effort}" for this exact route.` };
+      if (!isOpenAiFamily(protocol)) return { ok: false, reason: "This exact route does not expose an effort wire field for this protocol." };
+      return {
+        ok: true,
+        params: {
+          reasoning_effort: selected.wireValue ?? selected.id,
+          ...(capability.wire === "deepseek-thinking" ? { thinking: { type: "enabled" } } : {}),
+        },
+      };
+    }
+    case "budget": {
+      if (config.mode === "off") return disable();
+      if (config.mode !== "budget") return { ok: false, reason: "This exact route configures reasoning with a token budget." };
+      if (capability.efforts.length > 0 && !capability.efforts.some((effort) => effort.id === String(config.tokens) || effort.wireValue === String(config.tokens))) {
+        return { ok: false, reason: `Unsupported reasoning budget ${config.tokens} tokens for this exact route.` };
+      }
+      if (protocol !== "anthropic-messages") return { ok: false, reason: "Token-budget reasoning is not supported on this provider protocol." };
+      return { ok: true, params: { thinking: { type: "enabled", budget_tokens: config.tokens } } };
+    }
+  }
+}
+
 export function translateReasoning(
   config: ReasoningConfiguration,
   protocol: ProviderProtocol,
-  capability: RouteReasoningCapability
+  capability: RouteReasoningCapability | ReasoningCapability
 ): ReasoningTranslation {
+  if (isExactCapability(capability)) return translateExactReasoning(config, protocol, capability);
   // "auto" always means: send no explicit reasoning params and let the route's
   // own default (preset/provider) stand. Valid on every route.
   if (config.mode === "auto") return { ok: true, params: {} };
@@ -91,5 +151,8 @@ export function translateReasoning(
         return { ok: false, reason: "Token-budget reasoning is not supported on this provider protocol." };
       }
       return { ok: true, params: { thinking: { type: "enabled", budget_tokens: config.tokens } } };
+
+    case "unknown":
+      return { ok: false, reason: "This route has not reported a reasoning capability; choose Auto or configure the provider metadata first." };
   }
 }

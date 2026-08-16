@@ -1,4 +1,6 @@
 import type { ChatMessage, ProviderProtocol, ToolDefinition } from "../provider/base.js";
+import { buildCanonicalProviderRequest, type CanonicalVisibleContext } from "./canonical-request.js";
+import type { ExactProviderRoute } from "../provider/model-capabilities.js";
 import { getEncoding } from "js-tiktoken";
 
 export interface ContextBudget {
@@ -32,6 +34,10 @@ export interface ProviderRequestEnvelope {
   messages: ChatMessage[];
   tools: ToolDefinition[];
   outputReserveTokens: number;
+  /** Exact route identity used for canonical hashing when available. */
+  route?: ExactProviderRoute;
+  /** Safe model-visible component facts used for explainable accounting. */
+  visibleContext?: CanonicalVisibleContext;
 }
 
 export interface ProviderRequestMeasurement {
@@ -41,6 +47,19 @@ export interface ProviderRequestMeasurement {
   method: TokenCountMethod;
   exact: boolean;
   confidence: "exact" | "conservative";
+  /** The model-visible token total, kept distinct from any response usage. */
+  modelVisibleTokens?: number;
+  /** Identity of this exact request: model-visible content bound to one route. */
+  canonicalRequestHash?: string;
+  /** Route-free identity of the model-visible content alone. */
+  canonicalContentHash?: string;
+  provenance?: {
+    routeFingerprint: string;
+    canonicalRequestHash: string;
+    canonicalContentHash: string;
+    method: TokenCountMethod;
+    confidence: "exact" | "conservative";
+  };
   components: {
     messages: number;
     imageInputs: number;
@@ -171,13 +190,37 @@ const PROTOCOL_OVERHEAD: Record<ProviderProtocol, number> = {
   mock: 0,
 };
 
+/**
+ * Upper bound for an opaque serialized payload whose text Morrow does not
+ * control — provider continuation blobs and image metadata. One token per byte
+ * is deliberately pessimistic here: such a payload can be dense, non-ASCII, or
+ * emoji-heavy, where the prose estimator undercounts.
+ */
 function conservativeSerializedTokens(value: unknown): number {
   const serialized = JSON.stringify(value);
-  // Provider-specific tokenizers differ, but every supported text protocol is
-  // ultimately UTF-8 on the wire. One token per byte is a safe upper bound for
-  // byte-fallback tokenizers and avoids the Unicode undercount produced by the
-  // ordinary prose estimator (notably joined emoji and combining sequences).
   return Math.max(estimateTextTokens(serialized), Buffer.byteLength(serialized, "utf8"));
+}
+
+/**
+ * Upper bound for the tool schemas Morrow itself authors.
+ *
+ * This is static, mostly-ASCII JSON with English descriptions, where real
+ * tokenizers average roughly 3.5-4 bytes per token. Charging one token per byte
+ * over-reserved by about 4x, and because the reserve is subtracted from the
+ * same budget that decides compaction, it silently disabled the budget it was
+ * meant to protect: live evidence showed a 32k-fallback route billing 12,664
+ * tokens for 11 KB of schemas, leaving so little room that every turn compacted
+ * and the model lost its own prior observations.
+ *
+ * Three bytes per token stays conservative against the realistic ~3.7, and the
+ * caller adds the standard 15% margin on top, so the reserve still exceeds the
+ * true cost by roughly 40% without swallowing the budget. A residual
+ * underestimate is recoverable: `context_overflow` is typed and routes into the
+ * existing bounded compaction retry.
+ */
+function conservativeSchemaTokens(value: unknown): number {
+  const serialized = JSON.stringify(value);
+  return Math.max(estimateTextTokens(serialized), Math.ceil(Buffer.byteLength(serialized, "utf8") / 3));
 }
 
 function conservativeImageTokens(image: NonNullable<ChatMessage["images"]>[number]): number {
@@ -190,10 +233,28 @@ function conservativeImageTokens(image: NonNullable<ChatMessage["images"]>[numbe
   return Math.max(512, Math.ceil(Buffer.from(image.data, "base64").length / 64));
 }
 
+function canonicalRoute(envelope: ProviderRequestEnvelope): ExactProviderRoute {
+  return envelope.route ?? {
+    providerId: envelope.providerId,
+    modelId: envelope.model,
+    protocol: envelope.protocol,
+    endpointHost: null,
+    endpointIdentityHash: null,
+    routeFingerprint: `unbound:${envelope.providerId}:${envelope.model}:${envelope.protocol}`,
+  };
+}
+
 /** Count the complete normalized request envelope. Provider adapters serialize
  * this same information onto the wire; private continuation data is counted but
  * is never returned in diagnostics. */
 export function measureProviderRequest(envelope: ProviderRequestEnvelope): ProviderRequestMeasurement {
+  const canonical = buildCanonicalProviderRequest({
+    route: canonicalRoute(envelope),
+    messages: envelope.messages,
+    tools: envelope.tools,
+    outputReserveTokens: envelope.outputReserveTokens,
+    ...(envelope.visibleContext === undefined ? {} : { visibleContext: envelope.visibleContext }),
+  });
   const messageCount = countChatTokens(envelope.messages.map(({ providerContinuation: _private, providerContinuationRouteFingerprint: _binding, images: _images, ...message }) => message), {
     providerId: envelope.providerId,
     model: envelope.model,
@@ -206,7 +267,7 @@ export function measureProviderRequest(envelope: ProviderRequestEnvelope): Provi
     if (!message.providerContinuation) return sum;
     return sum + conservativeSerializedTokens(message.providerContinuation);
   }, 0);
-  const toolBase = conservativeSerializedTokens(envelope.tools.map((tool) => ({
+  const toolBase = conservativeSchemaTokens(envelope.tools.map((tool) => ({
     type: "function",
     function: { name: tool.name, description: tool.description, parameters: tool.parameters },
   })));
@@ -224,6 +285,16 @@ export function measureProviderRequest(envelope: ProviderRequestEnvelope): Provi
     method: hasEstimatedExtras ? "estimate" : messageCount.method,
     exact: messageCount.exact && !hasEstimatedExtras,
     confidence: hasEstimatedExtras ? "conservative" : messageCount.confidence,
+    modelVisibleTokens: inputTokens,
+    canonicalRequestHash: canonical.requestHash,
+    canonicalContentHash: canonical.contentHash,
+    provenance: {
+      routeFingerprint: canonical.route.routeFingerprint,
+      canonicalRequestHash: canonical.requestHash,
+      canonicalContentHash: canonical.contentHash,
+      method: hasEstimatedExtras ? "estimate" : messageCount.method,
+      confidence: hasEstimatedExtras ? "conservative" : messageCount.confidence,
+    },
     components: { messages: messageCount.tokens, imageInputs, toolSchemas, providerContinuation, protocolOverhead },
   };
 }

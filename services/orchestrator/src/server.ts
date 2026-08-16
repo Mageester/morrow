@@ -173,7 +173,7 @@ import { hostname } from "node:os";
 import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
 import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guard.js";
 import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
-import { buildProviderProjection } from "./execution/provider-projection.js";
+import { boundCompletedToolArguments, buildProviderProjection } from "./execution/provider-projection.js";
 import { resolveModelBudget } from "./routing/model-budget.js";
 import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
 import { createResearchAndVerifyTeam } from "./mission/research-and-verify-preset.js";
@@ -1768,10 +1768,21 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
           : [];
       }),
     }));
+    // Legacy rows may have the complete result but no persisted model-facing
+    // projection. Repair that seam before building the compacted request so a
+    // restart/manual compaction cannot re-inject an oversized raw result.
+    convs.materializeToolContextForTask(taskId);
     const toolResults = convs.listToolCallsForTask(taskId).flatMap((call) =>
-      typeof call.resultJson === "string" ? [{ id: call.id, toolName: call.toolName, result: redactJsonText(call.resultJson) ?? call.resultJson }] : [],
+      typeof (call.contextResultJson ?? call.resultJson) === "string"
+        ? [{ id: call.id, toolName: call.toolName, result: redactJsonText(call.contextResultJson ?? call.resultJson!) ?? call.contextResultJson ?? call.resultJson! }]
+        : [],
     );
-    const messages = buildProviderProjection({ prefixMessages, turns, toolResults });
+    const messages = buildProviderProjection({
+      prefixMessages,
+      turns,
+      toolResults,
+      normalizeToolArguments: boundCompletedToolArguments,
+    });
     if (messages.length < 2) throw new ApiError(409, "Not enough task history to compact", "CONTEXT_NOT_COMPACTABLE");
     const original = countChatTokens(messages, { providerId: decision.providerId, model: decision.model });
     const prepared = prepareContextForProvider(messages, {

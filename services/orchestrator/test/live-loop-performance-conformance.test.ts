@@ -18,14 +18,6 @@ import { MockProvider } from "../src/provider/mock.js";
 import type { ProviderChunk } from "../src/provider/base.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import {
-  ARTIFACT_DELIVERY_RECOVERY_TURN,
-  ARTIFACT_DELIVERY_STOP_TURN,
-  MAX_OBSERVATION_SIGNATURE_EXECUTIONS,
-  createProgressEpoch,
-  assessArtifactDelivery,
-  observationSignature,
-} from "../src/execution/progress-epoch.js";
-import {
   MAX_EXECUTION_CHECKPOINT_BYTES,
   projectCheckpointSnapshot,
 } from "../src/execution/checkpoint-snapshot.js";
@@ -129,7 +121,7 @@ class FailAfterRecoveryMarkerProvider extends MockProvider {
   private requestCount = 0;
 
   override async *streamChat(...args: Parameters<MockProvider["streamChat"]>) {
-    if (this.requestCount++ === ARTIFACT_DELIVERY_RECOVERY_TURN) {
+    if (this.requestCount++ === 6) {
       throw new Error("simulated restart after durable recovery marker");
     }
     yield* super.streamChat(...args);
@@ -147,108 +139,6 @@ describe("Task 2 live-loop performance conformance", () => {
       rmSync(workspacePath, { recursive: true, force: true });
       workspacePath = "";
     }
-  });
-
-  it("counts exact interleaved observation signatures across compaction and evidence in one epoch", () => {
-    const epoch = createProgressEpoch();
-    const sequence = [
-      ["read_file", { path: "README.md" }],
-      ["list_files", { path: "." }],
-      ["inspect_workspace", {}],
-    ] as const;
-
-    for (let repeat = 0; repeat < MAX_OBSERVATION_SIGNATURE_EXECUTIONS + 1; repeat++) {
-      for (const [toolName, args] of sequence) {
-        epoch.recordObservation(toolName, args);
-        epoch.recordObservationEvidence(`observation-${repeat}-${toolName}`);
-        epoch.recordCompaction();
-      }
-    }
-
-    const read = epoch.recordObservation("read_file", { path: "README.md" });
-    expect(read.executionsPerSignature).toBe(MAX_OBSERVATION_SIGNATURE_EXECUTIONS + 2);
-    expect(read.exceeded).toBe(true);
-    expect(epoch.currentEpoch()).toBe(0);
-    expect(epoch.count("read_file", { path: "README.md" })).toBe(MAX_OBSERVATION_SIGNATURE_EXECUTIONS + 2);
-  });
-
-  it("does not treat observation evidence or compaction as meaningful delivery progress", () => {
-    const epoch = createProgressEpoch();
-    epoch.recordObservation("read_file", { path: "README.md" });
-    const before = epoch.snapshot();
-
-    epoch.recordObservationEvidence("evidence-1");
-    epoch.recordCompaction();
-
-    expect(epoch.snapshot()).toEqual(before);
-    expect(epoch.hasMeaningfulDeliveryProgress()).toBe(false);
-
-    epoch.recordMutation("artifact:README.md@hash-1");
-    expect(epoch.currentEpoch()).toBe(1);
-    expect(epoch.hasMeaningfulDeliveryProgress()).toBe(true);
-  });
-
-  it("collapses semantically equivalent observation aliases into one epoch signature", () => {
-    const aliases = [
-      {},
-      { path: "." },
-      { path: "" },
-      { path: "./" },
-      { path: "src/.." },
-      { path: ".\\" },
-      { path: "./src/../" },
-    ];
-    const signatures = aliases.map((args) => observationSignature("list_files", args));
-    expect(new Set(signatures)).toHaveLength(1);
-
-    const epoch = createProgressEpoch();
-    const observations = aliases.map((args) => epoch.recordObservation("list_files", args));
-    expect(observations[0]?.executionsPerSignature).toBe(1);
-    expect(observations[MAX_OBSERVATION_SIGNATURE_EXECUTIONS - 1]?.exceeded).toBe(false);
-    expect(observations[MAX_OBSERVATION_SIGNATURE_EXECUTIONS]?.exceeded).toBe(true);
-  });
-
-  it("keeps malformed required observation arguments distinct from valid empty values", () => {
-    const readFileSignatures = [
-      observationSignature("read_file", {}),
-      observationSignature("read_file", { path: "" }),
-      observationSignature("read_file", { path: "README.md" }),
-    ];
-    const searchTextSignatures = [
-      observationSignature("search_text", {}),
-      observationSignature("search_text", { query: "" }),
-      observationSignature("search_text", { query: "needle" }),
-    ];
-
-    expect(new Set(readFileSignatures)).toHaveLength(3);
-    expect(new Set(searchTextSignatures)).toHaveLength(3);
-
-    const readEpoch = createProgressEpoch();
-    for (let index = 0; index < MAX_OBSERVATION_SIGNATURE_EXECUTIONS; index++) {
-      readEpoch.recordObservation("read_file", { path: "" });
-    }
-    const malformedRead = readEpoch.recordObservation("read_file", {});
-    expect(malformedRead.executionsPerSignature).toBe(1);
-    expect(malformedRead.exceeded).toBe(false);
-    expect(readEpoch.recordObservation("read_file", { path: "" }).exceeded).toBe(true);
-
-    const searchEpoch = createProgressEpoch();
-    for (let index = 0; index < MAX_OBSERVATION_SIGNATURE_EXECUTIONS; index++) {
-      searchEpoch.recordObservation("search_text", { query: "" });
-    }
-    const malformedSearch = searchEpoch.recordObservation("search_text", {});
-    expect(malformedSearch.executionsPerSignature).toBe(1);
-    expect(malformedSearch.exceeded).toBe(false);
-    expect(searchEpoch.recordObservation("search_text", { query: "" }).exceeded).toBe(true);
-  });
-
-  it("requires action-only recovery by turn 6 and strategy termination by turn 12 for artifact delivery", () => {
-    expect(assessArtifactDelivery({ requiresArtifact: true, providerTurn: ARTIFACT_DELIVERY_RECOVERY_TURN, mutationObserved: false }))
-      .toMatchObject({ actionOnlyRecoveryRequired: true, strategyTerminationRequired: false });
-    expect(assessArtifactDelivery({ requiresArtifact: true, providerTurn: ARTIFACT_DELIVERY_STOP_TURN, mutationObserved: false }))
-      .toMatchObject({ actionOnlyRecoveryRequired: false, strategyTerminationRequired: true });
-    expect(assessArtifactDelivery({ requiresArtifact: false, providerTurn: 100, mutationObserved: false }))
-      .toMatchObject({ actionOnlyRecoveryRequired: false, strategyTerminationRequired: false });
   });
 
   it("bounds a projected checkpoint and excludes cumulative raw call arguments and results", () => {
@@ -580,7 +470,7 @@ describe("Task 2 live-loop performance conformance", () => {
     const records = taskRecordsRepository(db);
     const events = records.listEvents("task-1") as Array<{ type: string; payload: Record<string, unknown> }>;
     const providerTurns = events.filter((event) => event.type === "assistant.turn_started");
-    expect(providerTurns.length).toBeGreaterThan(ARTIFACT_DELIVERY_STOP_TURN);
+    expect(providerTurns.length).toBeGreaterThan(6);
     expect(events.some((event) => event.payload.reason === "artifact_delivery_recovery")).toBe(false);
     expect(events.some((event) => event.payload.reason === "artifact_delivery_stalled")).toBe(false);
     expect(conversationsRepository(db).listToolCallsForTask("task-1").some((call) => ["propose_patch", "create_file", "create_directory"].includes(call.toolName) && call.status === "completed")).toBe(false);
@@ -771,7 +661,7 @@ describe("Task 2 live-loop performance conformance", () => {
     });
   });
 
-  it("reconstructs a trusted recovery after a multi-segment rollover using the exact durable turn key", async () => {
+  it("does not rebuild synthetic artifact-delivery context from a legacy marker", async () => {
     workspacePath = mkdtempSync(join(tmpdir(), "morrow-artifact-rollover-restart-"));
     db = openDatabase(":memory:");
     seedArtifactTask(db, workspacePath);
@@ -852,9 +742,9 @@ describe("Task 2 live-loop performance conformance", () => {
 
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
     const freshRequest = provider.requests[0]!;
-    expect(freshRequest.filter((message) => message.role === "user")).toHaveLength(1);
-    expect(freshRequest.find((message) => message.role === "user")?.content).toContain("MORROW DELIVERY RECOVERY");
-    expect(freshRequest.some((message) => message.role === "assistant" || message.role === "tool")).toBe(false);
+    expect(freshRequest.some((message) => message.role === "user" && message.content.includes("MORROW DELIVERY RECOVERY"))).toBe(false);
+    expect(freshRequest.some((message) => message.role === "assistant" && message.content.includes("durable segment one context"))).toBe(true);
+    expect(freshRequest.some((message) => message.role === "assistant" && message.content.includes("durable segment two context"))).toBe(true);
     const recoveryEvents = records.listEvents("task-1").filter((event) => event.payload.reason === "artifact_delivery_recovery");
     expect(recoveryEvents).toHaveLength(1);
     expect(recoveryEvents[0]?.payload.recoveryTurnKey).toBe(markerTurn.turnKey);
@@ -963,7 +853,7 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(conversationsRepository(db).listToolCallsForTask("task-1").some((call) => call.toolName === "create_file")).toBe(false);
   });
 
-  it("does not record cached repeated reads as exhausted observation executions", async () => {
+  it("executes repeated reads without observation-exhaustion interruption", async () => {
     workspacePath = mkdtempSync(join(tmpdir(), "morrow-cached-observation-"));
     db = openDatabase(":memory:");
     seedArtifactTask(db, workspacePath);
@@ -997,7 +887,7 @@ describe("Task 2 live-loop performance conformance", () => {
     const provider = new MockProvider({
       chunks: [
         write("write-first", "first.txt", "first\n"),
-        ...Array.from({ length: MAX_OBSERVATION_SIGNATURE_EXECUTIONS + 1 }, (_, index) => read(`read-first-${index}`)),
+        ...Array.from({ length: 4 }, (_, index) => read(`read-first-${index}`)),
         write("write-second", "second.txt", "second\n"),
         [{ type: "text", text: "Both requested files are complete." }, { type: "done" }],
       ],
@@ -1007,7 +897,7 @@ describe("Task 2 live-loop performance conformance", () => {
 
     const calls = conversationsRepository(db).listToolCallsForTask("task-1");
     const reads = calls.filter((call) => call.toolName === "read_file");
-    expect(reads).toHaveLength(MAX_OBSERVATION_SIGNATURE_EXECUTIONS + 1);
+    expect(reads).toHaveLength(4);
     expect(reads.every((call) => call.status === "completed")).toBe(true);
     expect(calls.find((call) => call.id === "write-second")?.status).toBe("completed");
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");

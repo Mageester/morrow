@@ -54,6 +54,38 @@ describe("workspace inspector", () => {
       expect(() => inspectWorkspace(item.root, { startPath: "..\\escape", maxDepth: 1, maxResults: 1 })).toThrow(WorkspaceInspectionError);
     } finally { item.remove(); rmSync(outside, { recursive: true, force: true }); }
   });
+  it("accepts a workspace-contained absolute start path and rejects an escaping one actionably", () => {
+    // Live evidence (nemotron-3.5-lightning, task a5196a7c): the model passed
+    // the workspace's OWN absolute path and was told "Workspace path is outside
+    // configured workspace" — false and unactionable — so it kept re-sending
+    // absolute paths for eleven calls and never recovered. A contained absolute
+    // path is now normalized and executes; an escaping one is still rejected,
+    // but names the root and shows a valid value.
+    const item = workspace();
+    const outside = `${item.root}-other`;
+    try {
+      mkdirSync(join(item.root, "nested"), { recursive: true });
+      writeFileSync(join(item.root, "nested", "a.txt"), "x");
+      const viaAbsolute = inspectWorkspace(item.root, { startPath: item.root, maxDepth: 8, maxResults: 10 });
+      const viaRelative = inspectWorkspace(item.root, { startPath: ".", maxDepth: 8, maxResults: 10 });
+      expect(viaAbsolute.entries).toEqual(viaRelative.entries);
+      expect(inspectWorkspace(item.root, { startPath: join(item.root, "nested"), maxDepth: 8, maxResults: 10 }).entries.map((e) => e.path))
+        .toEqual(["nested/a.txt"]);
+
+      mkdirSync(outside);
+      for (const startPath of [outside, "/etc", "C:\\Windows"]) {
+        expect(() => inspectWorkspace(item.root, { startPath, maxDepth: 1, maxResults: 1 }))
+          .toThrow(WorkspaceInspectionError);
+        expect(() => inspectWorkspace(item.root, { startPath, maxDepth: 1, maxResults: 1 }))
+          .toThrow(/outside this task's workspace root/);
+        expect(() => inspectWorkspace(item.root, { startPath, maxDepth: 1, maxResults: 1 }))
+          .toThrow(/assets\/site\.css/);
+      }
+      expect(() => inspectWorkspace(item.root, { startPath: `..${sep}escape`, maxDepth: 1, maxResults: 1 }))
+        .toThrow(/parent-traversal/i);
+    } finally { item.remove(); rmSync(outside, { recursive: true, force: true }); }
+  });
+
   it("treats a file start path as a single-file scope instead of erroring", () => {
     const item = workspace();
     try {

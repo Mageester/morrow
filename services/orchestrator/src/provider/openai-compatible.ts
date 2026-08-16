@@ -12,6 +12,11 @@ import {
 import { parseRetryAfter } from "./rate-guard.js";
 import { reconcileWireLimits } from "./limits.js";
 import { translateReasoning } from "./reasoning.js";
+import {
+  applyLearnedRequestCompatibility,
+  identifyUnsupportedRequestField,
+  learnUnsupportedRequestField,
+} from "./request-compatibility.js";
 
 export interface OpenAiCompatibleConfig {
   /** Provider identifier surfaced in disclosures (openai, openrouter, deepseek, ...). */
@@ -58,7 +63,7 @@ export class OpenAiCompatibleProvider implements AiProvider {
 
     const model = options.model || this.config.defaultModel;
     // Agent turns can inject `system`-role messages mid-conversation
-    // (convergence advisories, compaction notices, reminders) — valid input
+    // (execution advisories, compaction notices, reminders) — valid input
     // for the Anthropic and Gemini adapters, which already pull all system
     // content out of the transcript and merge it into one field regardless of
     // position. The OpenAI chat-completions wire format instead expects a
@@ -100,7 +105,9 @@ export class OpenAiCompatibleProvider implements AiProvider {
           : {}),
       })),
       stream: true,
-      ...(this.config.includeUsage ? { stream_options: { include_usage: true } } : {}),
+      ...(this.config.includeUsage && options.requestCapabilities?.streamUsage !== "unsupported"
+        ? { stream_options: { include_usage: true } }
+        : {}),
     };
 
     // Every limit on this request is reconciled against the others in one
@@ -113,12 +120,28 @@ export class OpenAiCompatibleProvider implements AiProvider {
       timeoutMs: options.timeoutMs,
       temperature: options.temperature,
     });
-    if (limits.temperature !== null) body.temperature = limits.temperature;
-    if (limits.maxOutputTokens !== null) body.max_tokens = limits.maxOutputTokens;
-    if (options.responseFormat === "json_object") body.response_format = { type: "json_object" };
+    if (limits.temperature !== null && options.requestCapabilities?.temperature !== "unsupported") {
+      body.temperature = limits.temperature;
+    }
+    if (limits.maxOutputTokens !== null) {
+      switch (options.requestCapabilities?.maxOutputTokens) {
+        case "max_completion_tokens":
+          body.max_completion_tokens = limits.maxOutputTokens;
+          break;
+        case "max_output_tokens":
+          body.max_output_tokens = limits.maxOutputTokens;
+          break;
+        default:
+          body.max_tokens = limits.maxOutputTokens;
+          break;
+      }
+    }
+    if (options.responseFormat === "json_object" && options.requestCapabilities?.responseFormat !== "unsupported") {
+      body.response_format = { type: "json_object" };
+    }
 
     if (options.reasoning) {
-      const capability = options.reasoningCapability ?? { control: "none", efforts: [], budgets: [], source: "unknown" };
+      const capability = options.exactReasoningCapability ?? options.reasoningCapability ?? { control: "none", efforts: [], budgets: [], source: "unknown" };
       const translated = translateReasoning(options.reasoning, "openai-chat", capability);
       if (!translated.ok) {
         yield { type: "error", error: { type: "invalid_request", kind: "invalid_request", message: translated.reason, retryable: false } };
@@ -127,13 +150,16 @@ export class OpenAiCompatibleProvider implements AiProvider {
       Object.assign(body, translated.params);
     }
 
-    if (options.tools && options.tools.length > 0) {
+    if (options.tools && options.tools.length > 0 && options.requestCapabilities?.tools !== "unsupported") {
       body.tools = options.tools.map((t) => ({
         type: "function",
         function: { name: t.name, description: t.description, parameters: t.parameters },
       }));
-      if (options.toolChoice === "required") body.tool_choice = "required";
+      if (options.toolChoice === "required" && (!options.requestCapabilities || options.requestCapabilities.toolChoice === "supported")) {
+        body.tool_choice = "required";
+      }
     }
+    applyLearnedRequestCompatibility(body, this.route, baseUrl, model);
 
     const controller = new AbortController();
     let timedOut = false;
@@ -155,26 +181,28 @@ export class OpenAiCompatibleProvider implements AiProvider {
       ...(this.config.extraHeaders ?? {}),
     };
 
-    let response: Response;
-    try {
-      response = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (e: any) {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (timedOut) {
-        yield { type: "error", error: { type: "timeout", kind: "timeout", message: "Provider request timed out", retryable: true } };
+    let response: Response | undefined;
+    let requestCompatibilityRetried = false;
+    while (!response) {
+      try {
+        response = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } catch (e: any) {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (timedOut) {
+          yield { type: "error", error: { type: "timeout", kind: "timeout", message: "Provider request timed out", retryable: true } };
+          return;
+        }
+        yield { type: "error", error: classifyThrownError(e, options.abortSignal?.aborted ?? false) };
         return;
       }
-      yield { type: "error", error: classifyThrownError(e, options.abortSignal?.aborted ?? false) };
-      return;
-    }
 
-    if (!response.ok) {
-      if (timeoutId) clearTimeout(timeoutId);
+      if (response.ok) break;
+
       const errText = await response.text().catch(() => "");
       let errMsg = errText || `Request failed with status ${response.status}`;
       try {
@@ -183,7 +211,24 @@ export class OpenAiCompatibleProvider implements AiProvider {
       } catch {
         /* keep raw text */
       }
+      const rejectedField = !requestCompatibilityRetried
+        ? identifyUnsupportedRequestField(response.status, errMsg, body)
+        : undefined;
+      if (rejectedField) {
+        requestCompatibilityRetried = true;
+        learnUnsupportedRequestField(this.route, baseUrl, model, rejectedField);
+        applyLearnedRequestCompatibility(body, this.route, baseUrl, model);
+        response = undefined;
+        continue;
+      }
+      if (timeoutId) clearTimeout(timeoutId);
       yield { type: "error", error: classifyHttpStatus(response.status, errMsg, parseRetryAfter(response.headers.get("retry-after"))) };
+      return;
+    }
+
+    if (!response) {
+      if (timeoutId) clearTimeout(timeoutId);
+      yield { type: "error", error: { type: "provider_error", kind: "provider", message: "Provider request did not return a response", retryable: true } };
       return;
     }
 
@@ -198,6 +243,8 @@ export class OpenAiCompatibleProvider implements AiProvider {
     let buffer = "";
     let completed = false;
     let terminalError = false;
+    let finishReason: ProviderChunk["finishReason"];
+    let sawUsableOutput = false;
     const redactConfiguredSecret = (message: string): string => this.config.apiKey
       ? message.split(this.config.apiKey).join("***redacted***")
       : message;
@@ -224,18 +271,30 @@ export class OpenAiCompatibleProvider implements AiProvider {
         return out;
       }
       if (parsed.usage) out.push({ type: "done", usage: { promptTokens: parsed.usage.prompt_tokens ?? 0, completionTokens: parsed.usage.completion_tokens ?? 0, ...(parsed.usage.prompt_tokens_details?.cached_tokens !== undefined ? { cachedPromptTokens: parsed.usage.prompt_tokens_details.cached_tokens } : {}) } });
-      const wireFinishReason = parsed.choices?.[0]?.finish_reason;
-      if (wireFinishReason) {
-        completed = true;
-        out.push({ type: "done", finishReason: normalizeFinishReason(wireFinishReason) });
-      }
+      // A gateway may deliver the last content delta and finish_reason in ONE
+      // record. The finish marker is the terminal boundary of the response, so
+      // this record's own content must be emitted BEFORE it — otherwise that
+      // content either disappears or forces consumers to accept model output
+      // after a terminal marker.
       const delta = parsed.choices?.[0]?.delta;
       if (delta?.reasoning_content) out.push({
         type: "text",
         providerContinuation: { reasoningContent: delta.reasoning_content },
       });
-      if (delta?.content) out.push({ type: "text", text: delta.content });
-      if (delta?.tool_calls) out.push({ type: "tool_call", toolCalls: delta.tool_calls.map((tc: any) => ({ id: tc.id, index: tc.index, type: "function", function: { name: tc.function?.name || "", arguments: tc.function?.arguments || "" } })) });
+      if (delta?.content) {
+        sawUsableOutput = true;
+        out.push({ type: "text", text: delta.content });
+      }
+      if (delta?.tool_calls?.length) {
+        sawUsableOutput = true;
+        out.push({ type: "tool_call", toolCalls: delta.tool_calls.map((tc: any) => ({ id: tc.id, index: tc.index, type: "function", function: { name: tc.function?.name || "", arguments: tc.function?.arguments || "" } })) });
+      }
+      const wireFinishReason = parsed.choices?.[0]?.finish_reason;
+      if (wireFinishReason) {
+        completed = true;
+        finishReason = normalizeFinishReason(wireFinishReason);
+        out.push({ type: "done", finishReason });
+      }
       return out;
     };
 
@@ -255,6 +314,22 @@ export class OpenAiCompatibleProvider implements AiProvider {
       yield* parseRecord(buffer, true);
       if (!completed && !terminalError) {
         yield { type: "error", error: { type: "interrupted_stream", kind: "provider", message: "Provider stream ended before completion", retryable: true } };
+      } else if (!terminalError && finishReason === "stop" && !sawUsableOutput) {
+        // A clean stop with no visible text or tool call is not a successful
+        // assistant turn. Classify it at the provider boundary so the agent
+        // can retry the same request path instead of persisting a false final
+        // answer. Reasoning-only `length` stops are intentionally left to the
+        // agent's bounded recovery policy, which has the route metadata needed
+        // to disable thinking where the provider supports it.
+        yield {
+          type: "error",
+          error: {
+            type: "empty_response",
+            kind: "provider",
+            message: "Provider returned a completed response with no content",
+            retryable: true,
+          },
+        };
       }
     } catch (e: any) {
       if (timedOut) {

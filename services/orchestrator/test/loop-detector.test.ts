@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createLoopDetector, toolCallSignature, stableStringify, duplicatesPriorNarration } from "../src/execution/loop-detector.js";
+import { createLoopDetector, toolCallSignature, stableStringify, duplicatesPriorNarration, isRepeatAdvisoryPoint } from "../src/execution/loop-detector.js";
 
 describe("stableStringify", () => {
   it("is order-independent for object keys", () => {
@@ -30,47 +30,32 @@ describe("toolCallSignature", () => {
 });
 
 describe("createLoopDetector", () => {
-  it("flags three identical signatures within a 6-call window as looping", () => {
-    const d = createLoopDetector({ windowSize: 6, repeatThreshold: 3 });
-    expect(d.record("x").looping).toBe(false);
-    expect(d.record("x").looping).toBe(false);
-    const third = d.record("x");
-    expect(third.looping).toBe(true);
-    expect(third.count).toBe(3);
+  it("counts exact signatures without deciding whether execution should stop", () => {
+    const d = createLoopDetector();
+    expect(d.record("x")).toMatchObject({ signature: "x", count: 1, looping: false });
+    expect(d.record("x")).toMatchObject({ signature: "x", count: 2, looping: false });
+    expect(d.record("x")).toMatchObject({ signature: "x", count: 3, looping: false });
   });
 
-  it("does not flag varied calls within the window", () => {
-    const d = createLoopDetector({ windowSize: 6, repeatThreshold: 3 });
-    for (const s of ["a", "b", "c", "a", "b", "c"]) {
-      expect(d.record(s).looping).toBe(false);
-    }
+  it("tracks each signature independently and exposes advisory points", () => {
+    const d = createLoopDetector();
+    for (const s of ["a", "b", "c", "a", "b", "c"]) d.record(s);
+    expect(d.record("a").count).toBe(3);
+    expect(d.record("a").count).toBe(4);
+    expect(isRepeatAdvisoryPoint(3)).toBe(true);
+    expect(isRepeatAdvisoryPoint(4)).toBe(true);
+    expect(isRepeatAdvisoryPoint(5)).toBe(false);
+    expect(isRepeatAdvisoryPoint(8)).toBe(true);
   });
 
-  it("forgets calls that fall outside the window", () => {
-    const d = createLoopDetector({ windowSize: 3, repeatThreshold: 3 });
-    d.record("x"); // window: [x]
-    d.record("y"); // [x,y]
-    d.record("z"); // [x,y,z]
-    d.record("x"); // [y,z,x]  — only one x in window
-    const again = d.record("x"); // [z,x,x] — two x
-    expect(again.looping).toBe(false);
-    expect(again.count).toBe(2);
-  });
-
-  it("resets its window", () => {
-    const d = createLoopDetector({ windowSize: 6, repeatThreshold: 2 });
+  it("resets task-local advisory counts", () => {
+    const d = createLoopDetector();
     d.record("x");
     d.record("x");
-    expect(d.size).toBe(2);
+    expect(d.size).toBe(1);
     d.reset();
     expect(d.size).toBe(0);
-    expect(d.record("x").looping).toBe(false);
-  });
-
-  it("clamps degenerate options to safe minimums", () => {
-    const d = createLoopDetector({ windowSize: 0, repeatThreshold: 0 });
-    d.record("x");
-    expect(d.record("x").looping).toBe(true); // threshold clamped to 2
+    expect(d.record("x").count).toBe(1);
   });
 });
 

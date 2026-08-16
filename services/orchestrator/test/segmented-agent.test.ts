@@ -246,6 +246,49 @@ describe("durable agent segments", () => {
     }
   });
 
+  it("recovers a typed context overflow through bounded durable compaction", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "morrow-context-overflow-recovery-"));
+    const db = openDatabase(":memory:");
+    try {
+      const at = new Date().toISOString();
+      projectRepository(db).createProject({ id: "p", name: "P", workspacePath: workspace, createdAt: at });
+      conversationsRepository(db).createConversation({ id: "c", projectId: "p", title: "C", createdAt: at, updatedAt: at });
+      conversationsRepository(db).appendMessage({ id: "u", conversationId: "c", role: "user", content: "Finish after the provider reports a full context.", createdAt: at, updatedAt: at });
+      taskRepository(db).createTask({ id: "t", projectId: "p", kind: "agent_chat", status: "queued", createdAt: at });
+      conversationsRepository(db).appendMessage({ id: "a", conversationId: "c", role: "assistant", content: "", taskId: "t", streamingState: "queued", createdAt: at, updatedAt: at });
+      let calls = 0;
+      const provider: AiProvider = {
+        id: "mock",
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          calls++;
+          if (calls === 1) {
+            throw new ProviderError("context_overflow", "maximum context length exceeded", {
+              kind: "context_overflow",
+              retryable: false,
+              status: 400,
+            });
+          }
+          yield { type: "text", text: "Recovered after bounded compaction." };
+          yield { type: "done" };
+        },
+      };
+
+      await executeAgentChatTask({ db, taskId: "t", provider });
+
+      expect(calls).toBe(2);
+      expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
+      expect(conversationsRepository(db).getMessage("a")?.content).toBe("Recovered after bounded compaction.");
+      expect(executionContinuityRepository(db).listSegments("t").map((segment) => segment.status)).toEqual(["checkpointed", "checkpointed", "completed"]);
+      const events = taskRecordsRepository(db).listEvents("t");
+      expect(events.some((event) => event.type === "provider.error_classified" && event.payload.contextRejection === true)).toBe(true);
+      expect(events.some((event) => event.type === "context.compaction_completed")).toBe(true);
+      expect(events.filter((event) => event.type === "provider.error_classified")).toHaveLength(1);
+    } finally {
+      db.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("checkpoints a mission context preflight failure for controller rollover", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "morrow-mission-context-rollover-"));
     const db = openDatabase(":memory:");
@@ -359,11 +402,12 @@ describe("durable agent segments", () => {
       expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
       expect(requests).toHaveLength(1);
       expect(requests[0]!.filter((message) => message.role === "assistant").map((message) => message.content)).toEqual(["PHASE_ONE"]);
-      expect(requests[0]!.flatMap((message) => message.toolCalls ?? [])).toHaveLength(0);
-      expect(requests[0]!.filter((message) => message.role === "tool")).toHaveLength(0);
-      expect(requests[0]!.find((message) => message.content.startsWith("Morrow durable write record."))?.content)
-        .toContain("create_file completed for result.txt");
+      expect(requests[0]!.flatMap((message) => message.toolCalls ?? []).filter((call) => call.id === "write-once")).toHaveLength(1);
+      expect(requests[0]!.filter((message) => message.role === "tool" && message.toolCallId === "write-once")).toHaveLength(1);
+      expect(requests[0]!.find((message) => message.role === "tool" && message.toolCallId === "write-once")?.content)
+        .toContain('"created":true');
       expect(JSON.stringify(requests[0])).not.toContain("_morrowAppliedWrite");
+      expect(JSON.stringify(requests[0])).not.toContain("Morrow durable write record.");
       expect(convs.listToolCallsForMessage("a")).toHaveLength(1);
       expect(continuity.listProviderTurns("t")).toHaveLength(2);
       expect(continuity.getCanonicalAnswer("t")?.content).toBe("RESTARTED_FINAL");

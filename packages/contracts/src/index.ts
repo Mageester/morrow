@@ -35,7 +35,7 @@ export const ProcessStatusSchema=z.enum(["running","exited","failed","cancelled"
 export const CreateWorktreeSchema=z.object({name:z.string().trim().min(1).max(81).optional(),taskId:z.string().optional(),agentId:z.string().optional(),baseRef:z.string().trim().min(1).max(200).optional()}).strict();
 export type CreateWorktreeInput=z.infer<typeof CreateWorktreeSchema>;
 export const CreateTaskSchema=z.object({projectId:z.string().min(1),kind:z.enum(["inspect_workspace","agent_chat"]),conversationId:z.string().optional(),preset:z.string().optional(),agentId:z.string().optional()});
-export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),type:z.enum(["task.created","task.running","plan.created","step.started","step.completed","workspace.inspected","evidence.persisted","memory.learned","assistant.turn_started","assistant.turn_completed","agent.state_changed","approval.requested","approval.resolved","verification.completed","tool.started","tool.completed","tool.failed","tool.arguments_rejected","tool.arguments_normalized","tool.strategy_switch","patch.recovery_feedback","task.verified","task.completed","task.failed","task.cancelled","task.interrupted","task.progress_warning","task.recovery_required","task.recovery_requeued","provider.route_selected","provider.request_started","provider.fallback","provider.rate_limited","provider.usage","context.trimmed","context.budget_calculated","context.estimate_used","context.exact_count_used","context.compaction_started","context.compaction_completed","context.compaction_failed","context.history_trimmed","context.safety_fallback_applied","context.minimum_viable_context_exceeded","process.started","process.exited","provider.error_classified","provider.tool_syntax_normalized","optimization.tool_profile_selected"]),createdAt:z.string(),payload:z.record(z.string(),z.unknown())});
+export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),type:z.enum(["task.created","task.running","plan.created","step.started","step.completed","workspace.inspected","evidence.persisted","memory.learned","assistant.turn_started","assistant.turn_completed","agent.state_changed","approval.requested","approval.resolved","verification.completed","tool.started","tool.completed","tool.failed","tool.arguments_rejected","tool.arguments_normalized","tool.strategy_switch","patch.recovery_feedback","task.verified","task.completed","task.failed","task.cancelled","task.interrupted","task.progress_warning","task.recovery_required","task.recovery_requeued","provider.route_selected","provider.request_started","provider.fallback","provider.rate_limited","provider.usage","provider.reasoning_unavailable","context.trimmed","context.budget_calculated","context.estimate_used","context.exact_count_used","context.compaction_started","context.compaction_completed","context.compaction_failed","context.history_trimmed","context.safety_fallback_applied","context.minimum_viable_context_exceeded","process.started","process.exited","provider.error_classified","provider.tool_syntax_normalized","optimization.tool_profile_selected"]),createdAt:z.string(),payload:z.record(z.string(),z.unknown())});
 export const AgentStateTransitionSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),state:AgentExecutionStateSchema,details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime()}).strict();
 export const ApprovalSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),projectId:z.string(),kind:ApprovalKindSchema,status:ApprovalStatusSchema,summary:z.string().min(1).max(240),details:z.record(z.string(),z.unknown()),decision:ApprovalDecisionSchema.nullable(),decisionNote:z.string().nullable(),createdAt:z.string().datetime(),resolvedAt:z.string().datetime().nullable()}).strict();
 export const ResolveApprovalSchema=z.object({projectId:z.string().min(1),decision:ApprovalDecisionSchema,trustPattern:z.string().trim().min(1).max(240).optional(),note:z.string().trim().max(500).optional()}).strict().refine((value)=>value.decision!=="trust_project"||value.trustPattern!==undefined,{message:"trustPattern is required when trusting a command pattern",path:["trustPattern"]});
@@ -182,6 +182,22 @@ export const ModelCapabilitiesSchema=z.object({
   reasoning:z.boolean().nullable().optional(),
 }).strict();
 
+// ── Provider request capability contract ───────────────────────────────────
+// Model capability flags describe what a model can do in principle. These
+// fields describe which optional wire arguments the exact model/endpoint has
+// verified support for. "unknown" is intentional: silence from a model
+// catalogue must never be converted into a false claim or a guessed request.
+export const RequestCapabilityStateSchema=z.enum(["supported","unsupported","unknown"]);
+export const MaxOutputTokensFieldSchema=z.enum(["max_tokens","max_completion_tokens","max_output_tokens","unknown"]);
+export const ModelRequestCapabilitiesSchema=z.object({
+  tools:RequestCapabilityStateSchema,
+  toolChoice:RequestCapabilityStateSchema,
+  temperature:RequestCapabilityStateSchema,
+  streamUsage:RequestCapabilityStateSchema,
+  responseFormat:RequestCapabilityStateSchema,
+  maxOutputTokens:MaxOutputTokensFieldSchema,
+}).strict();
+
 // ── Reasoning / thinking control ─────────────────────────────────────────────
 //
 // A route's reasoning behaviour is NOT uniform across providers, so it is
@@ -190,7 +206,9 @@ export const ModelCapabilitiesSchema=z.object({
 // it into that provider's real request format (see the orchestrator's
 // translateReasoning). `RouteReasoningCapability` describes what a specific
 // route actually exposes, with explicit provenance — never a guess.
-export const ReasoningEffortSchema=z.enum(["low","medium","high","xhigh","max"]);
+/** Provider-defined reasoning selector IDs. Common values remain supported,
+ * but adapters may expose opaque IDs such as `budget:32768` or `thinking:max`. */
+export const ReasoningEffortSchema=z.string().trim().min(1).max(200);
 /**
  * How a route exposes reasoning control:
  *   "none"   — the route has no reasoning controls (Not configurable);
@@ -198,9 +216,9 @@ export const ReasoningEffortSchema=z.enum(["low","medium","high","xhigh","max"])
  *   "budget" — a token budget for thinking (e.g. off/2k/8k/16k/max);
  *   "fixed"  — reasoning is on but fixed by the provider (Fixed by provider).
  */
-export const ReasoningControlSchema=z.enum(["none","effort","budget","fixed"]);
+export const ReasoningControlSchema=z.enum(["none","effort","budget","fixed","unknown"]);
 /** Where a reasoning fact came from — parallels ContextLimitSource provenance. */
-export const ReasoningSourceSchema=z.enum(["provider-metadata","capability-probe","registry","unknown"]);
+export const ReasoningSourceSchema=z.enum(["provider-metadata","capability-probe","registry","adapter-native","deployment","provider-catalog","route-config","unknown"]);
 export const RouteReasoningCapabilitySchema=z.object({
   control:ReasoningControlSchema,
   /** Supported effort levels — only meaningful when control === "effort". */
@@ -254,6 +272,7 @@ export const ModelInfoSchema=z.object({
   tokenUsage:z.boolean(),
   streamingUsage:z.boolean(),
   capabilities:ModelCapabilitiesSchema,
+  requestCapabilities:ModelRequestCapabilitiesSchema.optional(),
   capabilitySource:z.enum(["provider-reported","remote-catalog","bundled-catalog","user-supplied","unknown"]).optional(),
   speedClass:ModelSpeedClassSchema,
   costClass:ModelCostClassSchema,
@@ -290,6 +309,7 @@ export const ModelStatusSchema=z.object({
  * second, independently-derived source of truth.
  */
 export const ModelBudgetConfidenceSchema=z.enum(["verified","configured","unverified"]);
+export const ContextLimitSourceSchema=z.enum(["model-metadata","provider-metadata","endpoint-override","fallback","unknown"]);
 export const ModelBudgetViewSchema=z.object({
   providerId:ProviderIdSchema,
   selectedModelId:z.string(),
@@ -300,10 +320,21 @@ export const ModelBudgetViewSchema=z.object({
   endpointKind:z.enum(["default","custom","injected"]),
   endpointHost:z.string().nullable(),
   contextWindowTokens:z.number().int().nonnegative(),
+  /** Route-aware capacity diagnostics; optional for older cached responses. */
+  nativeContextWindowTokens:z.number().int().positive().nullable().optional(),
+  nativeContextWindowSource:ContextLimitSourceSchema.optional(),
+  routeLimitTokens:z.number().int().positive().nullable().optional(),
+  routeLimitSource:ContextLimitSourceSchema.optional(),
+  effectiveContextWindowTokens:z.number().int().nonnegative().optional(),
   contextWindowConfidence:ModelBudgetConfidenceSchema,
   usableInputTokens:z.number().int().nonnegative(),
   outputReserveTokens:z.number().int().nonnegative(),
   totalReserveTokens:z.number().int().nonnegative(),
+  harnessReserveTokens:z.number().int().nonnegative().optional(),
+  currentModelVisibleTokens:z.number().int().nonnegative().nullable().optional(),
+  remainingInputTokens:z.number().int().nonnegative().nullable().optional(),
+  compactionThresholdTokens:z.number().int().nonnegative().optional(),
+  compactionThresholdRatio:z.number().min(0).max(1).optional(),
   capabilities:ModelCapabilitiesSchema,
   pricing:ModelPricingSchema.nullable(),
   /** Reasoning capability of this resolved route, with provenance. Optional so
@@ -749,6 +780,9 @@ export type ModelStatus=z.infer<typeof ModelStatusSchema>;
 export type ModelBudgetConfidence=z.infer<typeof ModelBudgetConfidenceSchema>;
 export type ModelBudgetView=z.infer<typeof ModelBudgetViewSchema>;
 export type ModelCapabilities=z.infer<typeof ModelCapabilitiesSchema>;
+export type RequestCapabilityState=z.infer<typeof RequestCapabilityStateSchema>;
+export type MaxOutputTokensField=z.infer<typeof MaxOutputTokensFieldSchema>;
+export type ModelRequestCapabilities=z.infer<typeof ModelRequestCapabilitiesSchema>;
 export type ReasoningEffort=z.infer<typeof ReasoningEffortSchema>;
 export type ReasoningControl=z.infer<typeof ReasoningControlSchema>;
 export type ReasoningSource=z.infer<typeof ReasoningSourceSchema>;
@@ -866,6 +900,8 @@ export const DiscoveredModelSchema=z.object({
     vision:z.boolean().nullable(),
     reasoning:z.boolean().nullable().optional(),
   }).strict(),
+  requestCapabilities:ModelRequestCapabilitiesSchema.optional(),
+  reasoning:RouteReasoningCapabilitySchema.optional(),
   pricing:ModelPricingSchema.nullable().optional(),
   costType:z.enum(["free","paid","unknown"]).optional(),
   availability:z.enum(["available","unavailable","unknown"]).optional(),

@@ -4,11 +4,13 @@ import { AnthropicProvider } from "../src/provider/anthropic.js";
 import { GeminiProvider } from "../src/provider/gemini.js";
 import type { AiProvider, ChatMessage, ProviderChunk, StreamOptions } from "../src/provider/base.js";
 import { buildMissionCompletion } from "../src/mission/completion.js";
+import { clearLearnedRequestCompatibility } from "../src/provider/request-compatibility.js";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = realFetch;
   vi.restoreAllMocks();
+  clearLearnedRequestCompatibility();
 });
 
 function sseResponse(lines: string[], status = 200): Response {
@@ -84,14 +86,41 @@ describe("OpenAI-compatible provider normalization", () => {
     expect(JSON.stringify(chunks)).not.toContain("sk-secret-key");
   });
 
-  it("moves a mid-conversation system message (e.g. a convergence advisory) to the front and merges it with the leading one", async () => {
+  it("emits content from a record before that record's finish marker", async () => {
+    // Real OpenAI-compatible gateways may deliver the last content delta and
+    // finish_reason in one record. The finish marker is the terminal boundary
+    // of the stream, so emitting it first would either lose that content or
+    // force every downstream consumer to accept output after the terminal
+    // marker — the exact ambiguity a proxy could exploit to blend two
+    // responses into one turn.
+    const ref = mockFetch(
+      sseResponse([
+        `data: {"choices":[{"delta":{"content":"first"}}]}\n\n`,
+        `data: {"choices":[{"delta":{"content":" and last","tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":9,"completion_tokens":2}}\n\n`,
+        `data: [DONE]\n\n`,
+      ])
+    );
+    const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "k", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.4-mini" });
+    const chunks = await collect(provider, userMessages, { tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }] });
+
+    const types = chunks.map((chunk) => chunk.type);
+    const finishIndex = types.lastIndexOf("done");
+    expect(chunks[finishIndex]!.finishReason).toBe("tool_calls");
+    // Nothing model-visible may follow the record's finish marker.
+    expect(types.slice(finishIndex + 1).filter((type) => type === "text" || type === "tool_call")).toEqual([]);
+    expect(chunks.filter((chunk) => chunk.type === "text").map((chunk) => chunk.text).join("")).toBe("first and last");
+    expect(chunks.filter((chunk) => chunk.type === "tool_call")).toHaveLength(1);
+    expect(ref.captured).not.toBeNull();
+  });
+
+  it("moves a mid-conversation system advisory to the front and merges it with the leading one", async () => {
     const ref = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
     const provider = new OpenAiCompatibleProvider({ id: "tokenrouter", apiKey: "k", baseUrl: "https://api.tokenrouter.com/v1", defaultModel: "qwen/qwen3.8-max-free" });
     await collect(provider, [
       { role: "system", content: "You are Morrow." },
       { role: "user", content: "Read a file" },
       { role: "assistant", content: "Reading now." },
-      { role: "system", content: "Morrow convergence advisory: repeated edit detected." },
+      { role: "system", content: "Morrow execution advisory: inspect the prior result before continuing." },
       { role: "user", content: "Try again" },
     ]);
 
@@ -100,7 +129,7 @@ describe("OpenAI-compatible provider normalization", () => {
     // not the first entry ("System message must be at the beginning.") —
     // both system messages must land in one leading slot, in the original
     // relative order, with every other message's order otherwise unchanged.
-    expect(sent[0]).toEqual({ role: "system", content: "You are Morrow.\n\nMorrow convergence advisory: repeated edit detected." });
+    expect(sent[0]).toEqual({ role: "system", content: "You are Morrow.\n\nMorrow execution advisory: inspect the prior result before continuing." });
     expect(sent.slice(1).map((m: { role: string }) => m.role)).toEqual(["user", "assistant", "user"]);
   });
 
@@ -142,6 +171,98 @@ describe("OpenAI-compatible provider normalization", () => {
     const ref3 = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
     await collect(provider, userMessages, { tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }] });
     expect(JSON.parse(ref3.captured!.init.body)).not.toHaveProperty("tool_choice");
+  });
+
+  it("honors the resolved model request profile instead of sending another route's optional fields", async () => {
+    const ref = mockFetch(sseResponse([
+      `data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}` + "\n\n",
+      `data: [DONE]\n\n`,
+    ]));
+    const provider = new OpenAiCompatibleProvider({ id: "openai-compatible", apiKey: "k", baseUrl: "https://gateway.example/v1", defaultModel: "qwen-local" , includeUsage: true });
+    await collect(provider, userMessages, {
+      maxOutputTokens: 1234,
+      temperature: 0.2,
+      responseFormat: "json_object",
+      tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }],
+      toolChoice: "required",
+      requestCapabilities: {
+        tools: "supported",
+        toolChoice: "supported",
+        temperature: "unsupported",
+        streamUsage: "unsupported",
+        responseFormat: "unsupported",
+        maxOutputTokens: "max_completion_tokens",
+      },
+    });
+
+    const body = JSON.parse(ref.captured!.init.body);
+    expect(body.max_completion_tokens).toBe(1234);
+    expect(body.max_tokens).toBeUndefined();
+    expect(body.temperature).toBeUndefined();
+    expect(body.stream_options).toBeUndefined();
+    expect(body.response_format).toBeUndefined();
+    expect(body.tool_choice).toBe("required");
+    expect(body.tools).toHaveLength(1);
+  });
+
+  it("does not send tools to a model whose discovery explicitly says tools are unsupported", async () => {
+    const ref = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
+    const provider = new OpenAiCompatibleProvider({ id: "openai-compatible", apiKey: "k", baseUrl: "https://gateway.example/v1", defaultModel: "text-only", includeUsage: false });
+    await collect(provider, userMessages, {
+      tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }],
+      toolChoice: "required",
+      requestCapabilities: {
+        tools: "unsupported",
+        toolChoice: "unsupported",
+        temperature: "supported",
+        streamUsage: "unsupported",
+        responseFormat: "unsupported",
+        maxOutputTokens: "max_tokens",
+      },
+    });
+    expect(JSON.parse(ref.captured!.init.body)).not.toHaveProperty("tools");
+    expect(JSON.parse(ref.captured!.init.body)).not.toHaveProperty("tool_choice");
+  });
+
+  it("retries one rejected optional field and remembers the correction for the route/model", async () => {
+    const bodies: any[] = [];
+    let calls = 0;
+    globalThis.fetch = (async (_url: any, init: any) => {
+      calls++;
+      bodies.push(JSON.parse(init.body));
+      if (calls === 1) {
+        return new Response(JSON.stringify({ error: { message: "Unsupported parameter: 'temperature' is not supported for this model" } }), { status: 400 });
+      }
+      return sseResponse([`data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n`, `data: [DONE]\n\n`]);
+    }) as any;
+    const provider = new OpenAiCompatibleProvider({ id: "gateway", apiKey: "k", baseUrl: "https://gateway.example/v1", defaultModel: "qwen-local", includeUsage: false });
+    await collect(provider, userMessages, { temperature: 0.2 });
+    expect(calls).toBe(2);
+    expect(bodies[0].temperature).toBe(0.2);
+    expect(bodies[1].temperature).toBeUndefined();
+
+    // A later request on the same route/model starts with the learned shape;
+    // it does not pay the failed request again.
+    const later = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"later"}}]}\n\n`, `data: [DONE]\n\n`]));
+    await collect(provider, userMessages, { temperature: 0.2 });
+    expect(JSON.parse(later.captured!.init.body).temperature).toBeUndefined();
+  });
+
+  it("switches max_tokens to max_completion_tokens after a gateway rejects the legacy field", async () => {
+    const bodies: any[] = [];
+    let calls = 0;
+    globalThis.fetch = (async (_url: any, init: any) => {
+      calls++;
+      bodies.push(JSON.parse(init.body));
+      if (calls === 1) return new Response(JSON.stringify({ error: { message: "Unrecognized request argument: max_tokens" } }), { status: 422 });
+      return sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]);
+    }) as any;
+    const provider = new OpenAiCompatibleProvider({ id: "gateway", apiKey: "k", baseUrl: "https://gateway.example/v1", defaultModel: "qwen-local", includeUsage: false });
+    await collect(provider, userMessages, { maxOutputTokens: 200 });
+    expect(calls).toBe(2);
+    expect(bodies[0].max_tokens).toBe(200);
+    expect(bodies[1].max_tokens).toBeUndefined();
+    expect(bodies[1].max_completion_tokens).toBe(200);
   });
 
   it("injects a valid reasoning effort into the request body, and rejects an unsupported one before the request", async () => {
@@ -186,6 +307,38 @@ describe("OpenAI-compatible provider normalization", () => {
       reasoningCapability: { ...deepSeekCapability, efforts: [...deepSeekCapability.efforts] },
     });
     expect(JSON.parse(disabledRef.captured!.init.body).thinking).toEqual({ type: "disabled" });
+
+    const recoveryRef = mockFetch(sseResponse([`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"recovery","function":{"name":"read_file","arguments":"{}"}}]}}]}\n\n`, `data: [DONE]\n\n`]));
+    await collect(provider, userMessages, {
+      reasoning: { mode: "off" },
+      reasoningCapability: { ...deepSeekCapability, efforts: [...deepSeekCapability.efforts] },
+      toolChoice: "required",
+      tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }],
+    });
+    const recoveryBody = JSON.parse(recoveryRef.captured!.init.body);
+    expect(recoveryBody.thinking).toEqual({ type: "disabled" });
+    expect(recoveryBody.tool_choice).toBe("required");
+  });
+
+  it("classifies a clean stop with no visible output or tool call as a retryable empty response", async () => {
+    const provider = new OpenAiCompatibleProvider({ id: "deepseek", apiKey: "k", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-v4-flash" });
+    mockFetch(sseResponse([
+      `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n`,
+      `data: [DONE]\n\n`,
+    ]));
+    const chunks = await collect(provider, userMessages, {
+      tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }],
+    });
+
+    expect(chunks.at(-1)).toEqual({
+      type: "error",
+      error: {
+        type: "empty_response",
+        kind: "provider",
+        message: "Provider returned a completed response with no content",
+        retryable: true,
+      },
+    });
   });
 
   it("classifies HTTP errors into typed kinds", async () => {

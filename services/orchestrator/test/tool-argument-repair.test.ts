@@ -170,9 +170,15 @@ describe("validateToolArguments", () => {
     expect(validateToolArguments(proposePatchSchema, { patch: "d", files: "not-an-array" }, ["patch"])).toMatchObject({ field: "files", problem: "wrong_type", expected: "array" });
   });
 
-  it("rejects an absolute path argument", () => {
-    expect(validateToolArguments(createFileSchema, { path: "C:\\Windows\\evil.txt", content: "x" })).toMatchObject({ field: "path", problem: "absolute_path" });
-    expect(validateToolArguments(createFileSchema, { path: "/etc/passwd", content: "x" })).toMatchObject({ field: "path", problem: "absolute_path" });
+  it("does not judge absolute paths, which only the workspace-aware boundary can decide", () => {
+    // This validator has no workspace root, so it cannot distinguish an
+    // absolute path inside the workspace from one outside it. Rejecting both
+    // refused legitimate calls and taught the model nothing. Containment is
+    // enforced by validateSafeReadPath / inspectWorkspace /
+    // assertContainedRealPath, which know the root, normalize a contained
+    // absolute path, and reject an escaping one with an actionable message.
+    expect(validateToolArguments(createFileSchema, { path: "C:\\Windows\\evil.txt", content: "x" })).toBeNull();
+    expect(validateToolArguments(createFileSchema, { path: "/etc/passwd", content: "x" })).toBeNull();
   });
 
   it("honors a curated required-field override (tolerates omitted advertised-required fields)", () => {

@@ -288,12 +288,46 @@ function projectEvent(taskId: string, event: TaskEvent): WebConversationActivity
         summary: "Edit recovery evaluated",
         target: redactActivityTarget(payload.targetFile),
       });
-    case "task.progress_warning":
+    case "task.progress_warning": {
+      // `task.progress_warning` is now a mixed channel: some reasons are real
+      // recovery events, but most are observe-only telemetry that no longer
+      // controls anything. Rendering all of them as "Progress warning recorded"
+      // filled the Activity feed with alarming, identical, meaningless rows.
+      // Each reason is projected as what it actually is.
+      const reason = identifier(payload.reason);
+      // Pure telemetry with no user-facing meaning.
+      if (reason === "execution_policy_observed" || reason === "mission_ledger_write_failed") return null;
+      if (reason === "exact_repeat_advisory") {
+        return entry(taskId, event, {
+          kind: "recovery",
+          status: "running",
+          summary: "Repeat noted for the model",
+          detail: typeof payload.count === "number" && identifier(payload.toolName)
+            ? `${identifier(payload.toolName)} repeated ${payload.count} times; the previous result was shown again`
+            : "The previous result was shown to the model again",
+          toolName: identifier(payload.toolName),
+        });
+      }
+      if (reason === "empty_provider_response") {
+        return entry(taskId, event, {
+          kind: "provider",
+          status: "warning",
+          summary: "Provider returned no answer; retrying",
+          detail: identifier(payload.providerBoundaryClassification)?.replaceAll("_", " ") ?? null,
+        });
+      }
+      return entry(taskId, event, {
+        kind: "recovery",
+        status: "warning",
+        summary: "Recovery evaluated",
+        detail: reason?.replaceAll("_", " ") ?? null,
+      });
+    }
     case "task.recovery_required":
       return entry(taskId, event, {
         kind: "recovery",
         status: "warning",
-        summary: event.type === "task.progress_warning" ? "Progress warning recorded" : "Recovery required",
+        summary: "Recovery required",
         detail: identifier(payload.reason)?.replaceAll("_", " ") ?? null,
       });
     case "task.recovery_requeued":

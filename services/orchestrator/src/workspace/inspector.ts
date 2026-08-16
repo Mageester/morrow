@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { posix, win32, relative, resolve, sep } from "node:path";
 import { createGitignoreMatcher, isBuiltInIgnoredName } from "./ignore.js";
-import { isWithinWorkspace } from "./path-boundary.js";
+import { isWithinWorkspace, normalizeWorkspacePath } from "./path-boundary.js";
 
 export class WorkspaceInspectionError extends Error {
   readonly code = "workspace_inspection_rejected";
@@ -19,8 +19,16 @@ function isAnyAbsolutePath(candidate: string) { return posix.isAbsolute(candidat
 export function inspectWorkspace(canonicalRoot: string, options: WorkspaceInspectionOptions): WorkspaceInspection {
   if (!Number.isInteger(options.maxDepth) || options.maxDepth < 0 || !Number.isInteger(options.maxResults) || options.maxResults < 1) throw new WorkspaceInspectionError("Workspace inspection limits are invalid");
   const root = realpathSync(canonicalRoot);
-  const requested = options.startPath ?? "";
-  if (isAnyAbsolutePath(requested) || requested.split(/[\\/]+/).includes("..")) throw new WorkspaceInspectionError();
+  // Naming a workspace directory by its absolute path is an ordinary thing to
+  // do. Normalize it to the relative form instead of refusing it; the
+  // containment check below is unchanged and still decides. A path that cannot
+  // become workspace-relative is rejected with a message that names the real
+  // problem and shows a valid value.
+  const normalization = normalizeWorkspacePath(root, options.startPath ?? "");
+  if (!normalization.ok) {
+    throw new WorkspaceInspectionError(`${normalization.message} Example: "${normalization.example}".`);
+  }
+  const requested = normalization.path;
   const start = realpathSync(resolve(root, requested));
   if (!contained(root, start)) throw new WorkspaceInspectionError();
   const entries: WorkspaceEntry[] = [];

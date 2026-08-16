@@ -81,9 +81,16 @@ class WebProvider implements AiProvider {
       yield done;
       return;
     }
+    // A model recovers its own process handle from whatever durable context it
+    // still has. The raw run_command result is the obvious source, but it can be
+    // compacted away in a long run — the checkpoint carries live task-owned
+    // processes precisely so the handle survives that. Read both, newest first.
     const processId = [...messages].reverse().map((message) => {
-      try { return JSON.parse(message.content) as { processId?: string }; } catch { return {}; }
-    }).find((value) => value.processId)?.processId;
+      try { return (JSON.parse(message.content) as { processId?: string }).processId; } catch { /* not a bare JSON result */ }
+      const checkpoint = message.content.match(/"runningProcesses":\s*(\[[^\]]*\])/)?.[1];
+      if (!checkpoint) return undefined;
+      try { return (JSON.parse(checkpoint) as Array<{ processId?: string }>).at(-1)?.processId; } catch { return undefined; }
+    }).find(Boolean);
     if (this.turn === 4) {
       yield { type: "tool_call", toolCalls: [tool("web-output", 0, "read_process_output", { processId })] };
       yield done;

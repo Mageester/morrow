@@ -178,6 +178,7 @@ function reasoningSliderOptions(capability: RouteReasoningCapability | undefined
   switch (capability.control) {
     case "none":
     case "fixed":
+    case "unknown":
       return [auto];
     case "effort":
       return [

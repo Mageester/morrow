@@ -179,11 +179,13 @@ describe("beta.26 public failure — deterministic regression", () => {
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
-  it("escalates to create_file after repeated differently-broken diffs on the same file (the live loop)", async () => {
+  it("returns repairable evidence for repeated differently-broken diffs and lets the model recover (the live loop)", async () => {
     seed(db, ws, "Improve the styling of style.css.");
     // Two malformed patches with DIFFERENT headers (different hashes) — the
-    // real DeepSeek Flash loop, where no per-hash counter ever trips. The
-    // per-file counter must trip on the second and steer to create_file.
+    // real beta.26 loop. The harness no longer counts attempts per file or
+    // steers the model to a different tool; each failure is an ordinary
+    // structured tool result carrying the current file content, and the model
+    // owns the choice to switch to create_file.
     const bad1 = "--- a/style.css\n+++ b/style.css\n@@ -1,5 +1,9 @@\n body {\n-  color: black;\n";
     const bad2 = "--- a/style.css\n+++ b/style.css\n@@ -2,4 +2,7 @@\n  color: black;\n+  color: navy;\n";
     const provider = new MockProvider({
@@ -208,18 +210,27 @@ describe("beta.26 public failure — deterministic regression", () => {
     const p2 = calls.find((c: any) => c.id === "p2")!;
     expect(p1.status).toBe("failed");
     expect(p2.status).toBe("failed");
-    // Both are different patches (different hashes) yet the SECOND failure on the
-    // same file escalates — proving per-file, not per-hash, counting.
+    // Both failures return the same repairable evidence: what went wrong and
+    // the file's current content. Neither carries an attempt counter, a
+    // retry-exhausted flag, or a directive to use another tool — the harness
+    // reports objective facts and does not supervise strategy.
     const p1r = JSON.parse(p1.resultJson!);
     const p2r = JSON.parse(p2.resultJson!);
-    expect(p1r.switchToCreateFile).toBe(false);
-    expect(p2r.switchToCreateFile).toBe(true);
-    expect(p2r.attemptsForFile).toBe(2);
-    expect(p2r.instruction).toMatch(/create_file/);
+    for (const result of [p1r, p2r]) {
+      expect(result.kind).toBe("patch_recovery_feedback");
+      expect(result.targetFile).toBe("style.css");
+      expect(result.currentFile.content).toBe(STYLE_V1);
+      expect(result.switchToCreateFile).toBeUndefined();
+      expect(result.attemptsForFile).toBeUndefined();
+      expect(result.retryExhausted).toBeUndefined();
+    }
 
-    // The escalation worked: the improvement is applied via create→edit.
+    // Repeated failures never spend a hidden budget or pause the task: the
+    // model's own create_file recovery still runs and applies via create→edit.
     expect(readFileSync(join(ws, "style.css"), "utf8")).toBe(STYLE_V2);
     expect(calls.find((c: any) => c.id === "c2")!.status).toBe("completed");
+    const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((e: any) => e.type === "task.interrupted")).toBe(false);
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 });

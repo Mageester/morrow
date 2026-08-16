@@ -38,29 +38,134 @@ export interface DurableToolObservation {
 
 const CHECKPOINT_PREFIX = "Morrow durable execution checkpoint.";
 const COMPACTED_BATCH_PREFIX = "Morrow compacted the latest completed execution batch";
-const APPLIED_WRITE_PREFIX = "Morrow durable write record.";
+const HISTORICAL_ARGUMENT_BYTE_LIMIT = 8 * 1024;
 
-function appliedWriteRecord(toolName: string, argumentsJson: string): string | undefined {
-  if (toolName !== "create_file" && toolName !== "append_file" && toolName !== "propose_patch") return undefined;
+/**
+ * Bound a successful workspace-write argument for a provider request without
+ * inventing an executable payload. The complete arguments remain in the
+ * durable provider-turn row; this projection keeps the tool identity and
+ * useful target metadata while making the large body unavailable to replay.
+ *
+ * The legacy `_morrowAppliedWrite` shape is accepted only as old input. It is
+ * converted to the same non-executable metadata shape and is never emitted by
+ * the current projection.
+ */
+export function boundCompletedToolArguments(toolName: string, rawArguments: string): string {
+  const originalBytes = Buffer.byteLength(rawArguments, "utf8");
+  let parsed: Record<string, unknown>;
   try {
-    const args = JSON.parse(argumentsJson) as Record<string, unknown>;
-    if (!args._morrowAppliedWrite) return undefined;
-    const target = typeof args.path === "string"
-      ? args.path
-      : Array.isArray(args.files)
-        ? args.files.filter((value): value is string => typeof value === "string").join(", ")
-        : "workspace files";
-    return `${toolName} completed for ${target}; content remains in the workspace. This is a historical record, not a tool request.`;
+    const value = JSON.parse(rawArguments) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return rawArguments;
+    parsed = value as Record<string, unknown>;
   } catch {
-    return undefined;
+    return originalBytes <= HISTORICAL_ARGUMENT_BYTE_LIMIT
+      ? rawArguments
+      : JSON.stringify({ durable_context: { kind: "completed_tool_arguments", tool: toolName, originalBytes } });
+  }
+
+  const legacyMarker = parsed._morrowAppliedWrite;
+  if (legacyMarker && typeof legacyMarker === "object") {
+    const { _morrowAppliedWrite: _legacy, content: _content, patch: _patch, ...rest } = parsed;
+    return JSON.stringify({
+      ...rest,
+      durable_context: {
+        kind: "legacy_applied_write",
+        tool: toolName,
+        ...(typeof legacyMarker === "object" ? legacyMarker : {}),
+      },
+    });
+  }
+  if (originalBytes <= HISTORICAL_ARGUMENT_BYTE_LIMIT) return rawArguments;
+
+  const bodyKey = toolName === "propose_patch" ? "patch" : toolName === "create_file" || toolName === "append_file" ? "content" : null;
+  const body = bodyKey ? parsed[bodyKey] : undefined;
+  if (typeof body !== "string") {
+    return JSON.stringify({ durable_context: { kind: "completed_tool_arguments", tool: toolName, originalBytes } });
+  }
+  const { [bodyKey!]: _body, ...rest } = parsed;
+  return JSON.stringify({
+    ...rest,
+    durable_context: {
+      kind: "completed_tool_arguments",
+      tool: toolName,
+      originalBytes,
+      payloadBytes: Buffer.byteLength(body, "utf8"),
+      payloadSha256: createHash("sha256").update(body).digest("hex"),
+      note: "Complete successful arguments remain in durable execution history; inspect the workspace for current content.",
+    },
+  });
+}
+
+/**
+ * Bound any terminal historical call, including a failed write. Failed calls
+ * still keep their raw operator result/status, but an oversized request body
+ * is not useful as replay context: retain the target and a durable digest so
+ * the model can choose a repair without re-injecting an executable payload.
+ */
+export function boundTerminalToolArguments(
+  toolName: string,
+  rawArguments: string,
+  status: "completed" | "failed" = "completed",
+): string {
+  if (status === "completed") return boundCompletedToolArguments(toolName, rawArguments);
+  const originalBytes = Buffer.byteLength(rawArguments, "utf8");
+  if (originalBytes <= HISTORICAL_ARGUMENT_BYTE_LIMIT) return rawArguments;
+  try {
+    const value = JSON.parse(rawArguments) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return JSON.stringify({ durable_context: { kind: "failed_tool_arguments", tool: toolName, originalBytes } });
+    }
+    const parsed = value as Record<string, unknown>;
+    const targetKeys = ["path", "paths", "query", "pattern", "executable", "cwd", "purpose", "expectedOffset", "files"];
+    const target = Object.fromEntries(targetKeys.flatMap((key) => key in parsed ? [[key, parsed[key]]] : []));
+    const payloadKey = toolName === "propose_patch"
+      ? "patch"
+      : toolName === "create_file" || toolName === "append_file"
+        ? "content"
+        : undefined;
+    const payload = payloadKey && typeof parsed[payloadKey] === "string" ? parsed[payloadKey] as string : undefined;
+    return JSON.stringify({
+      ...target,
+      durable_context: {
+        kind: "failed_tool_arguments",
+        tool: toolName,
+        originalBytes,
+        ...(payload ? {
+          payloadBytes: Buffer.byteLength(payload, "utf8"),
+          payloadSha256: createHash("sha256").update(payload).digest("hex"),
+        } : {}),
+        note: "The complete failed arguments remain in durable operator history; repair the target using current workspace evidence.",
+      },
+    });
+  } catch {
+    return JSON.stringify({ durable_context: { kind: "failed_tool_arguments", tool: toolName, originalBytes } });
+  }
+}
+
+/** Keep direct projection callers bounded even when they have not first run
+ * the repository's lazy externalization repair. Normal execution persists an
+ * artifact reference before reaching this fallback. */
+export function boundTerminalToolResult(toolName: string, result: string): string {
+  if (Buffer.byteLength(result, "utf8") <= HISTORICAL_ARGUMENT_BYTE_LIMIT) return result;
+  try {
+    const parsed = JSON.parse(result) as unknown;
+    const metadata: Record<string, unknown> = { truncatedForContext: true, tool: toolName, originalBytes: Buffer.byteLength(result, "utf8") };
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const key of ["error", "kind", "detail", "message", "exitCode", "durationMs", "terminationReason", "status"]) {
+        const value = (parsed as Record<string, unknown>)[key];
+        if (typeof value === "string" || typeof value === "number") metadata[key] = value;
+      }
+    }
+    return JSON.stringify(metadata);
+  } catch {
+    return JSON.stringify({ truncatedForContext: true, tool: toolName, originalBytes: Buffer.byteLength(result, "utf8") });
   }
 }
 
 function isGeneratedProjectionMessage(message: ChatMessage): boolean {
   return message.role === "system"
     && (message.content.startsWith(CHECKPOINT_PREFIX)
-      || message.content.startsWith(COMPACTED_BATCH_PREFIX)
-      || message.content.startsWith(APPLIED_WRITE_PREFIX));
+      || message.content.startsWith(COMPACTED_BATCH_PREFIX));
 }
 
 /**
@@ -79,17 +184,24 @@ export function buildProviderProjection(input: {
   const results = new Map(input.toolResults.map((result) => [result.id, result]));
   const projectedResults = new Set<string>();
   for (const turn of input.turns) {
-    const appliedWrites: Array<{ id: string; record: string }> = [];
     const toolCalls = turn.toolCalls.flatMap((call) => {
       const observation = results.get(call.id);
-      const normalizedArguments = observation?.status === "failed"
-        ? call.arguments
+      // A successful write is still a provider-visible assistant tool request,
+      // but its large body is a context-only historical projection. Failed
+      // calls retain their original body so the provider can repair them.
+      const isWorkspaceMutation = call.name === "create_file"
+        || call.name === "append_file"
+        || call.name === "propose_patch";
+      const normalizedArguments = isWorkspaceMutation
+        ? observation?.status === "failed"
+          ? call.arguments
+          : boundCompletedToolArguments(call.name, call.arguments)
         : input.normalizeToolArguments?.(call.name, call.arguments) ?? call.arguments;
-      const record = appliedWriteRecord(call.name, normalizedArguments);
-      if (record) {
-        appliedWrites.push({ id: call.id, record });
-        return [];
-      }
+      const projectedArguments = observation?.status
+        ? boundTerminalToolArguments(call.name, normalizedArguments, observation.status)
+        : normalizedArguments.includes("_morrowAppliedWrite")
+          ? boundCompletedToolArguments(call.name, call.arguments)
+          : normalizedArguments;
       return [{
         id: call.id,
         type: "function" as const,
@@ -98,7 +210,7 @@ export function buildProviderProjection(input: {
           // Failed write calls need their original body on the next turn
           // so provider can repair one bad field. Compact only calls whose
           // effect completed durably.
-          arguments: redactJsonText(normalizedArguments) ?? redactSecrets(normalizedArguments),
+          arguments: redactJsonText(projectedArguments) ?? redactSecrets(projectedArguments),
         },
       }];
     });
@@ -110,7 +222,6 @@ export function buildProviderProjection(input: {
       ...(turn.providerContinuationRouteFingerprint ? { providerContinuationRouteFingerprint: turn.providerContinuationRouteFingerprint } : {}),
     });
     for (const call of turn.toolCalls) {
-      if (appliedWrites.some((write) => write.id === call.id)) continue;
       if (projectedResults.has(call.id)) continue;
       const result = results.get(call.id);
       if (!result) continue;
@@ -119,13 +230,10 @@ export function buildProviderProjection(input: {
         role: "tool",
         name: result.toolName,
         toolCallId: result.id,
-        content: redactJsonText(input.normalizeToolResult?.(result.toolName, result.result) ?? result.result) ?? redactSecrets(result.result),
-      });
-    }
-    if (appliedWrites.length > 0) {
-      messages.push({
-        role: "system",
-        content: redactSecrets(`${APPLIED_WRITE_PREFIX}\n${appliedWrites.map((write) => `- ${write.record}`).join("\n")}`),
+        content: boundTerminalToolResult(
+          result.toolName,
+          redactJsonText(input.normalizeToolResult?.(result.toolName, result.result) ?? result.result) ?? redactSecrets(result.result),
+        ),
       });
     }
   }
@@ -175,6 +283,16 @@ function checkpointMessage(snapshot: ExecutionCheckpointSnapshot): ChatMessage {
       pendingWork: boundedList(snapshot.pendingWork, 20),
       approvals: snapshot.approvals,
       evidenceRequired: boundedList(snapshot.evidenceRequired, 30),
+      // Live task-owned resources. Without these the model loses the handle to
+      // a server it started and cannot stop it before finishing.
+      ...(snapshot.runningProcesses && snapshot.runningProcesses.length > 0
+        ? {
+            runningProcesses: snapshot.runningProcesses.slice(-10).map((item) => ({
+              processId: item.processId.slice(0, 100),
+              command: item.command.slice(0, 300),
+            })),
+          }
+        : {}),
     },
     identity: { taskId: snapshot.taskId, missionId: snapshot.missionId },
     routing: snapshot.providerRouting,
@@ -186,7 +304,8 @@ function checkpointMessage(snapshot: ExecutionCheckpointSnapshot): ChatMessage {
 }
 
 function hashEnvelope(envelope: ProviderRequestEnvelope): string {
-  return createHash("sha256").update(JSON.stringify(envelope)).digest("hex");
+  return measureProviderRequest(envelope).canonicalRequestHash
+    ?? createHash("sha256").update(JSON.stringify(envelope)).digest("hex");
 }
 
 /** Last tool batch may itself be wider than a provider's usable input. Keep
@@ -206,6 +325,19 @@ function compactLatestBatch(groups: ChatMessage[][]): ChatMessage {
     role: "system",
     content: `${COMPACTED_BATCH_PREFIX} to fit this route. Full tool records remain durable; continue from checkpoint and inspect narrowly if needed.\n${entries.join("\n")}`,
   };
+}
+
+const COMPACTED_USER_QUERY_CHAR_LIMIT = 4_000;
+
+function compactUserQuery(message: ChatMessage): ChatMessage {
+  if (message.role !== "user" || message.content.length <= COMPACTED_USER_QUERY_CHAR_LIMIT) return message;
+  const normalized = message.content.replace(/\s+/g, " ").trim();
+  const words = normalized.split(" ").filter(Boolean);
+  const distinctWordRatio = words.length === 0 ? 1 : new Set(words.map((word) => word.toLowerCase())).size / words.length;
+  const excerpt = distinctWordRatio < 0.2
+    ? "The full user request is retained in Morrow's durable checkpoint; continue from that checkpoint."
+    : `${normalized.slice(0, 1_800)}\n[User request compacted for this provider route; the full request remains durable in Morrow.]\n${normalized.slice(-1_800)}`;
+  return { ...message, content: excerpt };
 }
 
 const PRESSURE_TOOL_PRIORITY = [
@@ -266,7 +398,20 @@ export function projectProviderRequest(input: {
 
   const { system, groups } = groupDurableMessages(input.envelope.messages);
   const recentRawGroups = Math.max(1, input.recentRawGroups ?? 2);
-  const recent = groups.slice(-recentRawGroups).flat();
+  // A provider request must retain the active user query even when the latest
+  // raw group is an assistant/tool batch. Otherwise a valid execution history
+  // compacts to system-only instructions plus tool history, which providers
+  // such as TokenRouter reject as "No user query found in messages.".
+  const recentStart = Math.max(0, groups.length - recentRawGroups);
+  let latestUserGroup = -1;
+  for (let index = groups.length - 1; index >= 0; index--) {
+    if (groups[index]!.some((message) => message.role === "user")) {
+      latestUserGroup = index;
+      break;
+    }
+  }
+  const preservedStart = latestUserGroup >= 0 ? Math.min(recentStart, latestUserGroup) : recentStart;
+  const recent = groups.slice(preservedStart).flat().map(compactUserQuery);
   const messages = [...system, checkpointMessage(input.checkpoint), ...recent];
   const ordering = validateProviderMessageOrdering(messages);
   if (!ordering.ok) {
@@ -279,7 +424,22 @@ export function projectProviderRequest(input: {
   // route limit; otherwise the accepted projection is guaranteed to compact
   // again on the very next turn.
   if (!admission.ok || admission.measurement.inputTokens >= thresholdTokens) {
-    envelope = { ...input.envelope, messages: [...system, checkpointMessage(input.checkpoint), compactLatestBatch(groups)] };
+    const compactibleGroups = latestUserGroup >= 0
+      ? groups.filter((_group, index) => index !== latestUserGroup)
+      : groups;
+    const compactedBatch = compactibleGroups.length > 0 ? compactLatestBatch(compactibleGroups) : undefined;
+    const preservedUser = latestUserGroup >= 0
+      ? groups[latestUserGroup]!.map(compactUserQuery)
+      : [];
+    envelope = {
+      ...input.envelope,
+      messages: [
+        ...system,
+        checkpointMessage(input.checkpoint),
+        ...(compactedBatch ? [compactedBatch] : []),
+        ...preservedUser,
+      ],
+    };
     admission = admitProviderRequest(envelope, input.resolution);
   }
   // Tool schemas are part of the wire request. Small routes cannot carry every

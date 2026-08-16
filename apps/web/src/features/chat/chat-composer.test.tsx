@@ -241,6 +241,30 @@ describe("ChatComposer", () => {
     } satisfies Partial<ChatComposerSubmission>));
   });
 
+  it("keeps reasoning at Auto when the route capability is unknown", async () => {
+    const user = userEvent.setup();
+    const unknownRoute = {
+      id: "unknown:route",
+      label: "Unknown route",
+      providerId: "openrouter" as const,
+      model: "vendor/unknown",
+      reasoning: {
+        control: "unknown" as const,
+        efforts: [],
+        budgets: [],
+        source: "unknown" as const,
+      },
+    };
+
+    render(<ChatComposer draftScope={scope} modelRoutes={[...routes, unknownRoute]} onReasoningConfigChange={vi.fn()} onSubmit={vi.fn()} />);
+    await user.selectOptions(screen.getByLabelText("Model route"), "unknown:route");
+
+    const slider = screen.getByRole("slider", { name: "Reasoning effort" });
+    expect(slider).toHaveAttribute("aria-valuetext", "Auto");
+    expect(slider).toHaveAttribute("data-value", "auto");
+    expect(slider).toHaveAttribute("data-adjustable", "false");
+  });
+
   it("preserves an explicit supervised Build preference across composer remounts", async () => {
     const user = userEvent.setup();
     const first = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);

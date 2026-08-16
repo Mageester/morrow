@@ -4,6 +4,7 @@ import { redactSecrets, resolveApiKeyCredential, resolveLocalCredential, type Pr
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
 import { codexHeaders } from "./codex.js";
 import { catalogProvider } from "./catalog.js";
+import { reasoningCapabilityFromSupportedParameters, requestCapabilitiesFromSupportedParameters } from "../routing/request-capabilities.js";
 
 /**
  * Bounded, server-side provider connectivity check. Performs a single, cheap,
@@ -125,6 +126,7 @@ function normalizeModels(json: unknown, fetchedAt = new Date().toISOString()): D
           : "free" as const;
       const expirationMs = typeof entry?.expiration_date === "string" ? Date.parse(entry.expiration_date) : Number.NaN;
       const availability = Number.isFinite(expirationMs) && expirationMs <= Date.parse(fetchedAt) ? "unavailable" as const : "available" as const;
+      const reasoning = reasoningCapabilityFromSupportedParameters(supportedParameters);
       return [{
         providerModelId,
         displayName: [entry?.displayName, entry?.display_name, entry?.name].find((value) => typeof value === "string" && value.trim()) ?? id,
@@ -142,6 +144,8 @@ function normalizeModels(json: unknown, fetchedAt = new Date().toISOString()): D
           vision: inputModalities.length > 0 ? inputModalities.some((modality: string) => modality === "image" || modality === "video") : reportedBoolean(reportedCapabilities.vision),
           reasoning: supportedParameters.length > 0 ? supportedParameters.includes("reasoning") || supportedParameters.includes("include_reasoning") : null,
         },
+        ...(supportedParameters.length > 0 ? { requestCapabilities: requestCapabilitiesFromSupportedParameters(supportedParameters) } : {}),
+        ...(reasoning ? { reasoning } : {}),
         pricing,
         costType,
         availability,

@@ -523,9 +523,16 @@ export function validateToolArguments(
     if (expectedType && JSON_TYPE_CHECK[expectedType] && !JSON_TYPE_CHECK[expectedType]!(value)) {
       return { field, expected: expectedType, problem: "wrong_type" };
     }
-    if (PATH_FIELDS.has(field) && typeof value === "string" && isAnyAbsolutePath(value)) {
-      return { field, expected: "relative workspace path (absolute paths are rejected)", problem: "absolute_path" };
-    }
+    // Absolute paths are deliberately NOT rejected here. This validator has no
+    // workspace root, so it cannot tell a path inside the workspace from one
+    // outside it, and rejecting both taught the model nothing — live evidence
+    // showed a model re-sending the workspace's own absolute path because the
+    // refusal never said which spelling was wanted. Containment is decided
+    // where the root is actually known: `validateSafeReadPath` for reads,
+    // `inspectWorkspace` for listing/search, and `assertContainedRealPath` for
+    // every write and for `run_command`'s cwd. Each of those normalizes a
+    // contained absolute path and rejects an escaping one with a message that
+    // names the root and shows a valid value.
   }
 
   return null;

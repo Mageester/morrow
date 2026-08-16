@@ -122,6 +122,47 @@ describe("conversation activity projection", () => {
   });
 });
 
+describe("observe-only telemetry does not read as a warning", () => {
+  it("hides pure telemetry and states what a repeat advisory actually did", () => {
+    // `task.progress_warning` carries several unrelated reasons. Rendering all
+    // of them as "Progress warning recorded" filled the feed with identical,
+    // alarming rows for events that control nothing — the live runs showed one
+    // per turn. Policy observations and ledger-write diagnostics are not
+    // user-facing at all; a repeat advisory is, but it is not a warning.
+    const activity = projectConversationActivity({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      tasks: [{
+        taskId: "task-1",
+        events: [
+          event(1, "task.progress_warning", { reason: "execution_policy_observed", signal: "task_shape_inference" }),
+          event(2, "task.progress_warning", { reason: "mission_ledger_write_failed", message: "disk full" }),
+          event(3, "task.progress_warning", { reason: "exact_repeat_advisory", toolName: "read_file", count: 3 }),
+          event(4, "task.progress_warning", { reason: "empty_provider_response", providerBoundaryClassification: "empty_response" }),
+        ],
+      }],
+    });
+
+    expect(activity.entries).toMatchObject([
+      { kind: "recovery", status: "running", summary: "Repeat noted for the model", toolName: "read_file" },
+      { kind: "provider", status: "warning", summary: "Provider returned no answer; retrying" },
+    ]);
+    expect(activity.entries.some((item) => item.summary === "Progress warning recorded")).toBe(false);
+    expect(activity.entries[0]!.detail).toContain("repeated 3 times");
+  });
+
+  it("still surfaces an unrecognized recovery reason rather than swallowing it", () => {
+    const activity = projectConversationActivity({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      tasks: [{ taskId: "task-1", events: [event(1, "task.progress_warning", { reason: "verification_incomplete" })] }],
+    });
+    expect(activity.entries).toMatchObject([
+      { kind: "recovery", status: "warning", summary: "Recovery evaluated", detail: "verification incomplete" },
+    ]);
+  });
+});
+
 describe("interleaved transcript ordering", () => {
   it("folds streamed deltas into one narration entry per turn, in run order with the tools", () => {
     const activity = projectConversationActivity({
