@@ -20,3 +20,6 @@
 @import "./providers.css";
 @import "./settings.css";
 @import "./states.css";
+@import "./large-screens.css";
+@import "./compact-height.css";
+@import "./chat-legibility.css";

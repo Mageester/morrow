@@ -1,0 +1,68 @@
+/*
+ * Premium visual system — large displays.
+ *
+ * The responsive contract (docs/redesign/premium-reference/MOTION_AND_RESPONSIVE.md)
+ * describes a single desktop tier, "1200 px and wider", which caps editorial
+ * content near 1120px. Design QA captured its desktop evidence at 1600 x 1000,
+ * so that open-ended tier was never exercised past it. On a 2560px display the
+ * same rule leaves a 1120px column marooned inside a 2310px frame, with the
+ * hero already pinned at its 58px ceiling — the layout stops responding while
+ * the viewport keeps growing.
+ *
+ * This module adds the missing upper tier. Two properties matter:
+ *
+ * 1. Nothing at or below 1600px changes. The approved reference, the design-QA
+ *    evidence, and the 1440/900/390 visual-regression baselines all continue to
+ *    describe the shipped product exactly.
+ * 2. Above 1600px every value is a function of the viewport rather than a step,
+ *    and each one is authored to equal its inherited value at exactly 1600px.
+ *    There is no width at which the layout jumps, so this holds at any
+ *    resolution or aspect ratio rather than at a handful of tested sizes.
+ *
+ * Growth is deliberately fractional: the column takes a share of the extra
+ * width instead of all of it, so a wider display buys presence without pushing
+ * the reading measure past comfort. Each value also carries an upper bound for
+ * ultrawide displays, where even a fraction of the excess would overrun.
+ */
+
+@media (min-width: 1601px) {
+  :root {
+    /* Each expression resolves to the inherited cap at 1600px, then grows.
+       Content takes the largest share since it frames everything else. */
+    --morrow-premium-content: min(1560px, calc(1120px + (100vw - 1600px) * 0.46));
+    --morrow-premium-composer: min(1040px, calc(790px + (100vw - 1600px) * 0.26));
+    --morrow-premium-reading: min(1000px, calc(780px + (100vw - 1600px) * 0.23));
+
+    /* The rail and gutter move least: navigation should stay quiet, and the
+       shell frame is meant to read as a margin, not a band. */
+    --morrow-premium-rail: min(248px, calc(210px + (100vw - 1600px) * 0.04));
+    --morrow-premium-gutter: min(22px, calc(14px + (100vw - 1600px) * 0.008));
+  }
+
+  /* ── Home hero ───────────────────────────────────────────────────────────
+     The statement is the page's only display type, so it carries the scale.
+     3.2vw resolves below the inherited 58px floor until roughly 1810px, which
+     is what keeps the transition continuous rather than stepped. */
+  .morrow-home .morrow-home__intro h1 {
+    max-width: min(1100px, calc(760px + (100vw - 1600px) * 0.32));
+    font-size: clamp(58px, 3.2vw, 76px);
+  }
+
+  .morrow-home .morrow-home__subtitle {
+    max-width: min(780px, calc(620px + (100vw - 1600px) * 0.16));
+    font-size: clamp(15px, 0.92vw, 18px);
+  }
+
+  /* Section heads track the hero so the type hierarchy keeps its intervals
+     instead of compressing as the display grows. */
+  .morrow-home .morrow-section-head h2 {
+    font-size: clamp(22px, 1.34vw, 28px);
+  }
+
+  /* On a tall display the composition otherwise stacks against the top edge.
+     Trading some of the empty lower half for breathing room above re-centres
+     the statement without introducing a scroll. */
+  .morrow-home {
+    padding-top: clamp(74px, 7.4vh, 132px);
+  }
+}
