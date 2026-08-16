@@ -454,4 +454,3 @@ Every change is confined to the working tree on
 `provider/model-capabilities.ts`, and `workspace/inspector.ts`, plus the tests
 named above. Reverting those files restores the inherited baseline without
 touching the provider/context/stream migration.
-
