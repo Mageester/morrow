@@ -92,6 +92,9 @@ import { isSafeSkillInstructionDirectory, verifySkillDirectory, SKILL_MATCH_STOP
 import { createExecutionPolicy, type ExecutionPolicy } from "./execution-policy.js";
 import { buildAgentExecutionPolicy, type AgentExecutionPolicy } from "../security/agent-execution-policy.js";
 import { ToolProfileSelector, type ToolTaskClassification } from "../optimization/tool-profile-selector.js";
+import { loadMcpConfig } from "../mcp/config.js";
+import { McpPool } from "../mcp/pool.js";
+import { isMcpTool, getReadMcpResourceToolDefinition, buildMcpToolDefinitions, executeMcpTool } from "../mcp/tool-bridge.js";
 
 /**
  * Best-effort human-readable target for a tool call, included in the
@@ -1583,8 +1586,28 @@ export async function executeAgentChatTask({
       name: "browser_close",
       description: "Close the current task-scoped browser session.",
       parameters: { type: "object", properties: {} }
+    },
+    {
+      name: "read_mcp_resource",
+      description: "Read the direct contents of a resource URI from a configured MCP server (e.g. database schema, documentation, or application memory).",
+      parameters: {
+        type: "object",
+        properties: {
+          server: { type: "string", description: "The MCP server name (e.g. 'sqlite', 'github', 'memo')" },
+          uri: { type: "string", description: "The resource URI to read (e.g. 'memo://notes/1', 'file:///data.json')" },
+        },
+        required: ["server", "uri"],
+      },
     }
   ];
+
+  const mcpConfigs = loadMcpConfig({ workspaceRoot: project.workspacePath, db });
+  const mcpPool = new McpPool({ db });
+  try {
+    const discoveredMcpTools = await mcpPool.listAllTools(mcpConfigs);
+    const mcpDefinitions = buildMcpToolDefinitions(discoveredMcpTools);
+    tools.push(...mcpDefinitions);
+  } catch {}
 
   const BROWSER_TOOL_NAMES = new Set(tools.filter((tool) => tool.name.startsWith("browser_")).map((tool) => tool.name));
 
@@ -6036,6 +6059,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           } else if (tc.name === "create_skill") {
             if (activeToolProfile !== "agent") throw new Error(`Tool "create_skill" is not permitted in ${agentMode} mode`);
             resultStr = await executeApprovedTool(tc.name, args, tc.id);
+          } else if (isMcpTool(tc.name)) {
+            const mcpExec = await executeMcpTool(tc.name, args, mcpPool, mcpConfigs);
+            resultStr = mcpExec.content;
+            if (mcpExec.isError) {
+              isSuccess = false;
+              errorMessage = mcpExec.content;
+              errorType = "tool_failed";
+            }
           } else {
             throw new Error(`Forbidden tool: ${tc.name}`);
           }

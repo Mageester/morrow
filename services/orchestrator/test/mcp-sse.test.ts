@@ -141,7 +141,7 @@ describe("createSseTransport", () => {
     expect(resources).toEqual([{ uri: "memo://notes/1", name: "Memo Note 1" }]);
 
     const read = await client.readResource("memo://notes/1");
-    expect(read.contents[0].text).toBe("Sample resource content");
+    expect(read.contents[0]!.text).toBe("Sample resource content");
 
     client.close();
   });

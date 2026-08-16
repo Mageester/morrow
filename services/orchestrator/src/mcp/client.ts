@@ -51,7 +51,10 @@ export class McpClient {
   private readonly requestTimeoutMs: number;
   private closed = false;
 
-  constructor(private readonly transport: RawTransport, opts: { allowedTools?: string[]; requestTimeoutMs?: number } = {}) {
+  constructor(
+    private readonly transport: RawTransport,
+    opts: { allowedTools?: string[] | undefined; requestTimeoutMs?: number | undefined } = {}
+  ) {
     this.allowed = opts.allowedTools ? new Set(opts.allowedTools) : undefined;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 30000;
     transport.onData((chunk) => {

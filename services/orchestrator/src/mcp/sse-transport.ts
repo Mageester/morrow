@@ -1,8 +1,8 @@
 import type { RawTransport } from "./client.js";
 
 export interface SseTransportOptions {
-  headers?: Record<string, string>;
-  connectTimeoutMs?: number;
+  headers?: Record<string, string> | undefined;
+  connectTimeoutMs?: number | undefined;
 }
 
 /**

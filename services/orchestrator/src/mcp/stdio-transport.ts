@@ -13,7 +13,7 @@ import type { RawTransport } from "./client.js";
 export function spawnStdioTransport(
   command: string,
   args: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; onStderr?: (text: string) => void } = {}
+  opts: { cwd?: string | undefined; env?: NodeJS.ProcessEnv | undefined; onStderr?: ((text: string) => void) | undefined } = {}
 ): { transport: RawTransport; child: ChildProcess } {
   const child = spawn(command, args, {
     ...(opts.cwd ? { cwd: opts.cwd } : {}),

@@ -4,25 +4,25 @@ import { homedir } from "node:os";
 import type Database from "better-sqlite3";
 
 export interface McpServerPermissions {
-  autoApprove?: string[];
-  requireApproval?: string[];
+  autoApprove?: string[] | undefined;
+  requireApproval?: string[] | undefined;
 }
 
 export interface McpServerConfig {
-  transport?: "stdio" | "sse";
-  command?: string;
-  args?: string[];
-  url?: string;
-  headers?: Record<string, string>;
-  env?: Record<string, string>;
-  cwd?: string;
-  disabled?: boolean;
-  allowedTools?: string[];
-  permissions?: McpServerPermissions;
+  transport?: "stdio" | "sse" | undefined;
+  command?: string | undefined;
+  args?: string[] | undefined;
+  url?: string | undefined;
+  headers?: Record<string, string> | undefined;
+  env?: Record<string, string> | undefined;
+  cwd?: string | undefined;
+  disabled?: boolean | undefined;
+  allowedTools?: string[] | undefined;
+  permissions?: McpServerPermissions | undefined;
 }
 
 export interface McpConfigFile {
-  mcpServers?: Record<string, McpServerConfig>;
+  mcpServers?: Record<string, McpServerConfig> | undefined;
 }
 
 export function expandEnvVars(value: any, env: Record<string, string | undefined> = process.env): any {
