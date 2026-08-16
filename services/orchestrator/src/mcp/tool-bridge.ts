@@ -94,11 +94,11 @@ export async function executeMcpTool(
       const formatted = res.contents
         .map((c) => `[URI: ${c.uri}${c.mimeType ? ` (${c.mimeType})` : ""}]\n${c.text ?? (c.blob ? `[Binary blob: ${c.blob.length} bytes]` : "")}`)
         .join("\n\n");
-      return { content: formatted };
+      return { content: formatted, isError: false };
     }
 
     const rawResult = await pool.callNamespacedTool(name, args, configs);
-    return { content: formatMcpResult(rawResult) };
+    return { content: formatMcpResult(rawResult), isError: false };
   } catch (err: any) {
     return {
       content: `MCP tool error: ${err?.message ?? String(err)}`,
