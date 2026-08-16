@@ -66,6 +66,10 @@ import { gitStatus } from "./tools/git.js";
 import { loadAdaptersFromEnv, notifyAll, type MessageAdapter } from "./messaging/adapter.js";
 import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema, StartProcessSchema, CreateWorktreeSchema } from "@morrow/contracts";
 import { redactJsonText } from "./provider/credentials.js";
+import { loadMcpConfig, parseMcpServerConfig, type McpServerConfig } from "./mcp/config.js";
+import { McpPool } from "./mcp/pool.js";
+import { mcpTrustStore } from "./mcp/trust.js";
+import { setMcpToolApprovalOverride, isMcpToolAutoApproved } from "./security/mcp-policy.js";
 
 export type DiagnosticsCommandResult = { stdout: string; stderr: string; exitCode: number | null };
 export type DiagnosticsRunner = (tool: "tsc" | "eslint", cwd: string) => Promise<DiagnosticsCommandResult>;
@@ -3599,6 +3603,111 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.post("/api/onboarding/reset", async () => {
     deps.db.prepare("DELETE FROM settings").run();
     return { success: true };
+  });
+
+  // --- MCP (Model Context Protocol) API Routes ---
+
+  app.get("/api/mcp/servers", async (request) => {
+    const query = request.query as { projectId?: string } | undefined;
+    let workspaceRoot: string | undefined;
+    if (query?.projectId) {
+      const project = projects.getProjectById(query.projectId);
+      if (project) workspaceRoot = project.workspacePath;
+    }
+    const configs = loadMcpConfig({ workspaceRoot, db: deps.db });
+    const trust = mcpTrustStore(deps.db);
+    const servers = Object.entries(configs).map(([id, config]) => ({
+      id,
+      config,
+      trusted: trust.isServerTrusted(id, config),
+    }));
+    return { servers };
+  });
+
+  app.post("/api/mcp/servers", async (request, reply) => {
+    const body = request.body as { id?: string; config?: unknown } | undefined;
+    if (!body?.id || typeof body.id !== "string") {
+      throw new ApiError(400, "Missing required string field: id", "BAD_REQUEST");
+    }
+    const validated = parseMcpServerConfig(body.config);
+    if (!validated) {
+      throw new ApiError(400, "Invalid MCP server config payload", "BAD_REQUEST");
+    }
+    const key = `mcp.server.${body.id}`;
+    deps.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(validated));
+    const trust = mcpTrustStore(deps.db);
+    trust.trustServer(body.id, validated);
+    reply.status(201);
+    return { ok: true, id: body.id, config: validated };
+  });
+
+  app.delete("/api/mcp/servers/:serverId", async (request) => {
+    const { serverId } = request.params as { serverId: string };
+    const key = `mcp.server.${serverId}`;
+    deps.db.prepare("DELETE FROM settings WHERE key = ?").run(key);
+    const trust = mcpTrustStore(deps.db);
+    trust.revoke(serverId);
+    return { ok: true, id: serverId };
+  });
+
+  app.post("/api/mcp/trust/:serverId", async (request) => {
+    const { serverId } = request.params as { serverId: string };
+    const body = request.body as { config?: unknown } | undefined;
+    let config: McpServerConfig | null = null;
+    if (body?.config) {
+      config = parseMcpServerConfig(body.config);
+    } else {
+      const all = loadMcpConfig({ db: deps.db });
+      config = all[serverId] ?? null;
+    }
+    if (!config) {
+      throw new ApiError(404, `MCP server config for "${serverId}" not found`, "NOT_FOUND");
+    }
+    const trust = mcpTrustStore(deps.db);
+    trust.trustServer(serverId, config);
+    return { ok: true, trusted: true };
+  });
+
+  app.post("/api/mcp/test", async (request) => {
+    const body = request.body as { serverId?: string; config?: unknown } | undefined;
+    const serverId = body?.serverId || "test_server";
+    const config = parseMcpServerConfig(body?.config);
+    if (!config) {
+      throw new ApiError(400, "Invalid MCP server config for testing", "BAD_REQUEST");
+    }
+    const pool = new McpPool({ db: deps.db });
+    return pool.testServer(serverId, config);
+  });
+
+  app.get("/api/mcp/tools", async (request) => {
+    const query = request.query as { projectId?: string } | undefined;
+    let workspaceRoot: string | undefined;
+    if (query?.projectId) {
+      const project = projects.getProjectById(query.projectId);
+      if (project) workspaceRoot = project.workspacePath;
+    }
+    const configs = loadMcpConfig({ workspaceRoot, db: deps.db });
+    const pool = new McpPool({ db: deps.db });
+    const toolsMap = await pool.listAllTools(configs);
+    const toolsList = Array.from(toolsMap.entries()).map(([namespacedName, item]) => ({
+      namespacedName,
+      serverId: item.serverId,
+      rawName: item.rawName,
+      description: item.tool.description,
+      inputSchema: item.tool.inputSchema,
+      autoApprove: isMcpToolAutoApproved(item.serverId, item.rawName, configs[item.serverId], deps.db),
+    }));
+    return { tools: toolsList };
+  });
+
+  app.put("/api/mcp/permissions/:serverId/:toolName", async (request) => {
+    const { serverId, toolName } = request.params as { serverId: string; toolName: string };
+    const body = request.body as { policy?: "always_allow" | "require_approval" | "deny" } | undefined;
+    if (!body?.policy || !["always_allow", "require_approval", "deny"].includes(body.policy)) {
+      throw new ApiError(400, "Invalid policy (must be 'always_allow', 'require_approval', or 'deny')", "BAD_REQUEST");
+    }
+    setMcpToolApprovalOverride(deps.db, serverId, toolName, body.policy);
+    return { ok: true, serverId, toolName, policy: body.policy };
   });
 
   return app;

@@ -75,10 +75,10 @@ export function parseMcpServerConfig(config: unknown): McpServerConfig | null {
 }
 
 export interface LoadMcpConfigOptions {
-  workspaceRoot?: string;
-  homeDir?: string;
-  db?: Database.Database;
-  processEnv?: Record<string, string | undefined>;
+  workspaceRoot?: string | undefined;
+  homeDir?: string | undefined;
+  db?: Database.Database | undefined;
+  processEnv?: Record<string, string | undefined> | undefined;
 }
 
 export function loadMcpConfig(opts: LoadMcpConfigOptions = {}): Record<string, McpServerConfig> {
