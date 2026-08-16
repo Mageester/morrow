@@ -33,8 +33,8 @@ export interface ModelBudget {
 
   /** The verified-or-configured ceiling for this exact route (smallest of
    * advertised model capacity and any configured endpoint override), before
-   * any reserve is subtracted. */
-  contextWindowTokens: number;
+   * any reserve is subtracted. Null when unknown. */
+  contextWindowTokens: number | null;
   /** The model/adapter-owned native capacity before route overrides. */
   nativeContextWindowTokens: number | null;
   nativeContextWindowSource: ContextLimitSource;
@@ -42,17 +42,14 @@ export interface ModelBudget {
   routeLimitTokens: number | null;
   routeLimitSource: ContextLimitSource;
   /** Alias with explicit semantics for diagnostics and future schema consumers. */
-  effectiveContextWindowTokens: number;
+  effectiveContextWindowTokens: number | null;
   contextWindowSource: ContextLimitSource;
-  /** "verified" ONLY for built-in model metadata (routing/models.ts) or
-   * genuinely provider-reported metadata ("model-metadata" /
-   * "provider-metadata"). "configured" for a user-supplied context-window
-   * override or a configured endpoint limit ("endpoint-override") — Morrow
-   * cannot independently verify either against the real provider. "unverified"
-   * when no authoritative value exists at all and the internal safe fallback
-   * was used ("fallback" / "unknown"). Endpoint overrides are deliberately
-   * never "verified": a configured number is a claim, not a fact. */
-  contextWindowConfidence: "verified" | "configured" | "unverified";
+  /** "verified" ONLY for built-in model metadata (routing/models.ts).
+   * "reported" for genuinely provider-reported metadata ("provider-metadata").
+   * "configured" for a user-supplied context-window override or a configured
+   * endpoint limit ("endpoint-override").
+   * "unverified" when no authoritative value exists at all ("unknown" / "fallback"). */
+  contextWindowConfidence: "verified" | "reported" | "configured" | "unverified";
 
   endpointLimitTokens: number | null;
   endpointLimitSource: ContextLimitSource;
@@ -65,29 +62,19 @@ export interface ModelBudget {
   totalReserveTokens: number;
 
   /** contextWindowTokens - totalReserveTokens: the real provider-capacity
-   * ceiling. This is THE number every consumer must use to decide whether a
-   * complete wire request will be accepted — durable-checkpoint compaction,
-   * live-fallback admission, and mission-completion requests all gate on
-   * this, independent of any local preset/dev budget. */
-  usableInputTokens: number;
+   * ceiling. Null when context window is unknown. */
+  usableInputTokens: number | null;
   /** usableInputTokens, additionally capped by a local preset/dev context
-   * budget (bytes) when one is configured. This is a *soft* efficiency
-   * target for the first-pass deterministic history trim, never a provider
-   * constraint — it must never be used to reject a request outright. */
-  compactionTargetTokens: number;
+   * budget (bytes) when one is configured. */
+  compactionTargetTokens: number | null;
   currentModelVisibleTokens: number | null;
   remainingInputTokens: number | null;
-  compactionThresholdTokens: number;
+  compactionThresholdTokens: number | null;
   compactionThresholdRatio: number;
 
   /**
    * Demarcates which unverified-route category the conservative fallback was
-   * sourced from. Surfaced in `morrow models inspect` and mission telemetry so
-   * the operator can tell apart "OpenCode Zen fallback" from "OpenCode Go
-   * fallback" from "custom-compatible fallback" — without ever fabricating a
-   * per-slug context limit. Only the live provider discovery path (highest-
-   * precedence metadata source per §1) or an explicit user override can
-   * legitimately replace the conservative safe number with a verified one.
+   * sourced from.
    */
   routeFallbackIdentity: RouteFallbackIdentity;
 }
@@ -106,10 +93,6 @@ export function resolveModelBudget(input: {
   compactionThresholdRatio?: number;
 }): ModelBudget {
   const metadata = resolveModelMetadata(input.providerId, input.selectedModel);
-  // outputReserveTokens is 1 here (the minimum resolveEffectiveContext accepts):
-  // this call only borrows its endpoint/model-capacity merge logic. The real,
-  // complete reserve (output + safety margin + tools + framing) is computed
-  // once below and is the only reserve figure any consumer of ModelBudget sees.
   const effective = resolveEffectiveContext({
     providerId: input.providerId,
     selectedModel: input.selectedModel,
@@ -129,33 +112,35 @@ export function resolveModelBudget(input: {
         ? "unverified"
         : contextWindowSource === "endpoint-override"
           ? "configured"
-          : "verified"; // "model-metadata" | "provider-metadata"
+          : metadata.confidence === "reported" || contextWindowSource === "provider-metadata"
+            ? "reported"
+            : "verified";
 
   const outputReserveTokens = input.outputBudgetTokens ?? 2048;
-  const safetyMarginTokens = input.safetyMarginTokens ?? Math.max(512, Math.ceil(contextWindowTokens * 0.02));
-  // Tool schemas are measured from their exact serialized definitions by
-  // measureProviderRequest before every provider invocation. Reserving another
-  // synthetic amount per tool here double-counts the same bytes and can reject
-  // a request solely because the truthful catalog grew. Keep the field for the
-  // stable disclosure shape; the exact-envelope gate is authoritative.
+  const safetyMarginTokens = input.safetyMarginTokens ?? (contextWindowTokens !== null ? Math.max(512, Math.ceil(contextWindowTokens * 0.02)) : 512);
   const toolReserveTokens = 0;
   const framingReserveTokens = 512;
   const harnessReserveTokens = safetyMarginTokens + toolReserveTokens + framingReserveTokens;
   const totalReserveTokens = outputReserveTokens + safetyMarginTokens + toolReserveTokens + framingReserveTokens;
 
-  const usableInputTokens = Math.max(1, contextWindowTokens - totalReserveTokens);
+  const usableInputTokens = contextWindowTokens !== null ? Math.max(1, contextWindowTokens - totalReserveTokens) : null;
   const presetBudget = input.presetContextBudgetBytes !== undefined
     ? Math.max(1, Math.floor(input.presetContextBudgetBytes / 4))
-    : usableInputTokens;
-  const compactionTargetTokens = Math.max(1, Math.min(presetBudget, usableInputTokens));
+    : (usableInputTokens ?? null);
+  const compactionTargetTokens = usableInputTokens !== null
+    ? (presetBudget !== null ? Math.max(1, Math.min(presetBudget, usableInputTokens)) : usableInputTokens)
+    : presetBudget;
   const compactionThresholdRatio = input.compactionThresholdRatio ?? 0.8;
   if (!(compactionThresholdRatio > 0 && compactionThresholdRatio <= 1)) {
     throw new Error("Compaction threshold ratio must be in (0, 1]");
   }
   const currentModelVisibleTokens = input.currentModelVisibleTokens ?? null;
-  const remainingInputTokens = currentModelVisibleTokens === null
+  const remainingInputTokens = currentModelVisibleTokens === null || usableInputTokens === null
     ? null
     : Math.max(0, usableInputTokens - currentModelVisibleTokens);
+  const compactionThresholdTokens = usableInputTokens !== null
+    ? Math.max(1, Math.floor(usableInputTokens * compactionThresholdRatio))
+    : null;
 
   return {
     providerId: input.providerId,
@@ -187,7 +172,7 @@ export function resolveModelBudget(input: {
     compactionTargetTokens,
     currentModelVisibleTokens,
     remainingInputTokens,
-    compactionThresholdTokens: Math.max(1, Math.floor(usableInputTokens * compactionThresholdRatio)),
+    compactionThresholdTokens,
     compactionThresholdRatio,
     routeFallbackIdentity: effective.routeFallbackIdentity,
   };
@@ -207,10 +192,12 @@ export function withCurrentModelVisibleTokens(
   return {
     ...budget,
     currentModelVisibleTokens,
-    remainingInputTokens: currentModelVisibleTokens === null
+    remainingInputTokens: currentModelVisibleTokens === null || budget.usableInputTokens === null
       ? null
       : Math.max(0, budget.usableInputTokens - currentModelVisibleTokens),
     compactionThresholdRatio,
-    compactionThresholdTokens: Math.floor(budget.usableInputTokens * compactionThresholdRatio),
+    compactionThresholdTokens: budget.usableInputTokens !== null
+      ? Math.floor(budget.usableInputTokens * compactionThresholdRatio)
+      : null,
   };
 }

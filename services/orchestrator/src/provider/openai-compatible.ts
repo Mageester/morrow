@@ -12,6 +12,7 @@ import {
 import { parseRetryAfter } from "./rate-guard.js";
 import { reconcileWireLimits } from "./limits.js";
 import { translateReasoning } from "./reasoning.js";
+import { learnContextLimitFromProviderError } from "./context-limit-discovery.js";
 import {
   applyLearnedRequestCompatibility,
   identifyUnsupportedRequestField,
@@ -221,6 +222,11 @@ export class OpenAiCompatibleProvider implements AiProvider {
         response = undefined;
         continue;
       }
+      // An over-limit rejection is the one place many OpenAI-compatible routes
+      // state their real capacity: their model listings disclose none. Record
+      // it before surfacing the error, so the next budget resolution for this
+      // exact route is based on the provider's own number.
+      learnContextLimitFromProviderError(this.route, baseUrl, model, errMsg);
       if (timeoutId) clearTimeout(timeoutId);
       yield { type: "error", error: classifyHttpStatus(response.status, errMsg, parseRetryAfter(response.headers.get("retry-after"))) };
       return;

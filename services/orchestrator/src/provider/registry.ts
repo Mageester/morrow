@@ -17,10 +17,38 @@ import { createHash } from "node:crypto";
 import type { ProviderModelDiscovery } from "../repositories/provider-model-discovery.js";
 import { OPENROUTER_API_BASE_URL } from "./connectivity.js";
 
+import type { DiscoveredModel } from "@morrow/contracts";
+
 let modelDiscoveries: ProviderModelDiscovery[] = [];
 
 export function installProviderModelDiscoveries(discoveries: ProviderModelDiscovery[]): void {
   modelDiscoveries = discoveries.map((item) => ({ ...item, models: [...item.models] }));
+}
+
+export function getProviderModelDiscoveries(): ProviderModelDiscovery[] {
+  return modelDiscoveries;
+}
+
+export function findDiscoveredModel(providerId: string, modelId: string): DiscoveredModel | undefined {
+  const normalized = modelId.trim().toLowerCase();
+  for (const item of modelDiscoveries) {
+    if (item.providerId !== providerId) continue;
+    const found = item.models.find(
+      (m) => m.providerModelId === modelId || m.providerModelId.toLowerCase() === normalized
+    );
+    if (found) return found;
+  }
+  return undefined;
+}
+
+export function invalidateProviderModelDiscoveries(providerId?: ProviderId, authMode?: ProviderAuthMode): void {
+  if (providerId && authMode) {
+    modelDiscoveries = modelDiscoveries.filter((d) => !(d.providerId === providerId && d.authMode === authMode));
+  } else if (providerId) {
+    modelDiscoveries = modelDiscoveries.filter((d) => d.providerId !== providerId);
+  } else {
+    modelDiscoveries = [];
+  }
 }
 
 function withDiscovery(status: ProviderStatus, env: ProviderEnv): ProviderStatus {

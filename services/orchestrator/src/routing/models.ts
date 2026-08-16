@@ -7,6 +7,7 @@ import {
   protocolRequestCapabilities,
   UNKNOWN_REQUEST_CAPABILITIES,
 } from "./request-capabilities.js";
+import { findDiscoveredModel } from "../provider/registry.js";
 
 export interface CanonicalModelTarget {
   providerId: ProviderId;
@@ -181,7 +182,65 @@ export function listModels(): ModelInfo[] {
   return activeCatalogModels;
 }
 
+function catalogDeclaration(providerId: string, selectedId: string): ModelInfo | undefined {
+  return activeCatalogModels.find((model) => model.providerId === providerId && model.id === selectedId)
+    ?? activeCatalogModels.find((model) => model.providerId === providerId && model.aliases.includes(selectedId));
+}
+
 function resolveSelectedDeclaration(providerId: string, selectedId: string): { model: ModelInfo; selectedId: string } | undefined {
+  const discovered = findDiscoveredModel(providerId, selectedId);
+  if (discovered) {
+    // Discovery LAYERS OVER the catalog; it does not replace it.
+    //
+    // A model listing that omits a field is silent, not authoritative: most
+    // provider listings report nothing but ids (verified 2026-08-16 —
+    // DeepSeek, NVIDIA NIM, TokenRouter and OpenCode Zen all return only
+    // id/object/owned_by). Treating that silence as "unknown" would let a
+    // successful discovery call erase a capacity the provider catalog knows,
+    // which is a strictly worse answer than not discovering at all.
+    //
+    // Where discovery does report a value it wins outright, field by field.
+    const base = catalogDeclaration(providerId, selectedId)
+      ?? unknownModel(providerId as ProviderId, discovered.providerModelId);
+    const contextWindow = discovered.contextWindow ?? base.contextWindow;
+    const maxOutputTokens = discovered.maxOutputTokens ?? base.maxOutputTokens;
+    const reportedAnyCapacity = discovered.contextWindow !== null || discovered.maxOutputTokens !== null;
+    const synthesized: ModelInfo = {
+      ...base,
+      id: selectedId,
+      providerModelId: discovered.providerModelId,
+      label: discovered.displayName || base.label,
+      author: discovered.author ?? base.author ?? null,
+      inputModalities: discovered.inputModalities ?? base.inputModalities ?? [],
+      outputModalities: discovered.outputModalities ?? base.outputModalities ?? [],
+      pricing: discovered.pricing ?? base.pricing ?? null,
+      costType: discovered.costType ?? base.costType ?? "unknown",
+      contextWindow,
+      maxOutputTokens,
+      capabilities: {
+        streaming: discovered.capabilities.streaming ?? base.capabilities.streaming,
+        toolCalls: discovered.capabilities.toolCalls ?? base.capabilities.toolCalls,
+        vision: discovered.capabilities.vision ?? base.capabilities.vision,
+        reasoning: discovered.capabilities.reasoning ?? base.capabilities.reasoning ?? null,
+      },
+      ...(discovered.requestCapabilities ? { requestCapabilities: discovered.requestCapabilities } : {}),
+      ...(discovered.reasoning ? { reasoning: discovered.reasoning } : {}),
+      lifecycle: base.builtIn ? base.lifecycle : "custom",
+      // Provenance follows the field that actually decided the capacity, so a
+      // catalog number is never relabelled as provider-reported.
+      metadataSource: discovered.contextWindow !== null ? "provider-reported" : base.metadataSource,
+      fetchedAt: discovered.fetchedAt ?? base.fetchedAt ?? null,
+      confidence: discovered.contextWindow !== null
+        ? "reported"
+        : reportedAnyCapacity && base.contextWindow === null
+          ? "reported"
+          : base.contextWindow !== null
+            ? base.confidence
+            : "unknown",
+    };
+    return { model: synthesized, selectedId };
+  }
+
   const exact = activeCatalogModels.find((model) => model.providerId === providerId && model.id === selectedId);
   if (exact) return { model: exact, selectedId };
   const alias = activeCatalogModels.find((model) => model.providerId === providerId && model.aliases.includes(selectedId));

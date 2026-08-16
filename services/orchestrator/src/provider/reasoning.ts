@@ -1,4 +1,5 @@
-import type { ReasoningConfiguration, RouteReasoningCapability } from "@morrow/contracts";
+import type { ReasoningConfiguration, ReasoningWire, RouteReasoningCapability } from "@morrow/contracts";
+import { reasoningModesForRoute } from "@morrow/contracts";
 import type { ProviderProtocol } from "./base.js";
 import type { ReasoningCapability } from "./model-capabilities.js";
 
@@ -22,8 +23,19 @@ function isOpenAiFamily(protocol: ProviderProtocol): boolean {
   return protocol === "openai-chat" || protocol === "openai-responses";
 }
 
-function deepSeekWireEffort(effort: NonNullable<Extract<ReasoningConfiguration, { mode: "effort" }>['effort']>): "high" | "max" {
-  return effort === "xhigh" || effort === "max" ? "max" : "high";
+/**
+ * The dialect a route most likely speaks when it declared none.
+ *
+ * This is a fallback for capability rows written before dialects existed, not
+ * the resolution path: a provider that ships capability metadata always names
+ * its own dialect, and a protocol with no obvious spelling stays undecided
+ * rather than being handed OpenAI's.
+ */
+function inferWireDialect(protocol: ProviderProtocol): ReasoningWire | undefined {
+  if (isOpenAiFamily(protocol)) return "openai-reasoning-effort";
+  if (protocol === "gemini-generate-content") return "gemini-thinking-level";
+  if (protocol === "anthropic-messages") return "anthropic-thinking-budget";
+  return undefined;
 }
 
 function isExactCapability(capability: RouteReasoningCapability | ReasoningCapability): capability is ReasoningCapability {
@@ -100,16 +112,36 @@ function translateExactReasoning(
     case "selectable": {
       if (config.mode === "off") return disable();
       if (config.mode !== "effort") return { ok: false, reason: "This exact route configures reasoning with an opaque effort selector." };
+      // The selected mode must be one the route declared. Its id is opaque —
+      // matching it against a core enum here is exactly the global
+      // low/medium/high assumption this system exists to remove.
       const selected = capability.efforts.find((effort) => effort.id === config.effort);
       if (!selected) return { ok: false, reason: `Unsupported reasoning effort "${config.effort}" for this exact route.` };
-      if (!isOpenAiFamily(protocol)) return { ok: false, reason: "This exact route does not expose an effort wire field for this protocol." };
-      return {
-        ok: true,
-        params: {
-          reasoning_effort: selected.wireValue ?? selected.id,
-          ...(capability.wire === "deepseek-thinking" ? { thinking: { type: "enabled" } } : {}),
-        },
-      };
+      const wireValue = selected.wireValue ?? selected.id;
+      // Dispatch on the provider-declared dialect. A route that declared none
+      // falls back to inferring one from the protocol, which is what keeps
+      // older cached capability rows working.
+      switch (capability.wire ?? inferWireDialect(protocol)) {
+        case "deepseek-thinking":
+          return { ok: true, params: { reasoning_effort: wireValue, thinking: { type: "enabled" } } };
+        case "openai-reasoning-effort":
+          return { ok: true, params: { reasoning_effort: wireValue } };
+        case "gemini-thinking-level":
+          return { ok: true, params: { thinkingConfig: { thinkingLevel: wireValue } } };
+        case "anthropic-thinking-budget": {
+          // This dialect spends thinking tokens, so an effort mode only reaches
+          // the wire when the provider declared the budget it stands for. A
+          // bare level has nothing to send, which is the same outcome as the
+          // protocol not offering effort selection at all.
+          const tokens = Number(wireValue);
+          if (!Number.isSafeInteger(tokens) || tokens <= 0) {
+            return { ok: false, reason: "Effort-based reasoning is not supported on this provider protocol." };
+          }
+          return { ok: true, params: { thinking: { type: "enabled", budget_tokens: tokens } } };
+        }
+        default:
+          return { ok: false, reason: "This exact route does not expose an effort wire field for this protocol." };
+      }
     }
     case "budget": {
       if (config.mode === "off") return disable();
@@ -157,21 +189,24 @@ export function translateReasoning(
         };
       }
       if (config.mode !== "effort") {
-        return { ok: false, reason: "This route configures reasoning by effort level (Low/Medium/High), not this mode." };
+        return { ok: false, reason: "This route configures reasoning by an effort selector, not this mode." };
       }
       if (!capability.efforts.includes(config.effort)) {
         return { ok: false, reason: `Unsupported reasoning effort "${config.effort}" for this route.` };
       }
-      if (!isOpenAiFamily(protocol)) {
-        return { ok: false, reason: "Effort-based reasoning is not supported on this provider protocol." };
-      }
-      return {
-        ok: true,
-        params: {
-          reasoning_effort: capability.wire === "deepseek-thinking" ? deepSeekWireEffort(config.effort) : config.effort,
-          ...(capability.wire === "deepseek-thinking" ? { thinking: { type: "enabled" } } : {}),
-        },
-      };
+      // Same dialect dispatch as the exact path, reading the same
+      // provider-declared wire spelling, so the two cannot disagree about what
+      // a given selection sends.
+      return translateExactReasoning(config, protocol, {
+        mode: "selectable",
+        efforts: reasoningModesForRoute(capability).map((mode) => ({
+          id: mode.id,
+          label: mode.label,
+          ...(mode.wireValue === undefined ? {} : { wireValue: mode.wireValue }),
+        })),
+        ...(capability.supportsOff === undefined ? {} : { supportsOff: capability.supportsOff }),
+        ...(capability.wire === undefined ? {} : { wire: capability.wire }),
+      });
 
     case "budget":
       if (config.mode === "off") {

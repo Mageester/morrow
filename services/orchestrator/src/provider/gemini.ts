@@ -11,6 +11,8 @@ import {
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
 import { reconcileWireLimits } from "./limits.js";
+import { translateReasoning } from "./reasoning.js";
+import { learnContextLimitFromProviderError } from "./context-limit-discovery.js";
 
 export interface GeminiConfig {
   apiKey: string;
@@ -29,8 +31,11 @@ function tryParseJson(value: string): unknown {
 
 interface GeminiPart {
   text?: string;
+  thought?: boolean;
+  thoughtSignature?: string;
+  thought_signature?: string;
   inlineData?: { mimeType: "image/png" | "image/jpeg" | "image/webp"; data: string };
-  functionCall?: { name: string; args: unknown };
+  functionCall?: { name: string; args: unknown; thoughtSignature?: string; thought_signature?: string };
   functionResponse?: { name: string; response: unknown };
 }
 interface GeminiContent {
@@ -115,9 +120,26 @@ export class GeminiProvider implements AiProvider {
       }
       if (m.role === "assistant") {
         const parts: GeminiPart[] = [];
+        const opaque = m.providerContinuation?.opaque;
+        const defaultSignature = typeof opaque?.thoughtSignature === "string"
+          ? opaque.thoughtSignature
+          : typeof (opaque as any)?.thought_signature === "string"
+            ? (opaque as any).thought_signature
+            : undefined;
+        const toolCallSignatures = (opaque?.toolCallSignatures && typeof opaque.toolCallSignatures === "object")
+          ? opaque.toolCallSignatures as Record<string, string>
+          : undefined;
+
         if (m.content) parts.push({ text: m.content });
-        for (const tc of m.toolCalls ?? []) {
-          parts.push({ functionCall: { name: tc.function.name, args: tryParseJson(tc.function.arguments || "{}") } });
+        const toolCalls = m.toolCalls ?? [];
+        for (let i = 0; i < toolCalls.length; i++) {
+          const tc = toolCalls[i]!;
+          const sig = toolCallSignatures?.[tc.id] ?? toolCallSignatures?.[String(i)] ?? (i === 0 ? defaultSignature : undefined);
+          const part: GeminiPart = {
+            functionCall: { name: tc.function.name, args: tryParseJson(tc.function.arguments || "{}") },
+            ...(sig ? { thoughtSignature: sig } : {}),
+          };
+          parts.push(part);
         }
         if (parts.length === 0) parts.push({ text: "" });
         pushCoalesced("model", parts);
@@ -164,6 +186,18 @@ export class GeminiProvider implements AiProvider {
     const generationConfig: Record<string, any> = {};
     if (limits.temperature !== null && options.requestCapabilities?.temperature !== "unsupported") generationConfig.temperature = limits.temperature;
     if (limits.maxOutputTokens !== null) generationConfig.maxOutputTokens = limits.maxOutputTokens;
+    // Gemini carries thinking depth inside generationConfig rather than as a
+    // top-level field. The translator owns which level id maps to which wire
+    // value; this adapter only knows where Gemini expects the result to sit.
+    if (options.reasoning) {
+      const capability = options.exactReasoningCapability ?? options.reasoningCapability ?? { control: "unknown", efforts: [], budgets: [], source: "unknown" };
+      const translated = translateReasoning(options.reasoning, "gemini-generate-content", capability);
+      if (!translated.ok) {
+        yield { type: "error", error: { type: "invalid_request", kind: "invalid_request", message: translated.reason, retryable: false } };
+        return;
+      }
+      Object.assign(generationConfig, translated.params);
+    }
     if (Object.keys(generationConfig).length) body.generationConfig = generationConfig;
     if (options.tools && options.tools.length > 0 && options.requestCapabilities?.tools !== "unsupported") {
       body.tools = [{ functionDeclarations: options.tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }];
@@ -215,6 +249,10 @@ export class GeminiProvider implements AiProvider {
       } catch {
         /* keep raw */
       }
+      // Gemini's listing already reports inputTokenLimit, so this rarely adds a
+      // fact — but a rejection from a proxied or restricted deployment states
+      // what THAT route enforces, which the listing cannot know.
+      learnContextLimitFromProviderError(this.route, baseUrl, model, errMsg);
       yield { type: "error", error: classifyHttpStatus(response.status, errMsg, parseRetryAfter(response.headers.get("retry-after"))) };
       return;
     }
@@ -234,7 +272,11 @@ export class GeminiProvider implements AiProvider {
     let sawUsage = false;
     let sawToolCall = false;
     let sawVisibleOutput = false;
+    let sawReasoningOutput = false;
     let rawFinishReason: unknown;
+    let latestThoughtSignature: string | undefined;
+    const toolCallSignatures: Record<string, string> = {};
+    let accumulatedReasoning = "";
     // Unique per stream; see the class docstring for why an ordinal alone is
     // not a safe tool-call identity.
     const toolCallNonce = randomUUID().slice(0, 8);
@@ -269,22 +311,56 @@ export class GeminiProvider implements AiProvider {
 
           const parts: GeminiPart[] = evt.candidates?.[0]?.content?.parts ?? [];
           for (const part of parts) {
-            if (typeof part.text === "string" && part.text.length) {
+            const sig = part.thoughtSignature
+              ?? (part as any).thought_signature
+              ?? part.functionCall?.thoughtSignature
+              ?? (part.functionCall as any)?.thought_signature;
+            if (sig) latestThoughtSignature = sig;
+
+            if (part.thought === true && typeof part.text === "string" && part.text.length) {
+              sawReasoningOutput = true;
+              accumulatedReasoning += part.text;
+              yield {
+                type: "text",
+                providerContinuation: {
+                  reasoningContent: part.text,
+                  ...(sig ? { opaque: { thoughtSignature: sig } } : {}),
+                },
+              };
+            } else if (typeof part.text === "string" && part.text.length) {
               sawVisibleOutput = true;
-              yield { type: "text", text: part.text };
+              yield {
+                type: "text",
+                text: part.text,
+                ...(sig ? { providerContinuation: { opaque: { thoughtSignature: sig } } } : {}),
+              };
             } else if (part.functionCall) {
               sawToolCall = true;
               const ordinal = toolOrdinal++;
+              const toolCallId = `gemini-tool-${toolCallNonce}-${ordinal}`;
+              const callSig = sig ?? latestThoughtSignature;
+              if (callSig) {
+                toolCallSignatures[toolCallId] = callSig;
+                toolCallSignatures[String(ordinal)] = callSig;
+              }
               yield {
                 type: "tool_call",
                 toolCalls: [
                   {
-                    id: `gemini-tool-${toolCallNonce}-${ordinal}`,
+                    id: toolCallId,
                     index: ordinal,
                     type: "function",
                     function: { name: part.functionCall.name, arguments: JSON.stringify(part.functionCall.args ?? {}) },
                   },
                 ],
+                ...(callSig ? {
+                  providerContinuation: {
+                    opaque: {
+                      thoughtSignature: callSig,
+                      toolCallSignatures: { ...toolCallSignatures },
+                    },
+                  },
+                } : {}),
               };
             }
           }
@@ -296,12 +372,25 @@ export class GeminiProvider implements AiProvider {
       // truncation unobservable on this route. Usage stays conditional so an
       // absent count is never reported as zero.
       const finishReason = normalizeGeminiFinishReason(rawFinishReason, sawToolCall);
+      const hasContinuation = accumulatedReasoning.length > 0 || latestThoughtSignature !== undefined;
+      const continuation = hasContinuation
+        ? {
+            ...(accumulatedReasoning.length > 0 ? { reasoningContent: accumulatedReasoning } : {}),
+            ...(latestThoughtSignature ? {
+              opaque: {
+                thoughtSignature: latestThoughtSignature,
+                ...(Object.keys(toolCallSignatures).length > 0 ? { toolCallSignatures: { ...toolCallSignatures } } : {}),
+              },
+            } : {}),
+          }
+        : undefined;
       yield {
         type: "done",
         ...(sawUsage ? { usage: { promptTokens, completionTokens } } : {}),
         ...(finishReason ? { finishReason } : {}),
+        ...(continuation ? { providerContinuation: continuation } : {}),
       };
-      if (finishReason === "stop" && !sawVisibleOutput && !sawToolCall) {
+      if (finishReason === "stop" && !sawVisibleOutput && !sawToolCall && !sawReasoningOutput) {
         yield { type: "error", error: { type: "empty_response", kind: "provider", message: "Provider returned a completed response with no content", retryable: true } };
       }
     } catch (e: any) {

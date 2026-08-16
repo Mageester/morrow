@@ -17,7 +17,7 @@ export interface ProviderProjectionResult {
   admission: ProviderAdmission;
   originalMeasurement: ProviderRequestMeasurement;
   compacted: boolean;
-  thresholdTokens: number;
+  thresholdTokens: number | null;
   contentHash: string;
 }
 
@@ -380,9 +380,11 @@ export function projectProviderRequest(input: {
 }): ProviderProjectionResult {
   const thresholdRatio = input.thresholdRatio ?? 0.8;
   if (!(thresholdRatio > 0 && thresholdRatio <= 1)) throw new Error("Context compaction threshold must be in (0, 1]");
-  const thresholdTokens = Math.floor(input.resolution.usableInputTokens * thresholdRatio);
+  const thresholdTokens = input.resolution.usableInputTokens !== null && input.resolution.usableInputTokens !== undefined
+    ? Math.floor(input.resolution.usableInputTokens * thresholdRatio)
+    : null;
   const originalMeasurement = measureProviderRequest(input.envelope);
-  const shouldCompact = input.forceCompaction === true || originalMeasurement.inputTokens >= thresholdTokens;
+  const shouldCompact = input.forceCompaction === true || (thresholdTokens !== null && originalMeasurement.inputTokens >= thresholdTokens);
 
   if (!shouldCompact) {
     const admission = admitProviderRequest(input.envelope, input.resolution);
@@ -423,7 +425,7 @@ export function projectProviderRequest(input: {
   // headroom that triggered compaction instead of merely fitting the hard
   // route limit; otherwise the accepted projection is guaranteed to compact
   // again on the very next turn.
-  if (!admission.ok || admission.measurement.inputTokens >= thresholdTokens) {
+  if (!admission.ok || (thresholdTokens !== null && admission.measurement.inputTokens >= thresholdTokens)) {
     const compactibleGroups = latestUserGroup >= 0
       ? groups.filter((_group, index) => index !== latestUserGroup)
       : groups;

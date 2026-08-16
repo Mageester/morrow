@@ -183,17 +183,14 @@ describe("Free Execution Kernel", () => {
 
     await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 12 });
 
+    // Repeated identical reads must not cost the model its turn: the whole
+    // point of this scenario is that the task still reaches its final answer.
     expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
-    // Repetition is advisory, never control: the harness appends a durable
-    // model-visible reminder at its fixed reminder points and keeps executing
-    // every requested read. There is no loop-detector signal, no interruption,
-    // and no strategy directive.
+    // Repetition is observe-only telemetry: the harness records a progress_warning
+    // at its fixed observation points and keeps executing every requested read.
+    // It must NOT inject reminders, advice, or warnings into model-visible history.
     const advisories = events(db).filter((event) => event.payload.reason === "exact_repeat_advisory");
     expect(advisories.length).toBeGreaterThan(0);
-    expect(advisories.every((event) => typeof event.payload.message === "string")).toBe(true);
-    // The stronger reminder quotes the prior durable result rather than
-    // rejecting the call.
-    expect(advisories.some((event) => String(event.payload.message).includes("Prior durable result"))).toBe(true);
     expect(events(db).some((event) => event.payload.signal === "loop_detected")).toBe(false);
     expect(events(db).some((event) => event.type === "task.interrupted")).toBe(false);
     expect(events(db).some((event) => event.type === "task.completed")).toBe(true);
@@ -201,6 +198,11 @@ describe("Free Execution Kernel", () => {
     expect(conversationsRepository(db).listToolCallsForTask("t")
       .filter((call: { toolName: string; status: string }) => call.toolName === "read_file" && call.status === "completed"))
       .toHaveLength(6);
+    // Model-visible requests never receive injected repeat advice
+    for (const request of provider.requests) {
+      const allText = request.map((m) => m.content).join("\n");
+      expect(allText).not.toMatch(/repeat advisory/i);
+    }
   });
 
   it("lets a long diagnosis continue through repeated soft progress signals", async () => {

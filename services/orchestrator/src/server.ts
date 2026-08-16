@@ -3185,7 +3185,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         endpointKind: budget.endpointKind,
         endpointHost: budget.endpointHost,
         contextWindowTokens: budget.contextWindowTokens,
-        contextWindowConfidence: budget.contextWindowConfidence,
+        contextWindowConfidence: configured ? budget.contextWindowConfidence : "unverified",
         usableInputTokens: budget.usableInputTokens,
         outputReserveTokens: budget.outputReserveTokens,
         totalReserveTokens: budget.totalReserveTokens,

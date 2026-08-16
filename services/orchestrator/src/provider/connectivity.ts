@@ -131,11 +131,29 @@ function normalizeModels(json: unknown, fetchedAt = new Date().toISOString()): D
         providerModelId,
         displayName: [entry?.displayName, entry?.display_name, entry?.name].find((value) => typeof value === "string" && value.trim()) ?? id,
         author: providerModelId.includes("/") ? providerModelId.split("/", 1)[0]! : null,
-        contextWindow: [entry?.inputTokenLimit, entry?.max_input_tokens, entry?.context_window]
-          .concat(entry?.context_length)
-          .find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
-        maxOutputTokens: [entry?.outputTokenLimit, entry?.max_tokens, entry?.max_output_tokens, entry?.top_provider?.max_completion_tokens]
-          .find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
+        contextWindow: [
+          entry?.inputTokenLimit,
+          entry?.max_input_tokens,
+          entry?.context_window,
+          entry?.context_window_tokens,
+          entry?.context_length,
+          entry?.max_context_length,
+          entry?.max_model_len,
+          entry?.max_position_embeddings,
+          entry?.contextLength,
+          entry?.contextWindow,
+          entry?.top_provider?.context_length,
+          entry?.top_provider?.max_input_tokens,
+        ].find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
+        maxOutputTokens: [
+          entry?.outputTokenLimit,
+          entry?.max_tokens,
+          entry?.max_output_tokens,
+          entry?.max_completion_tokens,
+          entry?.maxOutputTokens,
+          entry?.maxTokens,
+          entry?.top_provider?.max_completion_tokens,
+        ].find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
         inputModalities,
         outputModalities,
         capabilities: {

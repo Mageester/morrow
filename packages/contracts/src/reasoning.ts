@@ -1,4 +1,30 @@
-import type { ReasoningConfiguration, RouteReasoningCapability } from "./index.js";
+import type { ReasoningConfiguration, ReasoningMode, RouteReasoningCapability } from "./index.js";
+
+/**
+ * The reasoning modes a picker may offer for one exact route, in the
+ * provider's own display order.
+ *
+ * A provider that ships `modes` owns both the ids and their labels, so the UI
+ * renders the vendor's vocabulary ("Minimal", "Thinking: high") instead of
+ * title-casing an opaque id. A route that reports only `efforts` — a live
+ * discovery response, or an older cached row — still yields selectable modes,
+ * with the id standing in as its own label.
+ *
+ * Returning `[]` is meaningful: it says this route exposes no selectable mode,
+ * which is what a "none"/"fixed"/"unknown" route must render as. Callers add
+ * Auto (and Off, when `supportsOff`) around this list; those are route-level
+ * states rather than provider-defined modes, so they are deliberately absent.
+ */
+export function reasoningModesForRoute(capability: RouteReasoningCapability | undefined): ReasoningMode[] {
+  if (!capability) return [];
+  if (capability.control !== "effort") return [];
+  if (capability.modes && capability.modes.length > 0) {
+    // Ids are the contract with translateReasoning; a label-only entry that
+    // named no id could never be sent, so the filter is a guard, not a policy.
+    return capability.modes.filter((mode) => mode.id.length > 0).map((mode) => ({ ...mode }));
+  }
+  return capability.efforts.map((id) => ({ id, label: id }));
+}
 
 /**
  * Protocol-agnostic reasoning compatibility. This decides whether a

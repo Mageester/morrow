@@ -75,5 +75,14 @@ export function providerModelDiscoveryRepository(db: Database.Database) {
         && Date.parse(item.expiresAt) > at.getTime()
         && (credentialIdentity === undefined || item.credentialIdentity === credentialIdentity);
     },
+    invalidate(providerId?: ProviderId, authMode?: ProviderAuthMode): void {
+      if (providerId && authMode) {
+        db.prepare("DELETE FROM provider_model_discovery WHERE provider_id=? AND auth_mode=?").run(providerId, authMode);
+      } else if (providerId) {
+        db.prepare("DELETE FROM provider_model_discovery WHERE provider_id=?").run(providerId);
+      } else {
+        db.prepare("DELETE FROM provider_model_discovery").run();
+      }
+    },
   };
 }

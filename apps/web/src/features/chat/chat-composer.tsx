@@ -1,4 +1,4 @@
-import { normalizeReasoningForRoute, type AgentMode, type ModelStatus, type PresetId, type PresetStatus, type ProviderId, type ReasoningConfiguration, type RouteReasoningCapability } from "@morrow/contracts";
+import { normalizeReasoningForRoute, reasoningModesForRoute, type AgentMode, type ModelStatus, type PresetId, type PresetStatus, type ProviderId, type ReasoningConfiguration, type RouteReasoningCapability } from "@morrow/contracts";
 import { Send, Square } from "lucide-react";
 import { ContextMeter } from "./context-meter.js";
 import { ModelPicker } from "./model-picker.js";
@@ -181,6 +181,12 @@ interface ReasoningSliderOption {
   config: ReasoningConfiguration;
 }
 
+/** Render an opaque provider mode id readably when the provider named no label. */
+function displayCaseModeId(id: string): string {
+  if (id === "xhigh") return "xHigh";
+  return id.length > 0 ? id[0]!.toUpperCase() + id.slice(1) : id;
+}
+
 function reasoningSliderOptions(capability: RouteReasoningCapability | undefined): ReasoningSliderOption[] {
   const auto: ReasoningSliderOption = { label: "Auto", config: { mode: "auto" } };
   if (!capability) return [auto];
@@ -189,15 +195,26 @@ function reasoningSliderOptions(capability: RouteReasoningCapability | undefined
     case "fixed":
     case "unknown":
       return [auto];
-    case "effort":
+    case "effort": {
+      // The set of modes and their order come from the provider — the picker
+      // never assumes a low/medium/high ladder, so a route offering only
+      // "minimal" and "max" renders exactly those two.
+      //
+      // Labels come from the provider too when it supplied them. A route that
+      // reported only ids (a live discovery response) gets display casing
+      // applied here: presenting an opaque id readably is this component's
+      // job, and doing it here keeps it out of the capability contract, where
+      // it would read as a claim the provider never made.
+      const providerLabelled = (capability.modes?.length ?? 0) > 0;
       return [
         auto,
         ...(capability.supportsOff ? [{ label: "Off", config: { mode: "off" } as ReasoningConfiguration }] : []),
-        ...capability.efforts.map((effort): ReasoningSliderOption => ({
-          label: effort === "xhigh" ? "xHigh" : effort[0]!.toUpperCase() + effort.slice(1),
-          config: { mode: "effort", effort },
+        ...reasoningModesForRoute(capability).map((mode): ReasoningSliderOption => ({
+          label: providerLabelled ? mode.label : displayCaseModeId(mode.id),
+          config: { mode: "effort", effort: mode.id },
         })),
       ];
+    }
     case "budget":
       return [
         auto,
