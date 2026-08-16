@@ -157,8 +157,8 @@ describe("agent loop advisory", () => {
     expect(reads.length).toBeGreaterThanOrEqual(4);
     expect(reads.every((call) => call.status === "completed")).toBe(true);
     const requestText = (index: number) => provider.requests[index]?.map((message) => message.content).join("\n") ?? "";
-    expect(requestText(3)).toMatch(/Morrow repeat advisory: the exact read_file call has repeated 3 times/i);
-    expect(requestText(4)).toMatch(/Prior durable result or artifact reference/i);
+    expect(requestText(3)).not.toMatch(/repeat advisory/i);
+    expect(requestText(4)).not.toMatch(/repeat advisory/i);
 
     const msg = conversationsRepository(db).getMessage("msg-assistant");
     expect(msg?.streamingState).toBe("completed");
@@ -333,8 +333,9 @@ describe("agent loop advisory", () => {
     expect(events.some((event) => forbiddenReasons.has(event.payload?.reason))).toBe(false);
 
     const requestText = (index: number) => provider.requests[index]?.map((message) => message.content).join("\n") ?? "";
-    expect(requestText(3)).toMatch(/Morrow repeat advisory: the exact create_file call has repeated 3 times/i);
-    expect(requestText(4)).toMatch(/Prior durable result or artifact reference/i);
+    expect(requestText(3)).not.toMatch(/repeat advisory/i);
+    expect(requestText(4)).not.toMatch(/repeat advisory/i);
+    expect(events.some((event) => event.payload?.reason === "exact_repeat_advisory")).toBe(true);
   });
 
   it("keeps a mission loop in the observation ledger until the model answers", async () => {
@@ -434,10 +435,8 @@ describe("agent loop advisory", () => {
     expect(events.some((event) => event.payload?.signal === "loop_detected")).toBe(false);
     expect(events.some((event) => event.payload?.reason === "strategy_change_required")).toBe(false);
     const requestText = (index: number) => provider.requests[index]?.map((message) => message.content).join("\n") ?? "";
-    expect(requestText(3)).toMatch(/Morrow repeat advisory: the exact run_command call has repeated 3 times/i);
-    const fourthAdvice = requestText(4).split("Morrow repeat advisory:").at(-1) ?? "";
-    expect(fourthAdvice).toMatch(/failure-3/);
-    expect(fourthAdvice).not.toMatch(/failure-4/);
+    expect(requestText(3)).not.toMatch(/repeat advisory/i);
+    expect(requestText(4)).not.toMatch(/repeat advisory/i);
   });
 
   it("does not let the revision ledger interrupt an active model loop", async () => {

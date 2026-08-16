@@ -230,13 +230,7 @@ export function isEchoedAppliedWrite(toolName: string, args: Record<string, unkn
  */
 const PATH_NOTE = "A path relative to the workspace root is expected; an absolute path inside the workspace is also accepted and normalized for you.";
 
-function formatExactRepeatAdvisory(toolName: string, count: number, priorResult?: string): string {
-  const prefix = `Morrow repeat advisory: the exact ${toolName} call has repeated ${count} times.`;
-  if (!priorResult) {
-    return `${prefix} Inspect the previous durable result before choosing the next action.`;
-  }
-  return `${prefix} Prior durable result or artifact reference: ${priorResult}. Inspect it, choose a different action, or finish if the evidence is sufficient.`;
-}
+
 
 /**
  * True when a turn's text announces an action the model is ABOUT to take
@@ -2769,11 +2763,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     ...(missionAgentId ? { agentId: missionAgentId } : {}),
     log: (message) => event("task.progress_warning", { reason: "mission_ledger_write_failed", message }),
   });
-  // Task-local exact-call counts schedule durable model-visible advice only.
-  // Seed both the count and the last durable observation from prior terminal
-  // rows so a resumed segment does not forget what the model already saw.
+  // Task-local exact-call counts for observe-only loop detection telemetry.
+  // Seed the detector from prior terminal rows so a resumed segment does not
+  // reset telemetry counters.
   const loopDetector = createLoopDetector();
-  const durableRepeatResults = new Map<string, string>();
   // Repair migration-32 rows before reconstructing any provider request. The
   // repository keeps result_json as the complete operator record and persists
   // only the bounded/artifact-backed context projection.
@@ -2782,9 +2775,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     if ((priorCall.status !== "completed" && priorCall.status !== "failed") || !priorCall.resultJson) continue;
     const signature = toolCallSignature(priorCall.toolName, priorCall.argsJson);
     loopDetector.record(signature);
-    durableRepeatResults.set(signature, redactSecrets(priorCall.contextResultJson ?? priorCall.resultJson).slice(0, 2_000));
   }
-  const emittedRepeatAdvisoryKeys = new Set<string>();
   let responseContent = assistantMessageRow.content || "";
 
   // Turn-boundary tracking. `responseContent` stays a whole-task accumulator
@@ -3298,18 +3289,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     appliedTaskProjectionId = projection.id;
   };
   applyLatestTaskProjection();
-
-  // Repeat reminders are orchestrator-authored provider inputs, not ephemeral
-  // console hints. Rehydrate durable advisory records after the authoritative
-  // provider-turn projection so a resumed task sees the same non-executable
-  // context without replaying a tool call.
-  for (const reminder of records.listEventsByType(taskId, "task.progress_warning")) {
-    if (reminder.payload.reason !== "exact_repeat_advisory" || typeof reminder.payload.message !== "string") continue;
-    const key = `restored:${reminder.sequence}`;
-    if (emittedRepeatAdvisoryKeys.has(key)) continue;
-    emittedRepeatAdvisoryKeys.add(key);
-    chatMessages.push({ role: "system", content: reminder.payload.message });
-  }
 
   // Screenshot bytes are intentionally absent from durable chat/tool rows. On
   // restart, reconstruct at most the latest verified task artifact into one
@@ -4259,7 +4238,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     let currentServedBy = providerType as string;
     let currentRouteFingerprint = primaryRouteFingerprint;
     let cleanEmptyProviderResponse = false;
-    const pendingRepeatAdvisories: string[] = [];
 
     try {
       const preparedContext = prepareContextForProvider(chatMessages, {
@@ -6231,19 +6209,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // the signature's entry so a later reminder cannot accidentally quote
         // the result from the call that just failed.
         const repeat = loopDetector.record(toolSignature);
-        const priorResult = durableRepeatResults.get(toolSignature);
         if (isRepeatAdvisoryPoint(repeat.count)) {
-          const message = formatExactRepeatAdvisory(tc.name, repeat.count, repeat.count >= 4 ? priorResult : undefined);
-          pendingRepeatAdvisories.push(message);
           event("task.progress_warning", {
             reason: "exact_repeat_advisory",
             toolName: tc.name,
             count: repeat.count,
             status: isSuccess ? "completed" : "failed",
-            message,
           });
         }
-        durableRepeatResults.set(toolSignature, redactSecrets(contextResultStr).slice(0, 2_000));
         if (isSuccess) {
           // Attribute workspace effects for completion evidence. A patch can
           // span files and a command can write anything, so those fall back to
@@ -6285,9 +6258,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           toolCallId: tc.id,
           content: contextResultStr
         });
-      }
-      for (const message of pendingRepeatAdvisories) {
-        chatMessages.push({ role: "system", content: message });
       }
 
       if (browserVisionQueue.length > 0) {
