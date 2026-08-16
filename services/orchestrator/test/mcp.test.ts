@@ -30,8 +30,11 @@ function fakeMcpServer(tools: McpTool[]): RawTransport {
         const msg = raw as { id: number; method: string; params?: any };
         let result: unknown;
         if (msg.method === "initialize") result = { protocolVersion: "2024-11-05", serverInfo: { name: "fake", version: "1.0.0" } };
+        else if (msg.method === "ping") result = {};
         else if (msg.method === "tools/list") result = { tools };
         else if (msg.method === "tools/call") result = { content: [{ type: "text", text: `called ${msg.params?.name}` }] };
+        else if (msg.method === "resources/list") result = { resources: [{ uri: "file:///sample.txt", name: "Sample" }] };
+        else if (msg.method === "resources/read") result = { contents: [{ uri: msg.params?.uri, text: "hello" }] };
         else result = {};
         const response = encodeMessage({ jsonrpc: "2.0", id: msg.id, result });
         queueMicrotask(() => onData(response));
@@ -50,9 +53,15 @@ describe("McpClient", () => {
     { name: "delete_everything", description: "dangerous" },
   ];
 
-  it("initializes, lists tools, and calls a tool over the fake stdio transport", async () => {
+  it("initializes, pings, lists resources and calls a tool over fake transport", async () => {
     const client = new McpClient(fakeMcpServer(tools));
     await client.initialize();
+    await expect(client.ping()).resolves.toBeDefined();
+    const resources = await client.listResources();
+    expect(resources).toEqual([{ uri: "file:///sample.txt", name: "Sample" }]);
+    const read = await client.readResource("file:///sample.txt");
+    expect(read.contents[0]?.text).toBe("hello");
+
     const listed = await client.listTools();
     expect(listed.map((t) => t.name)).toEqual(["search", "delete_everything"]);
     const result = (await client.callTool("search", { q: "morrow" })) as { content: Array<{ text: string }> };
