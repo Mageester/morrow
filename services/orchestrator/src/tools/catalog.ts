@@ -267,6 +267,11 @@ export const TOOL_CATALOG: ToolSpec[] = [
   {
     name: "browser_close", title: "Close browser session", description: "Close and release the current task-scoped browser session.", sideEffect: "execute", enabled: true,
     parameters: {}, constraints: ["Idempotent", "All task exit paths also close an open session"],
+  },
+  {
+    name: "read_mcp_resource", title: "Read MCP resource", description: "Read a resource URI from a configured MCP server (e.g. database schema, documentation, or application memory).", sideEffect: "read-only", enabled: true,
+    parameters: { server: { type: "string", description: "MCP server name" }, uri: { type: "string", description: "Resource URI to read" } },
+    constraints: ["Scoped to trusted MCP servers", "Returns structured text or binary blob metadata"],
   }
 ];
 
@@ -276,6 +281,7 @@ export const IMPLEMENTED_TOOL_NAMES = [
   "git_status", "git_diff", "git_log", "run_command", "read_process_output", "stop_process", "propose_patch", "create_file", "append_file", "create_directory",
   "read_artifact", "find_skill", "load_skill", "create_skill", "browser_open", "browser_snapshot", "browser_console", "browser_click",
   "browser_type", "browser_key", "browser_select", "browser_viewport", "browser_screenshot", "browser_download", "browser_close",
+  "read_mcp_resource",
 ] as const;
 
 /** Safety/read tools that remain present in every capability-scoped profile. */

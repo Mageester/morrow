@@ -92,6 +92,10 @@ import { isSafeSkillInstructionDirectory, verifySkillDirectory, SKILL_MATCH_STOP
 import { createExecutionPolicy, type ExecutionPolicy } from "./execution-policy.js";
 import { buildAgentExecutionPolicy, type AgentExecutionPolicy } from "../security/agent-execution-policy.js";
 import { ToolProfileSelector, type ToolTaskClassification } from "../optimization/tool-profile-selector.js";
+import { loadMcpConfig } from "../mcp/config.js";
+import { McpPool } from "../mcp/pool.js";
+import { isMcpTool, getReadMcpResourceToolDefinition, buildMcpToolDefinitions, executeMcpTool } from "../mcp/tool-bridge.js";
+import { isMcpToolAutoApproved, setMcpToolApprovalOverride } from "../security/mcp-policy.js";
 
 /**
  * Best-effort human-readable target for a tool call, included in the
@@ -1583,8 +1587,28 @@ export async function executeAgentChatTask({
       name: "browser_close",
       description: "Close the current task-scoped browser session.",
       parameters: { type: "object", properties: {} }
+    },
+    {
+      name: "read_mcp_resource",
+      description: "Read the direct contents of a resource URI from a configured MCP server (e.g. database schema, documentation, or application memory).",
+      parameters: {
+        type: "object",
+        properties: {
+          server: { type: "string", description: "The MCP server name (e.g. 'sqlite', 'github', 'memo')" },
+          uri: { type: "string", description: "The resource URI to read (e.g. 'memo://notes/1', 'file:///data.json')" },
+        },
+        required: ["server", "uri"],
+      },
     }
   ];
+
+  const mcpConfigs = loadMcpConfig({ workspaceRoot: project.workspacePath, db });
+  const mcpPool = new McpPool({ db });
+  try {
+    const discoveredMcpTools = await mcpPool.listAllTools(mcpConfigs);
+    const mcpDefinitions = buildMcpToolDefinitions(discoveredMcpTools);
+    tools.push(...mcpDefinitions);
+  } catch {}
 
   const BROWSER_TOOL_NAMES = new Set(tools.filter((tool) => tool.name.startsWith("browser_")).map((tool) => tool.name));
 
@@ -6036,6 +6060,70 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           } else if (tc.name === "create_skill") {
             if (activeToolProfile !== "agent") throw new Error(`Tool "create_skill" is not permitted in ${agentMode} mode`);
             resultStr = await executeApprovedTool(tc.name, args, tc.id);
+          } else if (isMcpTool(tc.name)) {
+            let isApproved = autoApprove;
+            if (!isApproved) {
+              if (tc.name === "read_mcp_resource") {
+                isApproved = true;
+              } else {
+                const match = tc.name.match(/^mcp__([a-zA-Z0-9_-]+)__(.+)$/);
+                const serverId = match ? match[1]! : "";
+                const rawName = match ? match[2]! : tc.name;
+                const srvConfig = mcpConfigs[serverId];
+                isApproved = isMcpToolAutoApproved(serverId, rawName, srvConfig, db);
+                if (!isApproved) {
+                  const existingApprovals = approvals.listByTask(taskId);
+                  let approvalRecord = existingApprovals.find(a =>
+                    a.kind === "command" && a.details.tool === tc.name && a.details.toolCallId === tc.id
+                  );
+                  if (approvalRecord) {
+                    if (approvalRecord.status === "approved") {
+                      isApproved = true;
+                      if (approvalRecord.decision === "trust_project") {
+                        setMcpToolApprovalOverride(db, serverId, rawName, "always_allow");
+                      }
+                    } else if (approvalRecord.status === "denied") {
+                      throw new Error(`MCP tool call denied by user.`);
+                    }
+                  } else {
+                    approvalRecord = approvals.create({
+                      id: randomUUID(),
+                      taskId,
+                      projectId: project.id,
+                      kind: "command",
+                      summary: `Execute MCP tool: ${tc.name}`,
+                      createdAt: now(),
+                      details: { tool: tc.name, toolCallId: tc.id, serverId, rawName, args },
+                    });
+                    continuationsRepo.save({ taskId, toolCallId: tc.id, toolName: tc.name, args });
+                    transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
+                    event("approval.requested", { approvalId: approvalRecord.id, kind: "command", tool: tc.name });
+                    await persistExecutionCheckpoint("waiting_for_approval");
+                    await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
+                    continuationsRepo.delete(taskId);
+                    const finalAppr = approvals.get(approvalRecord.id);
+                    if (finalAppr?.status === "approved") {
+                      isApproved = true;
+                      if (finalAppr.decision === "trust_project") {
+                        setMcpToolApprovalOverride(db, serverId, rawName, "always_allow");
+                      }
+                    } else {
+                      throw new Error(`MCP tool call denied by user.`);
+                    }
+                  }
+                }
+              }
+            }
+
+            if (isApproved) {
+              const mcpExec = await executeMcpTool(tc.name, args, mcpPool, mcpConfigs);
+              resultStr = mcpExec.content;
+              if (mcpExec.isError) {
+                isSuccess = false;
+                errorMessage = mcpExec.content;
+                errorType = "tool_failed";
+              }
+            }
           } else {
             throw new Error(`Forbidden tool: ${tc.name}`);
           }

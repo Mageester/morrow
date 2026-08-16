@@ -23,6 +23,20 @@ export interface McpTool {
   inputSchema?: Record<string, unknown>;
 }
 
+export interface McpResource {
+  uri: string;
+  name: string;
+  description?: string;
+  mimeType?: string;
+}
+
+export interface McpResourceContent {
+  uri: string;
+  mimeType?: string;
+  text?: string;
+  blob?: string;
+}
+
 interface Pending {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -37,7 +51,10 @@ export class McpClient {
   private readonly requestTimeoutMs: number;
   private closed = false;
 
-  constructor(private readonly transport: RawTransport, opts: { allowedTools?: string[]; requestTimeoutMs?: number } = {}) {
+  constructor(
+    private readonly transport: RawTransport,
+    opts: { allowedTools?: string[] | undefined; requestTimeoutMs?: number | undefined } = {}
+  ) {
     this.allowed = opts.allowedTools ? new Set(opts.allowedTools) : undefined;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 30000;
     transport.onData((chunk) => {
@@ -83,10 +100,24 @@ export class McpClient {
     });
   }
 
+  ping(): Promise<unknown> {
+    return this.request("ping");
+  }
+
   async listTools(): Promise<McpTool[]> {
     const result = await this.request<{ tools?: McpTool[] }>("tools/list");
     const tools = result?.tools ?? [];
     return this.allowed ? tools.filter((tool) => this.allowed!.has(tool.name)) : tools;
+  }
+
+  async listResources(): Promise<McpResource[]> {
+    const result = await this.request<{ resources?: McpResource[] }>("resources/list");
+    return result?.resources ?? [];
+  }
+
+  async readResource(uri: string): Promise<{ contents: McpResourceContent[] }> {
+    const result = await this.request<{ contents?: McpResourceContent[] }>("resources/read", { uri });
+    return { contents: result?.contents ?? [] };
   }
 
   callTool(name: string, args: unknown): Promise<unknown> {

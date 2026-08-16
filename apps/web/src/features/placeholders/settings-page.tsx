@@ -4,6 +4,7 @@ import {
   Check,
   CircleCheckBig,
   LockKeyhole,
+  Network,
   Palette,
   ShieldCheck,
   SlidersHorizontal,
@@ -17,6 +18,7 @@ import { ApiClientError } from "../../api/client.js";
 import { ProductHeader } from "../../components/product-frame.js";
 import { useUserSettings } from "../../state/settings-store.js";
 import { useTheme, type ThemePreference } from "../../state/theme.js";
+import { McpSettingsSection } from "../mcp/mcp-settings-section.js";
 
 function safeError(error: unknown, fallback: string): string {
   return error instanceof ApiClientError ? error.message : fallback;
@@ -49,6 +51,7 @@ const CHAPTERS = [
   { id: "privacy", label: "Privacy", detail: "Routing and local data", icon: ShieldCheck },
   { id: "approvals", label: "Approvals", detail: "Control boundaries", icon: CircleCheckBig },
   { id: "personalization", label: "Personalization", detail: "Profile and goals", icon: UserCircle },
+  { id: "mcp", label: "MCP Servers", detail: "Tools & data connectors", icon: Network },
   { id: "advanced", label: "Advanced", detail: "Local maintenance", icon: Wrench },
 ] as const;
 
@@ -298,6 +301,8 @@ export function SettingsPage() {
         ) : null}
 
         {chapter === "personalization" ? <AssistantProfileSection /> : null}
+
+        {chapter === "mcp" ? <McpSettingsSection /> : null}
 
         {chapter === "advanced" ? (
           <SettingsPageShell description="Small maintenance actions for this local installation." title="Advanced">

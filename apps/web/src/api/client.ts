@@ -78,6 +78,18 @@ export const api = {
     );
   },
 
+  put<TInput, TOutput>(
+    path: string,
+    input: TInput,
+    schema: z.ZodType<TOutput>,
+  ): Promise<TOutput> {
+    return request(
+      path,
+      { body: JSON.stringify(input), method: "PUT" },
+      schema,
+    );
+  },
+
   deleteWithBody<TInput, TOutput>(
     path: string,
     input: TInput,

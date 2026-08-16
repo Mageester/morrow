@@ -697,6 +697,31 @@ export class MorrowApi {
   resetOnboardingState() {
     return this.req<{ success: boolean }>("POST", "/api/onboarding/reset");
   }
+
+  // ── MCP (Model Context Protocol) ─────────────────────────────────────────────
+  listMcpServers(projectId?: string) {
+    const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+    return this.req<{ servers: Array<{ id: string; config: any; trusted: boolean }> }>("GET", `/api/mcp/servers${qs}`);
+  }
+  createMcpServer(id: string, config: any) {
+    return this.req<{ ok: boolean; id: string; config: any }>("POST", "/api/mcp/servers", { id, config });
+  }
+  deleteMcpServer(id: string) {
+    return this.req<{ ok: boolean; id: string }>("DELETE", `/api/mcp/servers/${encodeURIComponent(id)}`);
+  }
+  trustMcpServer(id: string, config?: any) {
+    return this.req<{ ok: boolean; trusted: boolean }>("POST", `/api/mcp/trust/${encodeURIComponent(id)}`, { config });
+  }
+  testMcpServer(serverId: string, config: any) {
+    return this.req<{ ok: boolean; tools: any[]; resources: any[]; latencyMs: number; error?: string }>("POST", "/api/mcp/test", { serverId, config });
+  }
+  listMcpTools(projectId?: string) {
+    const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+    return this.req<{ tools: Array<{ namespacedName: string; serverId: string; rawName: string; description?: string; inputSchema?: any; autoApprove: boolean }> }>("GET", `/api/mcp/tools${qs}`);
+  }
+  updateMcpToolPermission(serverId: string, toolName: string, policy: "always_allow" | "require_approval" | "deny") {
+    return this.req<{ ok: boolean }>("PUT", `/api/mcp/permissions/${encodeURIComponent(serverId)}/${encodeURIComponent(toolName)}`, { policy });
+  }
 }
 
 function safeJson(text: string): unknown {
