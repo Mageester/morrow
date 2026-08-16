@@ -15,17 +15,29 @@ export function spawnStdioTransport(
   args: string[],
   opts: { cwd?: string | undefined; env?: NodeJS.ProcessEnv | undefined; onStderr?: ((text: string) => void) | undefined } = {}
 ): { transport: RawTransport; child: ChildProcess } {
+  const mergedEnv = opts.env ? { ...process.env, ...opts.env } : process.env;
   const child = spawn(command, args, {
     ...(opts.cwd ? { cwd: opts.cwd } : {}),
-    env: filterEnv(opts.env ?? process.env),
+    env: filterEnv(mergedEnv),
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
+
+  child.on("error", (err) => {
+    if (opts.onStderr) {
+      opts.onStderr(`[mcp-spawn-error] ${err.message}`);
+    }
+  });
+
   if (opts.onStderr) child.stderr?.on("data", (buf: Buffer) => opts.onStderr!(buf.toString("utf8")));
 
   const transport: RawTransport = {
     write(data) {
-      child.stdin?.write(data);
+      try {
+        child.stdin?.write(data);
+      } catch {
+        /* ignore broken pipe */
+      }
     },
     onData(handler) {
       child.stdout?.on("data", (buf: Buffer) => handler(buf.toString("utf8")));

@@ -198,9 +198,23 @@ export class McpPool {
 
       const client = new McpClient(transport, { allowedTools: config.allowedTools });
       await client.initialize();
-      await client.ping();
-      const tools = await client.listTools();
-      const resources = await client.listResources();
+      try {
+        await client.ping();
+      } catch {
+        /* ping is an optional protocol method */
+      }
+      let tools: McpTool[] = [];
+      try {
+        tools = await client.listTools();
+      } catch {
+        /* tools list optional */
+      }
+      let resources: McpResource[] = [];
+      try {
+        resources = await client.listResources();
+      } catch {
+        /* resources list optional */
+      }
       const latencyMs = Date.now() - start;
       client.close();
 
