@@ -233,7 +233,25 @@ export async function* normalizeProviderStream(
           return;
         }
         sawToolCall = true;
-        yield { type: "tool_call", toolCalls };
+        if (raw.providerContinuation !== undefined) {
+          if (terminalContinuation === undefined) {
+            terminalContinuation = raw.providerContinuation;
+          } else {
+            terminalContinuation = {
+              ...(terminalContinuation.reasoningContent || raw.providerContinuation.reasoningContent ? {
+                reasoningContent: (terminalContinuation.reasoningContent ?? "") + (raw.providerContinuation.reasoningContent ?? ""),
+              } : {}),
+              ...(terminalContinuation.opaque || raw.providerContinuation.opaque ? {
+                opaque: { ...(terminalContinuation.opaque ?? {}), ...(raw.providerContinuation.opaque ?? {}) },
+              } : {}),
+            };
+          }
+        }
+        yield {
+          type: "tool_call",
+          toolCalls,
+          ...(raw.providerContinuation ? { providerContinuation: raw.providerContinuation } : {}),
+        };
       } catch (error) {
         yield malformed(error instanceof Error ? error.message : "Provider emitted a malformed tool call");
         return;
@@ -250,8 +268,19 @@ export async function* normalizeProviderStream(
       // protocols deliver those fields in the opposite order.
       if (!hadFinishReason || raw.finishReason === undefined) usage = mergeUsage(usage, raw.usage);
       if (finishReason === undefined && raw.finishReason !== undefined) finishReason = raw.finishReason;
-      if (terminalContinuation === undefined && raw.providerContinuation !== undefined) {
-        terminalContinuation = raw.providerContinuation;
+      if (raw.providerContinuation !== undefined) {
+        if (terminalContinuation === undefined) {
+          terminalContinuation = raw.providerContinuation;
+        } else {
+          terminalContinuation = {
+            ...(terminalContinuation.reasoningContent || raw.providerContinuation.reasoningContent ? {
+              reasoningContent: (terminalContinuation.reasoningContent ?? "") + (raw.providerContinuation.reasoningContent ?? ""),
+            } : {}),
+            ...(terminalContinuation.opaque || raw.providerContinuation.opaque ? {
+              opaque: { ...(terminalContinuation.opaque ?? {}), ...(raw.providerContinuation.opaque ?? {}) },
+            } : {}),
+          };
+        }
       }
       continue;
     }

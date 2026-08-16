@@ -241,6 +241,65 @@ describe("ChatComposer", () => {
     } satisfies Partial<ChatComposerSubmission>));
   });
 
+  it("offers only the modes the selected exact route supports, with the provider's own labels", async () => {
+    const user = userEvent.setup();
+    // Two Gemini models on the same provider with genuinely different level
+    // sets (verified live: 3.7 Flash rejects MINIMAL, 3.5 Flash accepts it).
+    const geminiRoute = (id: string, model: string, ids: string[]) => ({
+      id,
+      label: model,
+      providerId: "gemini" as const,
+      model,
+      reasoning: {
+        control: "effort" as const,
+        efforts: ids,
+        modes: ids.map((mode) => ({ id: mode, label: `Thinking: ${mode}` })),
+        budgets: [],
+        source: "provider-catalog" as const,
+        wire: "gemini-thinking-level" as const,
+      },
+    });
+    const flash37 = geminiRoute("gemini:3.7-flash", "gemini-3.7-flash", ["low", "medium", "high"]);
+    const flash35 = geminiRoute("gemini:3.5-flash", "gemini-3.5-flash", ["minimal", "low", "medium", "high"]);
+
+    const onReasoningConfigChange = vi.fn();
+    function Parent() {
+      const [reasoningConfig, setReasoningConfig] = useState<import("@morrow/contracts").ReasoningConfiguration>({ mode: "auto" });
+      return (
+        <ChatComposer
+          draftScope={scope}
+          modelRoutes={[...routes, flash37, flash35]}
+          onReasoningConfigChange={(config) => {
+            onReasoningConfigChange(config);
+            setReasoningConfig(config);
+          }}
+          onSubmit={vi.fn()}
+          reasoningConfig={reasoningConfig}
+        />
+      );
+    }
+    render(<Parent />);
+
+    await user.selectOptions(screen.getByLabelText("Model route"), "gemini:3.7-flash");
+    const slider = screen.getByRole("slider", { name: "Reasoning effort" });
+    // Auto + exactly three provider modes: "minimal" is a real Gemini level,
+    // but not on this model, so it must not be offered here.
+    expect(slider).toHaveAttribute("max", "3");
+    fireEvent.change(slider, { target: { value: "1" } });
+    expect(onReasoningConfigChange).toHaveBeenLastCalledWith({ mode: "effort", effort: "low" });
+    // The provider's own label is rendered, not a title-cased id.
+    expect(slider).toHaveAttribute("aria-valuetext", "Thinking: low");
+
+    // Switching to the sibling model widens the offer to four, with no change
+    // to this component: the route reports its own set.
+    await user.selectOptions(screen.getByLabelText("Model route"), "gemini:3.5-flash");
+    const wider = screen.getByRole("slider", { name: "Reasoning effort" });
+    expect(wider).toHaveAttribute("max", "4");
+    fireEvent.change(wider, { target: { value: "1" } });
+    expect(onReasoningConfigChange).toHaveBeenLastCalledWith({ mode: "effort", effort: "minimal" });
+    expect(wider).toHaveAttribute("aria-valuetext", "Thinking: minimal");
+  });
+
   it("keeps reasoning at Auto when the route capability is unknown", async () => {
     const user = userEvent.setup();
     const unknownRoute = {

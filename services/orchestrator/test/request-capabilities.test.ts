@@ -66,13 +66,25 @@ describe("provider request capability contract", () => {
   });
 
   it("only advertises tunable reasoning when the provider names a reasoning control", () => {
+    // `supported_parameters` names request FIELDS, never their accepted values.
+    // An effort field therefore proves the route is tunable and nothing more:
+    // the levels stay empty rather than being filled with an invented
+    // low/medium/high ladder a gateway may not accept, and the wire dialect
+    // stays undeclared rather than being guessed from a generic field name.
     expect(reasoningCapabilityFromSupportedParameters(["reasoning_effort", "thinking"])).toEqual({
       control: "effort",
-      efforts: ["low", "medium", "high"],
+      efforts: [],
+      budgets: [],
+      source: "provider-metadata",
+    });
+    // Only an explicitly named disable field earns a claim that reasoning can
+    // be turned off; "thinking" alone does not spell how to disable it.
+    expect(reasoningCapabilityFromSupportedParameters(["reasoning_effort", "disable_thinking"])).toEqual({
+      control: "effort",
+      efforts: [],
       budgets: [],
       source: "provider-metadata",
       supportsOff: true,
-      wire: "deepseek-thinking",
     });
     expect(reasoningCapabilityFromSupportedParameters(["include_reasoning"])).toEqual({
       control: "fixed",

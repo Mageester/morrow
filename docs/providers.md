@@ -67,11 +67,47 @@ HTTPS through `POST /api/models/refresh`; redirects are rejected. Bundled
 metadata remains offline seed data only. Cached catalog data is atomically
 updated and retained when refresh fails.
 
-For example, OpenCode Go can report that `glm-5.2` is available while models.dev
-supplies its context window and maximum output. Morrow labels that combination
-as live availability plus remote-catalog metadata. An unmatched model remains
-usable only with an explicit unverified conservative fallback; Morrow does not
-present that fallback as an authoritative model limit.
+### Capability resolution order
+
+Every capability is resolved for one **exact route** — provider + model +
+endpoint — through four layers, strongest first:
+
+1. **Live provider/runtime discovery.** The model listing when it reports the
+   fact, plus anything the endpoint states about itself at runtime. Notably, a
+   provider that rejects an oversized request usually names its real ceiling
+   ("This model's maximum context length is 202749 tokens"); Morrow records
+   that against the exact route and uses it from then on.
+2. **Provider-owned declarative catalog.** Advisory metadata shipped beside the
+   provider adapter (`src/provider/model-catalogs/`) for facts no listing
+   discloses. It is metadata, not routing permission: an uncatalogued model id
+   is still executable.
+3. **Explicit route or user override.** An operator statement about this exact
+   route — an endpoint context limit, a configured window.
+4. **Unknown.** A real, representable state. Morrow does not substitute a
+   generic fallback window for a capability it has not established.
+
+Layers merge field by field, so a discovery response that omits a field is
+treated as silence rather than a retraction of what the catalog knows. Every
+resolved fact carries its `source`, `authority`, `confidence`, and `fetchedAt`,
+and those survive into the model budget and the context meter.
+
+What is actually discoverable varies sharply by provider. Gemini's
+`GET /v1beta/models` reports `inputTokenLimit`, `outputTokenLimit`, and a
+`thinking` flag, so its capacity needs no catalog entry at all. DeepSeek,
+NVIDIA NIM, TokenRouter, and OpenCode Zen return only model ids, so their
+capacity comes from the catalog, from a runtime rejection, or stays unknown.
+
+### Route limits versus native model limits
+
+These are tracked separately and never conflated:
+
+```
+effective context = min(native model limit, route/runtime limit)
+```
+
+using only the values actually known. A 1M-token model behind a gateway capped
+at 202,749 tokens resolves to 202,749 for the request ceiling while its native
+size stays 1M. If neither is known, the effective limit is unknown.
 
 For OpenRouter specifically, possession of a value is not reported as
 `configured`: Morrow reports connected/configured only after an authenticated
@@ -207,10 +243,43 @@ Every provider also accepts a verified endpoint context override named
 `<PROVIDER>_CONTEXT_LIMIT` (for example `DEEPSEEK_CONTEXT_LIMIT` or
 `OPENAI_COMPAT_CONTEXT_LIMIT`). The value is a positive integer token limit for
 the exact configured route. Morrow does not infer that a custom gateway has the
-same limit as the provider's default endpoint. The default DeepSeek API route is
-recorded as 131,072 tokens; a custom DeepSeek URL must supply its own override or
-uses the labeled conservative fallback. Advertised model capacity is shown
-separately from the effective request limit.
+same limit as the provider's default endpoint. A custom URL with no override
+resolves its limit from live discovery, from a runtime rejection, or stays
+unknown — it is never given the default endpoint's number. Advertised model
+capacity is shown separately from the effective request limit.
+
+### Reasoning controls
+
+Reasoning is not a uniform API, and there is no global low/medium/high
+contract. Each exact route reports the modes it actually supports, as
+provider-defined `{ id, label }` pairs in the provider's own order; ids are
+opaque and Morrow never interprets them. A picker offers exactly those modes —
+plus Auto, and Off where the route reports it can disable thinking.
+
+The mapping from a selected mode to request fields is a provider-owned *wire
+dialect*, resolved in one place
+(`services/orchestrator/src/provider/reasoning.ts`):
+
+| Dialect | Sends |
+| --- | --- |
+| `openai-reasoning-effort` | `reasoning_effort: <id>` |
+| `deepseek-thinking` | `reasoning_effort: <wire value>` plus `thinking: {type}` |
+| `gemini-thinking-level` | `generationConfig.thinkingConfig.thinkingLevel` |
+| `anthropic-thinking-budget` | `thinking: {type, budget_tokens}` |
+
+A mode may declare its own `wireValue` when the selector is finer-grained than
+the wire field: DeepSeek offers four depths over a field that accepts two
+values, and the catalog states that mapping rather than deriving it from the id.
+
+The supported set is per model, not per provider. Verified against the live
+Gemini v1beta API on 2026-08-16, `gemini-3.7-flash` rejects `minimal`
+("Thinking level MINIMAL is not supported for this model") while
+`gemini-3.5-flash` and `gemini-3.1-flash-lite` accept it. A route whose modes
+have not been established reports unknown and stays on Auto rather than being
+offered an invented ladder.
+
+Adding or correcting a model is normally a metadata-only change to the
+provider's catalog file.
 
 Each provider also honors a `<PROVIDER>_MODEL` variable (e.g. `DEEPSEEK_MODEL`,
 `OPENAI_MODEL`) that sets the default model. Setting a default model in the app

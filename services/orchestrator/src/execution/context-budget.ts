@@ -301,7 +301,7 @@ export function measureProviderRequest(envelope: ProviderRequestEnvelope): Provi
 
 export function admitProviderRequest(
   envelope: ProviderRequestEnvelope,
-  budget: { usableInputTokens: number },
+  budget: { usableInputTokens: number | null },
 ): ProviderAdmission {
   const measurement = measureProviderRequest(envelope);
   return admitMeasuredProviderRequest(measurement, budget);
@@ -312,9 +312,9 @@ export function admitProviderRequest(
  * the same limit and output-reserve rule as locally tokenized requests. */
 export function admitMeasuredProviderRequest(
   measurement: ProviderRequestMeasurement,
-  budget: { usableInputTokens: number },
+  budget: { usableInputTokens: number | null },
 ): ProviderAdmission {
-  if (measurement.inputTokens > budget.usableInputTokens) {
+  if (budget.usableInputTokens !== null && budget.usableInputTokens !== undefined && measurement.inputTokens > budget.usableInputTokens) {
     return { ok: false, reason: "request_too_large", measurement, usableInputTokens: budget.usableInputTokens };
   }
   return { ok: true, measurement };
@@ -447,11 +447,12 @@ export function prepareContextForProvider(
   input: {
     providerId: string;
     model: string;
-    maxInputTokens: number;
+    maxInputTokens?: number | null;
     compact?: boolean;
     recentRawGroups?: number;
   }
 ): ContextPrepareResult {
+  const maxTokens = input.maxInputTokens ?? Infinity;
   const operations: ContextOperation[] = [];
   const count = (candidate: ChatMessage[]) => countChatTokens(candidate, { providerId: input.providerId, model: input.model });
   const firstCount = count(messages);
@@ -459,7 +460,7 @@ export function prepareContextForProvider(
     type: firstCount.exact ? "context.exact_count_used" : "context.estimate_used",
     payload: { provider: input.providerId, model: input.model, tokens: firstCount.tokens, method: firstCount.method, exact: firstCount.exact },
   });
-  if (firstCount.tokens <= input.maxInputTokens) {
+  if (firstCount.tokens <= maxTokens) {
     const ordering = validateProviderMessageOrdering(messages);
     if (!ordering.ok) {
       return {
@@ -492,17 +493,17 @@ export function prepareContextForProvider(
   }
 
   let candidateCount = count(candidate);
-  if (candidateCount.tokens > input.maxInputTokens && summary) {
+  if (candidateCount.tokens > maxTokens && summary) {
     operations.push({ type: "context.safety_fallback_applied", payload: { reason: "summary_too_large" } });
     candidate = [...mandatory, ...recent.flat()];
     candidateCount = count(candidate);
   }
 
-  if (candidateCount.tokens > input.maxInputTokens) {
+  if (candidateCount.tokens > maxTokens) {
     operations.push(
       {
         type: "context.minimum_viable_context_exceeded",
-        payload: { finalTokens: candidateCount.tokens, maxInputTokens: input.maxInputTokens, provider: input.providerId, model: input.model },
+        payload: { finalTokens: candidateCount.tokens, maxInputTokens: input.maxInputTokens ?? 0, provider: input.providerId, model: input.model },
       },
     );
     return {

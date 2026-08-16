@@ -222,17 +222,15 @@ describe("per-slug context resolution via live provider discovery (OpenCode Zen 
       endpoint: zenEndpoint(),
     });
     expect(budget.contextWindowTokens).toBe(1_000_000);
-    expect(budget.contextWindowSource).toBe("model-metadata");
-    expect(budget.contextWindowConfidence).toBe("verified");
+    expect(budget.contextWindowSource).toBe("provider-metadata");
+    expect(budget.contextWindowConfidence).toBe("reported");
     expect(budget.usableInputTokens).toBeGreaterThan(900_000);
     expect(budget.routeFallbackIdentity).toBe("opencode-go");
   });
 
   it("keeps the shared fallback label honest when discovery is absent for a Go slug", () => {
-    // If discovery hasn't run for an opencode-go model, the budget is still
-    // a conservative 32_768 fallback — but it's marked `unverified` and
-    // demarcated as the `opencode-go` route so the diagnostic can request
-    // discovery. The number is never silently reported as "verified".
+    // If discovery hasn't run for an opencode-go model, the budget remains
+    // unverified and unknown — never silently fabricated as a 32k guess.
     installModelCatalog([...originalCatalog]);
     const budget = resolveModelBudget({
       providerId: "opencode-go",
@@ -241,8 +239,8 @@ describe("per-slug context resolution via live provider discovery (OpenCode Zen 
     });
     expect(budget.routeFallbackIdentity).toBe("opencode-go");
     expect(budget.contextWindowConfidence).toBe("unverified");
-    expect(budget.contextWindowSource).toBe("fallback");
-    expect(budget.usableInputTokens).toBeLessThan(32_768);
+    expect(budget.contextWindowSource).toBe("unknown");
+    expect(budget.contextWindowTokens).toBeNull();
   });
 
   it("OpenCode Go and OpenCode Zen appear as distinct provider groups in the runtime model list", () => {

@@ -45,14 +45,14 @@ import { MissionService } from "../mission/service.js";
 import { createMissionToolFailureReporter } from "../mission/tool-failure-reporter.js";
 import { eligibleFallbackProviderIds } from "../routing/fallback-eligibility.js";
 import { CortexService } from "../cortex/service.js";
-import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk, ProviderError, isContextOverflowMessage, MAX_CHAT_IMAGE_BYTES, type ChatImage } from "../provider/base.js";
+import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk, ProviderError, isContextOverflowMessage, MAX_CHAT_IMAGE_BYTES, type ChatImage, type ProviderContinuationState } from "../provider/base.js";
 import { createProvider, getProviderDefaultModel, providerCapabilities } from "../provider/registry.js";
 import { isRetryableProviderError, openStreamWithFallback, MAX_PROVIDER_FALLBACK_ATTEMPTS, type FallbackCandidate } from "../provider/fallback.js";
 import { globalRateGuard } from "../provider/rate-guard.js";
 import { suppressReasoningForEchoContinuity, translateReasoning } from "../provider/reasoning.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { resolveModelMetadata, resolveModelRequestCapabilities } from "../routing/models.js";
-import { resolveProviderModelCapabilities } from "../provider/model-capabilities.js";
+import { buildExactProviderRoute, resolveProviderModelCapabilities } from "../provider/model-capabilities.js";
 import { MockProvider } from "../provider/mock.js";
 import { redactSecrets } from "../provider/credentials.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint } from "./adaptive-budget.js";
@@ -4255,6 +4255,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     let hasToolCalls = false;
     const currentToolCalls: any[] = [];
     let currentReasoningContent = "";
+    let currentContinuationOpaque: Record<string, unknown> | undefined = undefined;
     let currentServedBy = providerType as string;
     let currentRouteFingerprint = primaryRouteFingerprint;
     let cleanEmptyProviderResponse = false;
@@ -4403,22 +4404,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? IMPLEMENTED_TOOL_NAMES.length : READ_ONLY_TOOL_NAMES.size,
         });
         const requestCapabilities = resolveModelRequestCapabilities(candidate.id, candidateModel, route.protocol);
-        const routeFingerprint = providerRouteFingerprint({
+        const exactRoute = buildExactProviderRoute({
           providerId: candidate.id,
-          model: candidateModel,
+          modelId: candidateModel,
           protocol: route.protocol,
           endpointKind: route.endpointKind,
           endpointHost: route.endpointHost,
           endpointIdentityHash: route.endpointIdentityHash,
         });
-        const exactRoute = {
-          providerId: candidate.id,
-          modelId: candidateModel,
-          protocol: route.protocol,
-          endpointHost: route.endpointHost,
-          endpointIdentityHash: route.endpointIdentityHash ?? null,
-          routeFingerprint,
-        } as const;
+        const routeFingerprint = exactRoute.routeFingerprint;
         const exactCapabilities = resolveProviderModelCapabilities(exactRoute);
         const candidateMessages = preparedContext.messages.map((message) => {
           if (!message.providerContinuation) return message;
@@ -4549,7 +4543,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       }
       const compactionThresholdRatio = forceProviderCompaction ? 0.65 : 0.8;
       const compactionNeeded = forceProviderCompaction || candidateEnvelopes.some(({ envelope, resolution }) =>
-        measureProviderRequest(envelope).inputTokens >= Math.floor(resolution.usableInputTokens * compactionThresholdRatio),
+        resolution.usableInputTokens !== null && measureProviderRequest(envelope).inputTokens >= Math.floor(resolution.usableInputTokens * compactionThresholdRatio),
       );
       let projectionCheckpoint: ExecutionCheckpointSnapshot | null = null;
       let projectionCheckpointId: string | null = null;
@@ -4566,7 +4560,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               envelope: item.envelope,
               admission: { ok: true as const, measurement: measureProviderRequest(item.envelope) },
               compacted: false,
-              thresholdTokens: Math.floor(item.resolution.usableInputTokens * compactionThresholdRatio),
+              thresholdTokens: item.resolution.usableInputTokens !== null ? Math.floor(item.resolution.usableInputTokens * compactionThresholdRatio) : null,
               contentHash: originalMeasurement.canonicalRequestHash ?? createHash("sha256").update(JSON.stringify(item.envelope)).digest("hex"),
               originalMeasurement,
             };
@@ -4785,6 +4779,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         if (chunk.providerContinuation?.reasoningContent) {
           currentReasoningContent += chunk.providerContinuation.reasoningContent;
         }
+        if (chunk.providerContinuation?.opaque) {
+          currentContinuationOpaque = {
+            ...(currentContinuationOpaque ?? {}),
+            ...chunk.providerContinuation.opaque,
+          };
+        }
 
         if (chunk.type === "done" && chunk.usage) {
           // resolveRequestUsage/accumulateUsage (routing/usage-snapshot.ts) are
@@ -4994,11 +4994,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       ordinal: turn, assistantText: turnText, toolCalls: currentToolCalls,
       isFinal: !(hasToolCalls && currentToolCalls.length > 0), ...currentFence(), now: now(),
     });
-    if (currentReasoningContent) {
+    const continuationState: ProviderContinuationState | undefined = (currentReasoningContent || (currentContinuationOpaque && Object.keys(currentContinuationOpaque).length > 0)) ? {
+      ...(currentReasoningContent ? { reasoningContent: currentReasoningContent } : {}),
+      ...(currentContinuationOpaque && Object.keys(currentContinuationOpaque).length > 0 ? { opaque: currentContinuationOpaque } : {}),
+    } : undefined;
+
+    if (continuationState) {
       continuity.saveProviderContinuation({
         id: randomUUID(), taskId, segmentId: currentSegment.id, providerId: currentServedBy,
         routeFingerprint: currentRouteFingerprint,
-        turnKey: durableTurnKey, state: { reasoningContent: currentReasoningContent }, ...currentFence(), now: now(),
+        turnKey: durableTurnKey, state: continuationState, ...currentFence(), now: now(),
       });
     }
 
@@ -5034,8 +5039,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // is only the cumulative presentation buffer for the single UI row;
         // copying it here made turn N recursively contain turns 1..N-1.
         content: responseContent.slice(responseLengthAtTurnStart),
-        ...(currentReasoningContent ? {
-          providerContinuation: { reasoningContent: currentReasoningContent },
+        ...(continuationState ? {
+          providerContinuation: continuationState,
           providerContinuationRouteFingerprint: currentRouteFingerprint,
         } : {}),
         toolCalls: currentToolCalls.map(tc => ({

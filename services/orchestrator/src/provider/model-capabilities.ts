@@ -1,6 +1,9 @@
 import type { ProviderProtocol } from "./base.js";
-import type { ModelInfo, ModelRequestCapabilities } from "@morrow/contracts";
+import type { DiscoveredModel, ModelInfo, ModelRequestCapabilities, ReasoningWire } from "@morrow/contracts";
+import { reasoningModesForRoute } from "@morrow/contracts";
 import { PROVIDER_MODEL_CATALOGS } from "./model-catalogs/index.js";
+import { findDiscoveredModel } from "./registry.js";
+import { providerRouteFingerprint } from "../routing/effective-context.js";
 
 /** A fact source is deliberately narrower than a provider or model name. */
 export type CapabilitySource =
@@ -33,6 +36,40 @@ export interface ExactProviderRoute {
   readonly routeFingerprint: string;
 }
 
+/**
+ * Build the exact-route identity for one provider/model/endpoint triple.
+ *
+ * The route fingerprint is what binds provider-private continuation state (a
+ * Gemini thought signature, a DeepSeek reasoning echo) to the endpoint that
+ * issued it, so every caller must derive it the same way. Exposing one
+ * constructor is what keeps the execution path and its tests from drifting
+ * into two subtly different notions of "the same route".
+ */
+export function buildExactProviderRoute(input: {
+  providerId: string;
+  modelId: string;
+  protocol: ProviderProtocol;
+  endpointKind: "default" | "custom" | "injected";
+  endpointHost: string | null;
+  endpointIdentityHash?: string | null | undefined;
+}): ExactProviderRoute {
+  return {
+    providerId: input.providerId,
+    modelId: input.modelId,
+    protocol: input.protocol,
+    endpointHost: input.endpointHost,
+    endpointIdentityHash: input.endpointIdentityHash ?? null,
+    routeFingerprint: providerRouteFingerprint({
+      providerId: input.providerId,
+      model: input.modelId,
+      protocol: input.protocol,
+      endpointKind: input.endpointKind,
+      endpointHost: input.endpointHost,
+      endpointIdentityHash: input.endpointIdentityHash ?? null,
+    }),
+  };
+}
+
 export interface ReasoningEffortCapability {
   /** Provider-defined selector ID. It is never normalized to a core enum. */
   readonly id: string;
@@ -47,9 +84,9 @@ export interface ReasoningCapability {
   readonly efforts: readonly ReasoningEffortCapability[];
   readonly defaultId?: string;
   readonly supportsOff?: boolean;
-  /** Optional adapter-owned wire variant for protocol details the generic
-   * capability shape cannot express, such as DeepSeek's thinking toggle. */
-  readonly wire?: string;
+  /** Adapter-owned wire dialect. `translateReasoning` dispatches on this, so a
+   * provider whose spelling differs adds a dialect rather than a model check. */
+  readonly wire?: ReasoningWire;
 }
 
 export type RequestCapabilityField =
@@ -134,6 +171,18 @@ const SOURCE_PRIORITY: Record<CapabilitySource, number> = {
   "adapter-native": 60,
 };
 
+/** Project provider-declared modes onto the exact capability shape, dropping
+ * absent optional fields so an "unset" field never becomes an explicit
+ * `undefined` the merge would have to treat as a value. */
+function effortCapabilities(reasoning: Parameters<typeof reasoningModesForRoute>[0]): ReasoningEffortCapability[] {
+  return reasoningModesForRoute(reasoning).map((mode) => ({
+    id: mode.id,
+    label: mode.label,
+    ...(mode.description === undefined ? {} : { description: mode.description }),
+    ...(mode.wireValue === undefined ? {} : { wireValue: mode.wireValue }),
+  }));
+}
+
 function detached<T>(value: T): T {
   return structuredClone(value);
 }
@@ -199,10 +248,11 @@ function factFromModelField<T>(
   source: CapabilitySource,
   authority: CapabilityAuthority,
   confidence: CapabilityConfidence,
+  fetchedAt: string | null = null,
 ): CapabilityFact<T> {
   return value === null || value === undefined
     ? unknownCapabilityFact(source, authority, confidence)
-    : capabilityFact(value, source, authority, confidence);
+    : capabilityFact(value, source, authority, confidence, fetchedAt);
 }
 
 function requestFact(
@@ -236,22 +286,23 @@ export function capabilityLayerFromModelInfo(
 ): CapabilityLayer {
   const request = model.requestCapabilities;
   const reasoning = model.reasoning;
-  const reasoningEfforts = reasoning?.efforts.map((id) => ({
-    id,
-    label: id,
-    ...(reasoning.wire === "deepseek-thinking"
-      ? { wireValue: id === "low" || id === "medium" || id === "high" ? "high" : "max" }
-      : {}),
-  }));
+  // The catalog owns both the selectable ids and the wire spelling each one
+  // sends. Deriving a spelling from the id here would put one provider's
+  // protocol quirk into the resolver every other provider also flows through.
+  const reasoningEfforts = effortCapabilities(reasoning);
+  // Catalog entries carry the day their facts were recorded. Keeping it on the
+  // fact is what lets a consumer tell a freshly-published capability from one
+  // that has been asserted unchanged for two releases.
+  const fetchedAt = model.fetchedAt ?? null;
   return {
     source,
     capabilities: {
-      displayName: capabilityFact(model.label, source, authority, confidence),
-      contextWindow: factFromModelField(model.contextWindow, source, authority, confidence),
-      maxOutputTokens: factFromModelField(model.maxOutputTokens, source, authority, confidence),
-      inputModalities: factFromModelField(model.inputModalities, source, authority, confidence),
-      outputModalities: factFromModelField(model.outputModalities, source, authority, confidence),
-      streaming: capabilityFact(model.capabilities.streaming, source, authority, confidence),
+      displayName: capabilityFact(model.label, source, authority, confidence, fetchedAt),
+      contextWindow: factFromModelField(model.contextWindow, source, authority, confidence, fetchedAt),
+      maxOutputTokens: factFromModelField(model.maxOutputTokens, source, authority, confidence, fetchedAt),
+      inputModalities: factFromModelField(model.inputModalities, source, authority, confidence, fetchedAt),
+      outputModalities: factFromModelField(model.outputModalities, source, authority, confidence, fetchedAt),
+      streaming: capabilityFact(model.capabilities.streaming, source, authority, confidence, fetchedAt),
       request: {
         tools: requestFact(request?.tools, source, authority, confidence),
         toolChoice: requestFact(request?.toolChoice, source, authority, confidence),
@@ -260,15 +311,53 @@ export function capabilityLayerFromModelInfo(
         responseFormat: requestFact(request?.responseFormat, source, authority, confidence),
         maxOutputTokensField: requestMaxOutputFact(request?.maxOutputTokens, source, authority, confidence),
       },
-      reasoning: reasoning && reasoning.source !== "unknown"
+      reasoning: reasoning && reasoning.source !== "unknown" && reasoning.control !== "unknown"
         ? capabilityFact({
             mode: reasoning.control === "effort" ? "selectable" : reasoning.control,
-            efforts: reasoningEfforts ?? [],
-            ...(reasoningEfforts?.[0] ? { defaultId: reasoningEfforts[0].id } : {}),
+            efforts: reasoningEfforts,
+            ...(reasoningEfforts[0] ? { defaultId: reasoningEfforts[0].id } : {}),
             ...(reasoning.supportsOff === undefined ? {} : { supportsOff: reasoning.supportsOff }),
             ...(reasoning.wire ? { wire: reasoning.wire } : {}),
-          }, source, authority, confidence)
+          }, source, authority, confidence, fetchedAt)
         : unknownCapabilityFact(source, authority, confidence),
+    },
+  };
+}
+
+/** Convert a dynamically discovered provider model into a provider-reported capability layer. */
+export function capabilityLayerFromDiscoveredModel(
+  model: DiscoveredModel,
+  source: CapabilitySource = "provider-reported",
+  authority: CapabilityAuthority = "provider",
+  confidence: CapabilityConfidence = "reported",
+): CapabilityLayer {
+  return {
+    source,
+    capabilities: {
+      displayName: capabilityFact(model.displayName, source, authority, confidence, model.fetchedAt ?? null),
+      contextWindow: factFromModelField(model.contextWindow, source, authority, confidence, model.fetchedAt ?? null),
+      maxOutputTokens: factFromModelField(model.maxOutputTokens, source, authority, confidence, model.fetchedAt ?? null),
+      inputModalities: factFromModelField(model.inputModalities, source, authority, confidence, model.fetchedAt ?? null),
+      outputModalities: factFromModelField(model.outputModalities, source, authority, confidence, model.fetchedAt ?? null),
+      streaming: capabilityFact(model.capabilities.streaming ?? true, source, authority, confidence, model.fetchedAt ?? null),
+      ...(model.requestCapabilities ? {
+        request: {
+          tools: requestFact(model.requestCapabilities.tools, source, authority, confidence),
+          toolChoice: requestFact(model.requestCapabilities.toolChoice, source, authority, confidence),
+          temperature: requestFact(model.requestCapabilities.temperature, source, authority, confidence),
+          streamUsage: requestFact(model.requestCapabilities.streamUsage, source, authority, confidence),
+          responseFormat: requestFact(model.requestCapabilities.responseFormat, source, authority, confidence),
+          maxOutputTokensField: requestMaxOutputFact(model.requestCapabilities.maxOutputTokens, source, authority, confidence),
+        },
+      } : {}),
+      ...(model.reasoning ? {
+        reasoning: capabilityFact({
+          mode: model.reasoning.control === "effort" ? "selectable" : model.reasoning.control,
+          efforts: effortCapabilities(model.reasoning),
+          ...(model.reasoning.supportsOff !== undefined ? { supportsOff: model.reasoning.supportsOff } : {}),
+          ...(model.reasoning.wire ? { wire: model.reasoning.wire } : {}),
+        }, source, authority, confidence, model.fetchedAt ?? null),
+      } : {}),
     },
   };
 }
@@ -281,7 +370,8 @@ function catalogModel(providerId: string, modelId: string): ModelInfo | undefine
 
 /**
  * Resolve one exact route from adapter-owned metadata plus advisory catalog
- * metadata. Unknown model IDs remain valid inputs and return unknown facts.
+ * metadata and dynamic runtime discovery. Unknown model IDs remain valid inputs
+ * and return unknown facts.
  */
 export function resolveProviderModelCapabilities(
   route: ExactProviderRoute,
@@ -290,8 +380,11 @@ export function resolveProviderModelCapabilities(
   const resolver = nativeResolvers.get(route.providerId);
   const native = resolver?.(route);
   const catalog = catalogModel(route.providerId, route.modelId);
+  const discovered = findDiscoveredModel(route.providerId, route.modelId);
+  const discoveredLayer = discovered ? capabilityLayerFromDiscoveredModel(discovered) : undefined;
   return resolveModelCapabilities(route, [
     ...(catalog ? [capabilityLayerFromModelInfo(catalog)] : []),
+    ...(discoveredLayer ? [discoveredLayer] : []),
     ...layers,
     ...(native ? [native] : []),
   ]);

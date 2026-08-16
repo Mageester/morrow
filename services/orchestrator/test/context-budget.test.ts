@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "../src/provider/base.js";
+import { knownCapacity } from "./known-capacity.js";
 import {
   estimateChatTokens,
   estimateTextTokens,
@@ -271,7 +272,7 @@ describe("context budget", () => {
     const admission = admitProviderRequest(envelope, resolution);
 
     expect(admission.ok).toBe(false);
-    expect(admission.measurement.inputTokens).toBeGreaterThan(resolution.usableInputTokens);
+    expect(admission.measurement.inputTokens).toBeGreaterThan(knownCapacity(resolution.usableInputTokens, "usableInputTokens"));
     expect(admission.measurement.outputReserveTokens).toBe(16_384);
   });
 

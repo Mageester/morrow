@@ -117,10 +117,20 @@ export function requestCapabilitiesFromSupportedParameters(
 }
 
 /**
- * Translate provider-reported reasoning parameters into the normalized route
- * contract. A boolean `reasoning: true` without a named control is fixed, not
- * guessed as effort-based; only an explicit `reasoning_effort` parameter earns
- * an effort picker.
+ * Translate a provider's declared `supported_parameters` into the normalized
+ * route contract.
+ *
+ * This metadata names the request FIELDS an endpoint accepts. It never states
+ * which values those fields take, so an effort field earns `control: "effort"`
+ * with an empty mode list — "this route is tunable, but the depths it offers
+ * are unknown". Materializing a low/medium/high ladder here would be the exact
+ * global assumption this system exists to remove: a gateway advertising an
+ * effort field may well accept only `minimal` and `max`, and a picker offering
+ * three invented levels would send two the route rejects.
+ *
+ * Modes come from the provider catalog or from a route that reports them
+ * explicitly; the wire dialect likewise stays undeclared here rather than being
+ * guessed from a generic field name.
  */
 export function reasoningCapabilityFromSupportedParameters(
   parameters: readonly string[] | undefined,
@@ -130,14 +140,14 @@ export function reasoningCapabilityFromSupportedParameters(
     .filter(Boolean);
   if (normalized.length === 0) return undefined;
   const has = (...names: string[]) => names.some((name) => normalized.includes(name));
+  const supportsOff = has("reasoning_off", "disable_thinking");
   if (has("reasoning_effort")) {
     return {
       control: "effort",
-      efforts: ["low", "medium", "high"],
+      efforts: [],
       budgets: [],
       source: "provider-metadata",
-      ...(has("thinking", "reasoning_off", "disable_thinking") ? { supportsOff: true } : {}),
-      ...(has("thinking") ? { wire: "deepseek-thinking" as const } : {}),
+      ...(supportsOff ? { supportsOff: true } : {}),
     };
   }
   if (has("reasoning", "include_reasoning", "thinking")) {
@@ -146,8 +156,7 @@ export function reasoningCapabilityFromSupportedParameters(
       efforts: [],
       budgets: [],
       source: "provider-metadata",
-      ...(has("thinking", "reasoning_off", "disable_thinking") ? { supportsOff: true } : {}),
-      ...(has("thinking") ? { wire: "deepseek-thinking" as const } : {}),
+      ...(supportsOff ? { supportsOff: true } : {}),
     };
   }
   return undefined;

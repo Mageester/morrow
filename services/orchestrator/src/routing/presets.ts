@@ -43,7 +43,7 @@ export const PRESETS: Preset[] = [
     modelPreferences: {
       openai: ["gpt-5.6-terra", "gpt-5.6-luna"],
       anthropic: ["claude-sonnet-5"],
-      gemini: ["gemini-2.5-flash"],
+      gemini: ["gemini-3.7-flash", "gemini-3.5-flash"],
       openrouter: ["openrouter/auto", "deepseek/deepseek-v4-flash"],
       deepseek: ["deepseek-v4-flash"],
       ollama: ["llama3.1"],
@@ -69,7 +69,7 @@ export const PRESETS: Preset[] = [
     providerOrder: ["openai", "gemini", "deepseek", "openrouter", "anthropic", "openai-compatible", "ollama"],
     modelPreferences: {
       openai: ["gpt-5.6-luna"],
-      gemini: ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+      gemini: ["gemini-3.1-flash-lite", "gemini-3.7-flash"],
       deepseek: ["deepseek-v4-flash"],
       openrouter: ["deepseek/deepseek-v4-flash"],
       anthropic: ["claude-haiku-4-5-20251001"],
@@ -96,7 +96,7 @@ export const PRESETS: Preset[] = [
     providerOrder: ["deepseek", "gemini", "openai", "openrouter", "openai-compatible", "ollama", "anthropic"],
     modelPreferences: {
       deepseek: ["deepseek-v4-flash"],
-      gemini: ["gemini-2.5-flash-lite"],
+      gemini: ["gemini-3.1-flash-lite"],
       openai: ["gpt-5.6-luna"],
       openrouter: ["deepseek/deepseek-v4-flash"],
       ollama: ["llama3.1"],

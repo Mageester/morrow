@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExecutionCheckpointSnapshot } from "../src/repositories/execution-continuity.js";
+import { knownCapacity } from "./known-capacity.js";
 import { projectProviderRequest } from "../src/execution/provider-projection.js";
 import * as providerProjectionModule from "../src/execution/provider-projection.js";
 import { resolveModelBudget } from "../src/routing/model-budget.js";
@@ -487,7 +488,7 @@ describe("durable provider projection", () => {
 
     expect(result.compacted).toBe(true);
     expect(result.admission.ok).toBe(true);
-    expect(result.admission.measurement.inputTokens).toBeLessThan(result.thresholdTokens);
+    expect(result.admission.measurement.inputTokens).toBeLessThan(knownCapacity(result.thresholdTokens, "thresholdTokens"));
     expect(result.envelope.messages.map((message) => message.content).join("\n")).toContain("latest completed execution batch");
 
     const nextTurn = projectProviderRequest({

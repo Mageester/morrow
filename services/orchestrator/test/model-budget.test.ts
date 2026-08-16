@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveModelBudget } from "../src/routing/model-budget.js";
+import { knownCapacity } from "./known-capacity.js";
 import { admitProviderRequest, measureProviderRequest } from "../src/execution/context-budget.js";
 import { prepareContextForProvider } from "../src/execution/context-budget.js";
 
@@ -33,7 +34,7 @@ describe("canonical model budget (single source of truth)", () => {
     expect(budget.contextWindowTokens).toBe(1_000_000);
     expect(budget.usableInputTokens).toBeGreaterThan(900_000);
     expect(budget.compactionTargetTokens).toBe(131_072);
-    expect(budget.compactionTargetTokens).toBeLessThan(budget.usableInputTokens);
+    expect(budget.compactionTargetTokens).toBeLessThan(knownCapacity(budget.usableInputTokens, "usableInputTokens"));
   });
 
   it("labels an unresolved model honestly instead of fabricating a limit", () => {
@@ -44,7 +45,8 @@ describe("canonical model budget (single source of truth)", () => {
       presetContextBudgetBytes: 524288,
       outputBudgetTokens: 2048,
     });
-    expect(budget.contextWindowSource).toBe("fallback");
+    expect(budget.contextWindowSource).toBe("unknown");
+    expect(budget.contextWindowTokens).toBeNull();
     expect(budget.contextWindowConfidence).toBe("unverified");
   });
 
@@ -96,7 +98,7 @@ describe("canonical model budget (single source of truth)", () => {
       { providerId: routeInput.providerId, model: routeInput.selectedModel, protocol: "openai-chat", messages: [{ role: "user", content: "hello ".repeat(10) }], tools: [], outputReserveTokens: routeInput.outputBudgetTokens },
       forAdmission,
     );
-    expect(measurement.inputTokens).toBeLessThanOrEqual(forAdmission.usableInputTokens);
+    expect(measurement.inputTokens).toBeLessThanOrEqual(knownCapacity(forAdmission.usableInputTokens, "usableInputTokens"));
     expect(admission.ok).toBe(true);
   });
 
@@ -138,7 +140,7 @@ describe("canonical model budget (single source of truth)", () => {
       outputBudgetTokens: 16_384,
     });
     expect(budget.contextWindowSource).toBe("provider-metadata");
-    expect(budget.contextWindowConfidence).toBe("verified");
+    expect(budget.contextWindowConfidence).toBe("reported");
   });
 
   it("labels an explicit user context-window override as configured, never verified", () => {
@@ -168,7 +170,7 @@ describe("canonical model budget (single source of truth)", () => {
     expect(budget.effectiveContextWindowTokens).toBe(131_072);
     expect(budget.harnessReserveTokens).toBe(budget.safetyMarginTokens + budget.framingReserveTokens);
     expect(budget.currentModelVisibleTokens).toBe(20_000);
-    expect(budget.remainingInputTokens).toBe(budget.usableInputTokens - 20_000);
-    expect(budget.compactionThresholdTokens).toBe(Math.floor(budget.usableInputTokens * 0.8));
+    expect(budget.remainingInputTokens).toBe(knownCapacity(budget.usableInputTokens, "usableInputTokens") - 20_000);
+    expect(budget.compactionThresholdTokens).toBe(Math.floor(knownCapacity(budget.usableInputTokens, "usableInputTokens") * 0.8));
   });
 });

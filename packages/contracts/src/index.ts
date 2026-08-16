@@ -219,17 +219,60 @@ export const ReasoningEffortSchema=z.string().trim().min(1).max(200);
 export const ReasoningControlSchema=z.enum(["none","effort","budget","fixed","unknown"]);
 /** Where a reasoning fact came from — parallels ContextLimitSource provenance. */
 export const ReasoningSourceSchema=z.enum(["provider-metadata","capability-probe","registry","adapter-native","deployment","provider-catalog","route-config","unknown"]);
+/**
+ * Provider-defined reasoning wire dialects. The protocol alone does not
+ * determine how a reasoning selection is spelled on the wire: two providers
+ * both speaking `openai-chat` may take `reasoning_effort`, a `thinking` object,
+ * or nothing at all. Each dialect is owned by the adapter that speaks it, and
+ * `translateReasoning` is the only place that maps a dialect to request fields.
+ *
+ * Adding a provider whose spelling differs means adding a dialect here and a
+ * case in that one translator — never a model-name branch in the agent loop.
+ */
+export const ReasoningWireSchema=z.enum([
+  /** DeepSeek: `thinking: {type}` alongside a coarse `reasoning_effort`. */
+  "deepseek-thinking",
+  /** Gemini: `generationConfig.thinkingConfig.thinkingLevel`. */
+  "gemini-thinking-level",
+  /** OpenAI family: a plain `reasoning_effort` scalar. */
+  "openai-reasoning-effort",
+  /** Anthropic: `thinking: {type, budget_tokens}`. */
+  "anthropic-thinking-budget",
+]);
+/**
+ * One selectable reasoning mode on an exact route.
+ *
+ * `id` is opaque and provider-defined — Morrow never interprets it, and there
+ * is deliberately no global low/medium/high contract. `label` is the provider's
+ * own display name so a picker renders the vendor's vocabulary rather than a
+ * generic capitalization of the id. `wireValue` is the spelling the adapter
+ * sends when it differs from the id, which is what lets one provider expose
+ * four selectable modes over a wire field that accepts only two values.
+ */
+export const ReasoningModeSchema=z.object({
+  id:ReasoningEffortSchema,
+  label:z.string().trim().min(1).max(80),
+  description:z.string().max(300).optional(),
+  wireValue:z.string().trim().min(1).max(200).optional(),
+}).strict();
 export const RouteReasoningCapabilitySchema=z.object({
   control:ReasoningControlSchema,
   /** Supported effort levels — only meaningful when control === "effort". */
   efforts:z.array(ReasoningEffortSchema),
+  /**
+   * Provider-owned mode descriptors, in the provider's own display order.
+   * When present this is authoritative for what a picker may offer, and its
+   * ids agree with `efforts` (which remains the compatibility projection for
+   * consumers that only need the id list).
+   */
+  modes:z.array(ReasoningModeSchema).optional(),
   /** Supported thinking-token budgets — only meaningful when control === "budget". */
   budgets:z.array(z.number().int().positive()),
   source:ReasoningSourceSchema,
   /** Whether an active reasoning route can explicitly disable thinking. */
   supportsOff:z.boolean().optional(),
   /** Provider-specific wire variant when the protocol alone is insufficient. */
-  wire:z.enum(["deepseek-thinking"]).optional(),
+  wire:ReasoningWireSchema.optional(),
 }).strict();
 /**
  * The normalized reasoning selection carried by a route. Every provider adapter
@@ -308,7 +351,7 @@ export const ModelStatusSchema=z.object({
  * this is a read-only view of that single canonical computation, never a
  * second, independently-derived source of truth.
  */
-export const ModelBudgetConfidenceSchema=z.enum(["verified","configured","unverified"]);
+export const ModelBudgetConfidenceSchema=z.enum(["verified","reported","configured","unverified"]);
 export const ContextLimitSourceSchema=z.enum(["model-metadata","provider-metadata","endpoint-override","fallback","unknown"]);
 export const ModelBudgetViewSchema=z.object({
   providerId:ProviderIdSchema,
@@ -319,15 +362,15 @@ export const ModelBudgetViewSchema=z.object({
   protocol:z.string(),
   endpointKind:z.enum(["default","custom","injected"]),
   endpointHost:z.string().nullable(),
-  contextWindowTokens:z.number().int().nonnegative(),
+  contextWindowTokens:z.number().int().nonnegative().nullable(),
   /** Route-aware capacity diagnostics; optional for older cached responses. */
   nativeContextWindowTokens:z.number().int().positive().nullable().optional(),
   nativeContextWindowSource:ContextLimitSourceSchema.optional(),
   routeLimitTokens:z.number().int().positive().nullable().optional(),
   routeLimitSource:ContextLimitSourceSchema.optional(),
-  effectiveContextWindowTokens:z.number().int().nonnegative().optional(),
+  effectiveContextWindowTokens:z.number().int().nonnegative().nullable().optional(),
   contextWindowConfidence:ModelBudgetConfidenceSchema,
-  usableInputTokens:z.number().int().nonnegative(),
+  usableInputTokens:z.number().int().nonnegative().nullable(),
   outputReserveTokens:z.number().int().nonnegative(),
   totalReserveTokens:z.number().int().nonnegative(),
   harnessReserveTokens:z.number().int().nonnegative().optional(),
@@ -786,6 +829,8 @@ export type ModelRequestCapabilities=z.infer<typeof ModelRequestCapabilitiesSche
 export type ReasoningEffort=z.infer<typeof ReasoningEffortSchema>;
 export type ReasoningControl=z.infer<typeof ReasoningControlSchema>;
 export type ReasoningSource=z.infer<typeof ReasoningSourceSchema>;
+export type ReasoningWire=z.infer<typeof ReasoningWireSchema>;
+export type ReasoningMode=z.infer<typeof ReasoningModeSchema>;
 export type RouteReasoningCapability=z.infer<typeof RouteReasoningCapabilitySchema>;
 export type ReasoningConfiguration=z.infer<typeof ReasoningConfigurationSchema>;
 export type PresetId=z.infer<typeof PresetIdSchema>;
@@ -1440,7 +1485,7 @@ export * from "./cortex.js";
 
 export * from "./mission-runtime.js";
 
-export { isReasoningCompatible, normalizeReasoningForRoute } from "./reasoning.js";
+export { isReasoningCompatible, normalizeReasoningForRoute, reasoningModesForRoute } from "./reasoning.js";
 
 export * from "./web.js";
 export * from "./teams.js";
