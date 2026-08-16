@@ -78,6 +78,15 @@ export function saveChatRouteHandoff(scope: ChatDraftScope, route: ChatComposerM
   }
 }
 
+/** Forget the stored choice, so the composer falls back to "Auto — recommended". */
+export function clearChatRouteHandoff(scope: ChatDraftScope): void {
+  try {
+    window.localStorage.removeItem(routeHandoffKey(scope));
+  } catch {
+    // A denied storage write must not block the selection itself.
+  }
+}
+
 export function loadChatRouteHandoff(scope: ChatDraftScope): ChatComposerModelRoute | undefined {
   try {
     const raw = window.localStorage.getItem(routeHandoffKey(scope));
@@ -326,9 +335,17 @@ export function ChatComposer({
     availableRoutes.some((route) => route.id === initialRoute?.id) ? initialRoute!.id : availableRoutes[0]!.id,
   );
   // Selection from the searchable catalogue; undefined means "Auto — recommended".
+  // The choice is durable per conversation: a remount (navigating away and
+  // back, a reload, a task finishing) must never silently drop the user's model
+  // back to Auto or to a stale one.
   const [catalogueRoute, setCatalogueRoute] = useState<ChatComposerModelRoute | undefined>(
     modelCatalogue ? initialRoute : undefined,
   );
+  const chooseCatalogueRoute = (route: ChatComposerModelRoute | undefined) => {
+    setCatalogueRoute(route);
+    if (route) saveChatRouteHandoff(draftScope, route);
+    else clearChatRouteHandoff(draftScope);
+  };
   const [length, setLength] = useState(() => initialDraft.length);
   const [hasContent, setHasContent] = useState(() => Boolean(initialDraft.trim()));
   const [sending, setSending] = useState(false);
@@ -366,6 +383,8 @@ export function ChatComposer({
       setHasContent(Boolean(textarea.value.trim()));
       setMessage(null);
       committedScope.current = { id: currentScopeId, scope: nextScope };
+      // The stored choice belongs to the conversation, not to this mount.
+      if (modelCatalogue) setCatalogueRoute(loadChatRouteHandoff(nextScope));
       if (retainedFocus) {
         textarea.setSelectionRange(textarea.value.length, textarea.value.length);
       }
@@ -596,7 +615,7 @@ export function ChatComposer({
           <ModelPicker
             disabled={interactionDisabled}
             models={modelCatalogue.models}
-            onChange={setCatalogueRoute}
+            onChange={chooseCatalogueRoute}
             presets={modelCatalogue.presets}
             value={catalogueRoute}
           />

@@ -46,9 +46,11 @@ export function renderMarkdown(report: BenchmarkReport): string {
     const interruptions = runs.reduce((total, run) => total + (run.metrics?.interruptions ?? 0), 0);
     const notes = [
       runs.filter((run) => run.outcome === "budget_exhausted").length > 0 ? `${runs.filter((run) => run.outcome === "budget_exhausted").length} budget-exhausted` : "",
-      runs.filter((run) => run.outcome === "harness_error").length > 0 ? `${runs.filter((run) => run.outcome === "harness_error").length} route/harness error` : "",
+      runs.filter((run) => run.outcome === "route_unavailable").length > 0 ? `${runs.filter((run) => run.outcome === "route_unavailable").length} route unavailable upstream` : "",
+      runs.filter((run) => run.outcome === "harness_error").length > 0 ? `${runs.filter((run) => run.outcome === "harness_error").length} harness error` : "",
     ].filter(Boolean).join("; ") || "—";
-    lines.push(`| ${label} | ${passed}/${runs.length} | ${percent(passed, runs.length)} | ${average(turns)} | ${toolCalls} | ${compactions} | ${interruptions} | ${notes} |`);
+    const served = runs.filter((run) => run.outcome !== "route_unavailable");
+    lines.push(`| ${label} | ${passed}/${served.length} | ${percent(passed, served.length)} | ${average(turns)} | ${toolCalls} | ${compactions} | ${interruptions} | ${notes} |`);
   }
 
   if (report.unavailableRoutes.length > 0) {

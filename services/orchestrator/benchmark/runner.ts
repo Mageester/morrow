@@ -138,9 +138,18 @@ export async function runBenchmarkTask(input: RunBenchmarkTaskInput): Promise<Be
     // Outcome ordering is deliberate: a truthful pause is reported as a pause,
     // never as a verification failure, and a verified artifact that the model
     // never declared finished is reported as an incomplete task.
+    // A route that never produced a single tool call or output token failed
+    // upstream; that is evidence about the endpoint, not about the model or
+    // the harness, and must never be reported as a task failure.
+    const providerFailure = [...events].reverse().find((event) => event.type === "provider.error_classified");
+    const producedNothing = toolCalls.length === 0 && metrics.completionTokens === 0;
+
     let outcome: BenchmarkOutcome;
     let failureReason: string | null = null;
-    if (interruptionReason === "turn_budget_exhausted") {
+    if (status === "failed" && producedNothing && providerFailure) {
+      outcome = "route_unavailable";
+      failureReason = `the provider route failed before producing any output (status ${String(providerFailure.payload.status ?? "unknown")}): ${String(providerFailure.payload.message ?? "unknown error")}`;
+    } else if (interruptionReason === "turn_budget_exhausted") {
       outcome = "budget_exhausted";
       failureReason = `paused at the unattended turn budget after ${metrics.modelRequests} model requests`;
     } else if (!verification.ok) {
