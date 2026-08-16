@@ -49,7 +49,7 @@ import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk, ProviderError, 
 import { createProvider, getProviderDefaultModel, providerCapabilities } from "../provider/registry.js";
 import { isRetryableProviderError, openStreamWithFallback, MAX_PROVIDER_FALLBACK_ATTEMPTS, type FallbackCandidate } from "../provider/fallback.js";
 import { globalRateGuard } from "../provider/rate-guard.js";
-import { translateReasoning } from "../provider/reasoning.js";
+import { suppressReasoningForEchoContinuity, translateReasoning } from "../provider/reasoning.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { resolveModelMetadata, resolveModelRequestCapabilities } from "../routing/models.js";
 import { resolveProviderModelCapabilities } from "../provider/model-capabilities.js";
@@ -4440,7 +4440,33 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           requireToolCallThisTurn && ((exactReasoningCapability?.supportsOff === true) || resolution.reasoning.supportsOff === true)
             ? { mode: "off" }
             : undefined;
+        // A route whose wire format echoes reasoning back cannot enable
+        // reasoning on a history whose most recent assistant turn carries
+        // none â€” the provider rejects the request. That gap is produced by
+        // Morrow's own recovery turn above (which runs with reasoning off), so
+        // honouring the protocol here keeps the conversation valid instead of
+        // sending a request the route must 400.
+        // Only an assistant turn Morrow is still continuing (no user message
+        // after it) has to echo its reasoning back; a finished turn from an
+        // earlier round does not, and must never suppress what the user asked
+        // for on a fresh request.
+        let lastAssistantIndex = -1;
+        for (let index = chatMessages.length - 1; index >= 0; index--) {
+          if (chatMessages[index]?.role === "assistant") { lastAssistantIndex = index; break; }
+        }
+        const continuingAssistantTurn = lastAssistantIndex >= 0
+          && !chatMessages.slice(lastAssistantIndex + 1).some((message) => message.role === "user");
+        const continuityReasoning: ReasoningConfiguration | undefined = suppressReasoningForEchoContinuity({
+          capability: exactReasoningCapability ?? resolution.reasoning,
+          lastAssistantHasReasoning: continuingAssistantTurn
+            ? Boolean(chatMessages[lastAssistantIndex]?.providerContinuation?.reasoningContent)
+            : undefined,
+          supportsOff: (exactReasoningCapability?.supportsOff === true) || resolution.reasoning.supportsOff === true,
+        })
+          ? { mode: "off" }
+          : undefined;
         const candidateReasoning: ReasoningConfiguration | undefined = recoveryReasoning
+          ?? continuityReasoning
           ?? (requestedReasoning && requestedReasoning.mode !== "auto" && !reasoningTranslation.ok
             ? undefined
             : requestedReasoning);

@@ -30,6 +30,45 @@ function isExactCapability(capability: RouteReasoningCapability | ReasoningCapab
   return "mode" in capability;
 }
 
+/**
+ * True when the route's wire protocol requires the assistant's own reasoning
+ * output to be echoed back in the history of every subsequent request that has
+ * reasoning enabled.
+ *
+ * This is a protocol fact about the wire format, not a judgement about any
+ * model. DeepSeek's thinking mode rejects a request outright ("The
+ * `reasoning_content` in the thinking mode must be passed back to the API")
+ * when the preceding assistant turn carries none — which is exactly what
+ * happens after a recovery turn deliberately ran with thinking disabled.
+ * Callers use this to keep such a conversation on a protocol-valid path
+ * instead of producing a request the route must reject.
+ */
+export function reasoningRequiresEchoedContent(
+  capability: RouteReasoningCapability | ReasoningCapability | undefined,
+): boolean {
+  return capability?.wire === "deepseek-thinking";
+}
+
+/**
+ * Whether this request must run with reasoning disabled purely to stay
+ * protocol-valid, because the route echoes reasoning back and the newest
+ * assistant turn in the history has none.
+ *
+ * Returns false when the route cannot disable reasoning at all: there is no
+ * safe request to build in that case, and silently pretending otherwise would
+ * hide the real provider error.
+ */
+export function suppressReasoningForEchoContinuity(input: {
+  capability: RouteReasoningCapability | ReasoningCapability | undefined;
+  /** Absent means there is no prior assistant turn to echo. */
+  lastAssistantHasReasoning: boolean | undefined;
+  supportsOff: boolean;
+}): boolean {
+  if (input.lastAssistantHasReasoning !== false) return false;
+  if (!input.supportsOff) return false;
+  return reasoningRequiresEchoedContent(input.capability);
+}
+
 function translateExactReasoning(
   config: ReasoningConfiguration,
   protocol: ProviderProtocol,
