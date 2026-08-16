@@ -1,9 +1,29 @@
 import type Database from "better-sqlite3";
 import { ConversationSchema, ConversationMessageSchema, type Conversation, type ConversationMessage } from "@morrow/contracts";
 import { redactJsonText, redactSecrets } from "../provider/credentials.js";
+import { externalizeToolResult, renderExternalizedForContext } from "../execution/artifact-externalization.js";
+import { toolArtifactsRepository } from "./tool-artifacts.js";
 
 function safeErrorText(value: string | null | undefined): string | null {
   return value === null || value === undefined ? null : redactSecrets(value).slice(0, 2_000);
+}
+
+const TERMINAL_TOOL_STATUSES = new Set(["completed", "failed", "cancelled"]);
+
+function deriveContextResult(
+  db: Database.Database,
+  input: { taskId: string; toolName: string; resultJson: string; now: string },
+): string {
+  const externalized = externalizeToolResult(toolArtifactsRepository(db), input.resultJson, {
+    taskId: input.taskId,
+    toolName: input.toolName,
+    // Keep this kind aligned with the live agent path so legacy reconstruction
+    // deduplicates against an artifact already created during execution.
+    kind: input.toolName,
+    contentType: "application/json",
+    now: input.now,
+  });
+  return renderExternalizedForContext(externalized);
 }
 
 export interface ToolCallRecord {
@@ -13,6 +33,8 @@ export interface ToolCallRecord {
   toolName: string;
   argsJson: string;
   resultJson?: string | null;
+  /** Bounded result/reference used in the next provider request. */
+  contextResultJson?: string | null;
   status: "requested" | "running" | "completed" | "failed" | "cancelled";
   errorType?: string | null;
   errorMessage?: string | null;
@@ -58,6 +80,7 @@ export function conversationsRepository(db: Database.Database) {
       toolName: row.tool_name,
       argsJson: redactJsonText(row.args_json) ?? "{}",
       resultJson: row.result_json === null || row.result_json === undefined ? row.result_json : redactJsonText(row.result_json),
+      contextResultJson: row.context_result_json === null || row.context_result_json === undefined ? row.context_result_json : redactJsonText(row.context_result_json),
       status: row.status,
       errorType: safeErrorText(row.error_type),
       errorMessage: safeErrorText(row.error_message),
@@ -194,6 +217,7 @@ export function conversationsRepository(db: Database.Database) {
       toolName: string;
       argsJson: string;
       resultJson?: string | null;
+      contextResultJson?: string | null;
       status: "requested" | "running" | "completed" | "failed" | "cancelled";
       errorType?: string | null;
       errorMessage?: string | null;
@@ -215,44 +239,108 @@ export function conversationsRepository(db: Database.Database) {
       // A tool-call id is unique per task by construction, so a write landing
       // on another task's row is a defect in whatever minted the id — never a
       // recoverable condition. Refuse it loudly instead of losing the data.
-      const existingTaskId = db
-        .prepare("SELECT task_id FROM message_tool_calls WHERE id = ?")
-        .get(input.id) as { task_id: string } | undefined;
-      if (existingTaskId && existingTaskId.task_id !== input.taskId) {
-        throw new Error(
-          `Tool-call id collision: "${input.id}" is already recorded under task ${existingTaskId.task_id} and cannot be rewritten by task ${input.taskId}. Tool-call ids must be unique per task; the provider adapter that minted this id is reusing it across streams.`
+      db.transaction(() => {
+        const existing = db
+          .prepare("SELECT task_id, result_json, context_result_json FROM message_tool_calls WHERE id = ?")
+          .get(input.id) as { task_id: string; result_json: string | null; context_result_json: string | null } | undefined;
+        if (existing && existing.task_id !== input.taskId) {
+          throw new Error(
+            `Tool-call id collision: "${input.id}" is already recorded under task ${existing.task_id} and cannot be rewritten by task ${input.taskId}. Tool-call ids must be unique per task; the provider adapter that minted the id is reusing it across streams.`
+          );
+        }
+        const safeArgsJson = redactJsonText(input.argsJson) ?? "{}";
+        const safeResultJson = input.resultJson === null || input.resultJson === undefined
+          ? null
+          : redactJsonText(input.resultJson) ?? "null";
+        let safeContextResultJson = input.contextResultJson === null || input.contextResultJson === undefined
+          ? null
+          : redactJsonText(input.contextResultJson) ?? "null";
+        // Older rows have the complete operator-facing result but no context
+        // projection. Materialize that projection at the persistence seam so
+        // every later request/restart sees the same bounded value. This runs in
+        // the same SQLite transaction as the terminal row write, including the
+        // artifact insert/refcount update.
+        if (safeContextResultJson === null
+          && TERMINAL_TOOL_STATUSES.has(input.status)
+          && !(existing?.context_result_json)
+        ) {
+          const sourceResult = safeResultJson ?? existing?.result_json ?? null;
+          if (sourceResult !== null) {
+            safeContextResultJson = deriveContextResult(db, {
+              taskId: input.taskId,
+              toolName: input.toolName,
+              resultJson: sourceResult,
+              now: input.completedAt ?? input.createdAt,
+            });
+          }
+        }
+        db.prepare(
+          `INSERT INTO message_tool_calls
+           (id, message_id, task_id, tool_name, args_json, result_json, context_result_json, status, error_type, error_message, created_at, started_at, completed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             result_json = COALESCE(excluded.result_json, result_json),
+             context_result_json = COALESCE(excluded.context_result_json, context_result_json),
+             status = excluded.status,
+             error_type = excluded.error_type,
+             error_message = excluded.error_message,
+             started_at = COALESCE(excluded.started_at, started_at),
+             completed_at = COALESCE(excluded.completed_at, completed_at)`
+        ).run(
+          input.id,
+          input.messageId,
+          input.taskId,
+          input.toolName,
+          safeArgsJson,
+          safeResultJson,
+          safeContextResultJson,
+          input.status,
+          safeErrorText(input.errorType) || null,
+          safeErrorText(input.errorMessage) || null,
+          input.createdAt,
+          input.startedAt || null,
+          input.completedAt || null
         );
-      }
-      const safeArgsJson = redactJsonText(input.argsJson) ?? "{}";
-      const safeResultJson = input.resultJson === null || input.resultJson === undefined
-        ? null
-        : redactJsonText(input.resultJson) ?? "null";
-      db.prepare(
-        `INSERT INTO message_tool_calls
-         (id, message_id, task_id, tool_name, args_json, result_json, status, error_type, error_message, created_at, started_at, completed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           result_json = excluded.result_json,
-           status = excluded.status,
-           error_type = excluded.error_type,
-           error_message = excluded.error_message,
-           started_at = COALESCE(excluded.started_at, started_at),
-           completed_at = COALESCE(excluded.completed_at, completed_at)`
-      ).run(
-        input.id,
-        input.messageId,
-        input.taskId,
-        input.toolName,
-        safeArgsJson,
-        safeResultJson,
-        input.status,
-        safeErrorText(input.errorType) || null,
-        safeErrorText(input.errorMessage) || null,
-        input.createdAt,
-        input.startedAt || null,
-        input.completedAt || null
-      );
+      })();
       return this.getToolCall(input.id)!;
+    },
+
+    /**
+     * Repair legacy terminal rows that predate context_result_json. The
+     * complete result remains in result_json; only the model-facing projection
+     * is externalized/bounded and persisted. The transaction also makes an
+     * artifact insert atomic with each context update.
+     */
+    materializeToolContextForTask(taskId: string): ToolCallRecord[] {
+      db.transaction(() => {
+        const rows = db.prepare(`SELECT id, task_id, tool_name, result_json, context_result_json, status, completed_at, created_at
+          FROM message_tool_calls
+          WHERE task_id=? AND status IN ('completed','failed','cancelled')
+            AND result_json IS NOT NULL AND context_result_json IS NULL`).all(taskId) as Array<{
+              id: string;
+              task_id: string;
+              tool_name: string;
+              result_json: string;
+              context_result_json: string | null;
+              status: string;
+              completed_at: string | null;
+              created_at: string;
+            }>;
+        for (const row of rows) {
+          const contextResultJson = deriveContextResult(db, {
+            taskId: row.task_id,
+            toolName: row.tool_name,
+            resultJson: row.result_json,
+            now: row.completed_at ?? row.created_at,
+          });
+          db.prepare("UPDATE message_tool_calls SET context_result_json=? WHERE id=? AND context_result_json IS NULL")
+            .run(contextResultJson, row.id);
+        }
+      })();
+      return db
+        .prepare("SELECT * FROM message_tool_calls WHERE task_id = ? ORDER BY created_at ASC, rowid ASC")
+        .all(taskId)
+        .map(mapToolCall);
     },
 
     getToolCall(id: string): ToolCallRecord | undefined {

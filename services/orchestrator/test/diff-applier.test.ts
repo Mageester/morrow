@@ -183,7 +183,7 @@ Binary files a/img.png and b/img.png differ
 
     expect(() => {
       validatePatchPaths("C:\\workspace", patches, []);
-    }).toThrow(/Parent traversal/);
+    }).toThrow(/parent-traversal|Parent traversal/);
 
     const absolutePatches = [
       {
@@ -193,9 +193,11 @@ Binary files a/img.png and b/img.png differ
       }
     ];
 
+    // An absolute path that cannot resolve inside the root is still rejected —
+    // now naming the root and a valid value instead of just the path shape.
     expect(() => {
       validatePatchPaths("C:\\workspace", absolutePatches, []);
-    }).toThrow(/Absolute paths/);
+    }).toThrow(/outside this task's workspace root/);
 
     const secretPatches = [
       {
@@ -255,12 +257,29 @@ describe("assertContainedRealPath (symlink-aware containment)", () => {
     }
   });
 
-  it("rejects absolute paths, traversal, and .git", () => {
+  it("rejects escaping paths, traversal, and .git with an actionable message", () => {
     const ws = mkdtempSync(join(tmpdir(), "morrow-contain-"));
     try {
       expect(() => assertContainedRealPath(ws, "../escape.txt")).toThrow(/traversal/i);
       expect(() => assertContainedRealPath(ws, ".git/config")).toThrow(/\.git/);
-      expect(() => assertContainedRealPath(ws, "C:\\Windows\\system32\\x")).toThrow(/Absolute/);
+      // An absolute path that cannot resolve inside this root stays rejected,
+      // and the rejection names the root and shows a valid value.
+      expect(() => assertContainedRealPath(ws, "C:\\Windows\\system32\\x")).toThrow(/outside this task's workspace root/);
+      expect(() => assertContainedRealPath(ws, "/etc/passwd")).toThrow(/outside this task's workspace root/);
+      expect(() => assertContainedRealPath(ws, "/etc/passwd")).toThrow(/assets\/site\.css/);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts an absolute path that resolves inside the workspace", () => {
+    const ws = mkdtempSync(join(tmpdir(), "morrow-contain-abs-"));
+    try {
+      mkdirSync(join(ws, "assets"), { recursive: true });
+      // The model naming its own workspace file absolutely is ordinary, not an
+      // attack. It resolves to exactly the same target as the relative form.
+      expect(assertContainedRealPath(ws, join(ws, "assets", "site.css")))
+        .toBe(assertContainedRealPath(ws, "assets/site.css"));
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }

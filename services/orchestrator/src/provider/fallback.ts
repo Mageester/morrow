@@ -1,5 +1,6 @@
 import { ProviderError, type AiProvider, type ChatMessage, type ProviderChunk, type StreamOptions } from "./base.js";
 import type { RateGuard } from "./rate-guard.js";
+import { normalizeProviderStream } from "./stream-normalizer.js";
 
 /**
  * Live provider fallback.
@@ -53,6 +54,7 @@ export function isRetryableProviderError(err: unknown): boolean {
   if (/(upstream (?:request )?failed|upstream error)/.test(message)) return true;
   if (err instanceof ProviderError) {
     if (err.kind === "cancelled") return false;
+    if (err.kind === "context_overflow") return false;
     if (err.kind === "rate_limit" || err.kind === "timeout" || err.kind === "network") return true;
     if (err.kind === "auth" || err.kind === "invalid_request") return false;
     if (err.kind === "provider" && err.retryable) return true;
@@ -128,11 +130,18 @@ export async function openStreamWithFallback(
     if (candidateOptions.abortSignal?.aborted) throw new Error("AbortError");
     onAttempt?.(candidate);
     try {
-      const iterator = candidate.provider.streamChat(candidateMessages, candidateOptions)[Symbol.asyncIterator]();
+      const normalizedStream = normalizeProviderStream(
+        candidate.provider.streamChat(candidateMessages, candidateOptions),
+        candidateOptions.abortSignal ? { abortSignal: candidateOptions.abortSignal } : {},
+      );
+      const iterator = normalizedStream[Symbol.asyncIterator]();
       const first = await iterator.next();
       // An error chunk at the very start counts as a start failure. Preserve the
       // normalized classification so retry/rate-guard decisions stay precise.
-      if (!first.done && first.value.type === "error") {
+      // `empty_response` is different: it is a completed logical turn with no
+      // usable content, so the agent's bounded same-route recovery must see it
+      // as a stream event rather than silently switching providers.
+      if (!first.done && first.value.type === "error" && first.value.error?.type !== "empty_response") {
         const payload = first.value.error;
         throw new ProviderError(payload?.type ?? "provider_error", payload?.message || "Model provider error", {
           kind: payload?.kind ?? "unknown",

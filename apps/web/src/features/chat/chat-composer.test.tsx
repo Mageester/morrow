@@ -241,6 +241,30 @@ describe("ChatComposer", () => {
     } satisfies Partial<ChatComposerSubmission>));
   });
 
+  it("keeps reasoning at Auto when the route capability is unknown", async () => {
+    const user = userEvent.setup();
+    const unknownRoute = {
+      id: "unknown:route",
+      label: "Unknown route",
+      providerId: "openrouter" as const,
+      model: "vendor/unknown",
+      reasoning: {
+        control: "unknown" as const,
+        efforts: [],
+        budgets: [],
+        source: "unknown" as const,
+      },
+    };
+
+    render(<ChatComposer draftScope={scope} modelRoutes={[...routes, unknownRoute]} onReasoningConfigChange={vi.fn()} onSubmit={vi.fn()} />);
+    await user.selectOptions(screen.getByLabelText("Model route"), "unknown:route");
+
+    const slider = screen.getByRole("slider", { name: "Reasoning effort" });
+    expect(slider).toHaveAttribute("aria-valuetext", "Auto");
+    expect(slider).toHaveAttribute("data-value", "auto");
+    expect(slider).toHaveAttribute("data-adjustable", "false");
+  });
+
   it("preserves an explicit supervised Build preference across composer remounts", async () => {
     const user = userEvent.setup();
     const first = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
@@ -446,5 +470,71 @@ describe("ChatComposer", () => {
     expect(screen.getByRole("button", { name: "Stop generation" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Chat" })).toBeDisabled();
     expect(screen.getByLabelText("Model route")).toBeDisabled();
+  });
+});
+
+/**
+ * Regression: a model chosen inside a conversation used to live only in
+ * component state, so any remount — navigating away and back, a reload, a task
+ * finishing — silently reverted the picker to "Auto — recommended" or to a
+ * stale route. The choice is now durable per conversation.
+ */
+describe("ChatComposer model selection persistence", () => {
+  const catalogue = {
+    models: [{
+      model: {
+        version: 1 as const,
+        id: "vendor/model-a",
+        canonicalId: "vendor/model-a",
+        aliases: [],
+        providerId: "openrouter" as const,
+        label: "Model A",
+        contextWindow: 128_000,
+        maxOutputTokens: null,
+        pricing: null,
+        tokenUsage: false,
+        streamingUsage: false,
+        capabilities: { streaming: true, toolCalls: true, vision: false },
+        speedClass: "balanced" as const,
+        costClass: "medium" as const,
+        privacy: "remote" as const,
+        builtIn: true,
+      },
+      available: true,
+      availabilityReason: null,
+    }],
+    presets: [],
+  };
+
+  it("keeps the chosen model across a remount and offers it again", async () => {
+    const user = userEvent.setup();
+    const view = render(<ChatComposer draftScope={scope} modelCatalogue={catalogue} onSubmit={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: /Auto — recommended/ }));
+    await user.click(await screen.findByRole("button", { name: /Model A/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Model A/ })).toBeVisible());
+
+    view.unmount();
+    render(<ChatComposer draftScope={scope} modelCatalogue={catalogue} onSubmit={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: /Model A/ })).toBeVisible();
+  });
+
+  it("forgets the choice only when the reader picks Auto again", async () => {
+    const user = userEvent.setup();
+    const view = render(<ChatComposer draftScope={scope} modelCatalogue={catalogue} onSubmit={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: /Auto — recommended/ }));
+    await user.click(await screen.findByRole("button", { name: /Model A/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Model A/ })).toBeVisible());
+
+    await user.click(screen.getByRole("button", { name: /Model A/ }));
+    await user.click(await screen.findByRole("button", { name: /Auto — recommended/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Auto — recommended/ })).toBeVisible());
+
+    view.unmount();
+    render(<ChatComposer draftScope={scope} modelCatalogue={catalogue} onSubmit={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: /Auto — recommended/ })).toBeVisible();
   });
 });

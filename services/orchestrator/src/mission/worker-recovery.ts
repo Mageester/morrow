@@ -33,7 +33,6 @@ function categoryFor(input: WorkerRecoveryInput): MissionRecoveryCategory {
   if (input.provider?.kind === "network" || /network|econn|enotfound|dns|socket/.test(combined)) return "network_failure";
   if (/model .*not (?:available|found|supported)|unknown model|model access denied/.test(combined)) return "model_unavailable";
   if (input.reason === "context_rollover_required" || /context (?:window|limit|budget)/.test(combined)) return "context_exhaustion";
-  if (input.reason === "strategy_change_required" || /loop|no measurable progress|repeated/.test(combined)) return "repeated_strategy";
   if (input.reason === "validation_required" || /verification|validation/.test(combined)) return "verification_failure";
   if (input.reason === "provider_recovery_required" || input.provider || /provider|upstream|insufficient balance|payment required|\b402\b/.test(combined)) return "provider_failure";
   return "process_interruption";
@@ -92,7 +91,6 @@ function actionFor(
         : { action: "retry_same_provider", next: "provider:network-retry", retryCondition: null, exhausted: false };
     case "context_exhaustion":
       return { action: "compact_context", next: "context:compact", retryCondition: null, exhausted: false };
-    case "repeated_strategy":
     case "verification_failure":
       return { action: "replan", next: "worker:alternate-strategy", retryCondition: null, exhausted: false };
     default:

@@ -99,7 +99,45 @@ describe("durable provider projection", () => {
     expect(JSON.stringify(messages)).not.toContain(probe);
   });
 
-  it("compacts completed write arguments but preserves failed write bodies for repair", () => {
+  it("keeps a completed write request and its exact successful result in durable history", () => {
+    const messages = providerProjectionModule.buildProviderProjection({
+      prefixMessages: [{ role: "user", content: "mission" }],
+      turns: [{
+        turnKey: "turn-write",
+        assistantText: "I created the file.",
+        toolCalls: [{
+          id: "write",
+          name: "create_file",
+          arguments: JSON.stringify({ path: "src/app.ts", content: "export const ready = true;\n" }),
+        }],
+      }],
+      toolResults: [{
+        id: "write",
+        toolName: "create_file",
+        result: JSON.stringify({ created: true, path: "src/app.ts" }),
+        status: "completed",
+      }],
+      // This is the old context-only normalization seam. A completed durable
+      // write must not be converted into a Morrow replay marker at the request
+      // boundary, even if an older caller still provides the normalizer.
+      normalizeToolArguments: () => JSON.stringify({
+        path: "src/app.ts",
+        _morrowAppliedWrite: { kind: "create_file", contentBytes: 28, contentSha256: "abc" },
+        truncatedForContext: true,
+      }),
+    });
+
+    const assistant = messages.find((message) => message.role === "assistant");
+    const tool = messages.find((message) => message.role === "tool");
+    expect(assistant?.toolCalls?.map((call) => call.id)).toEqual(["write"]);
+    expect(tool?.toolCallId).toBe("write");
+    expect(tool?.content).toBe(JSON.stringify({ created: true, path: "src/app.ts" }));
+    expect(JSON.stringify(messages)).not.toContain("_morrowAppliedWrite");
+    expect(JSON.stringify(messages)).not.toContain("Morrow durable write record.");
+    expect(messages.filter((message) => message.role === "tool" && message.toolCallId === "write")).toHaveLength(1);
+  });
+
+  it("preserves completed and failed write arguments for truthful reconstruction", () => {
     const buildProviderProjection = providerProjectionModule.buildProviderProjection;
     const body = "full file body";
     const messages = buildProviderProjection({
@@ -119,14 +157,17 @@ describe("durable provider projection", () => {
       normalizeToolArguments: (_name, args) => JSON.stringify({ normalizedBytes: args.length }),
     });
     const calls = messages.find((message) => message.role === "assistant")!.toolCalls!;
-    expect(JSON.parse(calls.find((call) => call.id === "completed")!.function.arguments)).toHaveProperty("normalizedBytes");
+    expect(JSON.parse(calls.find((call) => call.id === "completed")!.function.arguments)).toEqual({
+      path: "done.ts",
+      content: body,
+    });
     expect(JSON.parse(calls.find((call) => call.id === "failed")!.function.arguments)).toEqual({
       path: "retry.ts",
       content: body,
     });
   });
 
-  it("projects applied-write markers as non-executable history", () => {
+  it("does not turn a completed write into an applied-write marker or narration", () => {
     const messages = providerProjectionModule.buildProviderProjection({
       prefixMessages: [{ role: "user", content: "mission" }],
       turns: [{
@@ -152,15 +193,17 @@ describe("durable provider projection", () => {
 
     const serialized = JSON.stringify(messages);
     const calls = messages.flatMap((message) => message.toolCalls ?? []);
-    expect(calls.map((call) => call.id)).toEqual(["read"]);
-    expect(messages.filter((message) => message.role === "tool").map((message) => message.toolCallId)).toEqual(["read"]);
+    expect(calls.map((call) => call.id)).toEqual(["write", "read"]);
+    expect(messages.filter((message) => message.role === "tool").map((message) => message.toolCallId)).toEqual(["write", "read"]);
     expect(serialized).not.toContain("_morrowAppliedWrite");
-    expect(serialized).not.toContain('"created":true');
-    expect(serialized).toContain("create_file completed for src/app.ts");
-    expect(serialized).toContain("historical record, not a tool request");
+    expect(messages.find((message) => message.role === "tool" && message.toolCallId === "write")?.content)
+      .toContain('"created":true');
+    expect(serialized).not.toContain("create_file completed for src/app.ts");
+    expect(serialized).not.toMatch(/requirement is satisfied|do not call create_file again|read-only tool/i);
+    expect(serialized).not.toContain("historical record, not a tool request");
   });
 
-  it("projects an applied append_file marker as non-executable history", () => {
+  it("keeps a completed append result as an ordinary tool observation", () => {
     const messages = providerProjectionModule.buildProviderProjection({
       prefixMessages: [{ role: "user", content: "mission" }],
       turns: [{
@@ -186,12 +229,70 @@ describe("durable provider projection", () => {
 
     const serialized = JSON.stringify(messages);
     const calls = messages.flatMap((message) => message.toolCalls ?? []);
-    expect(calls).toHaveLength(0);
-    expect(messages.filter((message) => message.role === "tool")).toHaveLength(0);
+    expect(calls.map((call) => call.id)).toEqual(["append"]);
+    expect(messages.filter((message) => message.role === "tool").map((message) => message.toolCallId)).toEqual(["append"]);
     expect(serialized).not.toContain("_morrowAppliedWrite");
-    expect(serialized).not.toContain('"appended":true');
-    expect(serialized).toContain("append_file completed for src/app.ts");
-    expect(serialized).toContain("historical record, not a tool request");
+    expect(messages.find((message) => message.role === "tool" && message.toolCallId === "append")?.content)
+      .toContain('"appended":true');
+    expect(serialized).not.toContain("append_file completed for src/app.ts");
+    expect(serialized).not.toMatch(/requirement is satisfied|do not call append_file again|read-only tool/i);
+    expect(serialized).not.toContain("historical record, not a tool request");
+  });
+
+  it("bounds a completed large write argument without an executable body or legacy marker", () => {
+    const body = "x".repeat(12_000);
+    const messages = providerProjectionModule.buildProviderProjection({
+      prefixMessages: [{ role: "user", content: "mission" }],
+      turns: [{
+        turnKey: "turn-large-append",
+        assistantText: "Appended the durable chunk.",
+        toolCalls: [{ id: "large-append", name: "append_file", arguments: JSON.stringify({ path: "large.txt", content: body, expectedOffset: 5 }) }],
+      }],
+      toolResults: [{ id: "large-append", toolName: "append_file", result: JSON.stringify({ status: "success", appendedBytes: body.length, totalBytes: body.length + 5 }), status: "completed" }],
+    });
+
+    const call = messages.flatMap((message) => message.toolCalls ?? []).find((item) => item.id === "large-append");
+    expect(call).toBeDefined();
+    const args = JSON.parse(call!.function.arguments) as Record<string, any>;
+    expect(args.path).toBe("large.txt");
+    expect(args.expectedOffset).toBe(5);
+    expect(args).not.toHaveProperty("content");
+    expect(args.durable_context).toMatchObject({ kind: "completed_tool_arguments", tool: "append_file", payloadBytes: body.length });
+    expect(JSON.stringify(messages)).not.toContain(body);
+    expect(JSON.stringify(messages)).not.toContain("_morrowAppliedWrite");
+    expect(messages.filter((message) => message.role === "tool" && message.toolCallId === "large-append")).toHaveLength(1);
+  });
+
+  it("bounds oversized failed terminal arguments and results without hiding failure metadata", () => {
+    const body = "failed-write-body-" + "x".repeat(12_000);
+    const failure = JSON.stringify({
+      error: "patch rejected",
+      kind: "invalid_tool_arguments",
+      detail: "the requested file was not found",
+      output: "failure-output-" + "y".repeat(16_000),
+    });
+    const messages = providerProjectionModule.buildProviderProjection({
+      prefixMessages: [{ role: "user", content: "Repair the failed write." }],
+      turns: [{
+        turnKey: "failed-large-turn",
+        assistantText: "The write failed.",
+        toolCalls: [{ id: "failed-large", name: "create_file", arguments: JSON.stringify({ path: "missing.txt", content: body }) }],
+      }],
+      toolResults: [{ id: "failed-large", toolName: "create_file", result: failure, status: "failed" }],
+    });
+    const assistantCall = messages.flatMap((message) => message.toolCalls ?? []).find((call) => call.id === "failed-large");
+    const toolResult = messages.find((message) => message.role === "tool" && message.toolCallId === "failed-large");
+    expect(assistantCall).toBeDefined();
+    expect(assistantCall!.function.arguments.length).toBeLessThan(8 * 1024);
+    expect(JSON.parse(assistantCall!.function.arguments)).toMatchObject({
+      path: "missing.txt",
+      durable_context: { tool: "create_file", originalBytes: expect.any(Number) },
+    });
+    expect(toolResult?.content.length).toBeLessThan(8 * 1024);
+    expect(toolResult?.content).toContain("invalid_tool_arguments");
+    expect(JSON.stringify(messages)).not.toContain(body);
+    expect(JSON.stringify(messages)).not.toContain("failure-output-" + "y".repeat(8_000));
+    expect(JSON.stringify(messages)).not.toContain("_morrowAppliedWrite");
   });
 
   it("compacts from the structured checkpoint when the complete envelope crosses the threshold", () => {
@@ -226,6 +327,32 @@ describe("durable provider projection", () => {
     expect(projection).not.toContain("opaque-private-row");
   });
 
+  it("retains the user query when compaction keeps the latest assistant tool batch", () => {
+    const result = projectProviderRequest({
+      checkpoint: snapshot,
+      envelope: {
+        providerId: "tokenrouter",
+        model: "qwen/qwen3.8-max-free",
+        protocol: "openai-chat",
+        messages: [
+          { role: "system", content: "Execution kernel rules" },
+          { role: "user", content: "Build the requested page." },
+          { role: "assistant", content: "I will inspect the workspace.", toolCalls: [{ id: "call-1", type: "function", function: { name: "inspect_workspace", arguments: "{}" } }] },
+          { role: "tool", toolCallId: "call-1", name: "inspect_workspace", content: "workspace facts" },
+        ],
+        tools: [],
+        outputReserveTokens: 16_384,
+      },
+      resolution,
+      forceCompaction: true,
+      recentRawGroups: 1,
+    });
+
+    expect(result.compacted).toBe(true);
+    expect(result.admission.ok).toBe(true);
+    expect(result.envelope.messages.some((message) => message.role === "user" && message.content === "Build the requested page.")).toBe(true);
+  });
+
   it("is byte-idempotent for an unchanged checkpoint and durable turn set", () => {
     const input = {
       checkpoint: snapshot,
@@ -249,6 +376,36 @@ describe("durable provider projection", () => {
     const second = projectProviderRequest(input);
     expect(JSON.stringify(second.envelope)).toBe(JSON.stringify(first.envelope));
     expect(second.contentHash).toBe(first.contentHash);
+  });
+
+  it("uses the canonical model-visible hash instead of private continuation bytes", () => {
+    const baseEnvelope = {
+      providerId: "deepseek",
+      model: "deepseek-v4-flash",
+      protocol: "openai-chat" as const,
+      route: {
+        providerId: "deepseek",
+        modelId: "deepseek-v4-flash",
+        protocol: "openai-chat" as const,
+        endpointHost: "api.deepseek.com",
+        endpointIdentityHash: "endpoint",
+        routeFingerprint: "route-a",
+      },
+      messages: [{ role: "user" as const, content: "continue", providerContinuation: { reasoningContent: "private-a" } }],
+      tools: [],
+      outputReserveTokens: 1024,
+    };
+    const first = projectProviderRequest({ checkpoint: snapshot, envelope: baseEnvelope, resolution, thresholdRatio: 1 });
+    const second = projectProviderRequest({
+      checkpoint: snapshot,
+      envelope: {
+        ...baseEnvelope,
+        messages: [{ role: "user" as const, content: "continue", providerContinuation: { reasoningContent: "private-b" } }],
+      },
+      resolution,
+      thresholdRatio: 1,
+    });
+    expect(first.contentHash).toBe(second.contentHash);
   });
 
   it("counts tool schemas before deciding whether compaction is required", () => {

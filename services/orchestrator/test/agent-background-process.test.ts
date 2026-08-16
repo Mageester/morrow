@@ -291,13 +291,23 @@ describe("agent background processes (full-stack dev-server capability)", () => 
     const provider = new MockProvider({ chunks });
     await executeAgentChatTask({ db, taskId: "t", provider, supervisor, maxTurns: 32 });
 
-    expect(readOffsets).toEqual([0, 0]);
+    // The malformed non-finite offset is normalized at the tool boundary and
+    // still executes as an ordinary poll. It must not become a cognitive
+    // offset/progress supervisor that cuts off useful work.
+    expect(readOffsets).toEqual([0, 0, 0]);
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
     const calls = conversationsRepository(db).listToolCallsForTask("t");
     expect(calls.find((call: any) => call.id === "infinite-offset")?.status).toBe("completed");
     expect(calls.some((call: any) => call.toolName === "stop_process")).toBe(false);
     expect(provider.requests).toHaveLength(21);
-    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.payload?.signal === "stagnation")).toBe(true);
+    expect(processRepo.get("owned-process")?.status).not.toBe("running");
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) =>
+      event.payload?.signal === "loop_stalled"
+      || event.payload?.signal === "no_progress"
+      || event.payload?.signal === "observation_epoch_exhausted"
+      || event.payload?.signal === "strategy_change_required"
+      || event.payload?.reason === "loop_stalled"
+    )).toBe(false);
   });
 
   it("refuses to read or stop a process belonging to a different project", async () => {

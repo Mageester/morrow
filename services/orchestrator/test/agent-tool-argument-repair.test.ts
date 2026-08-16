@@ -247,7 +247,6 @@ describe("agent tool-argument recovery", () => {
       kind: "malformed_tool_arguments",
       toolName: "create_file",
       reason: "truncated_json",
-      retryExhausted: false,
     });
     expect(feedback.expectedSchema).toContain("path");
     // Truncation feedback must name the real cause (cut off / size), not tell
@@ -271,11 +270,11 @@ describe("agent tool-argument recovery", () => {
     ]);
   });
 
-  it("stops cleanly after a second malformed retry for the same tool", async () => {
+  it("keeps malformed retries as structured model-visible results", async () => {
     seedYolo(db, ws);
     // Genuinely malformed (not truncated) input: no JSON object at all. This
-    // exercises the generic exhausted-budget instruction, distinct from the
-    // size-specific guidance truncation now receives (next test).
+    // Both invalid calls remain ordinary structured observations; no hidden
+    // correction budget is allowed to interrupt the model-owned loop.
     const provider = new MockProvider({
       chunks: [
         [rawTool("bad1", "create_file", "garbage, not json"), done],
@@ -287,8 +286,9 @@ describe("agent tool-argument recovery", () => {
     await run(db, provider);
 
     const second = JSON.parse(calls(db).find((c: any) => c.id === "bad2")!.resultJson!);
-    expect(second).toMatchObject({ kind: "malformed_tool_arguments", reason: "invalid_json", retryExhausted: true });
-    expect(second.instruction).toMatch(/Stop cleanly/);
+    expect(second).toMatchObject({ kind: "malformed_tool_arguments", reason: "invalid_json" });
+    expect(second).not.toHaveProperty("retryExhausted");
+    expect(second.instruction).toMatch(/valid JSON/);
     expect(argEvents(db)).toHaveLength(2);
     // Nothing was written for either malformed attempt.
     expect(readdirSync(ws)).toHaveLength(0);
@@ -316,15 +316,16 @@ describe("agent tool-argument recovery", () => {
     await run(db, provider);
 
     const first = JSON.parse(calls(db).find((c: any) => c.id === "cut1")!.resultJson!);
-    expect(first).toMatchObject({ kind: "malformed_tool_arguments", reason: "truncated_json", retryExhausted: false });
+    expect(first).toMatchObject({ kind: "malformed_tool_arguments", reason: "truncated_json" });
+    expect(first).not.toHaveProperty("retryExhausted");
     expect(first.instruction).toMatch(/cut off/i);
     expect(first.instruction).toMatch(/smaller|single file/i);
     expect(first.instruction).not.toMatch(/Stop cleanly|single valid JSON object/);
 
     const second = JSON.parse(calls(db).find((c: any) => c.id === "cut2")!.resultJson!);
-    expect(second).toMatchObject({ kind: "malformed_tool_arguments", reason: "truncated_json", retryExhausted: true });
-    // Even when the budget is exhausted, truncation guidance is about size, not
-    // a formatting stop-clean message.
+    expect(second).toMatchObject({ kind: "malformed_tool_arguments", reason: "truncated_json" });
+    expect(second).not.toHaveProperty("retryExhausted");
+    // Truncation guidance is about size, not a formatting stop-clean message.
     expect(second.instruction).toMatch(/Split the work|smaller/i);
     expect(second.instruction).not.toMatch(/could not be parsed/i);
     expect(readdirSync(ws)).toHaveLength(0);
@@ -372,7 +373,7 @@ describe("agent tool-argument recovery", () => {
     expect(JSON.parse(historical!.function.arguments)).toEqual({ content });
   });
 
-  it("counts parallel invalid calls for one tool as one correction attempt", async () => {
+  it("records every parallel invalid call as a structured observation", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -391,11 +392,12 @@ describe("agent tool-argument recovery", () => {
     });
     await run(db, provider);
 
-    expect(argEvents(db).map((event: any) => event.payload.attempts)).toEqual([1, 1, 1, 1]);
+    expect(argEvents(db)).toHaveLength(4);
+    expect(argEvents(db).every((event: any) => event.payload.reason === "invalid_argument:missing")).toBe(true);
     expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.payload.reason === "tool_arguments_unrecoverable")).toBe(false);
   });
 
-  it("keeps correction budgets independent across sequential file targets", async () => {
+  it("keeps sequential file-target schema errors independent", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -409,7 +411,8 @@ describe("agent tool-argument recovery", () => {
     });
     await run(db, provider);
 
-    expect(argEvents(db).map((event: any) => event.payload.attempts)).toEqual([1, 1, 1]);
+    expect(argEvents(db)).toHaveLength(3);
+    expect(argEvents(db).every((event: any) => event.payload.reason === "invalid_argument:missing")).toBe(true);
     expect(readFileSync(join(ws, "done.txt"), "utf8")).toBe("done\n");
     expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.payload.reason === "tool_arguments_unrecoverable")).toBe(false);
   });
@@ -455,7 +458,7 @@ describe("agent tool-argument recovery", () => {
     expect(readFileSync(join(ws, "src/App.tsx"), "utf8")).toContain("export default function App");
   });
 
-  it("never exposes Morrow's applied-write marker to the provider after a successful write", async () => {
+  it("never exposes Morrow's applied-write marker, and keeps the successful write visible as success", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -467,11 +470,20 @@ describe("agent tool-argument recovery", () => {
     await run(db, provider);
 
     expect(provider.requests).toHaveLength(2);
-    const secondRequest = JSON.stringify(provider.requests[1]);
-    expect(secondRequest).not.toContain("_morrowAppliedWrite");
-    expect(secondRequest).not.toContain("export default function App");
-    expect(secondRequest).toContain("create_file completed for src/App.tsx");
-    expect(secondRequest).toContain("historical record, not a tool request");
+    const secondRequest = provider.requests[1]!;
+    const serialized = JSON.stringify(secondRequest);
+    // Morrow never invents a write marker the model can echo back as a call.
+    expect(serialized).not.toContain("_morrowAppliedWrite");
+    expect(serialized).not.toContain("historical record, not a tool request");
+    // Durable model-visible history: the assistant's own tool request and its
+    // exact successful result each appear once, in valid provider ordering.
+    const assistant = secondRequest.find((message: any) => message.role === "assistant" && message.toolCalls?.length) as any;
+    expect(assistant?.toolCalls).toHaveLength(1);
+    expect(assistant.toolCalls[0].id).toBe("real");
+    expect(JSON.parse(assistant.toolCalls[0].function.arguments)).toMatchObject({ path: "src/App.tsx" });
+    const toolResults = secondRequest.filter((message: any) => message.role === "tool" && message.toolCallId === "real") as any[];
+    expect(toolResults).toHaveLength(1);
+    expect(JSON.parse(toolResults[0]!.content)).toMatchObject({ status: "success", path: "src/App.tsx", created: true });
   });
 
   it("does NOT no-op an applied-write placeholder for a file that was never written", async () => {
@@ -545,7 +557,7 @@ describe("agent tool-argument recovery", () => {
     expect(existsSync(join(ws, "src/Ghost.tsx"))).toBe(true);
   });
 
-  it("bounds invented applied-write placeholders across changing file targets", async () => {
+  it("keeps invented applied-write placeholders model-visible across changing file targets", async () => {
     seedYolo(db, ws);
     const ph = (path: string, bytes: number) => ({
       path,
@@ -559,19 +571,15 @@ describe("agent tool-argument recovery", () => {
         [tool("g3", "create_file", ph("_part01.js", 300)), done],
         [tool("g4", "create_file", ph("_part02.js", 400)), done],
         [tool("should-not-run", "create_file", { path: "late.txt", content: "late" }), done],
+        [text("wrote the real file"), done],
       ],
       delayMs: 1,
     });
     await run(db, provider, 12);
 
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
-    expect(calls(db).some((call: any) => call.id === "should-not-run")).toBe(false);
-    expect(taskRecordsRepository(db).listEvents("t")).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        type: "task.progress_warning",
-        payload: expect.objectContaining({ reason: "tool_arguments_unrecoverable", toolName: "create_file" }),
-      }),
-    ]));
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(calls(db).some((call: any) => call.id === "should-not-run" && call.status === "completed")).toBe(true);
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.payload.reason === "tool_arguments_unrecoverable")).toBe(false);
   });
 
   it("does not let an echoed propose_patch placeholder loop kill the whole task", async () => {
@@ -601,7 +609,7 @@ describe("agent tool-argument recovery", () => {
     expect(existsSync(join(ws, "src/Ghost.tsx"))).toBe(true);
   });
 
-  it("keeps propose_patch correction budgets independent across target files", async () => {
+  it("keeps propose_patch schema errors model-visible across target files", async () => {
     // Reproduces the production deepseek-v4-pro failure (task 98159b5c): three
     // propose_patch calls on THREE DIFFERENT files, each with a missing patch,
     // collapsed onto one shared correction budget (propose_patch has no `path`),
@@ -620,7 +628,8 @@ describe("agent tool-argument recovery", () => {
     });
     await run(db, provider);
 
-    expect(argEvents(db).map((event: any) => event.payload.attempts)).toEqual([1, 1, 1]);
+    expect(argEvents(db)).toHaveLength(3);
+    expect(argEvents(db).every((event: any) => event.payload.reason === "invalid_argument:missing")).toBe(true);
     expect(
       taskRecordsRepository(db)
         .listEvents("t")
@@ -628,7 +637,7 @@ describe("agent tool-argument recovery", () => {
     ).toBe(false);
   });
 
-  it("redirects an unrecoverable propose_patch to create_file for the same file", async () => {
+  it("does not redirect an invalid propose_patch to another tool", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -645,12 +654,13 @@ describe("agent tool-argument recovery", () => {
       kind: "invalid_tool_arguments",
       toolName: "propose_patch",
       invalidField: "patch",
-      retryExhausted: true,
     });
-    expect(p2.instruction).toMatch(/create_file/);
+    expect(p2).not.toHaveProperty("retryExhausted");
+    expect(p2.instruction).toMatch(/patch/);
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.type === "tool.strategy_switch")).toBe(false);
   });
 
-  it("rejects an absolute path argument as a structured correction", async () => {
+  it("refuses an escaping absolute path and says how to name a workspace file", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -661,10 +671,30 @@ describe("agent tool-argument recovery", () => {
     });
     await run(db, provider);
 
-    const abs = JSON.parse(calls(db).find((c: any) => c.id === "abs")!.resultJson!);
-    expect(abs).toMatchObject({ kind: "invalid_tool_arguments", invalidField: "path", problem: "absolute_path" });
+    // The write is still hard-refused and nothing was created — but the model
+    // now learns the boundary and a valid spelling instead of a bare rejection.
+    const call = calls(db).find((c: any) => c.id === "abs")!;
+    expect(call.status).toBe("failed");
+    expect(call.resultJson).toMatch(/outside this task's workspace root/);
+    expect(call.resultJson).toContain(realpathSync(ws));
+    expect(call.resultJson).toMatch(/assets\/site\.css/);
     expect(existsSync(join(ws, "evil.txt"))).toBe(false);
     expect(states(db)).not.toContain("applying_changes");
+  });
+
+  it("writes a file named by its workspace-contained absolute path", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("ok", "create_file", { path: join(realpathSync(ws), "assets", "site.css"), content: "body{}\n" }), done],
+        [text("wrote it"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    expect(calls(db).find((c: any) => c.id === "ok")!.status).toBe("completed");
+    expect(readFileSync(join(ws, "assets", "site.css"), "utf8")).toBe("body{}\n");
   });
 
   it("rejects a wrong argument type before dispatch", async () => {

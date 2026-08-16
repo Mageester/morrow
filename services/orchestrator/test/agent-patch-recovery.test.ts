@@ -142,7 +142,7 @@ describe("agent patch recovery", () => {
     expect(feedback.targetFile).toBe("index.html");
     expect(feedback.currentFile.content).toContain("<h1>current</h1>");
     expect(feedback.instruction).toMatch(/Regenerate the patch against currentFile\.content/);
-    expect(feedback.retryExhausted).toBe(false);
+    expect(feedback).not.toHaveProperty("retryExhausted");
 
     const regenerated = calls.find((c: any) => c.id === "regen")!;
     expect(regenerated.status).toBe("completed");
@@ -165,7 +165,7 @@ describe("agent patch recovery", () => {
     ]);
   });
 
-  it("marks a repeated stale patch as exhausted on the second unchanged failure", async () => {
+  it("keeps repeated stale patch failures as structured model-visible results", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -183,11 +183,9 @@ describe("agent patch recovery", () => {
     expect(readFileSync(join(ws, "index.html"), "utf8")).toContain("<h1>current</h1>");
     const calls = conversationsRepository(db).listToolCallsForTask("t");
     const second = JSON.parse(calls.find((c: any) => c.id === "stale-2")!.resultJson!);
-    expect(second.retryExhausted).toBe(true);
-    // Two failures on the same file now escalate to a whole-file create_file
-    // rewrite (a safe, backed-up edit) rather than a bare "stop cleanly".
-    expect(second.switchToCreateFile).toBe(true);
-    expect(second.instruction).toMatch(/create_file/);
+    expect(second).not.toHaveProperty("retryExhausted");
+    expect(second).not.toHaveProperty("switchToCreateFile");
+    expect(second.instruction).toMatch(/Regenerate the patch/);
     const recoveryEvents = taskRecordsRepository(db).listEvents("t").filter((e: any) => e.type === "patch.recovery_feedback");
     expect(recoveryEvents).toHaveLength(2);
   });
@@ -237,14 +235,7 @@ describe("agent patch recovery", () => {
     });
   });
 
-  it("escalates a repeated no-op patch to a create_file rewrite instead of looping", async () => {
-    // A patch that applies cleanly but changes nothing is a *valid-argument*
-    // failure, so it never touches the malformed-argument correction budget or
-    // its create_file redirect. Without an escalation of its own, a model can
-    // re-propose the same dead patch until the stagnation kill (observed live on
-    // deepseek-v4-flash, task f318d8a8: four no-op patches on watch-anim.css).
-    // The second no-op on a file must escalate to a whole-file create_file
-    // rewrite, mirroring the stale/malformed-patch path.
+  it("keeps repeated no-op patches as structured model-visible results", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -262,20 +253,27 @@ describe("agent patch recovery", () => {
     const calls = conversationsRepository(db).listToolCallsForTask("t");
     const first = JSON.parse(calls.find((c: any) => c.id === "noop-1")!.resultJson!);
     expect(first.kind).toBe("patch_no_effect");
-    expect(first.switchToCreateFile).toBe(false);
-    expect(first.instruction).toMatch(/Regenerate a patch/);
+    expect(first).not.toHaveProperty("switchToCreateFile");
+    expect(first.instruction).toMatch(/Inspect currentFile|current content/);
 
     const second = JSON.parse(calls.find((c: any) => c.id === "noop-2")!.resultJson!);
     expect(second.kind).toBe("patch_no_effect");
-    expect(second.switchToCreateFile).toBe(true);
-    expect(second.instruction).toMatch(/create_file/);
+    expect(second).not.toHaveProperty("switchToCreateFile");
+    expect(second.instruction).toMatch(/current content/);
+
+    // Both no-op results remain durable, model-visible observations on the
+    // immediately following request. Repetition does not redirect the model
+    // to a hidden whole-file strategy or interrupt the task.
+    for (const [request, id] of [[provider.requests[2], "noop-1"], [provider.requests[3], "noop-2"]] as const) {
+      const resultMessages = request?.filter((message) => message.role === "tool" && message.toolCallId === id) ?? [];
+      expect(resultMessages).toHaveLength(1);
+      expect(resultMessages[0]?.content).toContain('"kind":"patch_no_effect"');
+    }
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
 
     const switches = taskRecordsRepository(db).listEvents("t")
       .filter((e: any) => e.type === "tool.strategy_switch");
-    expect(switches.some((e: any) =>
-      e.payload.to === "create_file" &&
-      e.payload.reason === "patch_no_effect_repeated" &&
-      e.payload.path === "index.html")).toBe(true);
+    expect(switches).toHaveLength(0);
   });
 
   it("returns actionable feedback for malformed hunk line-count mismatches", async () => {

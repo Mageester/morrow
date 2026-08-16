@@ -157,7 +157,7 @@ describe("agent completion gate", () => {
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
-  it("durably suppresses a third identical failed command and requests a strategy change", async () => {
+  it("executes repeated failed commands and keeps each result durable without strategy interruption", async () => {
     seedYolo(db, ws, "recover without repeating the same failed command", true);
     const failedCommand = { executable: "node", args: ["-e", "process.exit(7)"], purpose: "verify" };
     const provider = new MockProvider({
@@ -175,20 +175,24 @@ describe("agent completion gate", () => {
     expect(actionAttemptsRepository(db).listForTask("t")).toEqual([
       expect.objectContaining({ toolCallId: "repeat-1", attemptNumber: 1, status: "failed", exitStatus: 7 }),
       expect.objectContaining({ toolCallId: "repeat-2", attemptNumber: 2, status: "failed", exitStatus: 7 }),
-      expect.objectContaining({
-        toolCallId: "repeat-3",
-        attemptNumber: 3,
-        status: "suppressed",
-        failureCategory: "repeated_strategy",
-      }),
+      expect.objectContaining({ toolCallId: "repeat-3", attemptNumber: 3, status: "failed", exitStatus: 7 }),
     ]);
-    expect(conversationsRepository(db).listToolCallsForTask("t").find((call: any) => call.id === "repeat-3"))
-      .toMatchObject({ status: "failed", errorType: "repeated_strategy" });
+    const calls = conversationsRepository(db).listToolCallsForTask("t");
+    expect(calls.find((call: any) => call.id === "repeat-3"))
+      .toMatchObject({ status: "failed", errorType: "command_exit_nonzero" });
+
+    // The third failed result is still present exactly once in the next
+    // provider request; it is an observation for the model, not an
+    // orchestrator-authored strategy switch.
+    const thirdResult = provider.requests[3]?.filter((message) => message.role === "tool" && message.toolCallId === "repeat-3");
+    expect(thirdResult).toHaveLength(1);
+    expect(thirdResult?.[0]?.content).toContain('"exitCode":7');
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
     expect(taskRecordsRepository(db).listEvents("t").some((event: any) =>
       event.type === "tool.strategy_switch"
-      && event.payload?.toolName === "run_command"
-      && event.payload?.failedAttempts === 2
-    )).toBe(true);
+      || event.payload?.signal === "strategy_change_required"
+      || event.payload?.reason === "loop_stalled"
+    )).toBe(false);
   });
 
   it("reports completed when a failed verification is recovered by a later clean run", async () => {

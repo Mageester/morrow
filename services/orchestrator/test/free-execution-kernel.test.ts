@@ -1,10 +1,11 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDatabase } from "../src/database.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
+import { createExecutionPolicy, DEFAULT_UNATTENDED_TURN_BUDGET } from "../src/execution/execution-policy.js";
 import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { projectRepository } from "../src/repositories/projects.js";
@@ -183,8 +184,23 @@ describe("Free Execution Kernel", () => {
     await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 12 });
 
     expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
-    expect(events(db).some((event) => event.payload.signal === "loop_detected")).toBe(true);
+    // Repetition is advisory, never control: the harness appends a durable
+    // model-visible reminder at its fixed reminder points and keeps executing
+    // every requested read. There is no loop-detector signal, no interruption,
+    // and no strategy directive.
+    const advisories = events(db).filter((event) => event.payload.reason === "exact_repeat_advisory");
+    expect(advisories.length).toBeGreaterThan(0);
+    expect(advisories.every((event) => typeof event.payload.message === "string")).toBe(true);
+    // The stronger reminder quotes the prior durable result rather than
+    // rejecting the call.
+    expect(advisories.some((event) => String(event.payload.message).includes("Prior durable result"))).toBe(true);
+    expect(events(db).some((event) => event.payload.signal === "loop_detected")).toBe(false);
+    expect(events(db).some((event) => event.type === "task.interrupted")).toBe(false);
     expect(events(db).some((event) => event.type === "task.completed")).toBe(true);
+    // Every repeated read really executed; none was substituted or refused.
+    expect(conversationsRepository(db).listToolCallsForTask("t")
+      .filter((call: { toolName: string; status: string }) => call.toolName === "read_file" && call.status === "completed"))
+      .toHaveLength(6);
   });
 
   it("lets a long diagnosis continue through repeated soft progress signals", async () => {
@@ -352,6 +368,41 @@ describe("Free Execution Kernel", () => {
     expect(conversationsRepository(db).listToolCallsForTask("t")).toHaveLength(28);
     expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
     expect(events(db).some((event) => event.payload.reason === "segment_budget_exhausted")).toBe(false);
+  });
+
+  it("pauses resumably at the default unattended turn budget without any progress heuristic", async () => {
+    seed(db, workspace, { prompt: "Keep working until the unattended resource budget runs out." });
+    writeFileSync(join(workspace, "budgeted.txt"), "work\n");
+    // Every turn is genuinely productive: the budget is a resource ceiling, so
+    // it must fire on turn count alone and never on how the work looks.
+    const provider = new MockProvider({
+      chunks: [
+        ...Array.from({ length: 12 }, (_, index) => [
+          tool(`write-${index}`, "create_file", { path: `budgeted-${index}.txt`, content: `${index}\n` }),
+          done,
+        ] as ProviderChunk[]),
+        [text("This answer is past the configured ceiling and must not be reached."), done],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxUnattendedTurns: 8 });
+
+    expect(provider.requests.length).toBe(8);
+    expect(taskRepository(db).getTaskById("t")?.status).toBe("interrupted");
+    const exhausted = events(db).find((event) => event.payload.reason === "turn_budget_exhausted");
+    expect(exhausted?.payload.limit).toBe(8);
+    expect(exhausted?.payload.checkpointId).toBeTruthy();
+    expect(events(db).some((event) => event.type === "task.completed")).toBe(false);
+    // Completed work and its evidence survive the pause.
+    expect(existsSync(join(workspace, "budgeted-7.txt"))).toBe(true);
+    expect(conversationsRepository(db).listToolCallsForTask("t")).toHaveLength(8);
+  });
+
+  it("applies the 128-turn default when no unattended turn budget is configured", () => {
+    expect(createExecutionPolicy().unattendedTurnBudget).toBe(DEFAULT_UNATTENDED_TURN_BUDGET);
+    expect(DEFAULT_UNATTENDED_TURN_BUDGET).toBe(128);
+    expect(createExecutionPolicy({ maxUnattendedTurns: 5 }).unattendedTurnBudget).toBe(5);
+    expect(createExecutionPolicy({ maxUnattendedTurns: null }).unattendedTurnBudget).toBeNull();
   });
 
   it("stops only at an explicitly configured segment budget", async () => {

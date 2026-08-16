@@ -1,8 +1,12 @@
-import type { ModelInfo, ModelStatus, ProviderId, ProviderStatus, RouteReasoningCapability, ReasoningEffort } from "@morrow/contracts";
+import type { ModelInfo, ModelStatus, ProviderId, ProviderStatus, RouteReasoningCapability, ModelRequestCapabilities } from "@morrow/contracts";
 import type { ProviderModelDiscovery } from "../repositories/provider-model-discovery.js";
-
-type Pricing = NonNullable<ModelInfo["pricing"]>;
-export const BUNDLED_MODEL_CATALOG_VERSION = "2026-07-16";
+import type { ProviderProtocol } from "../provider/base.js";
+import { BUILT_IN_MODELS, BUNDLED_MODEL_CATALOG_VERSION, UNKNOWN_REASONING } from "../provider/model-catalogs/index.js";
+import {
+  mergeRequestCapabilities,
+  protocolRequestCapabilities,
+  UNKNOWN_REQUEST_CAPABILITIES,
+} from "./request-capabilities.js";
 
 export interface CanonicalModelTarget {
   providerId: ProviderId;
@@ -11,181 +15,7 @@ export interface CanonicalModelTarget {
 
 export type BundledModelInfo = ModelInfo;
 
-// ── Reasoning capability, with provenance ────────────────────────────────────
-//
-// The built-in registry is the lowest-priority ("registry") source of reasoning
-// truth; a live provider probe or provider-returned metadata (higher priority)
-// would override it. When nothing is known the capability is an explicit
-// "unknown/none" — never a guessed control surface.
-export const UNKNOWN_REASONING: RouteReasoningCapability = { control: "none", efforts: [], budgets: [], source: "unknown" };
-
-function effort(levels: ReasoningEffort[] = ["low", "medium", "high"]): RouteReasoningCapability {
-  return { control: "effort", efforts: levels, budgets: [], source: "registry" };
-}
-function deepSeekReasoning(): RouteReasoningCapability {
-  return {
-    control: "effort",
-    efforts: ["low", "high", "xhigh", "max"],
-    budgets: [],
-    source: "provider-metadata",
-    supportsOff: true,
-    wire: "deepseek-thinking",
-  };
-}
-function fixedReasoning(): RouteReasoningCapability {
-  return { control: "fixed", efforts: [], budgets: [], source: "registry" };
-}
-function noReasoning(): RouteReasoningCapability {
-  return { control: "none", efforts: [], budgets: [], source: "registry" };
-}
-
-/**
- * Authoritative model metadata registry.
- *
- * The registry is deliberately conservative: unknown context windows, pricing,
- * and usage capabilities stay unknown instead of being inferred from provider
- * families or marketing copy. Custom model IDs are still allowed; they resolve
- * to safe metadata with nullable limits and no pricing.
- */
-function model(
-  providerId: ProviderId,
-  id: string,
-  label: string,
-  opts: {
-    aliases?: string[];
-    canonicalTarget?: CanonicalModelTarget;
-    contextWindow?: number | null;
-    maxOutputTokens?: number | null;
-    pricing?: Pricing | null;
-    tokenUsage?: boolean;
-    streamingUsage?: boolean;
-    streaming?: boolean;
-    toolCalls?: boolean;
-    vision?: boolean;
-    speed?: ModelInfo["speedClass"];
-    cost?: ModelInfo["costClass"];
-    privacy?: ModelInfo["privacy"];
-    reasoning?: RouteReasoningCapability;
-    family?: string | null;
-    generation?: string | null;
-    lifecycle?: ModelInfo["lifecycle"];
-    metadataSource?: ModelInfo["metadataSource"];
-    confidence?: ModelInfo["confidence"];
-  }
-): ModelInfo {
-  return {
-    version: 1,
-    id,
-    providerModelId: id,
-    canonicalId: id,
-    ...(opts.canonicalTarget ? { canonicalTarget: opts.canonicalTarget } : {}),
-    aliases: opts.aliases ?? [],
-    providerId,
-    label,
-    family: opts.family ?? null,
-    generation: opts.generation ?? null,
-    lifecycle: opts.lifecycle ?? "current",
-    contextWindow: opts.contextWindow ?? null,
-    maxOutputTokens: opts.maxOutputTokens ?? null,
-    pricing: opts.pricing ?? null,
-    tokenUsage: opts.tokenUsage ?? true,
-    streamingUsage: opts.streamingUsage ?? true,
-    capabilities: {
-      streaming: opts.streaming ?? true,
-      toolCalls: opts.toolCalls ?? true,
-      vision: opts.vision ?? false,
-    },
-    speedClass: opts.speed ?? "unknown",
-    costClass: opts.cost ?? "unknown",
-    privacy: opts.privacy ?? "remote",
-    builtIn: true,
-    capabilitySource: opts.metadataSource === "remote-catalog" ? "remote-catalog" : "bundled-catalog",
-    metadataSource: opts.metadataSource ?? "bundled-catalog",
-    metadataVersion: BUNDLED_MODEL_CATALOG_VERSION,
-    fetchedAt: "2026-07-16T00:00:00.000Z",
-    confidence: opts.confidence ?? "verified",
-    // Default: no reasoning controls. Only models with a known reasoning
-    // surface opt in below — the registry never claims a control it can't back.
-    reasoning: opts.reasoning ?? noReasoning(),
-  };
-}
-
-const freeLocal: Pricing = {
-  inputUsdPerMillion: 0,
-  outputUsdPerMillion: 0,
-  cachedInputUsdPerMillion: 0,
-  source: "authoritative",
-};
-
-const price = (inputUsdPerMillion: number, outputUsdPerMillion: number, cachedInputUsdPerMillion?: number): Pricing => ({
-  inputUsdPerMillion,
-  outputUsdPerMillion,
-  ...(cachedInputUsdPerMillion === undefined ? {} : { cachedInputUsdPerMillion }),
-  source: "authoritative",
-});
-
-export const BUILT_IN_MODELS: BundledModelInfo[] = [
-  // OpenAI API catalog. Account availability is discovered separately.
-  model("openai", "gpt-5.6-sol", "GPT-5.6 Sol", { aliases: ["gpt-5.6", "gpt5.6"], family: "gpt-5.6", generation: "5.6", contextWindow: 1_050_000, maxOutputTokens: 128_000, pricing: price(5, 30, 0.5), vision: true, speed: "powerful", cost: "high", reasoning: effort(["low", "medium", "high", "xhigh", "max"]) }),
-  model("openai", "gpt-5.6-terra", "GPT-5.6 Terra", { family: "gpt-5.6", generation: "5.6", contextWindow: 1_050_000, maxOutputTokens: 128_000, pricing: price(2.5, 15), vision: true, speed: "balanced", cost: "medium", reasoning: effort(["low", "medium", "high", "xhigh", "max"]) }),
-  model("openai", "gpt-5.6-luna", "GPT-5.6 Luna", { family: "gpt-5.6", generation: "5.6", contextWindow: 1_050_000, maxOutputTokens: 128_000, pricing: price(1, 6), vision: true, speed: "fast", cost: "low", reasoning: effort(["low", "medium", "high", "xhigh", "max"]) }),
-  model("openai", "gpt-5.5", "GPT-5.5", { aliases: ["gpt5.5"], family: "gpt-5.5", generation: "5.5", lifecycle: "legacy", contextWindow: 1_050_000, maxOutputTokens: 128_000, pricing: price(5, 30, 0.5), vision: true, speed: "powerful", cost: "high", reasoning: effort() }),
-  model("openai", "gpt-5.4", "GPT-5.4", { aliases: ["gpt5.4"], family: "gpt-5.4", generation: "5.4", lifecycle: "legacy", contextWindow: 1_050_000, maxOutputTokens: 128_000, pricing: price(2.5, 15, 0.25), vision: true, speed: "powerful", cost: "medium", reasoning: effort() }),
-  model("openai", "gpt-5.4-mini", "GPT-5.4 mini", { aliases: ["gpt5.4-mini"], family: "gpt-5.4", generation: "5.4", lifecycle: "legacy", vision: true, speed: "fast", cost: "low", reasoning: effort() }),
-
-  // Anthropic
-  model("anthropic", "claude-fable-5", "Claude Fable 5", { family: "claude-fable", generation: "5", contextWindow: 1_000_000, maxOutputTokens: 128_000, pricing: price(10, 50), vision: true, speed: "powerful", cost: "high", reasoning: fixedReasoning() }),
-  // Anthropic routes speak `anthropic-messages`, which carries reasoning as a
-  // thinking-token budget and has no `reasoning_effort` field at all. Declaring
-  // `effort` here advertised Low/Medium/High in the `/reasoning` picker for
-  // these two models and then rejected every one of them at send time with
-  // REASONING_UNSUPPORTED, because translateReasoning can only map effort onto
-  // the OpenAI family. Until a live probe supplies a verified thinking budget
-  // for them, `fixed` is the honest declaration — it matches claude-fable-5 and
-  // states plainly that the depth is the provider's to choose.
-  model("anthropic", "claude-opus-4-8", "Claude Opus 4.8", { family: "claude-opus", generation: "4.8", contextWindow: 1_000_000, maxOutputTokens: 128_000, pricing: price(5, 25), vision: true, speed: "powerful", cost: "high", reasoning: fixedReasoning() }),
-  model("anthropic", "claude-sonnet-5", "Claude Sonnet 5", { family: "claude-sonnet", generation: "5", contextWindow: 1_000_000, maxOutputTokens: 128_000, pricing: price(3, 15), vision: true, speed: "fast", cost: "medium", reasoning: fixedReasoning() }),
-  model("anthropic", "claude-haiku-4-5-20251001", "Claude Haiku 4.5", { aliases: ["claude-haiku-4-5"], family: "claude-haiku", generation: "4.5", contextWindow: 200_000, maxOutputTokens: 64_000, pricing: price(1, 5), vision: true, speed: "fast", cost: "low" }),
-
-  // Gemini
-  model("gemini", "gemini-3.5-flash", "Gemini 3.5 Flash", { family: "gemini-flash", generation: "3.5", vision: true, speed: "powerful", cost: "unknown", reasoning: fixedReasoning() }),
-  model("gemini", "gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview", { family: "gemini-pro", generation: "3.1", lifecycle: "preview", vision: true, speed: "powerful", cost: "unknown", reasoning: fixedReasoning() }),
-  model("gemini", "gemini-2.5-flash", "Gemini 2.5 Flash", { family: "gemini-flash", generation: "2.5", vision: true, speed: "fast", cost: "low", reasoning: fixedReasoning() }),
-  model("gemini", "gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite", { family: "gemini-flash-lite", generation: "2.5", vision: true, speed: "fast", cost: "low", reasoning: fixedReasoning() }),
-
-  // OpenRouter (aggregated upstreams)
-  model("openrouter", "openrouter/auto", "OpenRouter Auto", { tokenUsage: true, streamingUsage: true, speed: "balanced", cost: "unknown" }),
-  model("openrouter", "deepseek/deepseek-v4-pro", "DeepSeek V4 Pro (via OpenRouter)", { contextWindow: 1000000, speed: "powerful", cost: "low" }),
-  model("openrouter", "deepseek/deepseek-v4-flash", "DeepSeek V4 Flash (via OpenRouter)", { contextWindow: 1000000, speed: "fast", cost: "low" }),
-
-  // DeepSeek
-  model("deepseek", "deepseek-v4-pro", "DeepSeek V4 Pro", { aliases: ["deepseek-pro"], contextWindow: 1000000, maxOutputTokens: 384000, pricing: price(0.435, 0.87, 0.003625), speed: "powerful", cost: "low", reasoning: deepSeekReasoning() }),
-  // Declared `noReasoning()` until 2026-08-04: live traffic showed the wire
-  // stream emitting `delta.reasoning_content` chunks (task 46ea7980-3905-45ac-
-  // a0cf-48b0ec7e4c25 in morrow.db), i.e. this is a reasoning model in
-  // practice regardless of what the catalog said. The chat-completions
-  // endpoint gives no caller-tunable control over that reasoning (no
-  // `reasoning_effort` support), so `fixed` — same declaration as
-  // deepseek-reasoner below — is the honest capability, not a guess.
-  model("deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash", { aliases: ["deepseek-flash"], contextWindow: 1000000, maxOutputTokens: 384000, pricing: price(0.14, 0.28, 0.0028), speed: "fast", cost: "low", reasoning: deepSeekReasoning() }),
-  model("deepseek", "deepseek-chat", "DeepSeek Chat", { canonicalTarget: { providerId: "deepseek", modelId: "deepseek-v4-flash" }, lifecycle: "deprecated", speed: "balanced", cost: "low" }),
-  // The reasoner always thinks; the depth is fixed by the provider, not caller-tunable.
-  model("deepseek", "deepseek-reasoner", "DeepSeek Reasoner", { canonicalTarget: { providerId: "deepseek", modelId: "deepseek-v4-flash" }, lifecycle: "deprecated", speed: "powerful", cost: "low", reasoning: fixedReasoning() }),
-
-  // OpenCode Zen. The gateway re-serves other vendors' models, so these are
-  // declared in their own right rather than aliased across providers — the
-  // gateway's limits are its own, not the upstream vendor's. Without an entry
-  // the route fell back to the conservative 32k ceiling and compacted
-  // constantly, despite serving a long-context model.
-  model("opencode-zen", "deepseek-v4-flash-free", "DeepSeek V4 Flash (free, via OpenCode Zen)", { contextWindow: 200000, speed: "fast", cost: "low" }),
-
-  // Ollama (local)
-  model("ollama", "llama3.1", "Llama 3.1 (local)", { contextWindow: 128000, pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "balanced", cost: "free", privacy: "local" }),
-  model("ollama", "qwen2.5", "Qwen 2.5 (local)", { pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "balanced", cost: "free", privacy: "local" }),
-  model("ollama", "mistral", "Mistral (local)", { pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "fast", cost: "free", privacy: "local" }),
-  model("ollama", "phi3", "Phi-3 (local)", { pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "fast", cost: "free", privacy: "local" }),
-
-];
+export { BUILT_IN_MODELS, BUNDLED_MODEL_CATALOG_VERSION, UNKNOWN_REASONING };
 
 let activeCatalogModels: ModelInfo[] = BUILT_IN_MODELS;
 
@@ -306,6 +136,9 @@ export function mergeModelCatalog(seed: ModelInfo[], remote: ModelInfo[]): Model
       contextWindow: model.contextWindow ?? bundled.contextWindow,
       maxOutputTokens: model.maxOutputTokens ?? bundled.maxOutputTokens,
       ...(reasoning ? { reasoning } : {}),
+      ...(bundled.requestCapabilities || model.requestCapabilities
+        ? { requestCapabilities: mergeRequestCapabilities(bundled.requestCapabilities ?? UNKNOWN_REQUEST_CAPABILITIES, model.requestCapabilities) }
+        : {}),
     });
   }
   return [...merged.values()];
@@ -406,6 +239,23 @@ export function resolveReasoningCapability(providerId: string, id: string): Rout
   return resolveModelMetadata(providerId, id).reasoning ?? UNKNOWN_REASONING;
 }
 
+/** Resolve optional request fields for one exact model/protocol route. */
+export function resolveModelRequestCapabilities(
+  providerId: string,
+  id: string,
+  protocol: ProviderProtocol,
+): ModelRequestCapabilities {
+  const metadata = resolveModelMetadata(providerId, id);
+  const knownMetadata = metadata.capabilitySource !== "unknown" && metadata.metadataSource !== "unknown";
+  const baseline = knownMetadata ? protocolRequestCapabilities(protocol) : UNKNOWN_REQUEST_CAPABILITIES;
+  const derived = metadata.capabilities.toolCalls === true
+    ? { ...baseline, tools: "supported" as const }
+    : metadata.capabilities.toolCalls === false && knownMetadata
+      ? { ...baseline, tools: "unsupported" as const }
+      : baseline;
+  return mergeRequestCapabilities(derived, metadata.requestCapabilities);
+}
+
 export function resolveModelMetadata(providerId: string, id: string): ModelInfo {
   const { selected, canonical } = resolveCanonicalModelMetadata(providerId, id);
   if (selected === canonical) return selected;
@@ -476,6 +326,7 @@ export function resolveModelStatuses(
         costType: item.costType ?? "unknown",
         contextWindow: item.contextWindow,
         maxOutputTokens: item.maxOutputTokens,
+        ...(item.requestCapabilities ? { requestCapabilities: item.requestCapabilities } : {}),
         lifecycle: "custom",
         metadataSource: "provider-reported",
         fetchedAt: discovery?.fetchedAt ?? null,
@@ -486,6 +337,9 @@ export function resolveModelStatuses(
     for (const model of providerModels) {
       const report = discovered.find((item) => item.providerModelId === model.id || model.aliases.includes(item.providerModelId));
       const metadata = resolveModelMetadata(model.providerId, model.id);
+      const reportedReasoning = report?.reasoning && report.reasoning.source !== "unknown"
+        ? report.reasoning
+        : metadata.reasoning;
       const resolved = report ? {
         ...metadata,
         providerModelId: report.providerModelId,
@@ -504,8 +358,12 @@ export function resolveModelStatuses(
           streaming: report.capabilities.streaming ?? metadata.capabilities.streaming,
           toolCalls: report.capabilities.toolCalls ?? metadata.capabilities.toolCalls,
           vision: report.capabilities.vision ?? metadata.capabilities.vision,
-          reasoning: report.capabilities.reasoning ?? null,
+          reasoning: report.capabilities.reasoning ?? metadata.capabilities.reasoning ?? null,
         },
+        ...(metadata.requestCapabilities || report.requestCapabilities
+          ? { requestCapabilities: mergeRequestCapabilities(metadata.requestCapabilities ?? UNKNOWN_REQUEST_CAPABILITIES, report.requestCapabilities) }
+          : {}),
+        ...(reportedReasoning ? { reasoning: reportedReasoning } : {}),
         capabilitySource: Object.values(report.capabilities).some((value) => value !== null)
           ? "provider-reported" as const
           : metadata.capabilitySource,

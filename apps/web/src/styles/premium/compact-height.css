@@ -1,0 +1,70 @@
+/*
+ * Premium visual system — short viewports.
+ *
+ * The conversation column is a flex stack: history takes the remainder, the
+ * composer keeps its natural height. That works while the viewport is tall.
+ * The composer's natural height is ~305px (78px input floor, a toolbar that
+ * wraps to three rows once its container is under 560px, and the disclosure
+ * line), and none of it responds to viewport height. On a 600px-tall viewport
+ * — a HiDPI 2560x1600 laptop at devicePixelRatio 2, minus browser chrome —
+ * that leaves the message history 130px: two visible lines of a conversation.
+ *
+ * The composer is the part that should yield, so this module compresses it
+ * where vertical space is scarce and returns the reclaimed height to the
+ * history. Nothing here changes what is present or reachable: the disclosure
+ * line, every control, and the input's own growth behaviour are all retained,
+ * only tightened.
+ *
+ * Threshold: 820px. Every viewport in the approved evidence sits above it —
+ * design QA at 1600x1000 and 390x844, visual regression at 1440x1000,
+ * 900x1100, and 390x844 — so this tier cannot alter any approved baseline. It
+ * engages exactly where the layout was never exercised: short desktop
+ * viewports and landscape handhelds. `min-width: 721px` defers to the existing
+ * small-screen layout below it, matching the convention already used by the
+ * short-viewport rule in product-refresh.css.
+ */
+
+@media (max-height: 820px) and (min-width: 721px) {
+  /* Outer frame: the composer's breathing room is the first thing to give. */
+  .morrow-conversation-composer {
+    padding-block: 10px 12px;
+  }
+
+  .morrow-chat-composer {
+    padding: 12px 14px 10px;
+  }
+
+  /* The input keeps growing with typed content — only its empty floor drops,
+     and its ceiling tracks the viewport so a long draft cannot swallow the
+     history it is replying to. */
+  .morrow-chat-composer__input {
+    min-height: 48px;
+    max-height: 30vh;
+    padding-bottom: 8px;
+  }
+
+  /* The toolbar wraps to three rows in a narrow column, so each row's height
+     and the gaps between them are multiplied by three. */
+  .morrow-chat-composer__toolbar {
+    --morrow-chip-height: 28px;
+
+    padding-top: 6px;
+    gap: 4px;
+  }
+
+  .morrow-chat-composer__thinking-controls {
+    padding-top: 2px;
+  }
+
+  /* The attachment disclosure stays — it is an honest statement about what the
+     message API accepts, and hiding it to save 23px would trade truth for
+     margin. It only loses its separation. */
+  .morrow-chat-composer__meta {
+    margin-top: 2px;
+  }
+
+  /* Reclaimed height goes to the transcript. */
+  .morrow-conversation-history {
+    padding-block: 22px 14px;
+  }
+}

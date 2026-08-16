@@ -48,20 +48,75 @@ describe("agent file creation under YOLO", () => {
   beforeEach(() => { ws = realpathSync(mkdtempSync(join(tmpdir(), "morrow-create-"))); db = openDatabase(":memory:"); });
   afterEach(() => { try { db.close(); } catch {} rmSync(ws, { recursive: true, force: true }); });
 
-  it("removes applied write bodies from provider context without creating copyable content placeholders", () => {
+  it("keeps successful write arguments truthful without generating applied-write markers", () => {
     const normalized = JSON.parse(capToolArgumentsForContext("create_file", JSON.stringify({
       path: "src/index.ts",
       content: "export const ready = true;\n",
     })));
 
     expect(normalized.path).toBe("src/index.ts");
-    expect(normalized).not.toHaveProperty("content");
-    expect(normalized._morrowAppliedWrite).toMatchObject({
-      kind: "create_file",
-      contentBytes: 27,
-      instruction: "Historical applied write. Read workspace file for current content.",
+    expect(normalized.content).toBe("export const ready = true;\n");
+    expect(JSON.stringify(normalized)).not.toContain("_morrowAppliedWrite");
+  });
+
+  it("bounds large legacy terminal write arguments before the first provider request", async () => {
+    seedYolo(db, ws, "continue a legacy task");
+    const legacyContent = "legacy-body-" + "x".repeat(12_000);
+    conversationsRepository(db).upsertToolCall({
+      id: "legacy-large-write",
+      messageId: "ma",
+      taskId: "t",
+      toolName: "create_file",
+      argsJson: JSON.stringify({ path: "legacy.txt", content: legacyContent }),
+      resultJson: JSON.stringify({ created: true, path: "legacy.txt" }),
+      status: "completed",
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
     });
-    expect(normalized._morrowAppliedWrite.contentSha256).toMatch(/^[a-f0-9]{64}$/);
+    const provider = new MockProvider({ chunks: [[text("Finished from legacy history."), done]], delayMs: 1 });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 2 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    const historicalCall = provider.requests
+      .flatMap((request) => request.flatMap((message) => message.toolCalls ?? []))
+      .find((call) => call.id === "legacy-large-write");
+    expect(historicalCall).toBeDefined();
+    expect(historicalCall!.function.arguments.length).toBeLessThan(8 * 1024);
+    expect(JSON.parse(historicalCall!.function.arguments)).toMatchObject({
+      path: "legacy.txt",
+      durable_context: { tool: "create_file", originalBytes: expect.any(Number) },
+    });
+    expect(JSON.stringify(provider.requests)).not.toContain(legacyContent);
+  });
+
+  it("externalizes oversized failed results for the immediate and durable provider context", async () => {
+    seedYolo(db, ws, "run the failing verification and report it");
+    const provider = new MockProvider({
+      chunks: [
+        [tool("large-failure", "run_command", {
+          executable: "node",
+          args: ["-e", "process.stderr.write('failure-output-'.repeat(1400)); process.exit(1)"],
+          purpose: "verify",
+        }), done],
+        [text("The verification failed; the durable failure is recorded."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    const failed = conversationsRepository(db).listToolCallsForTask("t").find((call) => call.id === "large-failure");
+    expect(failed?.status).toBe("failed");
+    expect((failed?.resultJson?.length ?? 0)).toBeGreaterThan(8 * 1024);
+    expect(failed?.contextResultJson).toContain("artifactId");
+    expect(failed?.contextResultJson?.length).toBeLessThan(2_000);
+    const nextRequest = provider.requests[1];
+    const nextResult = nextRequest?.find((message) => message.role === "tool" && message.toolCallId === "large-failure");
+    expect(nextResult?.content).toBe(failed?.contextResultJson);
+    expect(nextResult?.content).toContain("read_artifact");
+    expect(nextResult?.content).not.toContain("failure-output-" + "failure-output-".repeat(500));
   });
 
   it("refuses to write a generated context omission marker into a workspace file", async () => {

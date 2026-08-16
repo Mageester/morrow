@@ -25,7 +25,7 @@ import type { AiProvider, ChatMessage, ProviderChunk, ProviderProtocol, StreamOp
 
 const PROVIDER_SOURCE_DIR = join(__dirname, "..", "src", "provider");
 
-type ScenarioName = "stop" | "truncated" | "tool_use";
+type ScenarioName = "stop" | "truncated" | "tool_use" | "empty_stop";
 
 /** The canned tool call every adapter's `tool_use` scenario must produce, in
  * order. Two calls, so id uniqueness is exercised within a stream as well as
@@ -78,6 +78,10 @@ const ADAPTERS: WireAdapter[] = [
         `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n`,
         `data: [DONE]\n\n`,
       ],
+      empty_stop: [
+        `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n`,
+        `data: [DONE]\n\n`,
+      ],
       truncated: [
         `data: {"choices":[{"delta":{"content":"${TRUNCATED_TEXT}"}}]}\n\n`,
         `data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n`,
@@ -105,6 +109,11 @@ const ADAPTERS: WireAdapter[] = [
         `data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}\n\n`,
         `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"${STOP_TEXT}"}}\n\n`,
         `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}\n\n`,
+        `data: {"type":"message_stop"}\n\n`,
+      ],
+      empty_stop: [
+        `data: {"type":"message_start","message":{"usage":{"input_tokens":11}}}\n\n`,
+        `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}\n\n`,
         `data: {"type":"message_stop"}\n\n`,
       ],
       truncated: [
@@ -136,6 +145,9 @@ const ADAPTERS: WireAdapter[] = [
       stop: [
         `data: {"candidates":[{"content":{"parts":[{"text":"${STOP_TEXT}"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":5}}\n\n`,
       ],
+      empty_stop: [
+        `data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":0}}\n\n`,
+      ],
       truncated: [
         `data: {"candidates":[{"content":{"parts":[{"text":"${TRUNCATED_TEXT}"}]},"finishReason":"MAX_TOKENS"}]}\n\n`,
       ],
@@ -158,6 +170,9 @@ const ADAPTERS: WireAdapter[] = [
       stop: [
         `data: {"type":"response.output_text.delta","delta":"${STOP_TEXT}"}\n\n`,
         `data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":11,"output_tokens":5}}}\n\n`,
+      ],
+      empty_stop: [
+        `data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":11,"output_tokens":0}}}\n\n`,
       ],
       truncated: [
         `data: {"type":"response.output_text.delta","delta":"${TRUNCATED_TEXT}"}\n\n`,
@@ -289,6 +304,20 @@ describe("provider adapter conformance", () => {
         expect(chunks.filter((c) => c.type === "error")).toEqual([]);
       });
 
+      it("classifies a clean stop with no visible output or tool call as retryable", async () => {
+        respondWith(() => sseResponse(adapter.wire.empty_stop));
+        const chunks = await collect(adapter.make());
+        expect(chunks.at(-1)).toEqual({
+          type: "error",
+          error: {
+            type: "empty_response",
+            kind: "provider",
+            message: "Provider returned a completed response with no content",
+            retryable: true,
+          },
+        });
+      });
+
       it("reports truncation as finishReason 'length' and keeps the partial text", async () => {
         // The load-bearing case. `mission/completion.ts` retries a review only
         // when finishReason === "length", so an adapter that cannot report
@@ -330,7 +359,7 @@ describe("provider adapter conformance", () => {
           const last = chunks.at(-1);
           expect(last?.type).toBe("error");
           expect(last?.error?.message ?? "").not.toBe("");
-          expect(["auth", "rate_limit", "timeout", "network", "cancelled", "invalid_request", "provider", "unknown"])
+          expect(["auth", "rate_limit", "timeout", "network", "cancelled", "invalid_request", "context_overflow", "provider", "unknown"])
             .toContain(last?.error?.kind);
           expect(typeof last?.error?.retryable).toBe("boolean");
         });

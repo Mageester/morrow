@@ -24,6 +24,10 @@ export function isReasoningCompatible(config: ReasoningConfiguration, capability
       return config.mode === "effort" && capability.efforts.includes(config.effort);
     case "budget":
       return config.mode === "off" || (config.mode === "budget" && (capability.budgets.length === 0 || capability.budgets.includes(config.tokens)));
+    case "unknown":
+      // Auto is handled above. An unknown route cannot safely accept an
+      // explicit reasoning control, even when the provider might accept it.
+      return false;
   }
 }
 

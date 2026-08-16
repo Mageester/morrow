@@ -1,5 +1,6 @@
-import type { ReasoningConfiguration, RouteReasoningCapability } from "@morrow/contracts";
+import type { ModelRequestCapabilities, ReasoningConfiguration, RouteReasoningCapability } from "@morrow/contracts";
 import { redactSecrets } from "./credentials.js";
+import type { ReasoningCapability } from "./model-capabilities.js";
 
 export interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
@@ -124,6 +125,7 @@ export type ProviderErrorKind =
   | "network"
   | "cancelled"
   | "invalid_request"
+  | "context_overflow"
   | "provider"
   | "unknown";
 
@@ -175,6 +177,12 @@ export interface StreamOptions {
   /** The resolved route's verified reasoning capability, paired with
    * `reasoning` so the adapter validates against real support, never a guess. */
   reasoningCapability?: RouteReasoningCapability;
+  /** Provider-owned exact capability descriptor. When present, it takes
+   * precedence over the compatibility projection above and preserves opaque
+   * effort IDs plus adapter-owned wire values. */
+  exactReasoningCapability?: ReasoningCapability;
+  /** Exact optional wire fields verified for this model/endpoint route. */
+  requestCapabilities?: ModelRequestCapabilities;
   /** When "required", constrains the response to structurally include a tool
    * call — used only to recover from a reasoning-only, length-terminated turn
    * (see agent.ts's empty-response handling), never on a normal turn. Only
@@ -227,6 +235,22 @@ export class ProviderError extends Error {
   }
 }
 
+/**
+ * Detect provider language that specifically means the model-visible input
+ * exceeded a context or input-token limit. Keep this deliberately narrower
+ * than a generic 4xx classifier: unsupported fields and malformed tool
+ * schemas need a different recovery path.
+ */
+export function isContextOverflowMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  const hasLimitSignal = /\b(?:too many|too large|too long|exceed(?:ed|s)?|maximum|max(?:imum)?|limit|length|overflow)\b/.test(normalized);
+  if (!hasLimitSignal) return false;
+  if (/\bcontext\b/.test(normalized)) return true;
+  if (/\b(?:prompt|input)\b/.test(normalized) && !/\boutput\b/.test(normalized)) return true;
+  if (/\btoo many tokens\b/.test(normalized) && !/\boutput\b/.test(normalized)) return true;
+  return /\b(?:request|entity)\b.{0,32}\btoo large\b/.test(normalized);
+}
+
 /** Classify an HTTP status code from any provider into a normalized error. */
 export function classifyHttpStatus(status: number, message: string, retryAfterMs?: number): ProviderErrorPayload {
   const safeMessage = redactSecrets(message);
@@ -242,6 +266,9 @@ export function classifyHttpStatus(status: number, message: string, retryAfterMs
       status,
       ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     };
+  }
+  if ((status === 400 || status === 413 || status === 422) && isContextOverflowMessage(safeMessage)) {
+    return { type: "context_overflow", kind: "context_overflow", message: safeMessage, retryable: false, status };
   }
   if (status === 400 || status === 404 || status === 422) {
     return { type: "invalid_request", kind: "invalid_request", message: safeMessage, retryable: false, status };

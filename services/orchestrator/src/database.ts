@@ -1400,6 +1400,13 @@ export const migrations:Migration[]=[
       updated_at TEXT NOT NULL
     );
   `}
+  ,{id:50,name:"durable_tool_context_results",sql:`
+    -- Keep the complete tool outcome for operator/API surfaces while also
+    -- persisting the bounded representation that was actually shown to the
+    -- model. Reconstructing a request after a restart must not re-inject the
+    -- unbounded raw result or manufacture a different synthetic outcome.
+    ALTER TABLE message_tool_calls ADD COLUMN context_result_json TEXT;
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

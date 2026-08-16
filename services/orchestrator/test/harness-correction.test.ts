@@ -4,13 +4,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDatabase } from "../src/database.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
-import { createConvergenceGuard, canonicalOperationIdentity } from "../src/execution/convergence-guard.js";
+import { createLoopDetector, isRepeatAdvisoryPoint, toolCallSignature } from "../src/execution/loop-detector.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
-import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import { MockProvider } from "../src/provider/mock.js";
 
 function seedYolo(db: any, workspacePath: string, prompt = "Build the requested app") {
@@ -48,64 +47,17 @@ describe("harness correction", () => {
     rmSync(workspace, { recursive: true, force: true });
   });
 
-  it("canonicalizes operation identity separately from content", () => {
-    expect(canonicalOperationIdentity("create_file", { path: ".\\src\\..\\package.json", content: "one" })).toEqual({
-      toolFamily: "workspace-write",
-      targetPath: "package.json",
-      operationClass: "overwrite",
-      key: "workspace-write|package.json|overwrite",
-    });
-    expect(canonicalOperationIdentity("create_file", { path: "package.json", content: "two" }).key)
-      .toBe("workspace-write|package.json|overwrite");
-  });
+  it("counts canonical exact calls for advisory scheduling without a loop decision", () => {
+    const detector = createLoopDetector();
+    const first = toolCallSignature("create_file", { path: "package.json", content: "same" });
+    const equivalent = toolCallSignature("create_file", { content: "same", path: "package.json" });
 
-  it("stalls same-target changed-content churn without confusing it with legitimate verified edits", () => {
-    const guard = createConvergenceGuard({ exactRepeatThreshold: 2, stallThreshold: 3 });
-    const observe = (content: string, progress = {}) => guard.observeTurn({
-      calls: [{ toolName: "create_file", args: { path: "package.json", content }, outcome: "success", changed: true }],
-      progress,
-    });
-
-    expect(observe("one").stalled).toBe(false);
-    expect(observe("two").churn?.uniqueArgumentCount).toBe(2);
-    expect(observe("three").stalled).toBe(true);
-    expect(observe("four").reason).toBe("same_target_write_churn");
-
-    const verified = createConvergenceGuard({ stallThreshold: 2 });
-    verified.observeTurn({
-      calls: [{ toolName: "create_file", args: { path: "app.js", content: "v1" }, outcome: "success", changed: true }],
-      progress: {},
-    });
-    verified.observeTurn({
-      calls: [{ toolName: "create_file", args: { path: "app.js", content: "v2" }, outcome: "success", changed: true }],
-      progress: { verificationPassed: true },
-    });
-    expect(verified.observeTurn({
-      calls: [{ toolName: "create_file", args: { path: "app.js", content: "v3" }, outcome: "success", changed: true }],
-      progress: {},
-    }).stalled).toBe(false);
-  });
-
-  it("does not treat successful no-op writes as progress and persists a resumable state", () => {
-    const guard = createConvergenceGuard({ stallThreshold: 2 });
-    guard.observeTurn({
-      calls: [{ toolName: "create_file", args: { path: "same.txt", content: "same" }, outcome: "success", changed: false }],
-      progress: {},
-    });
-    const second = guard.observeTurn({
-      calls: [{ toolName: "create_file", args: { path: "same.txt", content: "same" }, outcome: "success", changed: false }],
-      progress: {},
-    });
-    expect(second.stalled).toBe(true);
-    expect(second.advisory).toMatch(/same target/i);
-
-    const restored = createConvergenceGuard({ stallThreshold: 2 });
-    restored.restore(guard.snapshot());
-    expect(restored.snapshot().nonProgressCycles).toBe(2);
-    expect(restored.observeTurn({
-      calls: [{ toolName: "create_file", args: { path: "same.txt", content: "same" }, outcome: "success", changed: false }],
-      progress: {},
-    }).stalled).toBe(true);
+    expect(first).toBe(equivalent);
+    expect(detector.record(first)).toMatchObject({ count: 1, looping: false });
+    expect(detector.record(equivalent)).toMatchObject({ count: 2, looping: false });
+    const third = detector.record(first);
+    expect(third).toMatchObject({ count: 3, looping: false });
+    expect(isRepeatAdvisoryPoint(third.count)).toBe(true);
   });
 
   it("overwrites an existing create_file target directly with undo metadata, without target_exists strategy switching", async () => {
@@ -158,41 +110,4 @@ describe("harness correction", () => {
     expect(conversationsRepository(db).getMessage("a")?.content).toMatch(/incomplete/i);
   });
 
-  it("stops a deterministic Pulse-style repeated-write provider with an explicit checkpoint instead of exhausting turns", async () => {
-    seedYolo(db, workspace, "Build the complete Pulse service-health monitor and verify it.");
-    const provider = new MockProvider({
-      chunks: Array.from({ length: 10 }, (_, index) => [
-        tool(`rewrite-${index}`, "create_file", { path: index % 2 ? "server.js" : "package.json", content: `rewrite ${index}\n` }),
-        done,
-      ]),
-      delayMs: 1,
-    });
-
-    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 4 });
-
-    const events = taskRecordsRepository(db).listEvents("t");
-    expect(taskRepository(db).getTaskById("t")?.status).toBe("interrupted");
-    expect(provider.requests.length).toBeLessThan(8);
-    expect(events.some((event) => event.payload.reason === "loop_stalled")).toBe(true);
-    expect(events.some((event) => event.payload.message && String(event.payload.message).includes("same target"))).toBe(true);
-    expect(executionContinuityRepository(db).latestCheckpoint("t")?.snapshot.convergence?.nonProgressCycles).toBeGreaterThanOrEqual(3);
-  });
-
-  it("rehydrates the convergence advisory on resume without replaying a write", async () => {
-    seedYolo(db, workspace, "Build the complete Pulse service-health monitor and verify it.");
-    const pathological = new MockProvider({
-      chunks: Array.from({ length: 8 }, (_, index) => [
-        tool(`rewrite-${index}`, "create_file", { path: index % 2 ? "server.js" : "package.json", content: `rewrite ${index}\n` }),
-        done,
-      ]),
-    });
-    await executeAgentChatTask({ db, taskId: "t", provider: pathological, maxTurns: 4 });
-    expect(taskRepository(db).getTaskById("t")?.status).toBe("interrupted");
-
-    const resumed = new MockProvider({ chunks: [[{ type: "text", text: "Paused for a strategy change; awaiting new instructions." }, done]] });
-    await executeAgentChatTask({ db, taskId: "t", provider: resumed, maxTurns: 2 });
-
-    expect(resumed.requests[0]?.some((message) => message.role === "system" && message.content.includes("Morrow convergence advisory"))).toBe(true);
-    expect(conversationsRepository(db).listToolCallsForTask("t").filter((call) => call.toolName === "create_file").length).toBeLessThanOrEqual(6);
-  });
 });

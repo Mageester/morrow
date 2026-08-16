@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import type { ExecutionCheckpointSnapshot } from "../repositories/execution-continuity.js";
 import { redactSecrets, redactSecretsDeep } from "../provider/credentials.js";
 import { sanitizeExecutionRequirement, sanitizeRequirementEvaluation, type ExecutionRequirement, type RequirementEvaluation } from "./requirements.js";
-import type { ConvergenceSnapshot } from "./convergence-guard.js";
 
 /** Hard upper bound for one serialized internal recovery checkpoint. */
 export const MAX_EXECUTION_CHECKPOINT_BYTES = 131_072;
@@ -173,28 +172,6 @@ function boundedArtifactFingerprints(values: unknown): Array<{ path: string; con
     .slice(-MAX_ARRAY_ENTRIES);
 }
 
-function boundedConvergence(value: ConvergenceSnapshot | undefined): ConvergenceSnapshot | undefined {
-  if (!value || value.version !== 1) return undefined;
-  return {
-    version: 1,
-    nonProgressCycles: Number.isSafeInteger(value.nonProgressCycles) && value.nonProgressCycles >= 0 ? value.nonProgressCycles : 0,
-    exactCounts: value.exactCounts.slice(-MAX_ARRAY_ENTRIES).flatMap((entry) =>
-      typeof entry.signature === "string" && Number.isSafeInteger(entry.count) && entry.count > 0
-        ? [{ signature: boundedString(entry.signature, 240), count: entry.count }]
-        : []),
-    targets: value.targets.slice(-MAX_ARRAY_ENTRIES).flatMap((entry) =>
-      typeof entry.key === "string" && Number.isSafeInteger(entry.callCount) && entry.callCount >= 0
-        ? [{
-            key: boundedString(entry.key, 512),
-            callCount: entry.callCount,
-            uniqueArgumentCount: Math.max(0, Number.isSafeInteger(entry.uniqueArgumentCount) ? entry.uniqueArgumentCount : 0),
-            changedCallCount: Math.max(0, Number.isSafeInteger(entry.changedCallCount) ? entry.changedCallCount : 0),
-            noOpCallCount: Math.max(0, Number.isSafeInteger(entry.noOpCallCount) ? entry.noOpCallCount : 0),
-          }]
-        : []),
-  };
-}
-
 function boundedBaselinePaths(values: string[], maxBytes = 24 * 1024): { paths: string[]; complete: boolean; count: number; identityHash: string } {
   const unique = [...new Set(values)].map((value) => boundedString(redactSecrets(value)));
   const paths: string[] = [];
@@ -267,9 +244,14 @@ function compactRequirementEvaluation(evaluation: RequirementEvaluation): Requir
 }
 
 function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionCheckpointSnapshot {
+  // Checkpoints written before the loop simplification may still carry an
+  // untyped convergence field. Ignore that legacy payload instead of
+  // preserving an obsolete controller state in newly bounded snapshots.
+  const currentSnapshot = { ...snapshot } as ExecutionCheckpointSnapshot & Record<string, unknown>;
+  delete currentSnapshot.convergence;
   const baseline = snapshot.requirementBaselinePaths ? boundedBaselinePaths(snapshot.requirementBaselinePaths) : undefined;
   return {
-    ...snapshot,
+    ...currentSnapshot,
     originalMission: boundedString(redactSecrets(snapshot.originalMission)),
     hardRequirements: uniqueStrings(snapshot.hardRequirements),
     prohibitedActions: uniqueStrings(snapshot.prohibitedActions),
@@ -336,7 +318,17 @@ function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionChec
     ...(snapshot.taskArtifactFingerprints
       ? { taskArtifactFingerprints: boundedArtifactFingerprints(snapshot.taskArtifactFingerprints) }
       : {}),
-    ...(boundedConvergence(snapshot.convergence) ? { convergence: boundedConvergence(snapshot.convergence) } : {}),
+    // Live task-owned processes are small, bounded, and load-bearing: losing
+    // one leaves the model unable to stop a server it started. Deliberately
+    // absent from the shrink list below for that reason.
+    ...(snapshot.runningProcesses && snapshot.runningProcesses.length > 0
+      ? {
+          runningProcesses: snapshot.runningProcesses.slice(-10).map((item) => ({
+            processId: boundedString(redactSecrets(String(item.processId)), 100),
+            command: boundedString(redactSecrets(String(item.command)), 300),
+          })),
+        }
+      : {}),
   };
 }
 
@@ -409,10 +401,12 @@ export function boundExecutionCheckpointSnapshot(snapshot: ExecutionCheckpointSn
       ...(bounded.requirementEvaluations
         ? { requirementEvaluations: bounded.requirementEvaluations.map(compactRequirementEvaluation) }
         : {}),
+      ...(bounded.runningProcesses && bounded.runningProcesses.length > 0
+        ? { runningProcesses: bounded.runningProcesses }
+        : {}),
       ...(bounded.taskArtifactFingerprints
         ? { taskArtifactFingerprints: bounded.taskArtifactFingerprints }
         : {}),
-      ...(bounded.convergence ? { convergence: bounded.convergence } : {}),
     };
   }
 

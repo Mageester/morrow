@@ -84,6 +84,22 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     hasFreeTier: true,
   },
   {
+    // Base URL, OpenAI-compatible `/chat/completions` shape and `sk-` key format
+    // are taken from TokenRouter's own setup documentation. Billing is a prepaid
+    // balance rather than a free allowance, so no free tier is claimed here.
+    id: "tokenrouter",
+    label: "TokenRouter",
+    summary: "Unified multi-model gateway across many upstream providers, billed from one balance.",
+    category: "gateway",
+    defaultBaseUrl: "https://api.tokenrouter.com/v1",
+    apiKeyEnv: "TOKENROUTER_API_KEY",
+    baseUrlEnv: "TOKENROUTER_BASE_URL",
+    modelEnv: "TOKENROUTER_MODEL",
+    contextLimitEnv: "TOKENROUTER_CONTEXT_LIMIT",
+    keyUrl: "https://www.tokenrouter.com/console",
+    vision: true,
+  },
+  {
     id: "vercel-ai-gateway",
     label: "Vercel AI Gateway",
     summary: "Vercel's routing gateway across many upstream model providers.",
@@ -313,6 +329,27 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     modelEnv: "HYPERBOLIC_MODEL",
     contextLimitEnv: "HYPERBOLIC_CONTEXT_LIMIT",
     keyUrl: "https://app.hyperbolic.xyz/settings",
+  },
+  {
+    // Defaults to NVIDIA's hosted endpoint (build.nvidia.com). A self-hosted NIM
+    // container serves the same OpenAI-compatible routes, so pointing
+    // NVIDIA_NIM_BASE_URL at it (typically http://127.0.0.1:8000/v1) is all a
+    // self-hosted deployment needs. Only the primary NVIDIA_API_KEY name is
+    // accepted: NGC_API_KEY is an NGC *registry* credential used for pulling
+    // containers, so honouring it would mark a hosted network provider as
+    // configured for users who only ever authenticated a docker pull.
+    id: "nvidia-nim",
+    label: "NVIDIA NIM",
+    summary: "Open-weight models on NVIDIA-hosted NIM inference microservices.",
+    category: "inference",
+    defaultBaseUrl: "https://integrate.api.nvidia.com/v1",
+    apiKeyEnv: "NVIDIA_API_KEY",
+    baseUrlEnv: "NVIDIA_NIM_BASE_URL",
+    modelEnv: "NVIDIA_NIM_MODEL",
+    contextLimitEnv: "NVIDIA_NIM_CONTEXT_LIMIT",
+    keyUrl: "https://build.nvidia.com/settings/api-keys",
+    vision: true,
+    hasFreeTier: true,
   },
   {
     id: "sambanova",

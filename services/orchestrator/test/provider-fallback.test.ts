@@ -78,6 +78,39 @@ describe("openStreamWithFallback", () => {
     await expect(openStreamWithFallback(candidates, [], {})).rejects.toThrow(/bad request/i);
   });
 
+  it("does not retry after the first candidate has emitted model output", async () => {
+    const attempts: string[] = [];
+    const candidates: FallbackCandidate[] = [
+      {
+        id: "primary",
+        provider: {
+          async *streamChat(): AsyncIterable<ProviderChunk> {
+            attempts.push("primary");
+            yield text("partial");
+            yield { type: "error", error: { type: "network_error", kind: "network", message: "socket reset", retryable: true } } as ProviderChunk;
+          },
+        } as AiProvider,
+      },
+      {
+        id: "secondary",
+        provider: {
+          async *streamChat(): AsyncIterable<ProviderChunk> {
+            attempts.push("secondary");
+            yield text("replacement");
+            yield { type: "done", finishReason: "stop" } as ProviderChunk;
+          },
+        } as AiProvider,
+      },
+    ];
+    const result = await openStreamWithFallback(candidates, [], {});
+    expect(result.servedBy).toBe("primary");
+    expect(await collect(result.stream)).toEqual([
+      { type: "text", text: "partial" },
+      { type: "error", error: { type: "network_error", kind: "network", message: "socket reset", retryable: true } },
+    ]);
+    expect(attempts).toEqual(["primary"]);
+  });
+
   it("throws an aggregated error when every candidate fails", async () => {
     const candidates: FallbackCandidate[] = [
       { id: "a", provider: fakeProvider({ throwAtStart: new Error("timeout") }) },

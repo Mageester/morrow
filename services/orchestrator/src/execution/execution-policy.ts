@@ -51,12 +51,28 @@ export interface ExecutionPolicyObservation extends ExecutionPolicyDecision {
   details: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * The default resource ceiling for an unattended run, expressed in model turns.
+ *
+ * This is a cost/latency boundary, not a progress heuristic: it never inspects
+ * what the model did, only how much provider work has been spent. When it is
+ * reached the run checkpoints, reports `turn_budget_exhausted`, and stays
+ * resumable with all completed work and evidence intact.
+ */
+export const DEFAULT_UNATTENDED_TURN_BUDGET = 128;
+
 export interface ExecutionPolicy {
   readonly mode: "free";
   /** Explicit per-segment turn budget; null means no hidden semantic ceiling. */
   readonly turnBudget: number | null;
   /** Explicit unattended segment budget; null means no hidden segment ceiling. */
   readonly segmentBudget: number | null;
+  /**
+   * Absolute model-turn ceiling for one unattended run. Defaults to
+   * {@link DEFAULT_UNATTENDED_TURN_BUDGET}; null only when a caller explicitly
+   * opts out of any ceiling.
+   */
+  readonly unattendedTurnBudget: number | null;
   decide(input: ExecutionPolicyInput): ExecutionPolicyDecision;
   observe(input: ExecutionPolicyInput): ExecutionPolicyObservation;
 }
@@ -66,6 +82,29 @@ export interface CreateExecutionPolicyOptions {
   maxTurns?: number | undefined;
   /** A caller-supplied unattended segment cap. */
   maxAutomaticSegments?: number | undefined;
+  /**
+   * Absolute model-turn ceiling for the whole unattended run. Omit for the
+   * default; pass `null` to run without any turn ceiling.
+   */
+  maxUnattendedTurns?: number | null | undefined;
+}
+
+/**
+ * Resolves the unattended turn ceiling. Precedence: explicit caller option,
+ * then `MORROW_MAX_UNATTENDED_TURNS` (`0`/`unlimited`/`none` disables it), then
+ * the built-in default.
+ */
+function resolveUnattendedTurnBudget(option: number | null | undefined): number | null {
+  if (option === null) return null;
+  if (option !== undefined) return explicitBudget(option);
+  const configured = process.env.MORROW_MAX_UNATTENDED_TURNS?.trim();
+  if (configured === undefined || configured === "") return DEFAULT_UNATTENDED_TURN_BUDGET;
+  if (configured === "0" || configured === "unlimited" || configured === "none") return null;
+  const parsed = Number(configured);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error("MORROW_MAX_UNATTENDED_TURNS must be a positive integer, 0, or 'unlimited'");
+  }
+  return parsed;
 }
 
 const SOFT_SIGNALS = new Set<ExecutionPolicySignal>([
@@ -123,6 +162,7 @@ export function createExecutionPolicy(options: CreateExecutionPolicyOptions = {}
     mode: "free",
     turnBudget,
     segmentBudget,
+    unattendedTurnBudget: resolveUnattendedTurnBudget(options.maxUnattendedTurns),
     decide(input) {
       const decision = HARD_DECISIONS[input.signal];
       if (!decision) throw new Error(`Unknown execution policy signal: ${input.signal}`);

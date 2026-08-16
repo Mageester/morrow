@@ -145,12 +145,15 @@ export class AnthropicProvider implements AiProvider {
       stream: true,
       ...(system ? { system } : {}),
     };
-    if (options.tools && options.tools.length > 0) {
+    if (options.tools && options.tools.length > 0 && options.requestCapabilities?.tools !== "unsupported") {
       body.tools = options.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+      if (options.toolChoice === "required" && (!options.requestCapabilities || options.requestCapabilities.toolChoice === "supported")) {
+        body.tool_choice = { type: "any" };
+      }
     }
 
     if (options.reasoning) {
-      const capability = options.reasoningCapability ?? { control: "none", efforts: [], budgets: [], source: "unknown" };
+      const capability = options.exactReasoningCapability ?? options.reasoningCapability ?? { control: "none", efforts: [], budgets: [], source: "unknown" };
       const translated = translateReasoning(options.reasoning, "anthropic-messages", capability);
       if (!translated.ok) {
         yield { type: "error", error: { type: "invalid_request", kind: "invalid_request", message: translated.reason, retryable: false } };
@@ -182,7 +185,7 @@ export class AnthropicProvider implements AiProvider {
       visibleAnswerFloorTokens: requestedOutputTokens,
     });
     body.max_tokens = limits.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
-    if (limits.temperature !== null) body.temperature = limits.temperature;
+    if (limits.temperature !== null && options.requestCapabilities?.temperature !== "unsupported") body.temperature = limits.temperature;
 
     const controller = new AbortController();
     let timedOut = false;
@@ -258,6 +261,7 @@ export class AnthropicProvider implements AiProvider {
     const blockToToolOrdinal = new Map<number, number>();
     let nextToolOrdinal = 0;
     let finishReason: NonNullable<ProviderChunk["finishReason"]> | undefined;
+    let sawUsableOutput = false;
 
     try {
       while (true) {
@@ -285,6 +289,7 @@ export class AnthropicProvider implements AiProvider {
             case "content_block_start": {
               const block = evt.content_block;
               if (block?.type === "tool_use") {
+                sawUsableOutput = true;
                 const ordinal = nextToolOrdinal++;
                 blockToToolOrdinal.set(evt.index, ordinal);
                 yield {
@@ -297,6 +302,7 @@ export class AnthropicProvider implements AiProvider {
             case "content_block_delta": {
               const delta = evt.delta;
               if (delta?.type === "text_delta" && delta.text) {
+                sawUsableOutput = true;
                 yield { type: "text", text: delta.text };
               } else if (delta?.type === "input_json_delta") {
                 const ordinal = blockToToolOrdinal.get(evt.index) ?? 0;
@@ -329,6 +335,9 @@ export class AnthropicProvider implements AiProvider {
               break;
           }
         }
+      }
+      if (finishReason === "stop" && !sawUsableOutput) {
+        yield { type: "error", error: { type: "empty_response", kind: "provider", message: "Provider returned a completed response with no content", retryable: true } };
       }
     } catch (e: any) {
       if (timedOut) {

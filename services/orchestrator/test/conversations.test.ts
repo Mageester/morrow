@@ -156,6 +156,112 @@ describe("project-scoped conversation API", () => {
     expect(JSON.stringify(body)).not.toContain("secret.txt");
   });
 
+  it("preserves a bounded context result when a lifecycle replay omits it", () => {
+    const tasks = taskRepository(db);
+    const conversations = conversationsRepository(db);
+    conversations.createConversation({ id: "conversation-context-replay", projectId: "project-a", title: "Context replay", createdAt: NOW, updatedAt: NOW });
+    tasks.createTask({ id: "task-context-replay", projectId: "project-a", kind: "agent_chat", status: "running", createdAt: NOW });
+    conversations.appendMessage({
+      id: "assistant-context-replay", conversationId: "conversation-context-replay", role: "assistant", content: "Working",
+      taskId: "task-context-replay", streamingState: "streaming", createdAt: NOW, updatedAt: NOW,
+    });
+
+    const first = conversations.upsertToolCall({
+      id: "context-replay-call", messageId: "assistant-context-replay", taskId: "task-context-replay", toolName: "read_file",
+      argsJson: JSON.stringify({ path: "result.txt" }), resultJson: "complete-result",
+      contextResultJson: JSON.stringify({ artifactId: "artifact-1", truncatedForContext: true }),
+      status: "completed", createdAt: NOW, completedAt: NOW,
+    });
+    expect(first.contextResultJson).toContain("artifact-1");
+
+    const omitted = conversations.upsertToolCall({
+      id: "context-replay-call", messageId: "assistant-context-replay", taskId: "task-context-replay", toolName: "read_file",
+      argsJson: JSON.stringify({ path: "result.txt" }), resultJson: "complete-result",
+      status: "completed", createdAt: NOW, completedAt: NOW,
+    });
+    expect(omitted.contextResultJson).toBe(first.contextResultJson);
+
+    const explicitNull = conversations.upsertToolCall({
+      id: "context-replay-call", messageId: "assistant-context-replay", taskId: "task-context-replay", toolName: "read_file",
+      argsJson: JSON.stringify({ path: "result.txt" }), resultJson: "complete-result", contextResultJson: null,
+      status: "completed", createdAt: NOW, completedAt: NOW,
+    });
+    expect(explicitNull.contextResultJson).toBe(first.contextResultJson);
+  });
+
+  it("rolls back artifact externalization when terminal tool-call persistence fails", () => {
+    const tasks = taskRepository(db);
+    const conversations = conversationsRepository(db);
+    conversations.createConversation({ id: "conversation-atomic-context", projectId: "project-a", title: "Atomic context", createdAt: NOW, updatedAt: NOW });
+    tasks.createTask({ id: "task-atomic-context", projectId: "project-a", kind: "agent_chat", status: "running", createdAt: NOW });
+    const oversized = JSON.stringify({ output: "x".repeat(20_000) });
+
+    expect(() => conversations.upsertToolCall({
+      id: "atomic-context-failure", messageId: "missing-assistant-message", taskId: "task-atomic-context", toolName: "read_file",
+      argsJson: JSON.stringify({ path: "large.txt" }), resultJson: oversized,
+      status: "completed", createdAt: NOW, completedAt: NOW,
+    })).toThrow();
+    expect((db.prepare("SELECT COUNT(*) AS count FROM tool_artifacts WHERE task_id=?").get("task-atomic-context") as { count: number }).count).toBe(0);
+
+    conversations.appendMessage({
+      id: "assistant-atomic-context", conversationId: "conversation-atomic-context", role: "assistant", content: "Working",
+      taskId: "task-atomic-context", streamingState: "streaming", createdAt: NOW, updatedAt: NOW,
+    });
+    const persisted = conversations.upsertToolCall({
+      id: "atomic-context-success", messageId: "assistant-atomic-context", taskId: "task-atomic-context", toolName: "read_file",
+      argsJson: JSON.stringify({ path: "large.txt" }), resultJson: oversized,
+      status: "completed", createdAt: NOW, completedAt: NOW,
+    });
+    expect(persisted.contextResultJson).toContain("artifactId");
+    expect((db.prepare("SELECT COUNT(*) AS count FROM tool_artifacts WHERE task_id=?").get("task-atomic-context") as { count: number }).count).toBe(1);
+  });
+
+  it("lazily externalizes a legacy null context result before provider projection", () => {
+    const tasks = taskRepository(db);
+    const conversations = conversationsRepository(db);
+    conversations.createConversation({ id: "conversation-legacy-context", projectId: "project-a", title: "Legacy context", createdAt: NOW, updatedAt: NOW });
+    tasks.createTask({ id: "task-legacy-context", projectId: "project-a", kind: "agent_chat", status: "running", createdAt: NOW });
+    conversations.appendMessage({
+      id: "assistant-legacy-context", conversationId: "conversation-legacy-context", role: "assistant", content: "Working",
+      taskId: "task-legacy-context", streamingState: "streaming", createdAt: NOW, updatedAt: NOW,
+    });
+    const oversized = JSON.stringify({ output: "legacy-output-" + "x".repeat(20_000) });
+    db.prepare(`INSERT INTO message_tool_calls
+      (id, message_id, task_id, tool_name, args_json, result_json, context_result_json, status, created_at, completed_at)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, 'completed', ?, ?)`)
+      .run(
+        "legacy-context-call",
+        "assistant-legacy-context",
+        "task-legacy-context",
+        "read_file",
+        JSON.stringify({ path: "large.txt" }),
+        oversized,
+        NOW,
+        NOW,
+      );
+
+    const materialized = conversations.materializeToolContextForTask("task-legacy-context");
+    const call = materialized.find((item) => item.id === "legacy-context-call");
+    expect(call?.resultJson).toBe(oversized);
+    expect(call?.contextResultJson).toContain("artifactId");
+    expect(call?.contextResultJson).toContain("read_artifact");
+    expect(call?.contextResultJson?.length).toBeLessThan(2_000);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM tool_artifacts WHERE task_id=?").get("task-legacy-context") as { count: number }).count).toBe(1);
+
+    const projection = buildProviderProjection({
+      prefixMessages: [{ role: "user", content: "Continue" }],
+      turns: [{
+        turnKey: "legacy-turn",
+        assistantText: "Reading the file.",
+        toolCalls: [{ id: "legacy-context-call", name: "read_file", arguments: JSON.stringify({ path: "large.txt" }) }],
+      }],
+      toolResults: [{ id: call!.id, toolName: call!.toolName, result: call!.contextResultJson!, status: "completed" }],
+    });
+    const toolMessage = projection.find((message) => message.role === "tool");
+    expect(toolMessage?.content).toBe(call?.contextResultJson);
+    expect(toolMessage?.content).not.toContain("x".repeat(8_000));
+  });
+
   it("returns only redacted provider-supplied reasoning for a task owned by this conversation", async () => {
     const conversation = await create("Reasoning projection");
     taskRepository(db).createTask({ id: "task-reasoning", projectId: "project-a", kind: "agent_chat", status: "completed", createdAt: NOW });

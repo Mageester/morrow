@@ -11,7 +11,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
   {
     name: "inspect_workspace",
     title: "Inspect workspace",
-    description: "Recursively list files in the project workspace (relative paths and sizes).",
+    description: "One-shot project discovery: top-level structure, manifests, README/AGENTS previews, and Git state. Takes no arguments. Use list_files, search_files, or search_text afterwards to look at anything specific.",
     sideEffect: "read-only",
     enabled: true,
     parameters: {},
@@ -24,11 +24,11 @@ export const TOOL_CATALOG: ToolSpec[] = [
   {
     name: "list_files",
     title: "List files",
-    description: "List the contents of a directory relative to the workspace root.",
+    description: "List the immediate contents of ONE workspace directory. Does not search — use search_files to find a file by name, or search_text to find a string inside files.",
     sideEffect: "read-only",
     enabled: true,
-    parameters: { path: { type: "string", description: "Relative directory path (e.g. '.' or 'src')" } },
-    constraints: ["Rejects absolute paths and '..' traversal", "Bounded to 100 results"],
+    parameters: { path: { type: "string", description: "Directory path relative to the workspace root, e.g. '.' for the root or 'assets'. An absolute path inside the workspace is also accepted and is normalized for you." } },
+    constraints: ["Paths must resolve inside the workspace; '..' traversal is rejected", "Bounded to 100 results"],
   },
   {
     name: "read_file",
@@ -36,9 +36,9 @@ export const TOOL_CATALOG: ToolSpec[] = [
     description: "Read the contents of a text file in the workspace.",
     sideEffect: "read-only",
     enabled: true,
-    parameters: { path: { type: "string", description: "Relative file path (e.g. 'package.json')" }, offset: { type: "number", description: "UTF-8 byte offset for paged reads" } },
+    parameters: { path: { type: "string", description: "File path relative to the workspace root, e.g. 'index.html' or 'assets/site.css'. An absolute path inside the workspace is also accepted and is normalized for you." }, offset: { type: "number", description: "UTF-8 byte offset for paged reads" } },
     constraints: [
-      "Rejects absolute paths, '..' traversal, and symlink escape",
+      "Paths must resolve inside the workspace; '..' traversal and symlink escape are rejected",
       "Denies .morrow, .env, secret/credential/key/token files",
       "Rejects binary content and pages large files with an explicit next offset",
       "Bounded by the active preset's context budget",
@@ -47,10 +47,10 @@ export const TOOL_CATALOG: ToolSpec[] = [
   {
     name: "search_text",
     title: "Search text",
-    description: "Search safe text files for a literal query.",
+    description: "Search INSIDE workspace files for a literal string and return the matching lines. To find a file by its name instead, use search_files.",
     sideEffect: "read-only",
     enabled: true,
-    parameters: { query: { type: "string", description: "Literal text to find" }, path: { type: "string", description: "Optional relative directory" } },
+    parameters: { query: { type: "string", description: "Literal text to find inside file contents. Not a regular expression or glob." }, path: { type: "string", description: "Optional directory to limit the search to, relative to the workspace root (e.g. 'assets'). Omit to search the whole workspace. An absolute path inside the workspace is also accepted." } },
     constraints: [
       "Scoped to the project workspace root",
       "Skips secret, binary, and oversized files",
@@ -60,10 +60,10 @@ export const TOOL_CATALOG: ToolSpec[] = [
   {
     name: "search_files",
     title: "Search filenames",
-    description: "Find safe workspace file paths containing a literal query.",
+    description: "Find workspace files whose PATH OR NAME contains a literal string. Returns paths only, never file contents. To search inside file contents, use search_text.",
     sideEffect: "read-only",
     enabled: true,
-    parameters: { query: { type: "string", description: "Literal filename text to find" }, path: { type: "string", description: "Optional relative directory" } },
+    parameters: { query: { type: "string", description: "Literal text to match against file paths, e.g. 'site.css' or 'assets/'. Not a regular expression or glob." }, path: { type: "string", description: "Optional directory to limit the search to, relative to the workspace root. Omit to search the whole workspace. An absolute path inside the workspace is also accepted." } },
     constraints: [
       "Scoped to the project workspace root",
       "Skips secret paths",
@@ -172,10 +172,10 @@ export const TOOL_CATALOG: ToolSpec[] = [
     parameters: {
       patch: { type: "string", description: "The unified diff content" },
       explanation: { type: "string", description: "Explain why this patch is proposed" },
-      files: { type: "array", items: { type: "string" }, description: "Relative paths of files expected to change" }
+      files: { type: "array", items: { type: "string" }, description: "Paths of files expected to change, relative to the workspace root" }
     },
     constraints: [
-      "Rejected if path traversal, absolute paths or escape occurs",
+      "Rejected if the patch targets a path that does not resolve inside the workspace",
       "Rejected if files change between proposal and approval",
       "Creates backups under MORROW_HOME/backups",
       "Requires explicit user approval"
@@ -183,18 +183,27 @@ export const TOOL_CATALOG: ToolSpec[] = [
   },
   {
     name: "create_file", title: "Create file", description: "Create or completely replace one plain-text workspace file.", sideEffect: "write", enabled: true,
-    parameters: { path: { type: "string" }, content: { type: "string" }, purpose: { type: "string" } },
-    constraints: ["Workspace-contained paths only", "Existing content is backed up", "Denied secret names remain blocked", "Runs directly in trusted-workspace mode"],
+    parameters: {
+      path: { type: "string", description: "File path relative to the workspace root, e.g. 'assets/site.css'. Missing parent directories are created. An absolute path inside the workspace is also accepted and is normalized for you." },
+      content: { type: "string", description: "The COMPLETE final text of the file. Any existing content is replaced." },
+      purpose: { type: "string", description: "One short line on why this file is being written." },
+    },
+    constraints: ["Paths must resolve inside the workspace", "Existing content is backed up", "Denied secret names remain blocked", "Runs directly in trusted-workspace mode"],
   },
   {
     name: "append_file", title: "Append file chunk", description: "Append an offset-fenced text chunk to a workspace file.", sideEffect: "write", enabled: true,
-    parameters: { path: { type: "string" }, content: { type: "string" }, expectedOffset: { type: "number" }, purpose: { type: "string" } },
-    constraints: ["Workspace-contained paths only", "Maximum 1 MiB per chunk", "Expected byte offset prevents replay duplication", "Existing content is backed up", "Denied secret names remain blocked"],
+    parameters: {
+      path: { type: "string", description: "File path relative to the workspace root. An absolute path inside the workspace is also accepted and is normalized for you." },
+      content: { type: "string", description: "Text chunk to append." },
+      expectedOffset: { type: "number", description: "Current file size in bytes, taken from the previous call's totalBytes. Use 0 for a new file." },
+      purpose: { type: "string", description: "One short line on why this chunk is being appended." },
+    },
+    constraints: ["Paths must resolve inside the workspace", "Maximum 1 MiB per chunk", "Expected byte offset prevents replay duplication", "Existing content is backed up", "Denied secret names remain blocked"],
   },
   {
     name: "create_directory", title: "Create directory", description: "Create a workspace-contained directory recursively.", sideEffect: "write", enabled: true,
-    parameters: { path: { type: "string" } },
-    constraints: ["Workspace-contained paths only", "Denied names remain blocked", "Requires explicit approval unless agent auto-approval was selected"],
+    parameters: { path: { type: "string", description: "Directory path relative to the workspace root, e.g. 'assets'. Parents are created too. An absolute path inside the workspace is also accepted and is normalized for you. create_file already creates missing parents, so this is only needed for an intentionally empty directory." } },
+    constraints: ["Paths must resolve inside the workspace", "Denied names remain blocked", "Requires explicit approval unless agent auto-approval was selected"],
   },
   {
     name: "read_artifact", title: "Read stored tool output", description: "Read a byte range of an oversized tool result Morrow stored as an artifact.", sideEffect: "read-only", enabled: true,

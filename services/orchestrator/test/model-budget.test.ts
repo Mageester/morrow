@@ -152,4 +152,23 @@ describe("canonical model budget (single source of truth)", () => {
     expect(budget.contextWindowTokens).toBe(16000);
     expect(budget.contextWindowConfidence).toBe("configured");
   });
+
+  it("keeps native, route, effective, reserve, current, remaining, and threshold facts distinct", () => {
+    const budget = resolveModelBudget({
+      providerId: "deepseek",
+      selectedModel: "deepseek-v4-flash",
+      endpoint: { kind: "default", host: "api.deepseek.com", protocol: "openai-chat", limitTokens: 131_072, limitSource: "provider-metadata" },
+      outputBudgetTokens: 4_096,
+      currentModelVisibleTokens: 20_000,
+      compactionThresholdRatio: 0.8,
+    });
+
+    expect(budget.nativeContextWindowTokens).toBe(1_000_000);
+    expect(budget.routeLimitTokens).toBe(131_072);
+    expect(budget.effectiveContextWindowTokens).toBe(131_072);
+    expect(budget.harnessReserveTokens).toBe(budget.safetyMarginTokens + budget.framingReserveTokens);
+    expect(budget.currentModelVisibleTokens).toBe(20_000);
+    expect(budget.remainingInputTokens).toBe(budget.usableInputTokens - 20_000);
+    expect(budget.compactionThresholdTokens).toBe(Math.floor(budget.usableInputTokens * 0.8));
+  });
 });

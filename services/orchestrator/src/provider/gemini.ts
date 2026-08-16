@@ -162,11 +162,14 @@ export class GeminiProvider implements AiProvider {
       temperature: options.temperature,
     });
     const generationConfig: Record<string, any> = {};
-    if (limits.temperature !== null) generationConfig.temperature = limits.temperature;
+    if (limits.temperature !== null && options.requestCapabilities?.temperature !== "unsupported") generationConfig.temperature = limits.temperature;
     if (limits.maxOutputTokens !== null) generationConfig.maxOutputTokens = limits.maxOutputTokens;
     if (Object.keys(generationConfig).length) body.generationConfig = generationConfig;
-    if (options.tools && options.tools.length > 0) {
+    if (options.tools && options.tools.length > 0 && options.requestCapabilities?.tools !== "unsupported") {
       body.tools = [{ functionDeclarations: options.tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }];
+      if (options.toolChoice === "required" && options.requestCapabilities?.toolChoice === "supported") {
+        body.toolConfig = { functionCallingConfig: { mode: "ANY" } };
+      }
     }
 
     const controller = new AbortController();
@@ -230,6 +233,7 @@ export class GeminiProvider implements AiProvider {
     let toolOrdinal = 0;
     let sawUsage = false;
     let sawToolCall = false;
+    let sawVisibleOutput = false;
     let rawFinishReason: unknown;
     // Unique per stream; see the class docstring for why an ordinal alone is
     // not a safe tool-call identity.
@@ -266,6 +270,7 @@ export class GeminiProvider implements AiProvider {
           const parts: GeminiPart[] = evt.candidates?.[0]?.content?.parts ?? [];
           for (const part of parts) {
             if (typeof part.text === "string" && part.text.length) {
+              sawVisibleOutput = true;
               yield { type: "text", text: part.text };
             } else if (part.functionCall) {
               sawToolCall = true;
@@ -296,6 +301,9 @@ export class GeminiProvider implements AiProvider {
         ...(sawUsage ? { usage: { promptTokens, completionTokens } } : {}),
         ...(finishReason ? { finishReason } : {}),
       };
+      if (finishReason === "stop" && !sawVisibleOutput && !sawToolCall) {
+        yield { type: "error", error: { type: "empty_response", kind: "provider", message: "Provider returned a completed response with no content", retryable: true } };
+      }
     } catch (e: any) {
       if (timedOut) {
         yield { type: "error", error: { type: "timeout", kind: "timeout", message: "Provider stream timed out", retryable: true } };

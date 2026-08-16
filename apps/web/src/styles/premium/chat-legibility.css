@@ -1,0 +1,113 @@
+/*
+ * Premium visual system — conversation legibility.
+ *
+ * Two defects in the conversation column, both measured rather than inferred.
+ *
+ * 1. The action cluster (Activity / rename / archive / delete) is positioned
+ *    absolutely over the top-right of the reading column. User messages are
+ *    right-aligned, so the newest one sits directly under it: at 1280x600 the
+ *    cluster's box intersects the assistant message's box outright, hiding
+ *    text behind an opaque, blurred panel. This is not specific to small
+ *    viewports — the cluster is inset from the column's right edge, and the
+ *    column is centred, so it overlaps whenever content reaches the top of the
+ *    scroller. Its own comment calls it "pinned to the reading column's
+ *    top-right, outside the prose measure"; it is not outside the measure.
+ *
+ *    The fix returns it to normal flow as a slim right-aligned bar. Nothing is
+ *    removed or relocated in the DOM, and the reading column keeps its
+ *    position — the controls simply stop sharing space with the prose. The
+ *    history's top padding drops to compensate, so the column costs no extra
+ *    height.
+ *
+ * 2. The history gutter is clamp(28px, 6vw, 88px). `vw` is the viewport, but
+ *    the conversation column is not the viewport: with the live-work rail open
+ *    at 1280px the column is ~588px wide while the gutter still resolves
+ *    against 1280px, taking 154px — 26% of the column — and leaving 435px of
+ *    text. The gutter is sized for a room the text does not occupy.
+ *
+ *    Below 1500px with the rail open, the gutter is measured against the space
+ *    that actually exists. Wider viewports, and any width with the rail closed,
+ *    keep the reference gutter exactly.
+ */
+
+/* ── 0. The conversation fills the space it was given ─────────────────────── */
+
+/*
+ * `.morrow-conversation-page` carries `height: 100%`, but its flex parent gives
+ * it no definite height to resolve against, so it falls back to content size.
+ * The 520px floor product-refresh.css sets for short viewports would have
+ * caught this, except chat.css sets `min-height: 0` unconditionally and wins on
+ * import order. The result: at 1280x600 the column is 435px inside 572px of
+ * available height, stranding 78px below the composer while the history above
+ * it scrolls. Growing along the parent's main axis is what `height: 100%` was
+ * reaching for.
+ */
+/*
+ * The route canvas is a block whose own height comes from `flex: 1 1 0%`, so it
+ * is not a definite height a percentage can resolve against — `height: 100%`
+ * silently falls back to content size. `:has()` scopes a column flex context to
+ * the conversation route alone, leaving every other page's canvas untouched.
+ */
+.morrow-route-canvas:has(> .morrow-conversation-page) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /*
+   * The canvas pads every route by clamp(...6vw...) — correct for an editorial
+   * page that scrolls inside it, wrong for the conversation, which is a
+   * fixed-height application layout that manages its own gutters. The bottom
+   * 76.8px was the dead band under the composer (512 - 76.8 = the 435.2px the
+   * column was actually getting), and the 153.6px of side padding was charged
+   * on top of the history's own gutter, twice-insetting the reading column.
+   */
+  padding: 0;
+  /* The conversation scrolls in its history pane. A second scroller on the
+     canvas is the nested scrollbar visible beside the transcript. */
+  overflow: hidden;
+}
+
+.morrow-conversation-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  /*
+   * The page declares only columns, so its single row is auto-sized and the
+   * conversation stops at its content height — on a 1400px-tall viewport the
+   * composer floats mid-page above ~330px of void. An explicit filling row
+   * makes the column occupy the height the page already has, which is what
+   * puts the composer on the floor at every viewport height.
+   */
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* ── 1. The action cluster leaves the prose alone ─────────────────────────── */
+
+.morrow-conversation-header {
+  position: static;
+  z-index: 4;
+  top: auto;
+  right: auto;
+  align-self: end;
+  flex: none;
+  margin: 8px clamp(16px, 3vw, 28px) 0;
+  /* In flow it no longer floats over scrolling prose, so it needs neither the
+     scrim nor the blur that made it opaque. */
+  border-color: transparent;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+/* The cluster now occupies real height, so the padding that was reserving room
+   for it underneath is no longer doing that job. */
+.morrow-conversation-history {
+  padding-top: 14px;
+}
+
+/* ── 2. The gutter is measured against the column, not the viewport ───────── */
+
+@media (max-width: 1499px) {
+  .morrow-conversation-page[data-rail="open"] .morrow-conversation-history,
+  .morrow-conversation-page[data-rail="open"] .morrow-conversation-action-shelf,
+  .morrow-conversation-page[data-rail="open"] .morrow-conversation-composer {
+    padding-inline: clamp(18px, 2.2vw, 40px);
+  }
+}

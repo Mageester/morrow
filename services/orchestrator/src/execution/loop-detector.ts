@@ -1,16 +1,8 @@
-/**
- * Loop detection for the agent runtime.
+/** Canonical exact-call identity and task-local repeat counts.
  *
- * A stalled model often repeats the *same action* — the same tool with the same
- * arguments — making no observable progress. The adaptive budget eventually
- * stops this, but only after several whole turns. Loop detection is an earlier,
- * tighter signal: it watches a sliding window of recent tool-call signatures and
- * flags when one signature recurs past a threshold.
- *
- * Signatures are computed from a *stable* serialization of the arguments, so two
- * calls that are semantically identical but differ only in JSON key order are
- * treated as the same action. The detector is pure and deterministic — no clocks,
- * no randomness — which makes the agent's stop behavior fully testable.
+ * Repetition is advisory context only. The executor still runs every validated
+ * call and applies its ordinary permission, containment, cancellation, replay,
+ * provider, and budget boundaries.
  */
 
 /** Stable JSON: object keys sorted recursively so key order never matters. */
@@ -41,16 +33,10 @@ export function toolCallSignature(toolName: string, args: unknown): string {
   return `${toolName}:${stableStringify(normalized)}`;
 }
 
-export interface LoopDetectorOptions {
-  /** How many recent signatures to keep in view. Default 6. */
-  windowSize?: number;
-  /** Occurrences of one signature within the window that count as a loop. Default 3. */
-  repeatThreshold?: number;
-}
-
 export interface LoopRecord {
-  looping: boolean;
-  /** Occurrences of this signature currently in the window. */
+  /** Kept as a compatibility-shaped field; repetition never controls execution. */
+  looping: false;
+  /** Successful occurrences of this signature in this task-local detector. */
   count: number;
   signature: string;
 }
@@ -59,6 +45,11 @@ export interface LoopDetector {
   record(signature: string): LoopRecord;
   reset(): void;
   readonly size: number;
+}
+
+/** Reminder points are intentionally small and deterministic. */
+export function isRepeatAdvisoryPoint(count: number): boolean {
+  return count === 3 || count === 4 || (count > 4 && count % 4 === 0);
 }
 
 /**
@@ -76,22 +67,19 @@ export function duplicatesPriorNarration(candidate: string, priorTexts: string[]
   return priorTexts.some((text) => normalize(text) === normalizedCandidate);
 }
 
-export function createLoopDetector(options: LoopDetectorOptions = {}): LoopDetector {
-  const windowSize = Math.max(2, options.windowSize ?? 6);
-  const repeatThreshold = Math.max(2, options.repeatThreshold ?? 3);
-  let window: string[] = [];
+export function createLoopDetector(): LoopDetector {
+  const counts = new Map<string, number>();
   return {
     record(signature: string): LoopRecord {
-      window.push(signature);
-      if (window.length > windowSize) window = window.slice(window.length - windowSize);
-      const count = window.reduce((n, s) => (s === signature ? n + 1 : n), 0);
-      return { looping: count >= repeatThreshold, count, signature };
+      const count = (counts.get(signature) ?? 0) + 1;
+      counts.set(signature, count);
+      return { looping: false, count, signature };
     },
     reset() {
-      window = [];
+      counts.clear();
     },
     get size() {
-      return window.length;
+      return counts.size;
     },
   };
 }

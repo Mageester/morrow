@@ -1140,6 +1140,8 @@ export class InteractiveSession {
         return "this route configures reasoning by effort level";
       case "budget":
         return "this route configures reasoning by a thinking-token budget";
+      case "unknown":
+        return "this route's reasoning capability is unknown";
     }
   }
 

@@ -163,9 +163,12 @@ export class CodexProvider implements AiProvider {
       store: false,
       ...(instructions ? { instructions } : {}),
     };
-    if (options.tools && options.tools.length > 0) {
+    if (options.tools && options.tools.length > 0 && options.requestCapabilities?.tools !== "unsupported") {
       // Responses API tool shape is flat (no nested "function" wrapper).
       body.tools = options.tools.map((t) => ({ type: "function", name: t.name, description: t.description, parameters: t.parameters }));
+      if (options.toolChoice === "required" && (!options.requestCapabilities || options.requestCapabilities.toolChoice === "supported")) {
+        body.tool_choice = "required";
+      }
     }
 
     // One boundary reconciles this request's limits against each other; see
@@ -237,6 +240,7 @@ export class CodexProvider implements AiProvider {
     const itemToOrdinal = new Map<string, number>();
     let nextOrdinal = 0;
     let sawToolCall = false;
+    let sawVisibleOutput = false;
 
     try {
       while (true) {
@@ -256,7 +260,10 @@ export class CodexProvider implements AiProvider {
 
           switch (evt.type) {
             case "response.output_text.delta":
-              if (evt.delta) yield { type: "text", text: evt.delta as string };
+              if (evt.delta) {
+                sawVisibleOutput = true;
+                yield { type: "text", text: evt.delta as string };
+              }
               break;
             case "response.output_item.added": {
               const item = evt.item;
@@ -283,6 +290,9 @@ export class CodexProvider implements AiProvider {
                 usage: { promptTokens, completionTokens, ...(cachedPromptTokens !== undefined ? { cachedPromptTokens } : {}) },
                 ...(finishReason ? { finishReason } : {}),
               };
+              if (finishReason === "stop" && !sawVisibleOutput && !sawToolCall) {
+                yield { type: "error", error: { type: "empty_response", kind: "provider", message: "Provider returned a completed response with no content", retryable: true } };
+              }
               break;
             }
             case "response.incomplete": {

@@ -1,6 +1,6 @@
 import { realpathSync, statSync, readFileSync } from "node:fs";
 import { posix, win32, relative, resolve, sep, extname } from "node:path";
-import { isWithinWorkspace } from "./path-boundary.js";
+import { isWithinWorkspace, normalizeWorkspacePath } from "./path-boundary.js";
 import { matchesDeniedNamePattern } from "../security/denied-name-patterns.js";
 
 export class SafeReadError extends Error {
@@ -64,10 +64,16 @@ export function isDeniedWorkspacePath(requested: string): boolean {
   return requested.split(/[\\/]+/).filter(Boolean).some(isDeniedName);
 }
 
-export function validateSafeReadPath(root: string, requested: string): string {
-  if (isAnyAbsolutePath(requested)) {
-    throw new SafeReadError("Absolute paths are rejected");
+export function validateSafeReadPath(root: string, rawRequested: string): string {
+  // An absolute path that resolves inside the workspace is an ordinary way to
+  // name a file; normalize it rather than refusing it. Everything below —
+  // traversal, denied names, realpath containment, symlink escape — is
+  // unchanged and still runs on the normalized path.
+  const normalization = normalizeWorkspacePath(root, rawRequested);
+  if (!normalization.ok) {
+    throw new SafeReadError(`${normalization.message} Example: "${normalization.example}".`);
   }
+  const requested = normalization.path;
   const parts = requested.split(/[\\/]+/);
   if (parts.includes("..") || parts.includes(".morrow")) {
     throw new SafeReadError("Traversal and .morrow directory are rejected");
