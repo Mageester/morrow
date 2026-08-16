@@ -55,6 +55,7 @@ export { mcpTrustStore } from "./mcp/trust.js";
 export { spawnStdioTransport } from "./mcp/stdio-transport.js";
 export { createSseTransport, type SseTransportOptions } from "./mcp/sse-transport.js";
 export { loadMcpConfig, parseMcpServerConfig, parseMcpConfigFile, expandEnvVars, type McpServerConfig, type McpConfigFile, type McpServerPermissions, type LoadMcpConfigOptions } from "./mcp/config.js";
+export { McpPool, UntrustedMcpServerError, type McpPoolOptions } from "./mcp/pool.js";
 export { localBackend } from "./backends/local.js";
 export { dockerBackend, sshBackend } from "./backends/remote.js";
 export type { ExecutionBackend, BackendCommand, BackendResult } from "./backends/types.js";
