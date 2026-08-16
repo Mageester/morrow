@@ -279,7 +279,7 @@ describe("Real MCP Verification Scenarios (10-point Acceptance Suite)", () => {
     const budget = resolveModelBudget({
       providerId: "anthropic",
       selectedModel: "claude-3-5-sonnet-20241022",
-      endpoint: {},
+      endpoint: { kind: "custom", host: "api.anthropic.com", protocol: "anthropic-messages", limitTokens: null, limitSource: "unknown" },
       userContextWindowTokens: 200000,
       toolCount: 15,
     });
