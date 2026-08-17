@@ -1416,7 +1416,6 @@ export function openDatabase(file:string){
     db.pragma("busy_timeout = 5000");
     if (file !== ":memory:") {
       db.pragma("journal_mode = WAL");
-      db.pragma("synchronous = NORMAL");
     }
     db.function("morrow_redact", { deterministic: true }, (value: unknown) => typeof value === "string" ? redactSecrets(value) : "");
     db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");

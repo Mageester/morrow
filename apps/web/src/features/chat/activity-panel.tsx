@@ -29,7 +29,9 @@ export type ActivityFilterCategory =
   | "context"
   | "system";
 
-function activityIcon(kind: WebConversationActivityEntry["kind"]) {
+/** Shared between the drawer's timeline and the conversation's work summary,
+ * so the same kind of event never wears two different icons. */
+export function activityIcon(kind: WebConversationActivityEntry["kind"]) {
   if (kind === "assistant") return <Brain aria-hidden="true" size={14} />;
   if (kind === "memory") return <Sparkles aria-hidden="true" size={14} />;
   if (kind === "file" || kind === "diff") return <FileCode2 aria-hidden="true" size={14} />;
@@ -50,12 +52,6 @@ function activityMeta(item: WebConversationActivityEntry): string | null {
       : `${item.durationMs}ms`;
   }
   return item.toolName?.replaceAll("_", " ") ?? null;
-}
-
-function formatDuration(ms: number | null | undefined): string | null {
-  if (ms === null || ms === undefined || ms < 0) return null;
-  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${ms}ms`;
 }
 
 export const ActivityDetails = memo(function ActivityDetails({ item }: { item: WebConversationActivityEntry }) {
@@ -167,7 +163,7 @@ export function ActivityTimeline({
  */
 export const CompactTranscriptTool = memo(function CompactTranscriptTool({ entry }: { entry: WebConversationActivityEntry }) {
   const [open, setOpen] = useState(false);
-  const duration = formatDuration(entry.durationMs);
+  const duration = entry.durationMs !== null ? `${entry.durationMs}ms` : null;
 
   return (
     <div
