@@ -98,18 +98,31 @@ function contextUsageFromEvents(events: Array<{ type: string; payload: Record<st
   return {
     providerId: str(budget?.provider) ?? str(count?.provider) ?? "unknown",
     model: str(budget?.model) ?? str(count?.model) ?? "unknown",
-    contextWindowTokens: num(budget?.contextWindowTokens) ?? num(budget?.modelCapacityTokens) ?? 0,
+    // No trailing `?? 0` here: a route whose window is genuinely unverified
+    // (a live-discovered model with no advertised capacity, e.g.) must report
+    // null, not a fabricated zero a naive `!= null` check would render as a
+    // real number. Every CLI/web consumer of these fields already treats
+    // "<= 0" the same as null (terminal/mission-control.ts's `tokens()`), so
+    // this was always effectively meant to be unknown, not zero.
+    contextWindowTokens: num(budget?.contextWindowTokens) ?? num(budget?.modelCapacityTokens),
     contextWindowSource: str(budget?.contextWindowSource) ?? str(budget?.modelCapacitySource) ?? "unknown",
+    // Confidence in the window/reserve numbers below — "verified" (provider- or
+    // registry-reported), "reported"/"configured" (a live or user-supplied
+    // value Morrow cannot independently verify), "unverified" (no
+    // authoritative value; an internal safe fallback was used). Mirrors
+    // routing/model-budget.ts's ModelBudget.contextWindowConfidence exactly —
+    // this is a read-only view, never a second computation of it.
+    contextWindowConfidence: str(budget?.contextWindowConfidence) ?? "unverified",
     modelCapacityTokens: num(budget?.contextWindowTokens) ?? num(budget?.modelCapacityTokens),
     modelCapacitySource: str(budget?.contextWindowSource) ?? str(budget?.modelCapacitySource) ?? "unknown",
     endpointLimitTokens: num(budget?.endpointLimitTokens),
     endpointLimitSource: str(budget?.endpointLimitSource) ?? "unknown",
     effectiveRequestLimitTokens: num(budget?.contextWindowTokens) ?? num(budget?.effectiveRequestLimitTokens),
     effectiveLimitSource: str(budget?.contextWindowSource) ?? str(budget?.effectiveLimitSource) ?? "unknown",
-    maxInputTokens: num(budget?.usableInputTokens) ?? num(budget?.maximumInputTokens) ?? num(budget?.maxInputTokens) ?? num(trim?.maxInputTokens) ?? 0,
-    maximumInputTokens: num(budget?.usableInputTokens) ?? num(budget?.maximumInputTokens) ?? num(budget?.maxInputTokens) ?? 0,
-    reservedTokens: num(budget?.totalReserveTokens) ?? num(budget?.outputReserveTokens) ?? num(budget?.reservedOutputTokens) ?? num(budget?.reservedTokens) ?? 0,
-    outputReserveTokens: num(budget?.outputReserveTokens) ?? num(budget?.reservedOutputTokens) ?? 0,
+    maxInputTokens: num(budget?.usableInputTokens) ?? num(budget?.maximumInputTokens) ?? num(budget?.maxInputTokens) ?? num(trim?.maxInputTokens),
+    maximumInputTokens: num(budget?.usableInputTokens) ?? num(budget?.maximumInputTokens) ?? num(budget?.maxInputTokens),
+    reservedTokens: num(budget?.totalReserveTokens) ?? num(budget?.outputReserveTokens) ?? num(budget?.reservedOutputTokens) ?? num(budget?.reservedTokens),
+    outputReserveTokens: num(budget?.outputReserveTokens) ?? num(budget?.reservedOutputTokens),
     currentRequestTokens: num(budget?.currentRequestTokens) ?? num(trim?.inputTokensAfter) ?? num(count?.tokens),
     inputTokensBefore: num(trim?.inputTokensBefore) ?? num(count?.tokens),
     inputTokensAfter: num(trim?.inputTokensAfter) ?? num(trim?.finalTokens) ?? null,
@@ -122,6 +135,58 @@ function contextUsageFromEvents(events: Array<{ type: string; payload: Record<st
     lastSummary: summary
       ? { id: summary.id, method: summary.method, sourceMessageCount: summary.sourceMessageCount, createdAt: summary.createdAt }
       : null,
+    // ── Route-aware capacity diagnostics (routing/effective-context.ts) ──────
+    // Native model window vs. the provider/route's own cap, and the effective
+    // = min(native, route) value actually enforced, each with its own
+    // provenance — never collapsed into one number before it reaches the UI.
+    nativeContextWindowTokens: num(budget?.nativeContextWindowTokens),
+    nativeContextWindowSource: str(budget?.nativeContextWindowSource),
+    routeLimitTokens: num(budget?.routeLimitTokens),
+    routeLimitSource: str(budget?.routeLimitSource),
+    effectiveContextWindowTokens: num(budget?.effectiveContextWindowTokens) ?? num(budget?.contextWindowTokens),
+    // Reserve breakdown: output generation, plus the harness's own system-
+    // prompt/tool-schema overhead, sum to totalReserveTokens.
+    harnessReserveTokens: num(budget?.harnessReserveTokens),
+    totalReserveTokens: num(budget?.totalReserveTokens),
+    currentModelVisibleTokens: num(budget?.currentModelVisibleTokens),
+    remainingInputTokens: num(budget?.remainingInputTokens),
+    compactionThresholdTokens: num(budget?.compactionThresholdTokens),
+    compactionThresholdRatio: num(budget?.compactionThresholdRatio),
+  };
+}
+
+/**
+ * What reasoning Morrow actually applied on the most recent request for this
+ * task, and whether the route accepted it.
+ *
+ * Sourced entirely from `provider.request_started` (which carries the exact
+ * `translateReasoning()` output for the attempt that was made — see
+ * execution/agent.ts) and `provider.reasoning_unavailable` (emitted when a
+ * requested selection could not be translated for the exact serving route).
+ * Never recomputed: the browser must see the same wire params the adapter
+ * actually sent, not a client-side guess at what a provider's dialect means.
+ */
+function reasoningApplicationFromEvents(events: Array<{ type: string; payload: Record<string, unknown> }>) {
+  const applied = [...events].reverse().find((event) => event.type === "provider.request_started")?.payload;
+  const unavailable = [...events].reverse().find((event) => event.type === "provider.reasoning_unavailable")?.payload;
+  if (!applied && !unavailable) return null;
+  const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
+  const bool = (value: unknown): boolean | null => (typeof value === "boolean" ? value : null);
+  return {
+    requested: applied?.reasoningRequested ?? unavailable?.requestedReasoning ?? null,
+    applied: applied?.reasoningApplied ?? null,
+    supported: bool(applied?.reasoningSupported),
+    unsupportedReason: str(applied?.reasoningUnsupportedReason) ?? str(unavailable?.reason),
+    // The exact request-body fragment the adapter sent for this reasoning
+    // selection — e.g. `{ thinkingConfig: { thinkingLevel: "HIGH" } }` for
+    // Gemini, or `{ reasoning_effort: "high" }` for an OpenAI-family route.
+    // Empty object means "no explicit reasoning params sent" (Auto/none).
+    wireParams: applied?.reasoningWireParams ?? null,
+    control: str(applied?.reasoningControl),
+    source: str(applied?.reasoningSource),
+    wire: str(applied?.reasoningWire),
+    supportsOff: bool(applied?.reasoningSupportsOff),
+    fallbackToRouteDefault: unavailable !== undefined,
   };
 }
 import { approvalsRepository } from "./repositories/approvals.js";
@@ -1091,7 +1156,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const routing = routingRepo.get(taskId)?.decision ?? null;
     const latestSummary = contextSummariesRepo.latestForTask(taskId);
     const context = contextUsageFromEvents(agg.events, latestSummary);
-    return { ...agg, toolCalls, approvals: approvals.listByTask(taskId), integrations: integrationsRepo.listByTask(taskId), context, routing };
+    const reasoningApplication = reasoningApplicationFromEvents(agg.events);
+    return { ...agg, toolCalls, approvals: approvals.listByTask(taskId), integrations: integrationsRepo.listByTask(taskId), context, routing, reasoningApplication };
   });
 
   app.get("/api/tasks/:taskId/events", async (request, reply) => {
@@ -3185,13 +3251,28 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         endpointKind: budget.endpointKind,
         endpointHost: budget.endpointHost,
         contextWindowTokens: budget.contextWindowTokens,
+        // Route-aware capacity diagnostics, straight from the same
+        // resolveModelBudget() call above — never re-derived here. See
+        // routing/effective-context.ts for how native/route/effective relate.
+        nativeContextWindowTokens: budget.nativeContextWindowTokens,
+        nativeContextWindowSource: budget.nativeContextWindowSource,
+        routeLimitTokens: budget.routeLimitTokens,
+        routeLimitSource: budget.routeLimitSource,
+        effectiveContextWindowTokens: budget.effectiveContextWindowTokens,
         contextWindowConfidence: configured ? budget.contextWindowConfidence : "unverified",
         usableInputTokens: budget.usableInputTokens,
         outputReserveTokens: budget.outputReserveTokens,
         totalReserveTokens: budget.totalReserveTokens,
+        harnessReserveTokens: budget.harnessReserveTokens,
+        compactionThresholdTokens: budget.compactionThresholdTokens,
+        compactionThresholdRatio: budget.compactionThresholdRatio,
         capabilities: budget.capabilities,
         pricing: metadata.pricing,
         reasoning: budget.reasoning,
+        // Provenance of the descriptive capability flags themselves (vision,
+        // tool calls, …) — distinct from contextWindowConfidence, which is
+        // specifically about the size numbers.
+        capabilitySource: metadata.capabilitySource ?? "unknown",
       };
     });
   });

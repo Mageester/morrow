@@ -14,6 +14,7 @@ import { encodeMessage, createMessageDecoder } from "./framing.js";
 export interface RawTransport {
   write(data: string): void;
   onData(handler: (chunk: string) => void): void;
+  onClose?: ((handler: (err?: Error) => void) => void) | undefined;
   close(): void;
 }
 
@@ -60,6 +61,22 @@ export class McpClient {
     transport.onData((chunk) => {
       for (const message of this.decoder.push(chunk)) this.handle(message as Record<string, unknown>);
     });
+    if (typeof transport.onClose === "function") {
+      transport.onClose((err) => {
+        this.closeWithError(err ?? new Error("MCP transport closed unexpectedly"));
+      });
+    }
+  }
+
+  closeWithError(error: Error): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const [, pending] of this.pending) {
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pending.clear();
+    this.transport.close();
   }
 
   private handle(message: Record<string, unknown>): void {

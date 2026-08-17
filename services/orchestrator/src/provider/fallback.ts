@@ -26,7 +26,20 @@ export interface FallbackCandidate {
   provider: AiProvider;
   /** Exact request envelope admitted for this route. When present, these
    * values must be used instead of the shared compatibility arguments. */
-  request?: { messages: ChatMessage[]; options: StreamOptions; routeFingerprint: string };
+  request?: {
+    messages: ChatMessage[];
+    options: StreamOptions;
+    routeFingerprint: string;
+    /**
+     * Observability-only facts about this exact attempt, never forwarded to
+     * the provider. Kept separate from `options` (which IS the wire request)
+     * so a diagnostic field can never leak into a live API call. Read by
+     * `onAttempt` to record what was actually applied — e.g. the real wire
+     * params a reasoning selection translated to — for the browser capability
+     * inspector to display without recomputing provider-specific translation.
+     */
+    diagnostics?: Record<string, unknown>;
+  };
 }
 
 /** Keep provider recovery observable and bounded even if routing supplies a noisy candidate list. */

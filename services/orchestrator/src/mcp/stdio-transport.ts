@@ -23,9 +23,29 @@ export function spawnStdioTransport(
     windowsHide: true,
   });
 
+  let closeHandler: ((err?: Error) => void) | null = null;
+  let hasClosed = false;
+
+  const notifyClosed = (err?: Error) => {
+    if (hasClosed) return;
+    hasClosed = true;
+    if (closeHandler) closeHandler(err);
+  };
+
   child.on("error", (err) => {
     if (opts.onStderr) {
       opts.onStderr(`[mcp-spawn-error] ${err.message}`);
+    }
+    notifyClosed(err);
+  });
+
+  child.on("close", (code, signal) => {
+    if (code !== 0 && code !== null) {
+      notifyClosed(new Error(`MCP server process exited with code ${code}`));
+    } else if (signal) {
+      notifyClosed(new Error(`MCP server process terminated with signal ${signal}`));
+    } else {
+      notifyClosed(new Error("MCP server process exited"));
     }
   });
 
@@ -42,12 +62,19 @@ export function spawnStdioTransport(
     onData(handler) {
       child.stdout?.on("data", (buf: Buffer) => handler(buf.toString("utf8")));
     },
+    onClose(handler) {
+      closeHandler = handler;
+      if (hasClosed) {
+        handler(new Error("MCP server process already exited"));
+      }
+    },
     close() {
       try {
         child.kill();
       } catch {
         /* already exited */
       }
+      notifyClosed();
     },
   };
   return { transport, child };

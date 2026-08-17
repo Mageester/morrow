@@ -668,4 +668,79 @@ describe("project-scoped conversation API", () => {
     expect(replay.statusCode).toBe(200);
     expect(replay.json()).toEqual({ version: 1, conversationId: conversation.id, deleted: false });
   });
+
+  it("exposes route-aware context diagnostics, confidence, and the applied reasoning wire config on task detail", async () => {
+    const tasks = taskRepository(db);
+    tasks.createTask({ id: "task-capability", projectId: "project-a", kind: "agent_chat", status: "completed", createdAt: NOW });
+    taskRoutingRepository(db).upsert({
+      taskId: "task-capability",
+      presetId: "balanced",
+      providerId: "gemini",
+      model: "gemini-3.7-flash",
+      useMemory: false,
+      createdAt: NOW,
+      decision: {
+        version: 1,
+        presetId: "balanced",
+        providerId: "gemini",
+        model: "gemini-3.7-flash",
+        reason: "user override",
+        fallbackUsed: false,
+        overridden: true,
+        privacy: "cloud",
+        candidates: [{ providerId: "gemini", configured: true, reason: "selected" }],
+        reasoning: { mode: "effort", effort: "high" },
+      },
+    });
+    taskRecordsRepository(db).appendEvent({
+      id: "event-budget", taskId: "task-capability", type: "context.budget_calculated", createdAt: NOW,
+      payload: {
+        provider: "gemini", model: "gemini-3.7-flash", contextWindowTokens: 1_000_000,
+        contextWindowConfidence: "verified", contextWindowSource: "model-metadata",
+        nativeContextWindowTokens: 1_000_000, nativeContextWindowSource: "model-metadata",
+        routeLimitTokens: null, routeLimitSource: "unknown",
+        effectiveContextWindowTokens: 1_000_000, harnessReserveTokens: 1_536, totalReserveTokens: 3_584,
+        currentModelVisibleTokens: 12_000, currentRequestTokens: 12_000, remainingInputTokens: 978_000,
+        compactionThresholdTokens: 800_000, compactionThresholdRatio: 0.8, usableInputTokens: 990_000,
+      },
+    });
+    taskRecordsRepository(db).appendEvent({
+      id: "event-request", taskId: "task-capability", type: "provider.request_started", createdAt: NOW,
+      payload: {
+        provider: "gemini", model: "gemini-3.7-flash",
+        reasoningRequested: { mode: "effort", effort: "high" },
+        reasoningApplied: { mode: "effort", effort: "high" },
+        reasoningSupported: true,
+        reasoningWireParams: { thinkingConfig: { thinkingLevel: "HIGH" } },
+        reasoningControl: "effort", reasoningSource: "provider-catalog", reasoningWire: "gemini-thinking-level",
+        reasoningSupportsOff: false,
+      },
+    });
+
+    const response = await app.inject({ method: "GET", url: "/api/tasks/task-capability" });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+
+    expect(body.context).toMatchObject({
+      contextWindowConfidence: "verified",
+      nativeContextWindowTokens: 1_000_000,
+      nativeContextWindowSource: "model-metadata",
+      effectiveContextWindowTokens: 1_000_000,
+      harnessReserveTokens: 1_536,
+      compactionThresholdTokens: 800_000,
+      compactionThresholdRatio: 0.8,
+      remainingInputTokens: 978_000,
+    });
+    expect(body.routing).toMatchObject({
+      providerId: "gemini", model: "gemini-3.7-flash", fallbackUsed: false,
+      reasoning: { mode: "effort", effort: "high" },
+    });
+    expect(body.reasoningApplication).toMatchObject({
+      applied: { mode: "effort", effort: "high" },
+      supported: true,
+      wireParams: { thinkingConfig: { thinkingLevel: "HIGH" } },
+      wire: "gemini-thinking-level",
+      fallbackToRouteDefault: false,
+    });
+  });
 });

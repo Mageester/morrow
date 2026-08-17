@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export interface ConversationAutoscrollInput {
   history: unknown;
@@ -9,6 +9,8 @@ export interface ConversationAutoscrollInput {
 export interface ConversationAutoscroll {
   sentinelRef: React.RefObject<HTMLDivElement | null>;
   resume: () => void;
+  isPinned: boolean;
+  showJumpButton: boolean;
 }
 
 /**
@@ -23,6 +25,7 @@ export function useConversationAutoscroll({
   const sentinelRef = useRef<HTMLDivElement>(null);
   const pinnedToLatest = useRef(true);
   const previousScrollHeight = useRef<number | null>(null);
+  const [isPinned, setIsPinned] = useState(true);
 
   const scrollRoot = () => document.scrollingElement ?? document.documentElement;
 
@@ -32,6 +35,7 @@ export function useConversationAutoscroll({
 
   const resume = useCallback(() => {
     pinnedToLatest.current = true;
+    setIsPinned(true);
     scrollToLatest();
   }, [scrollToLatest]);
 
@@ -40,16 +44,23 @@ export function useConversationAutoscroll({
     if (!sentinel) return;
     const updatePinnedState = () => {
       const root = scrollRoot();
-      pinnedToLatest.current = root.scrollTop + root.clientHeight >= root.scrollHeight - 2;
+      const atBottom = root.scrollTop + root.clientHeight >= root.scrollHeight - 16;
+      pinnedToLatest.current = atBottom;
+      setIsPinned(atBottom);
     };
-    const pauseFollowing = () => { pinnedToLatest.current = false; };
+    const pauseFollowing = () => {
+      pinnedToLatest.current = false;
+      setIsPinned(false);
+    };
     const pauseForKeyboardScroll = (event: KeyboardEvent) => {
       if ([" ", "ArrowUp", "PageUp", "Home"].includes(event.key)) pauseFollowing();
     };
     const observer = typeof IntersectionObserver === "undefined"
       ? null
       : new IntersectionObserver(([entry]) => {
-        pinnedToLatest.current = entry?.isIntersecting ?? true;
+        const intersecting = entry?.isIntersecting ?? true;
+        pinnedToLatest.current = intersecting;
+        setIsPinned(intersecting);
       }, { threshold: 1 });
     observer?.observe(sentinel);
     window.addEventListener("scroll", updatePinnedState, { passive: true });
@@ -68,12 +79,13 @@ export function useConversationAutoscroll({
   useLayoutEffect(() => {
     const root = scrollRoot();
     const previousHeight = previousScrollHeight.current;
-    if (previousHeight !== null && root.scrollTop + root.clientHeight < previousHeight - 2) {
+    if (previousHeight !== null && root.scrollTop + root.clientHeight < previousHeight - 16) {
       pinnedToLatest.current = false;
+      setIsPinned(false);
     }
     if (pinnedToLatest.current) scrollToLatest();
     previousScrollHeight.current = root.scrollHeight;
   }, [activeTaskId, history, scrollToLatest, transcript]);
 
-  return { sentinelRef, resume };
+  return { sentinelRef, resume, isPinned, showJumpButton: !isPinned };
 }

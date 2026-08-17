@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { conversationKeys } from "./conversations.js";
+import { taskQueryKey } from "./task-keys.js";
 import { chatStreamCursorKey, useChatTaskStream } from "./chat-stream.js";
 
 class FakeEventSource {
@@ -66,13 +66,19 @@ describe("useChatTaskStream", () => {
       source.emit("message.updated", signal);
       source.emit("message.updated", signal);
     });
-    await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(4)); // open reconciliation + one unique signal
-    expect(invalidate).toHaveBeenLastCalledWith({ queryKey: conversationKeys.activity("project-1", "conversation-1") });
+    // Each reconcile() invalidates messages, activity, AND the task-scoped
+    // prefix (context usage / capability telemetry) — 3 calls per
+    // reconciliation: the open handshake plus one unique signal.
+    await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(6));
+    expect(invalidate).toHaveBeenLastCalledWith({ queryKey: taskQueryKey("task-1") });
 
     act(() => source.emit("task.terminal", { ...signal, cursor: 2, eventType: "task.terminal", payload: { eventId: "event-2" } }));
     await waitFor(() => expect(source.closed).toBe(true));
     await waitFor(() => expect(result.current.terminal).toBe(true));
-    expect(invalidate).toHaveBeenCalledTimes(4);
+    // reconcileTerminal() adds exactly one more invalidate call (the task
+    // prefix) alongside its two refetchQueries calls.
+    expect(invalidate).toHaveBeenCalledTimes(7);
+    expect(invalidate).toHaveBeenLastCalledWith({ queryKey: taskQueryKey("task-1") });
     expect(refetch).toHaveBeenCalledTimes(2);
     expect(sessionStorage.getItem(chatStreamCursorKey({ projectId: "project-1", conversationId: "conversation-1", taskId: "task-1" }))).toBeNull();
     unmount();

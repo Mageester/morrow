@@ -120,6 +120,49 @@ describe("conversation activity projection", () => {
     expect(activity.entries[0]?.text).toBe("credential ***redacted***");
     expect(JSON.stringify(activity)).not.toContain("sk-abcdefghijklmnop");
   });
+
+  it("surfaces route selection, reasoning fallback, and admitted context budgeting", () => {
+    const activity = projectConversationActivity({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      tasks: [{
+        taskId: "task-1",
+        events: [
+          event(1, "provider.route_selected", { providerId: "gemini", model: "gemini-3.7-flash", fallbackUsed: false }),
+          event(2, "provider.reasoning_unavailable", {
+            provider: "deepseek",
+            model: "deepseek-v4-flash",
+            reason: "Unsupported reasoning effort \"max\" for this exact route.",
+          }),
+          event(3, "context.budget_calculated", {
+            admitted: true,
+            provider: "gemini",
+            model: "gemini-3.7-flash",
+            currentModelVisibleTokens: 12_000,
+            usableInputTokens: 990_000,
+            contextWindowConfidence: "verified",
+          }),
+          // A rejected (non-admitted) candidate on the same turn is diagnostic
+          // noise for this route, not something Morrow did — it must not
+          // appear as its own timeline row.
+          event(4, "context.budget_calculated", { admitted: false, provider: "deepseek", model: "deepseek-v4-flash" }),
+        ],
+      }],
+    });
+
+    expect(activity.entries).toMatchObject([
+      { kind: "provider", status: "completed", summary: "Route selected", detail: "gemini / gemini-3.7-flash" },
+      {
+        kind: "provider",
+        status: "warning",
+        summary: "Requested reasoning not supported; used route default",
+        detail: "Unsupported reasoning effort \"max\" for this exact route.",
+        target: "deepseek / deepseek-v4-flash",
+      },
+      { kind: "context", status: "completed", summary: "Context budget calculated", detail: "12,000 / 990,000 usable input tokens, verified" },
+    ]);
+    expect(activity.entries).toHaveLength(3);
+  });
 });
 
 describe("observe-only telemetry does not read as a warning", () => {
@@ -242,5 +285,94 @@ describe("narration cannot become a leak channel", () => {
     expect(activity.entries.map((e) => e.kind)).toEqual(["file"]);
     expect(activity.entries[0]).toMatchObject({ target: "src/app.ts", text: null });
     expect(JSON.stringify(activity)).not.toContain("PRIVATE MODEL OUTPUT");
+  });
+});
+
+describe("context budget and route event coalescing", () => {
+  it("does not spam identical per-turn context budgeting or route selection events", () => {
+    const activity = projectConversationActivity({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      tasks: [{
+        taskId: "task-1",
+        events: [
+          event(1, "provider.route_selected", { providerId: "nvidia-nim", model: "nemotron-3-ultra", fallbackUsed: false }),
+          event(2, "context.budget_calculated", {
+            admitted: true,
+            provider: "nvidia-nim",
+            model: "nemotron-3-ultra",
+            currentModelVisibleTokens: 4_000,
+            usableInputTokens: 200_000,
+            compactionThresholdTokens: 160_000,
+            contextWindowConfidence: "verified",
+          }),
+          // Turn 2: identical route selection & regular recalculation with same parameters
+          event(3, "provider.route_selected", { providerId: "nvidia-nim", model: "nemotron-3-ultra", fallbackUsed: false }),
+          event(4, "context.budget_calculated", {
+            admitted: true,
+            provider: "nvidia-nim",
+            model: "nemotron-3-ultra",
+            currentModelVisibleTokens: 5_200,
+            usableInputTokens: 200_000,
+            compactionThresholdTokens: 160_000,
+            contextWindowConfidence: "verified",
+          }),
+          // Turn 3: another routine calculation
+          event(5, "context.budget_calculated", {
+            admitted: true,
+            provider: "nvidia-nim",
+            model: "nemotron-3-ultra",
+            currentModelVisibleTokens: 6_800,
+            usableInputTokens: 200_000,
+            compactionThresholdTokens: 160_000,
+            contextWindowConfidence: "verified",
+          }),
+        ],
+      }],
+    });
+
+    // Only the initial route and initial context budget appear; routine turns 2 and 3 do NOT duplicate
+    expect(activity.entries).toHaveLength(2);
+    expect(activity.entries[0]).toMatchObject({ kind: "provider", summary: "Route selected" });
+    expect(activity.entries[1]).toMatchObject({ kind: "context", summary: "Context budget calculated" });
+  });
+
+  it("surfaces compaction lifecycle and near-threshold warnings", () => {
+    const activity = projectConversationActivity({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      tasks: [{
+        taskId: "task-1",
+        events: [
+          event(1, "context.budget_calculated", {
+            admitted: true,
+            provider: "nvidia-nim",
+            model: "nemotron-3-ultra",
+            currentModelVisibleTokens: 40_000,
+            usableInputTokens: 200_000,
+            compactionThresholdTokens: 160_000,
+          }),
+          // Exceeding compaction threshold
+          event(2, "context.budget_calculated", {
+            admitted: true,
+            provider: "nvidia-nim",
+            model: "nemotron-3-ultra",
+            currentModelVisibleTokens: 165_000,
+            usableInputTokens: 200_000,
+            compactionThresholdTokens: 160_000,
+          }),
+          // Compaction starts & completes
+          event(3, "context.compaction_started"),
+          event(4, "context.compaction_completed", { tokensBefore: 165_000, tokensAfter: 32_000 }),
+        ],
+      }],
+    });
+
+    expect(activity.entries).toMatchObject([
+      { kind: "context", status: "completed", summary: "Context budget calculated" },
+      { kind: "context", status: "warning", summary: "Context approaching compaction threshold" },
+      { kind: "context", status: "running", summary: "Context compaction started" },
+      { kind: "context", status: "completed", summary: "Context compacted", detail: "165,000 → 32,000 tokens" },
+    ]);
   });
 });

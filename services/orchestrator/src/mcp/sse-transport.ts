@@ -35,6 +35,15 @@ export async function createSseTransport(
     throw new Error(`Failed to connect to SSE endpoint (${response.status} ${response.statusText})`);
   }
 
+  let closeHandler: ((err?: Error) => void) | null = null;
+  let hasClosed = false;
+
+  const notifyClosed = (err?: Error) => {
+    if (hasClosed) return;
+    hasClosed = true;
+    if (closeHandler) closeHandler(err);
+  };
+
   const endpointPromise = new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`Timed out waiting for SSE endpoint negotiation (${opts.connectTimeoutMs ?? 15000}ms)`));
@@ -49,7 +58,10 @@ export async function createSseTransport(
       try {
         while (!closed) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            notifyClosed(new Error("SSE connection stream ended"));
+            break;
+          }
           buffer += decoder.decode(value, { stream: true });
 
           // Parse SSE lines
@@ -92,6 +104,7 @@ export async function createSseTransport(
           clearTimeout(timer);
           reject(err);
         }
+        notifyClosed(err);
       }
     }
 
@@ -118,11 +131,16 @@ export async function createSseTransport(
     onData(handler) {
       dataHandler = handler;
     },
+    onClose(handler) {
+      closeHandler = handler;
+      if (hasClosed) handler(new Error("SSE connection already closed"));
+    },
     close() {
       closed = true;
       try {
         abortController.abort();
       } catch {}
+      notifyClosed();
     },
   };
 

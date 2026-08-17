@@ -4505,7 +4505,34 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         };
         const metadata = resolveModelMetadata(candidate.id, candidateModel);
         const verifiedVision = metadata.capabilities.vision && metadata.capabilitySource !== "unknown";
-        return { candidate, candidateModel, route, resolution, routeFingerprint, candidateOptions, envelope, verifiedVision, exactCapabilities };
+        // Observability-only: what reasoning was asked for, what Morrow actually
+        // sent, and the real provider-specific wire shape it translated to.
+        // Never re-derived by a consumer â€” this IS the exact
+        // translateReasoning() output for this candidate, carried through to
+        // the request_started event untouched.
+        //
+        // routeReasoningCapability is a union: the exact per-deployment shape
+        // (`ReasoningCapability`, keyed by `mode`) when one was verified for
+        // this route, otherwise the catalog shape (`RouteReasoningCapability`,
+        // keyed by `control`) â€” both are read here rather than assumed.
+        const reasoningControl = "control" in routeReasoningCapability
+          ? routeReasoningCapability.control
+          : routeReasoningCapability.mode === "selectable" ? "effort" : routeReasoningCapability.mode;
+        const reasoningSource = "source" in routeReasoningCapability
+          ? routeReasoningCapability.source
+          : exactCapabilities.reasoning.source;
+        const reasoningDiagnostics = {
+          reasoningRequested: requestedReasoning ?? null,
+          reasoningApplied: candidateReasoning ?? null,
+          reasoningSupported: reasoningTranslation.ok,
+          reasoningUnsupportedReason: reasoningTranslation.ok ? null : reasoningTranslation.reason,
+          reasoningWireParams: reasoningTranslation.ok ? reasoningTranslation.params : null,
+          reasoningControl,
+          reasoningSource,
+          reasoningWire: routeReasoningCapability.wire ?? null,
+          reasoningSupportsOff: routeReasoningCapability.supportsOff ?? false,
+        };
+        return { candidate, candidateModel, route, resolution, routeFingerprint, candidateOptions, envelope, verifiedVision, exactCapabilities, reasoningDiagnostics };
       });
       const candidateEnvelopes = routedCandidates.filter((item) => !hasImageInputs || item.verifiedVision);
       // An image with no vision-capable route is a capability dead end, not a
@@ -4544,7 +4571,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             };
         return { ...item, projection };
       });
-      const admittedCandidates = projectedCandidates.flatMap(({ candidate, candidateModel, resolution, routeFingerprint, candidateOptions, projection }) => {
+      const admittedCandidates = projectedCandidates.flatMap(({ candidate, candidateModel, resolution, routeFingerprint, candidateOptions, projection, reasoningDiagnostics }) => {
         const admission = projection.admission;
         const measuredResolution = withCurrentModelVisibleTokens(
           resolution,
@@ -4589,7 +4616,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           measurementProvenance: admission.measurement.provenance ?? null,
         });
         return admission.ok
-          ? [{ ...candidate, resolution: measuredResolution, request: { messages: projection.envelope.messages, options: { ...candidateOptions, tools: projection.envelope.tools }, routeFingerprint } }]
+          ? [{ ...candidate, resolution: measuredResolution, request: { messages: projection.envelope.messages, options: { ...candidateOptions, tools: projection.envelope.tools }, routeFingerprint, diagnostics: reasoningDiagnostics } }]
           : [];
       });
       if (admittedCandidates.length === 0) {
@@ -4646,6 +4673,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             provider: candidate.id,
             model: candidate.request?.options.model ?? null,
             routeFingerprint: candidate.request?.routeFingerprint ?? null,
+            // Reasoning application facts for this exact attempt â€” the browser
+            // capability inspector reads these instead of recomputing a
+            // provider's wire dialect itself. Present only when this candidate
+            // went through the admission path above (always true in practice;
+            // request is only absent for the shared-options fallback object).
+            ...(candidate.request?.diagnostics ?? {}),
           });
         },
       );
@@ -6474,5 +6507,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   completeWithCanonicalAnswer(canonicalFinalText, finalTurn.turnKey);
   } finally {
     await closeBrowserSession();
+    await mcpPool.closeAll().catch(() => {});
   }
 }
