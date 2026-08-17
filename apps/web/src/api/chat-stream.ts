@@ -2,6 +2,7 @@ import { ChatStreamEnvelopeSchema } from "@morrow/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { conversationKeys } from "./conversations.js";
+import { taskQueryKey } from "./task-keys.js";
 
 const eventTypes = [
   "message.updated",
@@ -80,16 +81,41 @@ export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
     let source: EventSource | null = null;
     let reconnectTimer: number | null = null;
     let reconnectAttempt = 0;
+    let reconcileTimer: number | null = null;
     const restored = readCursor(identity);
     let cursor = restored.cursor;
     let terminalPending = restored.terminal;
 
     const messagesKey = conversationKeys.messages(projectId, conversationId);
     const activityKey = conversationKeys.activity(projectId, conversationId);
+    // Prefix, not exact: catches every per-task runtime query built from
+    // taskQueryKey (context usage, capability/reasoning telemetry, …)
+    // without this hook needing to know their individual suffixes. A query
+    // that first resolved while the task was still queued or streaming
+    // otherwise stays cached-empty for its whole staleTime — this is what
+    // keeps the capability inspector from freezing on a stale "no request
+    // yet" snapshot once the task actually completes.
+    const taskKey = taskQueryKey(taskId);
     const reconcile = () => Promise.all([
       queryClient.invalidateQueries({ queryKey: messagesKey }),
       queryClient.invalidateQueries({ queryKey: activityKey }),
+      queryClient.invalidateQueries({ queryKey: taskKey }),
     ]);
+    const scheduleReconcile = (immediate = false) => {
+      if (immediate) {
+        if (reconcileTimer !== null) {
+          window.clearTimeout(reconcileTimer);
+          reconcileTimer = null;
+        }
+        void reconcile();
+        return;
+      }
+      if (reconcileTimer !== null) return;
+      reconcileTimer = window.setTimeout(() => {
+        reconcileTimer = null;
+        void reconcile();
+      }, 50);
+    };
     const reconcileTerminal = () => Promise.all([
       queryClient.refetchQueries(
         { queryKey: messagesKey, exact: true },
@@ -99,11 +125,19 @@ export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
         { queryKey: activityKey, exact: true, type: "active" },
         { throwOnError: true },
       ),
+      // Best-effort: a runtime snapshot refresh must never block the message
+      // reconciliation above, which the retry/backoff loop depends on.
+      queryClient.invalidateQueries({ queryKey: taskKey }),
     ]);
     const clearTimer = () => {
-      if (reconnectTimer === null) return;
-      window.clearTimeout(reconnectTimer);
-      reconnectTimer = null;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (reconcileTimer !== null) {
+        window.clearTimeout(reconcileTimer);
+        reconcileTimer = null;
+      }
     };
     const close = () => {
       const active = source;
@@ -169,7 +203,7 @@ export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
         if (stopped || source !== active || terminalPending) return;
         reconnectAttempt = 0;
         publishStatus("synchronized");
-        void reconcile();
+        scheduleReconcile(true);
       });
       active.addEventListener("error", () => {
         if (stopped || source !== active || finished) return;
@@ -197,7 +231,7 @@ export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
               void completeTerminal();
               return;
             }
-            void reconcile();
+            scheduleReconcile(false);
           } catch {
             // Invalid or private stream data is ignored and never enters UI state.
           }

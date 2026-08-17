@@ -174,15 +174,32 @@ function evidencePresentation(action: string | null): {
       return { kind: "file", summary: "Directory created" };
     case "browser_screenshot":
     case "browser_download":
-    case "browser_vision_attached":
-    case "browser_vision_reattached":
-      return { kind: "evidence", summary: "Browser evidence recorded" };
     default:
       return { kind: "evidence", summary: "Evidence recorded" };
   }
 }
 
-function projectEvent(taskId: string, event: TaskEvent): WebConversationActivityEntry | null {
+interface TaskProjectionState {
+  seenRoute?: { provider: string | null; model: string | null; fallback: boolean } | undefined;
+  initialRouteEmitted?: boolean | undefined;
+  seenBudget?: {
+    provider: string | null;
+    model: string | null;
+    contextWindowConfidence: string | null;
+    contextWindowSource: string | null;
+    routeLimitTokens: number | null;
+    routeLimitSource: string | null;
+    capacity: number | null;
+    nearThreshold: boolean;
+  } | undefined;
+  initialBudgetEmitted?: boolean | undefined;
+}
+
+function projectEvent(
+  taskId: string,
+  event: TaskEvent,
+  state?: TaskProjectionState,
+): WebConversationActivityEntry | null {
   const payload = event.payload;
   const resultCount = nonnegativeInteger(payload.resultCount ?? payload.evidenceCount ?? payload.count);
   switch (event.type) {
@@ -332,6 +349,51 @@ function projectEvent(taskId: string, event: TaskEvent): WebConversationActivity
       });
     case "task.recovery_requeued":
       return entry(taskId, event, { kind: "recovery", status: "running", summary: "Mission recovered and resumed" });
+    case "provider.route_selected": {
+      const provider = identifier(payload.providerId);
+      const model = identifier(payload.model, 300);
+      const fallbackUsed = payload.fallbackUsed === true;
+      const prev = state?.seenRoute;
+      if (!state?.initialRouteEmitted) {
+        if (state) {
+          state.initialRouteEmitted = true;
+          state.seenRoute = { provider, model, fallback: fallbackUsed };
+        }
+        return entry(taskId, event, {
+          kind: "provider",
+          status: "completed",
+          summary: fallbackUsed ? "Route selected (fallback)" : "Route selected",
+          detail: provider && model
+            ? `${provider} / ${model}${payload.pinned === true ? " (pinned)" : ""}`
+            : null,
+          target: provider,
+        });
+      }
+      if (prev && (prev.provider !== provider || prev.model !== model || prev.fallback !== fallbackUsed)) {
+        state.seenRoute = { provider, model, fallback: fallbackUsed };
+        return entry(taskId, event, {
+          kind: "provider",
+          status: fallbackUsed ? "warning" : "completed",
+          summary: fallbackUsed ? "Route fallback used" : "Route changed",
+          detail: provider && model
+            ? `${provider} / ${model}${payload.pinned === true ? " (pinned)" : ""}`
+            : null,
+          target: provider,
+        });
+      }
+      return null;
+    }
+    case "provider.reasoning_unavailable": {
+      const provider = identifier(payload.provider);
+      const model = identifier(payload.model, 300);
+      return entry(taskId, event, {
+        kind: "provider",
+        status: "warning",
+        summary: "Requested reasoning not supported; used route default",
+        detail: typeof payload.reason === "string" ? clamp(payload.reason, 300) : null,
+        target: provider && model ? `${provider} / ${model}` : provider,
+      });
+    }
     case "provider.fallback":
       return entry(taskId, event, {
         kind: "provider",
@@ -350,9 +412,104 @@ function projectEvent(taskId: string, event: TaskEvent): WebConversationActivity
       return entry(taskId, event, { kind: "provider", status: "warning", summary: "Provider rate limit detected" });
     case "provider.tool_syntax_normalized":
       return null;
-    case "context.compaction_started":
-    case "context.compaction_completed":
+    case "context.budget_calculated": {
+      // Emitted once per admitted routing candidate on every turn — a rejected
+      // candidate (too large even after compaction) is diagnostic noise here,
+      // not something Morrow did, so only the route(s) actually admitted reach
+      // the timeline.
+      if (payload.admitted !== true) return null;
+      const provider = identifier(payload.provider);
+      const model = identifier(payload.model, 300);
+      const used = nonnegativeInteger(payload.currentModelVisibleTokens ?? payload.currentRequestTokens);
+      const usable = nonnegativeInteger(payload.usableInputTokens);
+      const confidence = identifier(payload.contextWindowConfidence);
+      const source = identifier(payload.contextWindowSource);
+      const routeLimitTokens = nonnegativeInteger(payload.routeLimitTokens);
+      const routeLimitSource = identifier(payload.routeLimitSource);
+      const capacity = nonnegativeInteger(payload.contextWindowTokens ?? payload.effectiveContextWindowTokens);
+      const threshold = nonnegativeInteger(payload.compactionThresholdTokens);
+      const nearThreshold = Boolean(used !== null && threshold !== null && used >= threshold);
+
+      if (!state?.initialBudgetEmitted) {
+        if (state) {
+          state.initialBudgetEmitted = true;
+          state.seenBudget = {
+            provider,
+            model,
+            contextWindowConfidence: confidence,
+            contextWindowSource: source,
+            routeLimitTokens,
+            routeLimitSource,
+            capacity,
+            nearThreshold,
+          };
+        }
+        return entry(taskId, event, {
+          kind: "context",
+          status: "completed",
+          summary: "Context budget calculated",
+          detail: used !== null && usable !== null
+            ? `${used.toLocaleString("en-US")} / ${usable.toLocaleString("en-US")} usable input tokens${confidence ? `, ${confidence}` : ""}`
+            : null,
+          target: provider && model ? `${provider} / ${model}` : null,
+        });
+      }
+
+      const prev = state.seenBudget;
+      const routeChanged = prev && (prev.provider !== provider || prev.model !== model);
+      const capacitySourceChanged = prev && (prev.contextWindowSource !== source || prev.routeLimitSource !== routeLimitSource || prev.routeLimitTokens !== routeLimitTokens);
+      const thresholdCrossed = prev && !prev.nearThreshold && nearThreshold;
+
+      if (routeChanged || capacitySourceChanged || thresholdCrossed) {
+        state.seenBudget = {
+          provider,
+          model,
+          contextWindowConfidence: confidence,
+          contextWindowSource: source,
+          routeLimitTokens,
+          routeLimitSource,
+          capacity,
+          nearThreshold,
+        };
+        if (thresholdCrossed) {
+          return entry(taskId, event, {
+            kind: "context",
+            status: "warning",
+            summary: "Context approaching compaction threshold",
+            detail: used !== null && threshold !== null
+              ? `${used.toLocaleString("en-US")} / ${threshold.toLocaleString("en-US")} tokens (compaction threshold)`
+              : null,
+            target: provider && model ? `${provider} / ${model}` : null,
+          });
+        }
+        return entry(taskId, event, {
+          kind: "context",
+          status: "completed",
+          summary: "Context window updated",
+          detail: used !== null && usable !== null
+            ? `${used.toLocaleString("en-US")} / ${usable.toLocaleString("en-US")} usable input tokens${confidence ? `, ${confidence}` : ""}`
+            : null,
+          target: provider && model ? `${provider} / ${model}` : null,
+        });
+      }
+
+      // Routine turn recalculation with identical budget params: suppressed from timeline spam
       return null;
+    }
+    case "context.compaction_started":
+      return entry(taskId, event, { kind: "context", status: "running", summary: "Context compaction started" });
+    case "context.compaction_completed": {
+      const before = nonnegativeInteger(payload.tokensBefore ?? payload.inputTokensBefore);
+      const after = nonnegativeInteger(payload.tokensAfter ?? payload.inputTokensAfter);
+      return entry(taskId, event, {
+        kind: "context",
+        status: "completed",
+        summary: "Context compacted",
+        detail: before !== null && after !== null
+          ? `${before.toLocaleString("en-US")} → ${after.toLocaleString("en-US")} tokens`
+          : null,
+      });
+    }
     case "context.compaction_failed":
       return entry(taskId, event, { kind: "context", status: "failed", summary: "Context compaction failed" });
     case "context.history_trimmed":
@@ -442,6 +599,7 @@ export function projectConversationActivity(
     );
 
   const entries: WebConversationActivityEntry[] = [];
+  const taskStates = new Map<string, TaskProjectionState>();
   // Narration arrives as one `evidence.persisted` event per streamed delta —
   // hundreds of them for a single paragraph. They are folded into ONE entry per
   // assistant turn, anchored at the sequence of that turn's first delta, so the
@@ -486,7 +644,11 @@ export function projectConversationActivity(
       continue;
     }
 
-    const projected = projectEvent(taskId, event);
+    if (!taskStates.has(taskId)) {
+      taskStates.set(taskId, {});
+    }
+    const state = taskStates.get(taskId)!;
+    const projected = projectEvent(taskId, event, state);
     if (!projected) continue;
 
     const previous = entries.at(-1);

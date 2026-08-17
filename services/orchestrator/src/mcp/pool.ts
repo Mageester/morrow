@@ -24,6 +24,21 @@ interface PooledClient {
   config: McpServerConfig;
 }
 
+interface CachedDiscovery {
+  tools: McpTool[];
+  cachedAt: number;
+  configHash: string;
+}
+
+const GLOBAL_DISCOVERY_CACHE = new Map<string, CachedDiscovery>();
+const DISCOVERY_CACHE_TTL_MS = 60_000; // 60 seconds
+const DISCOVERY_FAILURE_CACHE_TTL_MS = 30_000; // 30 seconds for failed/offline servers
+
+export function clearMcpDiscoveryCache(serverId?: string): void {
+  if (serverId) GLOBAL_DISCOVERY_CACHE.delete(serverId);
+  else GLOBAL_DISCOVERY_CACHE.clear();
+}
+
 export class McpPool {
   private readonly clients = new Map<string, PooledClient>();
   private readonly connecting = new Map<string, Promise<McpClient>>();
@@ -95,18 +110,71 @@ export class McpPool {
   }
 
   async listAllTools(
-    configs: Record<string, McpServerConfig>
+    configs: Record<string, McpServerConfig>,
+    opts: { timeoutMs?: number; bypassCache?: boolean } = {}
   ): Promise<Map<string, { serverId: string; tool: McpTool; rawName: string }>> {
     const toolMap = new Map<string, { serverId: string; tool: McpTool; rawName: string }>();
+    const timeoutMs = opts.timeoutMs ?? 2500; // 2.5s maximum discovery timeout per server
+    const now = Date.now();
 
-    for (const [serverId, config] of Object.entries(configs)) {
-      if (config.disabled) continue;
-      // If server is not yet trusted, skip tool discovery until user trusts it
-      if (!this.trust.isServerTrusted(serverId, config)) continue;
+    const trustedEntries = Object.entries(configs).filter(([serverId, config]) => {
+      if (config.disabled) return false;
+      return this.trust.isServerTrusted(serverId, config);
+    });
 
-      try {
-        const client = await this.getClient(serverId, config);
-        const tools = await client.listTools();
+    if (trustedEntries.length === 0) return toolMap;
+
+    const entriesToDiscover: Array<[string, McpServerConfig, string]> = [];
+
+    for (const [serverId, config] of trustedEntries) {
+      const configHash = JSON.stringify(config);
+      const cached = GLOBAL_DISCOVERY_CACHE.get(serverId);
+      const ttl = cached && cached.tools.length > 0 ? DISCOVERY_CACHE_TTL_MS : DISCOVERY_FAILURE_CACHE_TTL_MS;
+      if (!opts.bypassCache && cached && cached.configHash === configHash && (now - cached.cachedAt) < ttl) {
+        for (const tool of cached.tools) {
+          const namespacedName = `mcp__${serverId}__${tool.name}`;
+          toolMap.set(namespacedName, {
+            serverId,
+            tool,
+            rawName: tool.name,
+          });
+        }
+      } else {
+        entriesToDiscover.push([serverId, config, configHash]);
+      }
+    }
+
+    if (entriesToDiscover.length === 0) return toolMap;
+
+    const results = await Promise.allSettled(
+      entriesToDiscover.map(async ([serverId, config, configHash]) => {
+        let timer: NodeJS.Timeout | undefined;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`MCP tool discovery for "${serverId}" timed out after ${timeoutMs}ms`)), timeoutMs);
+          if (typeof timer?.unref === "function") timer.unref();
+        });
+
+        const discoverPromise = (async () => {
+          const client = await this.getClient(serverId, config);
+          return await client.listTools();
+        })();
+
+        try {
+          const tools = await Promise.race([discoverPromise, timeoutPromise]);
+          GLOBAL_DISCOVERY_CACHE.set(serverId, { tools, cachedAt: Date.now(), configHash });
+          return { serverId, tools };
+        } catch (err) {
+          GLOBAL_DISCOVERY_CACHE.set(serverId, { tools: [], cachedAt: Date.now(), configHash });
+          throw err;
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      })
+    );
+
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        const { serverId, tools } = result.value;
         for (const tool of tools) {
           const namespacedName = `mcp__${serverId}__${tool.name}`;
           toolMap.set(namespacedName, {
@@ -115,8 +183,6 @@ export class McpPool {
             rawName: tool.name,
           });
         }
-      } catch {
-        // Skip unavailable servers without breaking overall catalog
       }
     }
 

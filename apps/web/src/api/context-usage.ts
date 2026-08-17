@@ -1,6 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 import { z } from "zod";
 import { api } from "./client.js";
+import { taskQueryKey } from "./task-keys.js";
 
 /**
  * How much of the route's context window the last turn actually consumed.
@@ -33,10 +34,14 @@ export type ContextUsage = z.infer<typeof ContextUsageSchema>;
 export const contextUsageQueries = {
   forTask(taskId: string) {
     return queryOptions({
-      queryKey: ["task", taskId, "context"] as const,
+      queryKey: [...taskQueryKey(taskId), "context"] as const,
       queryFn: async () => (await api.get(`/api/tasks/${encodeURIComponent(taskId)}`, TaskDetailSchema)).context,
-      // A finished turn's usage never changes, and the meter re-queries on the
-      // next turn's task id, so there is nothing to poll for here.
+      // A finished turn's usage never changes — but an in-flight one does, and
+      // this key can resolve before the turn finishes (mounted the moment the
+      // task exists). staleTime alone would then cache that empty snapshot
+      // for a full minute; chat-stream.ts invalidates this task's queries on
+      // every lifecycle transition so a real answer replaces it as soon as
+      // the orchestrator has one, not on a timer.
       staleTime: 60_000,
     });
   },

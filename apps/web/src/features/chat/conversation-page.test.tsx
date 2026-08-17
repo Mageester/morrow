@@ -501,4 +501,139 @@ describe("ConversationPage interleaved transcript", () => {
     expect(within(disclosure).getByText(/smallest coherent change/)).toBeVisible();
     expect(localStorage.getItem("morrow.chat.show-reasoning.v1")).toBe("true");
   });
+
+  it("renders live execution status during an active task and connects to inspector", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/activity")) {
+        return json({
+          version: 1,
+          projectId: "project-1",
+          conversationId: conversation.id,
+          entries: [
+            {
+              version: 1,
+              id: "task-1:tool:read",
+              taskId: "task-1",
+              sequence: 1,
+              kind: "file",
+              status: "running",
+              summary: "Reading src/index.ts",
+              detail: null,
+              target: "src/index.ts",
+              toolName: "read_file",
+              durationMs: null,
+              exitCode: null,
+              resultCount: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+        });
+      }
+      if (path.endsWith("/api/tasks/task-1")) {
+        return json({
+          context: {
+            currentModelVisibleTokens: 18_400,
+            effectiveContextWindowTokens: 200_000,
+          },
+          routing: {
+            providerId: "nvidia-nim",
+            model: "nemotron-3-ultra",
+          },
+          reasoningApplication: null,
+        });
+      }
+      if (path.includes("/approvals")) return json([]);
+      if (path.endsWith("/messages")) {
+        return json([
+          message({
+            taskId: "task-1",
+            streamingState: "streaming",
+            content: "",
+          }),
+        ]);
+      }
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      if (path.includes("/projects/project-1/status")) return json({ id: "project-1", name: "Local project", workspacePath: "C:\\local", accessible: true, gitDetected: true, branch: "main" });
+      if (path.includes("/models")) return json({ version: 1, presets: [], models: [] });
+      return json({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("region", { name: `Conversation: ${conversation.title}` });
+    const inspectBtn = await screen.findByRole("button", { name: "Inspect live activity" });
+    expect(inspectBtn).toBeInTheDocument();
+    expect(screen.getByText(/Working ·/)).toBeInTheDocument();
+    expect(screen.getByText("1 step")).toBeInTheDocument();
+    await user.click(inspectBtn);
+
+    const panel = await screen.findByRole("complementary", { name: "Activity / Inspect" });
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByText("Reading src/index.ts")).toBeInTheDocument();
+  });
+
+  it("queues user messages during active task and delivers automatically upon task completion", async () => {
+    let active = true;
+    let submittedMessage: unknown = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/activity")) return json({ version: 1, projectId: "project-1", conversationId: conversation.id, entries: [] });
+      if (path.endsWith("/api/tasks/task-1")) return json({ context: null, routing: null, reasoningApplication: null });
+      if (path.includes("/approvals")) return json([]);
+      if (path.endsWith("/messages") && init?.method === "POST") {
+        submittedMessage = JSON.parse(String(init.body));
+        return json({
+          task: { id: "task-2", status: "queued" },
+          userMessage: { id: "msg-user-2", conversationId: conversation.id, role: "user", content: "Queued message to send next", createdAt: now, updatedAt: now },
+          assistantMessage: { id: "msg-asst-2", conversationId: conversation.id, role: "assistant", content: "", createdAt: now, updatedAt: now },
+          routing,
+        });
+      }
+      if (path.endsWith("/messages")) {
+        return json([
+          message({
+            taskId: active ? "task-1" : undefined,
+            streamingState: active ? "streaming" : "completed",
+            content: active ? "" : "Completed first answer",
+          }),
+        ]);
+      }
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      if (path.includes("/projects/project-1/status")) return json({ id: "project-1", name: "Local project", workspacePath: "C:\\local", accessible: true, gitDetected: true, branch: "main" });
+      if (path.includes("/models")) return json({ version: 1, presets: [], models: [] });
+      return json({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+
+    const input = await screen.findByRole("textbox", { name: "Message Morrow" });
+    expect(input).toBeEnabled();
+    await user.type(input, "Queued message to send next");
+
+    const queueBtn = screen.getByRole("button", { name: "Queue message" });
+    await user.click(queueBtn);
+
+    // Queued message banner appears
+    expect(await screen.findByText("Queued for next step")).toBeInTheDocument();
+    expect(screen.getByText("Queued message to send next")).toBeInTheDocument();
+
+    // Now complete task-1
+    act(() => {
+      active = false;
+      queryClient.setQueryData(
+        conversationKeys.messages("project-1", conversation.id),
+        [message({ taskId: undefined, streamingState: "completed", content: "Completed first answer" })],
+      );
+    });
+
+    await waitFor(() => {
+      expect(submittedMessage).toMatchObject({
+        content: "Queued message to send next",
+      });
+    });
+  });
 });

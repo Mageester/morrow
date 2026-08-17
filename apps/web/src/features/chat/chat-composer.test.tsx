@@ -521,7 +521,6 @@ describe("ChatComposer", () => {
       />,
     );
     const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
-    expect(textbox).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
     fireEvent.keyDown(textbox, { key: "Enter" });
     fireEvent.submit(textbox.closest("form")!);
@@ -529,6 +528,42 @@ describe("ChatComposer", () => {
     expect(screen.getByRole("button", { name: "Stop generation" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Chat" })).toBeDisabled();
     expect(screen.getByLabelText("Model route")).toBeDisabled();
+  });
+
+  it("allows typing and queueing a message while a task is active", async () => {
+    const user = userEvent.setup();
+    const onQueueMessage = vi.fn();
+    const onSubmit = vi.fn();
+    render(
+      <ChatComposer
+        activeTaskId="task-1"
+        draftScope={scope}
+        onQueueMessage={onQueueMessage}
+        onSubmit={onSubmit}
+      />,
+    );
+    const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
+    expect(textbox).toBeEnabled();
+    await user.type(textbox, "Queue this follow-up message");
+    const queueBtn = screen.getByRole("button", { name: "Queue message" });
+    expect(queueBtn).toBeEnabled();
+    await user.click(queueBtn);
+    expect(onQueueMessage).toHaveBeenCalledTimes(1);
+    expect(onQueueMessage).toHaveBeenCalledWith(expect.objectContaining({ content: "Queue this follow-up message" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("keeps CapabilityStatus enabled and inspectable during task execution", () => {
+    render(
+      <ChatComposer
+        activeTaskId="task-1"
+        contextTaskId="task-1"
+        draftScope={scope}
+        onSubmit={vi.fn()}
+      />,
+    );
+    const capabilityBtn = screen.getByTitle("Capability & context status");
+    expect(capabilityBtn).toBeEnabled();
   });
 });
 

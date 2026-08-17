@@ -1414,6 +1414,9 @@ export function openDatabase(file:string){
   try{
     db.pragma("foreign_keys = ON");
     db.pragma("busy_timeout = 5000");
+    if (file !== ":memory:") {
+      db.pragma("journal_mode = WAL");
+    }
     db.function("morrow_redact", { deterministic: true }, (value: unknown) => typeof value === "string" ? redactSecrets(value) : "");
     db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");
     const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));

@@ -356,7 +356,9 @@
     width: 100%;
   }
 
-  .morrow-chat-composer .morrow-context-meter {
+  /* The status control shrinks to its ring/icon rather than disappearing —
+     the whole point of this control is that it stays answerable on a phone. */
+  .morrow-chat-composer .morrow-capability-status__label {
     display: none;
   }
 
@@ -372,12 +374,288 @@
   opacity: 0.75;
 }
 
-/* Stop replaces send in place, at the same size and on one line. */
+/* ── Capability / context status control ─────────────────────────────────── */
+/*
+ * Compact by default — a ring or a small icon plus a short "Provider ·
+ * Model" label, the same chip height as its neighbours. Everything the user
+ * needs to verify (exact route, reasoning application, context arithmetic,
+ * provenance) lives in the popover, opened on demand rather than shown inline.
+ */
+.morrow-capability-status {
+  position: relative;
+  flex: none;
+}
+
+.morrow-chat-composer .morrow-capability-status__trigger {
+  display: inline-flex;
+  height: var(--morrow-chip-height);
+  max-width: 220px;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid #363831;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 0.018);
+  color: #93958c;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  gap: 6px;
+  transition:
+    border-color var(--morrow-premium-control) var(--morrow-product-shift),
+    color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-chat-composer .morrow-capability-status__trigger:hover:not(:disabled) {
+  border-color: #4d4f46;
+  color: var(--morrow-product-copy-soft);
+}
+
+.morrow-chat-composer .morrow-capability-status__trigger[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--morrow-product-copper) 40%, #363831);
+  color: var(--morrow-product-copy-soft);
+}
+
+.morrow-chat-composer .morrow-capability-status__trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.morrow-capability-status__trigger .morrow-context-meter {
+  opacity: 1;
+}
+
+.morrow-capability-status__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-capability-status__flag {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.morrow-capability-status__flag[data-tone="warning"] {
+  color: var(--morrow-product-warning, #c99a3e);
+  background: color-mix(in srgb, var(--morrow-product-warning, #c99a3e) 18%, transparent);
+}
+
+.morrow-capability-status__panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  display: grid;
+  width: min(360px, 92vw);
+  max-height: min(70vh, 560px);
+  gap: 14px;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid #3f4039;
+  border-radius: 14px;
+  background: #1d1e19;
+  box-shadow: 0 24px 64px rgb(0 0 0 / 0.55), 0 0 0 1px rgb(255 255 255 / 0.03);
+  color: var(--morrow-product-copy, #dedad2);
+  font-size: 12px;
+  transform-origin: bottom right;
+  animation: morrow-picker-in var(--morrow-premium-status, 220ms) var(--morrow-product-shift, ease) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .morrow-capability-status__panel {
+    animation: none;
+  }
+}
+
+.morrow-capability-status__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.morrow-capability-status__header p {
+  margin: 0;
+  color: var(--morrow-product-copy, #dedad2);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.morrow-capability-status__badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.morrow-capability-status__badge[data-tone="verified"] {
+  color: #7fbf8f;
+  background: rgb(127 191 143 / 0.14);
+}
+
+.morrow-capability-status__badge[data-tone="partial"] {
+  color: #93958c;
+  background: rgb(255 255 255 / 0.06);
+}
+
+.morrow-capability-status__badge[data-tone="unverified"] {
+  color: #c99a3e;
+  background: rgb(201 154 62 / 0.14);
+}
+
+.morrow-capability-status__panel section {
+  display: grid;
+  gap: 6px;
+}
+
+.morrow-capability-status__panel h3 {
+  margin: 0;
+  color: var(--morrow-product-faint, #85877e);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.morrow-capability-status__list {
+  display: grid;
+  margin: 0;
+  gap: 5px;
+}
+
+.morrow-capability-status__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.morrow-capability-status__row dt {
+  flex: none;
+  color: #93958c;
+}
+
+.morrow-capability-status__row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--morrow-product-copy, #dedad2);
+  text-align: right;
+}
+
+.morrow-capability-status__source {
+  color: #85877e;
+}
+
+.morrow-capability-status__note {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.03);
+  color: #93958c;
+  font-size: 11px;
+}
+
+.morrow-capability-status__note[data-tone="warning"] {
+  color: #c99a3e;
+  background: rgb(201 154 62 / 0.1);
+}
+
+.morrow-capability-status__wire {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.04);
+  color: var(--morrow-product-copy-soft, #c4c0b7);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 700px) {
+  /*
+   * `left: 50%` centered against the trigger's own tiny offset parent, not
+   * the viewport — since the trigger sits far right in the toolbar (next to
+   * send), that pushed most of the panel off the right edge of the screen.
+   * A fixed-position bottom sheet ignores the trigger's position entirely,
+   * which is what actually keeps this control answerable on a phone.
+   */
+  .morrow-capability-status__panel {
+    position: fixed;
+    /* Clears the fixed mobile tab dock (states.css, ~62px + margin) so the
+       sheet never sits underneath it. */
+    right: 12px;
+    bottom: 82px;
+    left: 12px;
+    width: auto;
+    max-height: min(70vh, 520px);
+    transform: none;
+    transform-origin: bottom center;
+  }
+}
+
+/* Stop & Queue replace send in place, at the same size and on one line. */
+.morrow-chat-composer .morrow-chat-composer__actions {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  gap: 6px;
+}
+
 .morrow-chat-composer .morrow-chat-composer__stop {
+  display: inline-flex;
   height: var(--morrow-chip-height);
   flex-direction: row;
   align-items: center;
+  padding: 0 12px;
+  border: 1px solid #5a322c;
+  border-radius: 9px;
+  background: rgb(90 50 44 / 0.18);
+  color: #ea8a7d;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  gap: 6px;
   white-space: nowrap;
+  transition: background var(--morrow-premium-control) var(--morrow-product-shift), border-color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-chat-composer .morrow-chat-composer__stop:hover:not(:disabled) {
+  border-color: #8c4238;
+  background: rgb(90 50 44 / 0.32);
+  color: #ff9f92;
+}
+
+.morrow-chat-composer .morrow-chat-composer__queue {
+  display: inline-flex;
+  height: var(--morrow-chip-height);
+  flex-direction: row;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid var(--morrow-product-copper-line);
+  border-radius: 9px;
+  background: var(--morrow-product-copper-glow);
+  color: var(--morrow-product-copper);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  gap: 6px;
+  white-space: nowrap;
+  transition: background var(--morrow-premium-control) var(--morrow-product-shift), border-color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-chat-composer .morrow-chat-composer__queue:hover:not(:disabled) {
+  border-color: var(--morrow-product-copper);
+  background: color-mix(in srgb, var(--morrow-product-copper) 22%, transparent);
 }
 
 /* The picker's trigger fills the chip that now carries the border. */

@@ -2,8 +2,8 @@ import type { Conversation, ModelStatus, PresetStatus, WebConversationActivityEn
 import { WebMissionSnapshotSchema } from "@morrow/contracts";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { Archive, ListTree, Pencil, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { Archive, ArrowDown, ListTree, Pencil, Trash2 } from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { clearChatStreamCursor, resumeChatStreamAfter, useChatTaskStream } from "../../api/chat-stream.js";
 import { useMissionStream } from "../../api/mission-stream.js";
 import {
@@ -17,18 +17,24 @@ import { Markdown } from "../../components/markdown.js";
 import { projectQueries } from "../../api/projects.js";
 import { missionKeys, missionQueries } from "../../api/query-keys.js";
 import { api, ApiClientError } from "../../api/client.js";
+import { saveChatDraft } from "./draft-store.js";
 import { ChatComposer, type ChatComposerSubmission } from "./chat-composer.js";
 import { toConversationMessageInput } from "./conversation-submit.js";
 import { MissionCard } from "./mission-card.js";
 import { MissionPanel } from "./mission-panel.js";
-import { ActivityPanel, ConversationActivity, ConversationTranscript } from "./activity-panel.js";
-import { ConversationRail } from "./conversation-rail.js";
+import { ActivityPanel } from "./activity-panel.js";
 import { usePublishShellTitle } from "../../app/shell-title.js";
 import { PendingApprovals } from "./pending-approvals.js";
 import { useConversationAutoscroll } from "./use-conversation-autoscroll.js";
 import { ReasoningDisclosure } from "./reasoning-disclosure.js";
+import { projectTurnWork } from "./chat-projection.js";
+import { NotableEvent, WorkSummary } from "./work-summary.js";
+import { parseTurnFailure } from "./turn-failure.js";
+import { TurnFailureNotice } from "./turn-failure-notice.js";
+import { LiveTurnStatus } from "./live-status.js";
 
 const ACTIVE_STATES = new Set(["queued", "streaming"]);
+const FAILED_STATES = new Set(["failed", "interrupted"]);
 const RETRYABLE_STATES = new Set(["failed", "interrupted"]);
 const REASONING_VISIBILITY_STORAGE_KEY = "morrow.chat.show-reasoning.v1";
 
@@ -92,20 +98,6 @@ function ConversationTitle({ title }: { title: string }) {
   return null;
 }
 
-/**
- * True when the viewport is wide enough to show the live-work rail beside the
- * conversation rather than over it. Matches the 1200px desktop breakpoint in
- * MOTION_AND_RESPONSIVE.md.
- */
-function railFitsViewport(): boolean {
-  try {
-    return window.matchMedia("(min-width: 1200px)").matches;
-  } catch {
-    // No matchMedia (jsdom, older engines): default to the calmer state.
-    return false;
-  }
-}
-
 function TaskStream({ projectId, conversationId, taskId }: { projectId: string; conversationId: string; taskId: string }) {
   const stream = useChatTaskStream({ projectId, conversationId, taskId });
   if (stream.status === "offline") {
@@ -153,6 +145,121 @@ function WorkspaceStatusLine({ projectId }: { projectId: string }) {
   );
 }
 
+export interface ConversationMessageItemProps {
+  message: WebConversationMessage;
+  conversationId: string;
+  projectId: string;
+  entries?: readonly WebConversationActivityEntry[] | undefined;
+  showReasoning: boolean;
+  actionBusy: boolean;
+  onRetry: (taskId: string) => void;
+  onOpenActivity: () => void;
+}
+
+/**
+ * One turn of the conversation.
+ *
+ * An assistant turn is a single coherent unit: the work Morrow did, folded into
+ * one compact summary; any exceptional transition that changes how the answer
+ * should be read; then the answer itself, which is what the turn is for and
+ * therefore what dominates once it exists.
+ *
+ * The ordered interleaving of narration and tool calls is not reproduced here.
+ * It remains complete in Activity / Inspect, where a reader is asking "in what
+ * order did this happen?" — a different question from the one a conversation
+ * answers. Rendering it inline is what turned this surface into an event feed.
+ */
+export const ConversationMessageItem = memo(function ConversationMessageItem({
+  message,
+  conversationId,
+  projectId,
+  entries,
+  showReasoning,
+  actionBusy,
+  onRetry,
+  onOpenActivity,
+}: ConversationMessageItemProps) {
+  const streaming = ACTIVE_STATES.has(message.streamingState);
+  const failed = FAILED_STATES.has(message.streamingState);
+  const work = useMemo(
+    () => projectTurnWork(entries, streaming),
+    [entries, streaming],
+  );
+  // The recorded failure reason is split out of the body so the prose above it
+  // still renders as prose and the reason gets a surface built for it.
+  const failure = useMemo(
+    () => (failed ? parseTurnFailure(message.content) : null),
+    [failed, message.content],
+  );
+
+  if (message.role === "user") {
+    return (
+      <article
+        className="morrow-conversation-message morrow-conversation-message--user"
+        data-testid="conversation-message-user"
+      >
+        <div className="morrow-conversation-message__content">
+          <p>{message.content}</p>
+        </div>
+      </article>
+    );
+  }
+
+  const label = routingLabel(message);
+  const body = failure ? failure.content : message.content;
+  const waiting = !body && streaming;
+
+  return (
+    <article
+      className="morrow-conversation-message morrow-conversation-message--assistant"
+      data-testid="conversation-message-assistant"
+    >
+      <p className="morrow-conversation-message__author">Morrow</p>
+      <div className="morrow-conversation-message__turn">
+        {message.taskId ? <WorkSummary onInspect={onOpenActivity} work={work} /> : null}
+
+        {work.notables.map((entry) => <NotableEvent entry={entry} key={entry.id} />)}
+
+        {showReasoning && message.taskId ? (
+          <ReasoningDisclosure
+            active={streaming}
+            conversationId={conversationId}
+            projectId={projectId}
+            taskId={message.taskId}
+          />
+        ) : null}
+
+        {waiting ? (
+          <p className="morrow-typing-indicator" role="status">
+            Morrow is responding…
+            <span aria-hidden="true" className="morrow-typing-indicator__dots">
+              <span />
+              <span />
+              <span />
+            </span>
+          </p>
+        ) : body ? (
+          <div className="morrow-conversation-message__content morrow-conversation-message__content--markdown">
+            <Markdown streaming={streaming} text={body} />
+          </div>
+        ) : null}
+
+        {failed ? (
+          <TurnFailureNotice
+            failure={failure}
+            retryDisabled={actionBusy}
+            {...(message.taskId && RETRYABLE_STATES.has(message.streamingState)
+              ? { onRetry: () => onRetry(message.taskId!) }
+              : {})}
+          />
+        ) : null}
+
+        {label ? <p className="morrow-conversation-message__route">{label}</p> : null}
+      </div>
+    </article>
+  );
+});
+
 export interface ConversationPageContentProps {
   projectId: string;
   conversationId: string;
@@ -181,12 +288,14 @@ export function ConversationPageContent({
   const [renameTitle, setRenameTitle] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
-  // The live-work rail is contextual: it opens with the conversation where
-  // there is room for it, and stays behind the Activity control below the
-  // reference's desktop breakpoint, where it would otherwise cover the reading
-  // column it is meant to accompany.
-  const [activityOpen, setActivityOpen] = useState(railFitsViewport);
-  const [inspectorOpen, setInspectorOpen] = useState(false);
+  // Activity is opt-in. The conversation owns the width by default and the
+  // drawer is one click away; a permanently docked execution panel duplicated
+  // what the turn summaries already say and pushed the reading column into a
+  // corner of its own screen.
+  const [activityOpen, setActivityOpen] = useState(false);
+  // Set synchronously when Send is pressed, before any request resolves, so the
+  // interface acknowledges the message in the same frame as the click.
+  const [sending, setSending] = useState(false);
   const [showReasoning, setShowReasoning] = useState(loadReasoningVisibility);
   const [reasoningConfig, setReasoningConfig] = useState<import("@morrow/contracts").ReasoningConfiguration>({ mode: "auto" });
   const activityButtonRef = useRef<HTMLButtonElement>(null);
@@ -222,7 +331,23 @@ export function ConversationPageContent({
     () => history.map(({ content, id, streamingState, updatedAt }) => `${id}\u0000${content}\u0000${streamingState}\u0000${updatedAt}`).join("\u0001"),
     [history],
   );
-  const { resume: resumeAutoscroll, sentinelRef } = useConversationAutoscroll({ history, transcript, activeTaskId });
+  const {
+    containerRef: historyRef,
+    resume: resumeAutoscroll,
+    sentinelRef,
+    showJumpButton,
+  } = useConversationAutoscroll({ history, transcript, activeTaskId });
+  const [queuedMessage, setQueuedMessage] = useState<ChatComposerSubmission | null>(null);
+  const prevActiveTaskId = useRef(activeTaskId);
+
+  useEffect(() => {
+    if (prevActiveTaskId.current && !activeTaskId && queuedMessage) {
+      const next = queuedMessage;
+      setQueuedMessage(null);
+      void submit(next);
+    }
+    prevActiveTaskId.current = activeTaskId;
+  }, [activeTaskId, queuedMessage]);
   const activityByTask = useMemo(() => {
     const grouped = new Map<string, WebConversationActivityEntry[]>();
     for (const entry of activity.data?.entries ?? []) {
@@ -231,15 +356,13 @@ export function ConversationPageContent({
     return grouped;
   }, [activity.data]);
 
-  // A task has a transcript only once it has narration to interleave; without
-  // it there is nothing to order the tool steps against.
-  const transcripts = useMemo(() => {
-    const withNarration = new Set<string>();
-    for (const entry of activity.data?.entries ?? []) {
-      if (entry.kind === "narration") withNarration.add(entry.taskId);
-    }
-    return withNarration;
-  }, [activity.data]);
+  // The live status line reports the turn in flight; it reads the same
+  // projection the turn's own summary does, so the two can never disagree.
+  const activeWork = useMemo(
+    () => projectTurnWork(activeTaskId ? activityByTask.get(activeTaskId) : undefined, true),
+    [activeTaskId, activityByTask],
+  );
+  const openActivity = useCallback(() => setActivityOpen(true), []);
   const conversationTaskIds = useMemo(
     () => new Set(history.flatMap((message) => (message.taskId ? [message.taskId] : []))),
     [history],
@@ -311,6 +434,9 @@ export function ConversationPageContent({
 
   async function submit(submission: ChatComposerSubmission) {
     resumeAutoscroll();
+    // Before the network is touched: the status line appears now, not when the
+    // provider gets around to answering.
+    setSending(true);
     try {
       const result = await conversationApi.sendMessage(
         projectId,
@@ -339,6 +465,8 @@ export function ConversationPageContent({
         accepted: false,
         error: safeError(error, "Morrow could not accept this message. Check the connection and try again."),
       } as const;
+    } finally {
+      setSending(false);
     }
   }
 
@@ -431,6 +559,10 @@ export function ConversationPageContent({
     }
   }
 
+  const handleRetry = useCallback((taskId: string) => {
+    void retry(taskId);
+  }, [projectId, conversationId, queryClient]);
+
   if (conversation.isPending || messages.isPending) {
     return <section className="morrow-conversation-page"><p aria-live="polite" role="status">Loading conversation…</p></section>;
   }
@@ -457,7 +589,7 @@ export function ConversationPageContent({
     <section
       aria-label={`Conversation: ${value.title}`}
       className="morrow-conversation-page"
-      data-rail={activityOpen ? "open" : "closed"}
+      data-activity={activityOpen ? "open" : "closed"}
     >
       {/* The conversation's name goes to the shell breadcrumb instead of being
           repeated as a page heading, so the reading column opens on the
@@ -468,7 +600,7 @@ export function ConversationPageContent({
       <header className="morrow-conversation-header">
         <div aria-label="Conversation actions" className="morrow-conversation-actions">
           <button
-            aria-label={activityOpen ? "Hide live work" : "Show live work"}
+            aria-label={activityOpen ? "Hide activity" : "Show activity"}
             aria-pressed={activityOpen}
             className="morrow-conversation-actions__activity"
             onClick={() => setActivityOpen((open) => !open)}
@@ -484,7 +616,7 @@ export function ConversationPageContent({
         </div>
       </header>
 
-      <div aria-live="polite" className="morrow-conversation-history">
+      <div aria-live="polite" className="morrow-conversation-history" ref={historyRef}>
         <div className="morrow-conversation-history__inner">
         <WorkspaceStatusLine projectId={projectId} />
 
@@ -516,63 +648,19 @@ export function ConversationPageContent({
             <h2>Start this conversation</h2>
             <p>Ask a question or choose Plan when you want a thoughtful approach without changes.</p>
           </div>
-        ) : history.map((message) => {
-          const label = routingLabel(message);
-          const waiting = message.role === "assistant" && !message.content && ACTIVE_STATES.has(message.streamingState);
-          return (
-            <article
-              className={`morrow-conversation-message morrow-conversation-message--${message.role}`}
-              data-testid={`conversation-message-${message.role}`}
-              key={message.id}
-            >
-              {message.role === "assistant" ? <p className="morrow-conversation-message__author">Morrow</p> : null}
-              {/* An assistant turn with narration renders as the interleaved
-                  transcript — its words and its actions in run order. The flat
-                  body is the fallback for turns that produced no narration
-                  entries (a plain answer with no tools, or history recorded
-                  before the transcript projection existed), so nothing that
-                  used to be readable stops being readable. */}
-              {message.role === "assistant" && message.taskId && transcripts.has(message.taskId) ? (
-                <ConversationTranscript
-                  entries={activityByTask.get(message.taskId) ?? []}
-                  streaming={ACTIVE_STATES.has(message.streamingState)}
-                />
-              ) : (
-                <>
-                  {message.role === "assistant" && message.taskId ? (
-                    <ConversationActivity entries={activityByTask.get(message.taskId) ?? []} />
-                  ) : null}
-                  <div className={`morrow-conversation-message__content${message.role === "assistant" ? " morrow-conversation-message__content--markdown" : ""}`}>
-                    {waiting ? (
-                      <p className="morrow-typing-indicator" role="status">
-                        Morrow is responding…
-                        <span aria-hidden="true" className="morrow-typing-indicator__dots">
-                          <span />
-                          <span />
-                          <span />
-                        </span>
-                      </p>
-                    ) : message.role === "assistant" ? (
-                      <Markdown streaming={ACTIVE_STATES.has(message.streamingState)} text={message.content} />
-                    ) : <p>{message.content}</p>}
-                  </div>
-                </>
-              )}
-              {showReasoning && message.role === "assistant" && message.taskId ? (
-                <ReasoningDisclosure
-                  active={ACTIVE_STATES.has(message.streamingState)}
-                  conversationId={conversationId}
-                  projectId={projectId}
-                  taskId={message.taskId}
-                />
-              ) : null}
-              {label ? <p className="morrow-conversation-message__route">{label}</p> : null}
-              {message.taskId && RETRYABLE_STATES.has(message.streamingState) ? (
-                <button disabled={actionBusy} onClick={() => { void retry(message.taskId!); }} type="button">Retry response</button>
-              ) : null}
-            </article>
-          );
-        })}
+        ) : history.map((message) => (
+          <ConversationMessageItem
+            actionBusy={actionBusy}
+            conversationId={conversationId}
+            entries={message.taskId ? activityByTask.get(message.taskId) : undefined}
+            key={message.id}
+            message={message}
+            onOpenActivity={openActivity}
+            onRetry={handleRetry}
+            projectId={projectId}
+            showReasoning={showReasoning}
+          />
+        ))}
 
         {activeMessages.map((message) => (
           <TaskStream conversationId={conversationId} key={message.taskId} projectId={projectId} taskId={message.taskId!} />
@@ -580,6 +668,17 @@ export function ConversationPageContent({
 
         <div aria-hidden="true" className="morrow-conversation-autoscroll-sentinel" ref={sentinelRef} />
         </div>
+        {showJumpButton ? (
+          <button
+            aria-label="Jump to latest messages"
+            className="morrow-jump-to-latest"
+            onClick={resumeAutoscroll}
+            type="button"
+          >
+            <ArrowDown aria-hidden="true" size={14} />
+            <span>Jump to latest</span>
+          </button>
+        ) : null}
       </div>
 
       <div className="morrow-conversation-action-shelf">
@@ -589,6 +688,44 @@ export function ConversationPageContent({
           conversationTaskIds={conversationTaskIds}
           projectId={projectId}
         />
+        {activeTaskId || sending ? (
+          <LiveTurnStatus
+            onOpenActivity={openActivity}
+            queued={activeMessages.at(-1)?.streamingState === "queued"}
+            sending={sending}
+            taskId={activeTaskId}
+            work={activeWork}
+          />
+        ) : null}
+        {queuedMessage ? (
+          <div className="morrow-queued-message" role="status">
+            <div className="morrow-queued-message__head">
+              <span className="morrow-queued-message__badge">Queued for next step</span>
+              <div className="morrow-queued-message__actions">
+                <button
+                  aria-label="Edit queued message"
+                  className="morrow-queued-message__btn"
+                  onClick={() => {
+                    saveChatDraft({ projectId, conversationId }, queuedMessage.content);
+                    setQueuedMessage(null);
+                  }}
+                  type="button"
+                >
+                  Edit
+                </button>
+                <button
+                  aria-label="Cancel queued message"
+                  className="morrow-queued-message__btn"
+                  onClick={() => setQueuedMessage(null)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+            <p className="morrow-queued-message__content">{queuedMessage.content}</p>
+          </div>
+        ) : null}
       </div>
 
       <div className="morrow-conversation-composer">
@@ -598,35 +735,25 @@ export function ConversationPageContent({
           contextTaskId={latestTaskId}
           draftScope={{ projectId, conversationId }}
           modelCatalogue={modelCatalogue}
-          onStop={stop}
-          onShowReasoningChange={setShowReasoning}
+          onQueueMessage={setQueuedMessage}
           onReasoningConfigChange={setReasoningConfig}
-          reasoningConfig={reasoningConfig}
+          onShowReasoningChange={setShowReasoning}
+          onStop={stop}
           onSubmit={submit}
+          placeholder={activeTaskId ? "Type a follow-up or steering message to queue…" : "Reply to Morrow…"}
+          queuedMessage={queuedMessage}
+          reasoningConfig={reasoningConfig}
           showReasoning={showReasoning}
-          placeholder="Reply to Morrow…"
         />
       </div>
       </div>
 
+      {/* One activity surface, not two. It carries the full, raw, redacted
+          execution record; the conversation carries the curated view of it. */}
       {activityOpen ? (
-        <ConversationRail
-          active={activeTaskId !== undefined}
-          conversationId={conversationId}
-          onOpenInspector={() => setInspectorOpen(true)}
-          projectId={projectId}
-        />
-      ) : null}
-
-      {/* The rail summarises; the inspector still carries the full, raw,
-          redacted activity record. Opening it stays one click away. */}
-      {inspectorOpen ? (
         <ActivityPanel
           conversationId={conversationId}
-          onClose={() => {
-            setInspectorOpen(false);
-            window.setTimeout(() => activityButtonRef.current?.focus(), 0);
-          }}
+          onClose={closeActivity}
           projectId={projectId}
         />
       ) : null}

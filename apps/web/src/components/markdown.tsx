@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
@@ -119,7 +119,7 @@ export interface MarkdownProps {
   className?: string;
 }
 
-export function Markdown({ text, streaming = false, className }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ text, streaming = false, className }: MarkdownProps) {
   const source = useMemo(
     () => (streaming ? normalizeStreamingMarkdown(text) : text),
     [text, streaming],
@@ -162,4 +162,4 @@ export function Markdown({ text, streaming = false, className }: MarkdownProps) 
       </ReactMarkdown>
     </div>
   );
-}
+});

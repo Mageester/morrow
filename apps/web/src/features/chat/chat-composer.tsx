@@ -1,6 +1,6 @@
 import { normalizeReasoningForRoute, reasoningModesForRoute, type AgentMode, type ModelStatus, type PresetId, type PresetStatus, type ProviderId, type ReasoningConfiguration, type RouteReasoningCapability } from "@morrow/contracts";
-import { Send, Square } from "lucide-react";
-import { ContextMeter } from "./context-meter.js";
+import { Send, SlidersHorizontal, Square } from "lucide-react";
+import { CapabilityStatus } from "./capability-status.js";
 import { ModelPicker } from "./model-picker.js";
 import {
   useEffect,
@@ -11,6 +11,7 @@ import {
   type FormEvent,
   type InputEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import {
   clearChatDraft,
@@ -142,6 +143,8 @@ export interface ChatComposerProps {
   onShowReasoningChange?: ((show: boolean) => void) | undefined;
   reasoningConfig?: ReasoningConfiguration | undefined;
   onReasoningConfigChange?: ((config: ReasoningConfiguration) => void) | undefined;
+  queuedMessage?: ChatComposerSubmission | null | undefined;
+  onQueueMessage?: ((submission: ChatComposerSubmission) => void) | undefined;
 }
 
 const DEFAULT_ROUTE: ChatComposerModelRoute = {
@@ -327,6 +330,8 @@ export function ChatComposer({
   onShowReasoningChange,
   reasoningConfig,
   onReasoningConfigChange,
+  queuedMessage,
+  onQueueMessage,
 }: ChatComposerProps) {
   const id = useId();
   const inputId = `morrow-chat-message-${id}`;
@@ -418,7 +423,7 @@ export function ChatComposer({
   // UI as if it were a standing status. Errors are left in place (they need the
   // user to act), so only the known success notices auto-dismiss.
   useEffect(() => {
-    if (message !== "Message accepted." && message !== "Stop requested.") return;
+    if (message !== "Message accepted." && message !== "Stop requested." && message !== "Message queued for next turn.") return;
     const timer = setTimeout(() => {
       setMessage((current) => (current === message ? null : current));
     }, 2500);
@@ -448,13 +453,10 @@ export function ChatComposer({
 
   async function submit() {
     const textarea = textareaRef.current;
-    if (!textarea || disabled || activeTaskId || stopping || sendingRef.current) return;
+    if (!textarea || disabled || stopping || sendingRef.current) return;
     const content = textarea.value;
     if (!content.trim() || content.length > CHAT_PROMPT_MAX_LENGTH) return;
 
-    sendingRef.current = true;
-    setSending(true);
-    setMessage(null);
     const submittedScope = committedScope.current.scope;
     const submittedScopeId = scopeId(submittedScope);
     const submittedSelection: SelectionSnapshot = {
@@ -471,17 +473,38 @@ export function ChatComposer({
         ? { preset: selectedRoute.preset }
         : {};
 
+    const submission: ChatComposerSubmission = {
+      content,
+      projectId: submittedScope.projectId,
+      ...(submittedScope.conversationId
+        ? { conversationId: submittedScope.conversationId }
+        : {}),
+      ...mapMode(mode, autoApprove),
+      ...routing,
+      ...(selectedReasoning ? { reasoning: selectedReasoning } : {}),
+    };
+
+    if (activeTaskId) {
+      if (onQueueMessage) {
+        onQueueMessage(submission);
+        clearChatDraft(submittedScope);
+        if (textareaRef.current && submittedScopeId === committedScope.current.id) {
+          textareaRef.current.value = "";
+          setLength(0);
+          setHasContent(false);
+          resize(textareaRef.current);
+          setMessage("Message queued for next turn.");
+        }
+      }
+      return;
+    }
+
+    sendingRef.current = true;
+    setSending(true);
+    setMessage(null);
+
     try {
-      const result = await onSubmit({
-        content,
-        projectId: submittedScope.projectId,
-        ...(submittedScope.conversationId
-          ? { conversationId: submittedScope.conversationId }
-          : {}),
-        ...mapMode(mode, autoApprove),
-        ...routing,
-        ...(selectedReasoning ? { reasoning: selectedReasoning } : {}),
-      });
+      const result = await onSubmit(submission);
       if (!result.accepted) {
         if (submittedScopeId === committedScope.current.id) {
           setMessage(result.error ?? "Message was not accepted. Review the details and try again.");
@@ -547,8 +570,9 @@ export function ChatComposer({
 
   const overLimit = Math.max(0, length - CHAT_PROMPT_MAX_LENGTH);
   const showCounter = length >= 30_000;
-  const interactionDisabled = disabled || sending || Boolean(activeTaskId);
-  const cannotSend = interactionDisabled || stopping || !hasContent || overLimit > 0;
+  const inputDisabled = disabled || sending || stopping;
+  const controlsDisabled = disabled || sending || Boolean(activeTaskId);
+  const cannotSend = inputDisabled || (!activeTaskId && !hasContent) || (Boolean(activeTaskId) && !hasContent) || overLimit > 0;
 
   return (
     <form
@@ -566,14 +590,14 @@ export function ChatComposer({
         autoComplete="on"
         className="morrow-chat-composer__input"
         defaultValue={initialDraft}
-        disabled={interactionDisabled}
+        disabled={inputDisabled}
         enterKeyHint="send"
         id={inputId}
         onCompositionEnd={() => { composing.current = false; }}
         onCompositionStart={() => { composing.current = true; }}
         onInput={handleInput}
         onKeyDown={handleKeyDown}
-        placeholder={placeholder}
+        placeholder={activeTaskId ? "Type a follow-up or steering message to queue…" : placeholder}
         ref={textareaRef}
         rows={1}
       />
@@ -587,7 +611,7 @@ export function ChatComposer({
             <button
               aria-pressed={mode === item.id}
               className={mode === item.id ? "is-active" : undefined}
-              disabled={interactionDisabled}
+              disabled={controlsDisabled}
               key={item.id}
               onClick={() => setMode(item.id)}
               title={item.hint}
@@ -605,7 +629,7 @@ export function ChatComposer({
           <label className="morrow-chat-composer__auto-approve">
             <input
               checked={autoApprove}
-              disabled={interactionDisabled}
+              disabled={controlsDisabled}
               onChange={(event) => setAutoApprove(event.target.checked)}
               type="checkbox"
             />
@@ -617,7 +641,7 @@ export function ChatComposer({
           <label className="morrow-chat-composer__select">
             <span>Project</span>
             <select
-              disabled={interactionDisabled}
+              disabled={controlsDisabled}
               onChange={(event) => onProjectChange(event.target.value)}
               value={projectId}
             >
@@ -630,7 +654,7 @@ export function ChatComposer({
 
         {modelCatalogue ? (
           <ModelPicker
-            disabled={interactionDisabled}
+            disabled={controlsDisabled}
             models={modelCatalogue.models}
             onChange={chooseCatalogueRoute}
             presets={modelCatalogue.presets}
@@ -640,7 +664,7 @@ export function ChatComposer({
           <label className="morrow-chat-composer__select">
             <span>Model route</span>
             <select
-              disabled={interactionDisabled}
+              disabled={controlsDisabled}
               onChange={(event) => setRouteId(event.target.value)}
               value={availableRoutes.some((route) => route.id === routeId) ? routeId : availableRoutes[0]!.id}
             >
@@ -651,13 +675,18 @@ export function ChatComposer({
           </label>
         )}
 
-        <ContextMeter taskId={contextTaskId ?? activeTaskId} />
+        <CapabilityStatus
+          disabled={disabled}
+          reasoningConfig={selectedReasoning}
+          route={selectedRoute}
+          taskId={contextTaskId ?? activeTaskId}
+        />
 
         <div aria-label="Thinking controls" className="morrow-chat-composer__thinking-controls">
         {onReasoningConfigChange ? (
           <ReasoningSlider
             capability={selectedReasoningCapability}
-            disabled={interactionDisabled}
+            disabled={controlsDisabled}
             onChange={onReasoningConfigChange}
             value={reasoningConfig ?? { mode: "auto" }}
           />
@@ -683,18 +712,33 @@ export function ChatComposer({
         ) : null}
         </div>
 
-        {activeTaskId && onStop ? (
-          <button
-            aria-label="Stop generation"
-            className="morrow-chat-composer__stop"
-            disabled={disabled || stopping}
-            onClick={() => { void stop(); }}
-            type="button"
-          >
-            <Square aria-hidden="true" size={15} />
-            <span>{stopping ? "Stopping…" : "Stop"}</span>
-          </button>
-        ) : activeTaskId ? null : (
+        {activeTaskId ? (
+          <div className="morrow-chat-composer__actions">
+            {onStop ? (
+              <button
+                aria-label="Stop generation"
+                className="morrow-chat-composer__stop"
+                disabled={disabled || stopping}
+                onClick={() => { void stop(); }}
+                type="button"
+              >
+                <Square aria-hidden="true" size={14} />
+                <span>{stopping ? "Stopping…" : "Stop"}</span>
+              </button>
+            ) : null}
+            {onQueueMessage && hasContent ? (
+              <button
+                aria-label="Queue message"
+                className="morrow-chat-composer__queue"
+                disabled={cannotSend}
+                type="submit"
+              >
+                <Send aria-hidden="true" size={16} />
+                <span>Queue</span>
+              </button>
+            ) : null}
+          </div>
+        ) : (
           <button
             aria-label={sending ? "Sending message" : "Send message"}
             className="morrow-chat-composer__send"
