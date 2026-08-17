@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { Markdown } from "../../components/markdown.js";
 import { conversationQueries } from "../../api/conversations.js";
 
 export interface ReasoningDisclosureProps {
@@ -148,7 +147,7 @@ export function ReasoningDisclosure({
                     </button>
                     <div aria-hidden={!open} className="morrow-reasoning__content-shell">
                       <div className="morrow-reasoning__content">
-                        <Markdown remarkPlugins={[remarkGfm]}>{entry.content}</Markdown>
+                        <Markdown streaming={active && isLast} text={entry.content} />
                       </div>
                     </div>
                   </article>

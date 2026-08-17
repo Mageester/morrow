@@ -1,7 +1,7 @@
 import type { Approval, ApprovalDecision } from "@morrow/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldAlert } from "lucide-react";
-import { useState } from "react";
+import { memo, useCallback, useState } from "react";
 import { approvalApi, approvalKeys, approvalQueries } from "../../api/approvals.js";
 import { conversationKeys } from "../../api/conversations.js";
 
@@ -19,6 +19,56 @@ function approvalTarget(approval: Approval): string | null {
   }
   return null;
 }
+
+export const ApprovalCard = memo(function ApprovalCard({
+  approval,
+  busy,
+  error,
+  onDecide,
+}: {
+  approval: Approval;
+  busy: boolean;
+  error: string | null;
+  onDecide: (approvalId: string, decision: ApprovalDecision) => void;
+}) {
+  const target = approvalTarget(approval);
+  return (
+    <article className="morrow-approvals__card" key={approval.id}>
+      <header>
+        <ShieldAlert aria-hidden="true" size={18} />
+        <div>
+          <p className="morrow-approvals__eyebrow">
+            {approval.kind === "change_set" ? "File changes" : "Command"} · waiting for you
+          </p>
+          <h3>{approval.summary}</h3>
+        </div>
+      </header>
+      {target ? <code className="morrow-approvals__target">{target}</code> : null}
+      <p className="morrow-approvals__hint">
+        Morrow paused this run until you decide. Allowing applies this {approval.kind === "change_set" ? "change" : "command"} once.
+      </p>
+      {error && !busy ? <p role="alert">{error}</p> : null}
+      <div className="morrow-approvals__actions">
+        <button
+          className="morrow-approvals__allow"
+          disabled={busy}
+          onClick={() => onDecide(approval.id, "allow_once")}
+          type="button"
+        >
+          {busy ? "Resolving…" : "Allow once"}
+        </button>
+        <button
+          className="morrow-approvals__deny"
+          disabled={busy}
+          onClick={() => onDecide(approval.id, "deny")}
+          type="button"
+        >
+          Deny
+        </button>
+      </div>
+    </article>
+  );
+});
 
 export interface PendingApprovalsProps {
   /** True while a task in this conversation is still running — keeps the
@@ -59,59 +109,28 @@ export function PendingApprovals({ active, conversationId, conversationTaskIds, 
   });
 
   const visible = (approvals.data ?? []).filter((approval) => conversationTaskIds.has(approval.taskId));
-  if (visible.length === 0) return null;
-
-  const decide = (approvalId: string, decision: ApprovalDecision) => {
+  const decide = useCallback((approvalId: string, decision: ApprovalDecision) => {
     setBusyId(approvalId);
     setError(null);
     resolve.mutate(
       { approvalId, decision },
       { onError: (cause) => setError(cause instanceof Error ? cause.message : "The approval could not be resolved.") },
     );
-  };
+  }, [resolve]);
+
+  if (visible.length === 0) return null;
 
   return (
     <section aria-label="Approvals waiting for your decision" className="morrow-approvals">
-      {visible.map((approval) => {
-        const target = approvalTarget(approval);
-        const busy = busyId === approval.id;
-        return (
-          <article className="morrow-approvals__card" key={approval.id}>
-            <header>
-              <ShieldAlert aria-hidden="true" size={18} />
-              <div>
-                <p className="morrow-approvals__eyebrow">
-                  {approval.kind === "change_set" ? "File changes" : "Command"} · waiting for you
-                </p>
-                <h3>{approval.summary}</h3>
-              </div>
-            </header>
-            {target ? <code className="morrow-approvals__target">{target}</code> : null}
-            <p className="morrow-approvals__hint">
-              Morrow paused this run until you decide. Allowing applies this {approval.kind === "change_set" ? "change" : "command"} once.
-            </p>
-            {error && busyId === null ? <p role="alert">{error}</p> : null}
-            <div className="morrow-approvals__actions">
-              <button
-                className="morrow-approvals__allow"
-                disabled={busy}
-                onClick={() => decide(approval.id, "allow_once")}
-                type="button"
-              >
-                {busy ? "Resolving…" : "Allow once"}
-              </button>
-              <button
-                className="morrow-approvals__deny"
-                disabled={busy}
-                onClick={() => decide(approval.id, "deny")}
-                type="button"
-              >
-                Deny
-              </button>
-            </div>
-          </article>
-        );
-      })}
+      {visible.map((approval) => (
+        <ApprovalCard
+          approval={approval}
+          busy={busyId === approval.id}
+          error={busyId === approval.id ? null : error}
+          key={approval.id}
+          onDecide={decide}
+        />
+      ))}
     </section>
   );
 }

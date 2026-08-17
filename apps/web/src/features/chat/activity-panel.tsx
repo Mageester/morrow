@@ -16,7 +16,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { conversationQueries } from "../../api/conversations.js";
 import { Markdown } from "../../components/markdown.js";
 
@@ -58,7 +58,7 @@ function formatDuration(ms: number | null | undefined): string | null {
   return `${ms}ms`;
 }
 
-export function ActivityDetails({ item }: { item: WebConversationActivityEntry }) {
+export const ActivityDetails = memo(function ActivityDetails({ item }: { item: WebConversationActivityEntry }) {
   const [copied, setCopied] = useState(false);
 
   const copyTarget = () => {
@@ -116,7 +116,32 @@ export function ActivityDetails({ item }: { item: WebConversationActivityEntry }
       </dl>
     </div>
   );
-}
+});
+
+export const ActivityTimelineItem = memo(function ActivityTimelineItem({
+  item,
+  forcedOpen,
+}: {
+  item: WebConversationActivityEntry;
+  forcedOpen?: boolean | undefined;
+}) {
+  const meta = activityMeta(item);
+  return (
+    <li data-kind={item.kind} data-status={item.status} key={item.id}>
+      <details open={forcedOpen !== undefined ? forcedOpen : undefined}>
+        <summary>
+          <span className="morrow-activity-entry__icon">{activityIcon(item.kind)}</span>
+          <span className="morrow-activity-entry__main">
+            <span className="morrow-activity-entry__summary">{item.summary}</span>
+            {meta ? <span className="morrow-activity-entry__meta">{meta}</span> : null}
+          </span>
+          <ChevronRight aria-hidden="true" className="morrow-activity-entry__chevron" size={14} />
+        </summary>
+        <ActivityDetails item={item} />
+      </details>
+    </li>
+  );
+});
 
 export function ActivityTimeline({
   entries,
@@ -129,24 +154,9 @@ export function ActivityTimeline({
 }) {
   return (
     <ol aria-label={label} className="morrow-activity-timeline">
-      {entries.map((item) => {
-        const meta = activityMeta(item);
-        return (
-          <li data-kind={item.kind} data-status={item.status} key={item.id}>
-            <details open={forcedOpen !== undefined ? forcedOpen : undefined}>
-              <summary>
-                <span className="morrow-activity-entry__icon">{activityIcon(item.kind)}</span>
-                <span className="morrow-activity-entry__main">
-                  <span className="morrow-activity-entry__summary">{item.summary}</span>
-                  {meta ? <span className="morrow-activity-entry__meta">{meta}</span> : null}
-                </span>
-                <ChevronRight aria-hidden="true" className="morrow-activity-entry__chevron" size={14} />
-              </summary>
-              <ActivityDetails item={item} />
-            </details>
-          </li>
-        );
-      })}
+      {entries.map((item) => (
+        <ActivityTimelineItem forcedOpen={forcedOpen} item={item} key={item.id} />
+      ))}
     </ol>
   );
 }
@@ -155,7 +165,7 @@ export function ActivityTimeline({
  * Compact execution step row for inline transcript.
  * Click to expand full details/target/output.
  */
-function CompactTranscriptTool({ entry }: { entry: WebConversationActivityEntry }) {
+export const CompactTranscriptTool = memo(function CompactTranscriptTool({ entry }: { entry: WebConversationActivityEntry }) {
   const [open, setOpen] = useState(false);
   const duration = formatDuration(entry.durationMs);
 
@@ -203,7 +213,28 @@ function CompactTranscriptTool({ entry }: { entry: WebConversationActivityEntry 
       ) : null}
     </div>
   );
-}
+});
+
+const ConversationTranscriptItem = memo(function ConversationTranscriptItem({
+  item,
+  isStreamingNarration,
+}: {
+  item: WebConversationActivityEntry;
+  isStreamingNarration: boolean;
+}) {
+  if (item.kind === "narration") {
+    return (
+      <div className="morrow-transcript__say" data-testid="transcript-narration">
+        <Markdown streaming={isStreamingNarration} text={item.text ?? ""} />
+      </div>
+    );
+  }
+  return (
+    <div className="morrow-transcript__do">
+      <ActivityTimeline entries={[item]} label={item.summary} />
+    </div>
+  );
+});
 
 /**
  * Interleaved transcript: one chronological stream of what Morrow said and what it did.
@@ -221,20 +252,13 @@ export function ConversationTranscript({
 
   return (
     <div className="morrow-transcript" data-testid="conversation-transcript">
-      {entries.map((item) => {
-        if (item.kind === "narration") {
-          return (
-            <div className="morrow-transcript__say" data-testid="transcript-narration" key={item.id}>
-              <Markdown streaming={streaming && item.id === lastNarrationId} text={item.text ?? ""} />
-            </div>
-          );
-        }
-        return (
-          <div className="morrow-transcript__do" key={item.id}>
-            <ActivityTimeline entries={[item]} label={item.summary} />
-          </div>
-        );
-      })}
+      {entries.map((item) => (
+        <ConversationTranscriptItem
+          isStreamingNarration={streaming && item.id === lastNarrationId}
+          item={item}
+          key={item.id}
+        />
+      ))}
     </div>
   );
 }

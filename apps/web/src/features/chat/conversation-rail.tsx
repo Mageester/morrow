@@ -1,5 +1,6 @@
 import type { WebConversationActivityEntry } from "@morrow/contracts";
 import { useQuery } from "@tanstack/react-query";
+import { memo } from "react";
 import { conversationQueries } from "../../api/conversations.js";
 import { projectQueries } from "../../api/projects.js";
 
@@ -89,7 +90,7 @@ export function ConversationRail({
   );
 }
 
-function RailStage({ entry }: { entry: WebConversationActivityEntry }) {
+const RailStage = memo(function RailStage({ entry }: { entry: WebConversationActivityEntry }) {
   return (
     <div className="morrow-conversation-rail__stage" data-state={entry.status ?? "done"}>
       <span aria-hidden="true" className="morrow-conversation-rail__node" />
@@ -98,7 +99,7 @@ function RailStage({ entry }: { entry: WebConversationActivityEntry }) {
       <time>{stageStatusLabel(entry)}</time>
     </div>
   );
-}
+});
 
 /**
  * Honest state language: a step that failed says so, a queued step is not
