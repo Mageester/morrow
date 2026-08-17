@@ -14,7 +14,7 @@
 .morrow-chat-composer {
   container-type: inline-size;
   display: grid;
-  padding: 18px 18px 13px;
+  padding: 13px 14px 11px;
   border: 1px solid #3f4039;
   border-radius: 20px;
   background: rgb(29 30 25 / 0.94);
@@ -42,9 +42,11 @@
 .morrow-chat-composer__input {
   display: block;
   width: 100%;
-  min-height: 78px;
+  /* Two comfortable lines at rest. The field grows with the message; it does
+     not reserve a paragraph of empty space before one exists. */
+  min-height: 46px;
   max-height: 40vh;
-  padding: 1px 2px 16px;
+  padding: 2px 2px 10px;
   border: 0;
   background: transparent;
   color: #dedad2;
@@ -264,20 +266,12 @@
 
 /* ── Honest state text, kept quiet ───────────────────────────────────────── */
 
-.morrow-chat-composer__mode-hint,
-.morrow-chat-composer__meta p,
 .morrow-chat-composer__counter {
   padding: 0;
   margin: 8px 2px 0;
   color: var(--morrow-product-faint);
   font-size: 10px;
-}
-
-.morrow-chat-composer__meta {
-  display: flex;
-  justify-content: space-between;
-  padding: 0;
-  gap: 12px;
+  text-align: end;
 }
 
 .morrow-chat-composer [role="alert"] {
@@ -345,25 +339,18 @@
 /* A narrow live-work layout still needs a legible model choice. The model is
    promoted to its own quiet line before controls begin to collide. */
 @container (max-width: 560px) {
+  /* The model keeps a usable share of a narrow bar without being promoted to
+     a row of its own — the row scrolls instead, so no control is dropped and
+     the bar stays one line high. */
   .morrow-chat-composer .morrow-model-picker,
   .morrow-chat-composer .morrow-chat-composer__select {
-    order: 2;
-    width: calc(100% - 42px);
-  }
-
-  .morrow-chat-composer .morrow-model-picker__trigger,
-  .morrow-chat-composer .morrow-chat-composer__select select {
-    width: 100%;
+    max-width: 40vw;
   }
 
   /* The status control shrinks to its ring/icon rather than disappearing —
      the whole point of this control is that it stays answerable on a phone. */
   .morrow-chat-composer .morrow-capability-status__label {
     display: none;
-  }
-
-  .morrow-chat-composer .morrow-chat-composer__thinking-controls {
-    order: 3;
   }
 }
 
@@ -673,10 +660,6 @@
 }
 
 @media (max-width: 860px) {
-  .morrow-chat-composer__toolbar {
-    flex-wrap: wrap;
-  }
-
   .morrow-chat-composer .morrow-reasoning-slider__label {
     display: none;
   }
@@ -693,89 +676,46 @@
   }
 }
 
-/* The composer has two deliberate reading levels: decisive routing controls
-   first, optional thinking controls second. This prevents the cramped,
-   clipped toolbar that the earlier single-line composition produced. */
-.morrow-chat-composer__toolbar {
-  --morrow-chip-height: 34px;
+/* ── Popover-hosted controls ─────────────────────────────────────────────── */
 
-  flex-wrap: wrap;
-}
-
-.morrow-chat-composer__toolbar > :not(.morrow-chat-composer__thinking-controls) {
-  order: 1;
-}
-
-.morrow-chat-composer__thinking-controls {
+/*
+ * The bar is one row again. Thinking depth, "Show thinking" and workspace
+ * trust moved into composer popovers, so the second row they needed — and the
+ * wrapping it forced — is gone with them. Their own styling now comes from the
+ * popover panel; what stays here is the switch mark, which is the same control
+ * wherever it is shown.
+ */
+.morrow-chat-composer .morrow-composer-popover__panel .morrow-chat-composer__auto-approve,
+.morrow-chat-composer .morrow-composer-popover__panel .morrow-chat-composer__reasoning-toggle {
   display: flex;
   width: 100%;
   height: auto;
   min-height: 0;
-  flex: 1 0 100%;
-  order: 2;
   align-items: center;
-  padding-top: 8px;
-  border-top: 0;
-  margin-top: 0;
-  gap: 8px;
-}
-
-.morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-reasoning-slider,
-.morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-chat-composer__reasoning-toggle {
-  display: inline-flex;
-  height: 32px;
-  min-height: 32px;
-  align-items: center;
-  padding: 0 11px;
+  padding: 6px 8px;
   border: 1px solid transparent;
   border-radius: 9px;
   background: transparent;
-  color: #a19f97;
+  color: var(--morrow-product-copy-soft);
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
-  gap: 8px;
-  white-space: nowrap;
+  font-size: 12.5px;
+  gap: 9px;
+  white-space: normal;
 }
 
-.morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-reasoning-slider {
-  max-width: none;
-}
-
-.morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-chat-composer__reasoning-toggle {
-  position: relative;
-  margin-left: auto;
-  transition: border-color var(--morrow-premium-control) var(--morrow-product-shift), color var(--morrow-premium-control) var(--morrow-product-shift);
-}
-
-.morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-chat-composer__reasoning-toggle:hover {
-  border-color: #45463e;
-  background: rgb(255 255 255 / 0.025);
-  color: var(--morrow-product-copy-soft);
-}
-
-.morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-chat-composer__reasoning-toggle input {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  cursor: pointer;
-  opacity: 0;
+.morrow-chat-composer .morrow-composer-popover__panel .morrow-chat-composer__auto-approve:hover,
+.morrow-chat-composer .morrow-composer-popover__panel .morrow-chat-composer__reasoning-toggle:hover {
+  background: var(--morrow-product-field-inset);
 }
 
 .morrow-chat-composer__toggle-mark {
   width: 8px;
   height: 8px;
+  flex: none;
   border: 1px solid #65675e;
   border-radius: 50%;
   background: transparent;
-}
-
-.morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-chat-composer__reasoning-toggle:has(input:checked) {
-  border-color: #5c4436;
-  background: rgb(190 123 82 / 0.09);
-  color: var(--morrow-product-copy-soft);
 }
 
 .morrow-chat-composer .morrow-chat-composer__reasoning-toggle:has(input:checked) .morrow-chat-composer__toggle-mark {
@@ -784,28 +724,74 @@
   box-shadow: 0 0 0 3px rgb(190 123 82 / 0.12);
 }
 
-.morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-chat-composer__reasoning-toggle:has(input:focus-visible) {
+.morrow-chat-composer .morrow-composer-popover__panel .morrow-chat-composer__auto-approve:has(input:focus-visible),
+.morrow-chat-composer .morrow-composer-popover__panel .morrow-chat-composer__reasoning-toggle:has(input:focus-visible) {
   outline: 2px solid var(--morrow-product-copper);
   outline-offset: 2px;
 }
 
-@media (max-width: 700px) {
+/* The slider gets the panel's full width, with its captions back. */
+.morrow-chat-composer .morrow-composer-popover__panel .morrow-reasoning-slider {
+  display: flex;
+  width: 100%;
+  height: auto;
+  max-width: none;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0;
+  border: 0;
+  gap: 6px;
+}
+
+.morrow-chat-composer .morrow-composer-popover__panel .morrow-reasoning-slider__label {
+  display: block;
+  color: var(--morrow-product-faint);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ── Compact viewports ───────────────────────────────────────────────────── */
+
+/*
+ * The bar scrolls sideways rather than wrapping into a control panel: at
+ * 390px every control stays reachable at a 44px touch target, and the field
+ * and Send never move.
+ */
+@media (max-width: 760px) {
   .morrow-chat-composer__toolbar {
-    --morrow-chip-height: 44px;
+    --morrow-chip-height: 34px;
+
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 
-  .morrow-chat-composer__thinking-controls {
-    align-items: stretch;
-    flex-wrap: wrap;
+  /* Earlier layers stretched the mode control to fill a wrapped row. On a
+     scrolling row that made it 324px wide and pushed every other control off
+     the screen, so it is pinned back to its content width. */
+  .morrow-chat-composer .morrow-chat-composer__modes {
+    width: auto;
+    flex: none;
   }
 
-  .morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-reasoning-slider,
-  .morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-chat-composer__reasoning-toggle {
-    height: 44px;
-    min-height: 44px;
+  .morrow-chat-composer .morrow-chat-composer__modes button {
+    width: auto;
+    flex: none;
   }
 
-  .morrow-chat-composer .morrow-chat-composer__thinking-controls .morrow-chat-composer__reasoning-toggle {
-    margin-left: 0;
+  .morrow-chat-composer__toolbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .morrow-chat-composer .morrow-reasoning-slider__label {
+    display: none;
+  }
+
+  /* Send stays pinned at the end of the row instead of scrolling away. */
+  .morrow-chat-composer__send,
+  .morrow-chat-composer__stop {
+    position: sticky;
+    right: 0;
   }
 }

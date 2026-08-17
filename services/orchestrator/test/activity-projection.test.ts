@@ -83,6 +83,28 @@ describe("conversation activity projection", () => {
     expect(JSON.stringify(activity)).not.toContain("privateReasoning");
   });
 
+  it("names a tool with no hand-written verb after the tool that actually ran", () => {
+    const activity = projectConversationActivity({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      tasks: [{
+        taskId: "task-1",
+        events: [
+          event(1, "tool.started", { id: "b-1", toolName: "browser_navigate", target: "https://example.test" }),
+          event(2, "tool.completed", { id: "b-1", toolName: "browser_navigate", elapsedMs: 120 }),
+          event(3, "tool.started", { id: "b-2", toolName: "browser_screenshot" }),
+        ],
+      }],
+    });
+
+    // Every one of these used to read "Used tool", which made distinct actions
+    // look like one repeated step.
+    expect(activity.entries.map((item) => item.summary)).toEqual([
+      "Used browser navigate https://example.test",
+      "Using browser screenshot",
+    ]);
+  });
+
   it("redacts command credentials before showing a target", () => {
     const activity = projectConversationActivity({
       projectId: "project-1",

@@ -365,3 +365,57 @@
     transition: none;
   }
 }
+
+/* ── Recent conversations ────────────────────────────────────────────────── */
+
+/*
+ * A quiet index, not a feed. One line per conversation, its age set small and
+ * to the right so titles line up, and a copper edge on the one you are in.
+ */
+.morrow-nav__recent-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  gap: 1px;
+}
+
+.morrow-nav__recent-link {
+  display: flex;
+  align-items: baseline;
+  padding: 5px 8px;
+  border-radius: 8px;
+  color: var(--morrow-product-copy-quiet);
+  font-size: 12px;
+  gap: 8px;
+  text-decoration: none;
+  transition:
+    background-color var(--morrow-premium-control) var(--morrow-product-shift),
+    color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-nav__recent-link:hover {
+  background: var(--morrow-product-field);
+  color: var(--morrow-product-copy-soft);
+}
+
+.morrow-nav__recent-link[aria-current="page"] {
+  background: var(--morrow-product-copper-soft);
+  color: var(--morrow-product-copper-bright);
+}
+
+.morrow-nav__recent-title {
+  overflow: hidden;
+  min-width: 0;
+  flex: 1 1 auto;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-nav__recent-age {
+  flex: none;
+  color: var(--morrow-product-faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}

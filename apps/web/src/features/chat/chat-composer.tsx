@@ -302,6 +302,75 @@ function ReasoningSlider({
   );
 }
 
+/**
+ * A secondary composer control that opens on demand.
+ *
+ * The composer's problem was not that it had too many controls — every one of
+ * them does something a person needs — but that all of them shouted at the same
+ * volume, which made a text field look like a settings page. Controls that are
+ * set occasionally live behind one of these; controls used every message stay
+ * on the bar.
+ */
+function ComposerPopover({
+  children,
+  disabled = false,
+  icon,
+  label,
+  title,
+}: {
+  children: ReactNode;
+  disabled?: boolean | undefined;
+  icon?: ReactNode | undefined;
+  label?: string | undefined;
+  title: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(event: PointerEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown as unknown as EventListener);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown as unknown as EventListener);
+    };
+  }, [open]);
+
+  return (
+    <div className="morrow-composer-popover" ref={rootRef}>
+      <button
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        className="morrow-composer-popover__trigger"
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+        ref={triggerRef}
+        title={title}
+        type="button"
+      >
+        {icon}
+        {label ? <span>{label}</span> : null}
+      </button>
+      {open ? (
+        <div aria-label={title} className="morrow-composer-popover__panel" role="dialog">
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function scopeId(scope: ChatDraftScope): string {
   return JSON.stringify([scope.projectId, scope.conversationId ?? null]);
 }
@@ -568,6 +637,22 @@ export function ChatComposer({
     }
   }
 
+  // The reasoning trigger states the current depth on the bar, so opening the
+  // popover is a way to change it rather than the only way to see it.
+  const reasoningOptions = reasoningSliderOptions(selectedReasoningCapability);
+  const normalizedReasoning = selectedReasoningCapability
+    ? normalizeReasoningForRoute(reasoningConfig ?? { mode: "auto" }, selectedReasoningCapability).config
+    : { mode: "auto" as const };
+  const reasoningLabel = reasoningOptions[
+    Math.max(0, reasoningOptions.findIndex((option) => sameReasoningConfig(option.config, normalizedReasoning)))
+  ]?.label ?? "Auto";
+
+  const modeConsequence = mode === "build"
+    ? autoApprove
+      ? "Ordinary workspace actions can continue without stopping; other actions still ask."
+      : "Morrow will ask before workspace changes and commands."
+    : "Morrow will answer and read your project, but will not change anything.";
+
   const overLimit = Math.max(0, length - CHAT_PROMPT_MAX_LENGTH);
   const showCounter = length >= 30_000;
   const inputDisabled = disabled || sending || stopping;
@@ -601,10 +686,22 @@ export function ChatComposer({
         ref={textareaRef}
         rows={1}
       />
+      {/* A standing limitation, not news: announced to assistive technology
+          through the field's description, kept off the visible bar. */}
+      <p className="morrow-sr-only" id={helpId}>
+        Attachments are unavailable because the message API does not accept files yet.
+      </p>
 
-      {/* One bar of chips, as in the premium reference: how Morrow should work,
-          how far it may go, and where it thinks — then send. Everything that
-          was on a second row is still here and still reachable in tab order. */}
+      {/*
+        One bar, three tiers of weight.
+        Primary   — the field above, and Send / Stop at the end of this row.
+        Secondary — mode, model, thinking depth: chosen per message.
+        Tertiary  — workspace trust, capability and context detail, the
+                    consequence of the current mode: set once, checked rarely,
+                    and therefore behind a control rather than in front of one.
+        Nothing was removed; the bar simply stopped presenting all of it as
+        equally urgent.
+      */}
       <div className="morrow-chat-composer__toolbar">
         <div aria-label="How Morrow should work" className="morrow-chat-composer__modes" role="group">
           {MODES.map((item) => (
@@ -621,21 +718,6 @@ export function ChatComposer({
             </button>
           ))}
         </div>
-
-        {/* Supervision is only a question once Morrow can actually change
-            something, so the switch appears with Build rather than sitting
-            inert next to Chat. */}
-        {mode === "build" ? (
-          <label className="morrow-chat-composer__auto-approve">
-            <input
-              checked={autoApprove}
-              disabled={controlsDisabled}
-              onChange={(event) => setAutoApprove(event.target.checked)}
-              type="checkbox"
-            />
-            <span>Trusted workspace</span>
-          </label>
-        ) : null}
 
         {projects.length > 1 && onProjectChange ? (
           <label className="morrow-chat-composer__select">
@@ -675,6 +757,45 @@ export function ChatComposer({
           </label>
         )}
 
+        {/* Thinking depth and whether the provider's reasoning text is shown
+            are one subject, so they share one surface. The trigger stays
+            enabled during a task: reading along with a run in progress is
+            exactly when someone reaches for it. */}
+        {onReasoningConfigChange || onShowReasoningChange ? (
+          <ComposerPopover
+            label={`Thinking · ${reasoningLabel}`}
+            title="Thinking and reasoning"
+          >
+            {onReasoningConfigChange ? (
+              <ReasoningSlider
+                capability={selectedReasoningCapability}
+                disabled={controlsDisabled}
+                onChange={onReasoningConfigChange}
+                value={reasoningConfig ?? { mode: "auto" }}
+              />
+            ) : null}
+            {onShowReasoningChange ? (
+              <label
+                className="morrow-chat-composer__reasoning-toggle"
+                title="Show the reasoning text supplied by the model provider"
+              >
+                <input
+                  checked={showReasoning}
+                  disabled={disabled}
+                  onChange={(event) => onShowReasoningChange(event.target.checked)}
+                  type="checkbox"
+                />
+                <span aria-hidden="true" className="morrow-chat-composer__toggle-mark" />
+                <span>Show thinking</span>
+              </label>
+            ) : null}
+            <p className="morrow-composer-popover__note">
+              Reasoning text appears only when the provider supplies it. Morrow never
+              reconstructs hidden reasoning.
+            </p>
+          </ComposerPopover>
+        ) : null}
+
         <CapabilityStatus
           disabled={disabled}
           reasoningConfig={selectedReasoning}
@@ -682,35 +803,26 @@ export function ChatComposer({
           taskId={contextTaskId ?? activeTaskId}
         />
 
-        <div aria-label="Thinking controls" className="morrow-chat-composer__thinking-controls">
-        {onReasoningConfigChange ? (
-          <ReasoningSlider
-            capability={selectedReasoningCapability}
-            disabled={controlsDisabled}
-            onChange={onReasoningConfigChange}
-            value={reasoningConfig ?? { mode: "auto" }}
-          />
-        ) : null}
-
-        {/* Named for what it reveals, not for the same word the depth control
-            uses — two chips both reading "Reasoning" sat side by side and
-            neither said which was which. */}
-        {onShowReasoningChange ? (
-          <label
-            className="morrow-chat-composer__reasoning-toggle"
-            title="Show the reasoning text supplied by the model provider"
-          >
-            <input
-              checked={showReasoning}
-              disabled={disabled}
-              onChange={(event) => onShowReasoningChange(event.target.checked)}
-              type="checkbox"
-            />
-            <span aria-hidden="true" className="morrow-chat-composer__toggle-mark" />
-            <span>Show thinking</span>
-          </label>
-        ) : null}
-        </div>
+        <ComposerPopover
+          icon={<SlidersHorizontal aria-hidden="true" size={14} />}
+          title="Workspace and message settings"
+        >
+          {/* Supervision is only a question once Morrow can actually change
+              something, so the switch appears with Build rather than sitting
+              inert next to Chat. */}
+          {mode === "build" ? (
+            <label className="morrow-chat-composer__auto-approve">
+              <input
+                checked={autoApprove}
+                disabled={controlsDisabled}
+                onChange={(event) => setAutoApprove(event.target.checked)}
+                type="checkbox"
+              />
+              <span>Trusted workspace</span>
+            </label>
+          ) : null}
+          <p className="morrow-chat-composer__mode-hint">{modeConsequence}</p>
+        </ComposerPopover>
 
         {activeTaskId ? (
           <div className="morrow-chat-composer__actions">
@@ -750,25 +862,11 @@ export function ChatComposer({
         )}
       </div>
 
-      {/* The consequence of the current mode, stated plainly under the bar. */}
-      <p className="morrow-chat-composer__mode-hint">
-        {mode === "build"
-          ? autoApprove
-            ? "Ordinary workspace actions can continue without stopping; other actions still ask."
-            : "Morrow will ask before workspace changes and commands."
-          : "Morrow will answer and read your project, but will not change anything."}
-      </p>
-
-      <div className="morrow-chat-composer__meta">
-        <p id={helpId}>
-          Attachments are unavailable because the message API does not accept files yet.
+      {showCounter ? (
+        <p aria-live="polite" className="morrow-chat-composer__counter">
+          {length.toLocaleString("en-US")} / {CHAT_PROMPT_MAX_LENGTH.toLocaleString("en-US")} characters
         </p>
-        {showCounter ? (
-          <p aria-live="polite" className="morrow-chat-composer__counter">
-            {length.toLocaleString("en-US")} / {CHAT_PROMPT_MAX_LENGTH.toLocaleString("en-US")} characters
-          </p>
-        ) : null}
-      </div>
+      ) : null}
       {overLimit > 0 ? (
         <p id={limitId} role="alert">
           {overLimit.toLocaleString("en-US")} {overLimit === 1 ? "character" : "characters"} over the limit. Shorten the message to send it.

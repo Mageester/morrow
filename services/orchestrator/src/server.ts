@@ -250,6 +250,7 @@ import { runReadmeSummarySample, ReadmeSummarySampleError } from "./mission/read
 import { registerWebMissionRoutes } from "./web/mission-routes.js";
 import { registerWebMissionStreamRoutes } from "./web/mission-stream.js";
 import { projectConversationActivity } from "./web/activity-projection.js";
+import { DEFAULT_CONVERSATION_TITLE, deriveConversationTitle, isDefaultConversationTitle } from "./web/conversation-title.js";
 import { registerWebAppRoutes } from "./web/static-app.js";
 
 export class ApiError extends Error {
@@ -1298,7 +1299,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
     
     const body = CreateConversationSchema.parse(request.body ?? {});
-    const title = body?.title?.trim() || "New Conversation";
+    const title = body?.title?.trim() || DEFAULT_CONVERSATION_TITLE;
     
     const conversation = convs.createConversation({
       id: crypto.randomUUID(),
@@ -1435,8 +1436,21 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   app.post("/api/projects/:projectId/conversations/:conversationId/messages", async (request, reply) => {
     const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
-    ownedConversation(projectId, conversationId);
+    const conversation = ownedConversation(projectId, conversationId);
     const body = SendMessageSchema.parse(request.body);
+    // Name the conversation from its opening message, once, and only while the
+    // title is still the untouched default. A failure here must never block
+    // the message it was named after.
+    if (isDefaultConversationTitle(conversation.title)) {
+      const derived = deriveConversationTitle(body.content);
+      if (derived) {
+        try {
+          convs.renameConversation(conversationId, derived, new Date().toISOString());
+        } catch (error) {
+          request.log.warn({ err: error }, "Conversation auto-title failed");
+        }
+      }
+    }
     const idempotencyKey = readIdempotencyKey(request);
     try {
       const result = dispatchAgentTask({ db: deps.db, runner: deps.runner, env: process.env }, {

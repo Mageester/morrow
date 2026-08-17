@@ -207,7 +207,9 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
 
   const label = routingLabel(message);
   const body = failure ? failure.content : message.content;
-  const waiting = !body && streaming;
+  // Exactly one waiting signal per turn: the line below until work starts, the
+  // work summary once it has, the answer once there is one.
+  const waiting = !body && streaming && work.steps.length === 0;
 
   return (
     <article
@@ -229,8 +231,11 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
           />
         ) : null}
 
+        {/* No role="status" here: announcing a running turn is the live status
+            line's job, and two live regions saying it produced double
+            announcements on every token. */}
         {waiting ? (
-          <p className="morrow-typing-indicator" role="status">
+          <p className="morrow-typing-indicator">
             Morrow is responding…
             <span aria-hidden="true" className="morrow-typing-indicator__dots">
               <span />

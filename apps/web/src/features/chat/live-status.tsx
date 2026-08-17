@@ -30,12 +30,17 @@ export interface LiveTurnStatusProps {
   onOpenActivity: () => void;
 }
 
-function phaseLabel(phase: LiveTurnPhase, work: TurnWork): string {
-  if (phase === "sending") return "Sending…";
-  if (phase === "queued") return "Preparing…";
-  if (phase === "thinking") return "Thinking…";
-  return work.runningEntry?.summary ?? "Working…";
-}
+/**
+ * The phase, not the step. Which file is being read belongs to the turn's own
+ * work summary, up in the conversation where the work is; repeating it here
+ * would put the same sentence twice on one screen.
+ */
+const PHASE_LABELS: Record<LiveTurnPhase, string> = {
+  sending: "Sending…",
+  queued: "Preparing…",
+  thinking: "Thinking…",
+  working: "Working…",
+};
 
 export function LiveTurnStatus({
   taskId,
@@ -76,7 +81,7 @@ export function LiveTurnStatus({
   return (
     <div aria-live="polite" className="morrow-live-status" data-phase={phase} role="status">
       <span aria-hidden="true" className="morrow-live-status__pulse" />
-      <span className="morrow-live-status__label">{phaseLabel(phase, work)}</span>
+      <span className="morrow-live-status__label">{PHASE_LABELS[phase]}</span>
       <span className="morrow-live-status__meta">
         {elapsed ? <span>{elapsed}</span> : null}
         {work.toolCount > 0 ? (

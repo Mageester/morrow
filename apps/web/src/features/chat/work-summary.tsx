@@ -1,6 +1,6 @@
 import type { WebConversationActivityEntry } from "@morrow/contracts";
 import { ChevronRight, Loader2 } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { ActivityDetails, activityIcon } from "./activity-panel.js";
 import { formatElapsed, workSummaryLabel, type TurnWork, type WorkStep } from "./chat-projection.js";
 
@@ -22,6 +22,25 @@ function statusMark(status: TurnWork["status"]) {
   return <span aria-hidden="true" className="morrow-work__mark">✓</span>;
 }
 
+/**
+ * Wall-clock elapsed time for a turn that is still running.
+ *
+ * Timing a live run from its recorded events makes the counter stall for as
+ * long as the model is thinking — the very stretch a reader most wants counted.
+ * The clock ticks against `startedAt` instead, and stops entirely once the turn
+ * settles, at which point the recorded span is the accurate figure.
+ */
+function useRunningElapsed(startedAt: number | null, running: boolean): number | null {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [running]);
+  if (!running || startedAt === null) return null;
+  return Math.max(0, now - startedAt);
+}
+
 export interface WorkSummaryProps {
   work: TurnWork;
   /** Opens the Activity / Inspect drawer for the full record. */
@@ -30,13 +49,16 @@ export interface WorkSummaryProps {
 
 export const WorkSummary = memo(function WorkSummary({ work, onInspect }: WorkSummaryProps) {
   const [open, setOpen] = useState(false);
-  if (work.steps.length === 0 && work.status !== "running") return null;
+  const running = work.status === "running";
+  const elapsedMs = useRunningElapsed(work.startedAt, running);
+  // A turn with no recorded work has nothing to summarise. Before the first
+  // tool starts, the turn's own waiting line and the live status say so; a
+  // third "Working" on the same screen is noise, not reassurance.
+  if (work.steps.length === 0) return null;
 
-  // While running, the header carries what is happening right now instead of a
-  // second row appearing beneath it every few seconds.
-  const currentLabel = work.status === "running"
-    ? work.runningEntry?.summary ?? "Thinking…"
-    : null;
+  // While running, the header carries what is happening right now on its own
+  // line, updated in place, instead of a new status row every few seconds.
+  const currentLabel = running ? work.runningEntry?.summary ?? "Thinking…" : null;
 
   return (
     <div
@@ -51,8 +73,10 @@ export const WorkSummary = memo(function WorkSummary({ work, onInspect }: WorkSu
         type="button"
       >
         <span className="morrow-work__status">{statusMark(work.status)}</span>
-        <span className="morrow-work__label">{workSummaryLabel(work)}</span>
-        {currentLabel ? <span className="morrow-work__current">{currentLabel}</span> : null}
+        <span className="morrow-work__lines">
+          <span className="morrow-work__label">{workSummaryLabel(work, elapsedMs)}</span>
+          {currentLabel ? <span className="morrow-work__current">{currentLabel}</span> : null}
+        </span>
         <ChevronRight
           aria-hidden="true"
           className={`morrow-work__chevron${open ? " is-open" : ""}`}

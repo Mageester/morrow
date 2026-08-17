@@ -137,17 +137,53 @@ function SidebarNewChat() {
   return <NewChatButton projectId={activeProject?.id} />;
 }
 
+/**
+ * "3m", "2h", "4d" — enough to order the list at a glance, without a date
+ * string competing with the title for the row's width.
+ */
+function shortAge(isoDate: string): string | null {
+  const at = Date.parse(isoDate);
+  if (!Number.isFinite(at)) return null;
+  const minutes = Math.max(0, Math.round((Date.now() - at) / 60_000));
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days}d`;
+  return `${Math.round(days / 7)}w`;
+}
+
+/**
+ * A conversation that was never named and never got a first message has no
+ * title to show. Saying so is better than five identical rows reading
+ * "New Conversation", which is what the sidebar looked like before messages
+ * started naming their own conversations.
+ */
+function conversationLabel(title: string): string {
+  const trimmed = title.trim();
+  return trimmed.length === 0 || trimmed === "New Conversation" ? "Untitled chat" : trimmed;
+}
+
 function SidebarRecent({ onNavigate }: { onNavigate: () => void }) {
   const { activeProject } = useActiveProject();
+  // A conversation route names its own project, and that is authoritative for
+  // what "recent" means while you are reading it. Without this the list was
+  // empty for anyone who arrived by link rather than by picking a project
+  // first — which is how every conversation in the sidebar is opened.
+  const routeProjectId = useRouterState({
+    select: (state) => (state.location.search as { projectId?: string } | undefined)?.projectId,
+  });
+  const projectId = activeProject?.id ?? routeProjectId;
   const conversations = useQuery({
-    ...conversationQueries.list(activeProject?.id ?? "", false),
-    enabled: Boolean(activeProject),
+    ...conversationQueries.list(projectId ?? "", false),
+    enabled: Boolean(projectId),
   });
   const recent = (conversations.data ?? [])
     .filter((conversation) => !conversation.archived)
-    .slice(0, 5);
+    .slice(0, 6);
 
-  if (!activeProject || recent.length === 0) return null;
+  if (!projectId || recent.length === 0) return null;
 
   return (
     <div className="morrow-nav__recent">
@@ -155,20 +191,25 @@ function SidebarRecent({ onNavigate }: { onNavigate: () => void }) {
         Recent
       </p>
       <ul aria-labelledby="sidebar-recent-heading" className="morrow-nav__recent-list">
-        {recent.map((conversation) => (
-          <li key={conversation.id}>
-            <Link
-              className="morrow-nav__recent-link"
-              onClick={onNavigate}
-              params={{ conversationId: conversation.id }}
-              search={{ projectId: activeProject.id }}
-              title={conversation.title}
-              to="/chats/$conversationId"
-            >
-              {conversation.title}
-            </Link>
-          </li>
-        ))}
+        {recent.map((conversation) => {
+          const age = shortAge(conversation.updatedAt);
+          return (
+            <li key={conversation.id}>
+              <Link
+                activeProps={{ "aria-current": "page" }}
+                className="morrow-nav__recent-link"
+                onClick={onNavigate}
+                params={{ conversationId: conversation.id }}
+                search={{ projectId }}
+                title={conversationLabel(conversation.title)}
+                to="/chats/$conversationId"
+              >
+                <span className="morrow-nav__recent-title">{conversationLabel(conversation.title)}</span>
+                {age ? <span className="morrow-nav__recent-age">{age}</span> : null}
+              </Link>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
