@@ -1,5 +1,5 @@
 import { normalizeReasoningForRoute, reasoningModesForRoute, type AgentMode, type ModelStatus, type PresetId, type PresetStatus, type ProviderId, type ReasoningConfiguration, type RouteReasoningCapability } from "@morrow/contracts";
-import { Send, Square } from "lucide-react";
+import { Send, SlidersHorizontal, Square } from "lucide-react";
 import { CapabilityStatus } from "./capability-status.js";
 import { ModelPicker } from "./model-picker.js";
 import {
@@ -11,6 +11,7 @@ import {
   type FormEvent,
   type InputEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import {
   clearChatDraft,

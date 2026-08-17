@@ -8,7 +8,6 @@ import {
   Copy,
   Cpu,
   FileCode2,
-  Filter,
   Layers,
   Search,
   Sparkles,
