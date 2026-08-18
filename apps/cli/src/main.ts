@@ -32,6 +32,7 @@ import { acceptanceCommand, printAcceptanceHelp } from "./commands/acceptance.js
 import { provenanceCommand } from "./commands/provenance.js";
 import { mcpCommand } from "./commands/mcp.js";
 import { SLASH_COMMANDS } from "./terminal/commands.js";
+import { groupCommands } from "./terminal/command-groups.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
 import { aggregateDoctor, pnpmIsCritical, redactDiagnostics, type DoctorCheck } from "./service/doctor-checks.js";
@@ -265,7 +266,16 @@ function printHelp(out: Output): number {
     // Generated from the same registry the interactive `/` palette uses, so
     // this list can never drift from what the palette actually offers
     // (KNOWN_ISSUES #14 — `/tasks` and `/stats` were previously missing here).
-    `  ${g(SLASH_COMMANDS.map((c) => `/${c.name}`).join(" "))}`,
+    //
+    // Grouped rather than run together: seventy-one commands on one line is a
+    // list nobody reads. The grouping is the palette's own taxonomy, so the
+    // two surfaces stay identical.
+    ...groupCommands(SLASH_COMMANDS).flatMap((group) => [
+      `  ${g(group.title)}`,
+      `    ${g(group.commands.map((c) => `/${c.name}`).join(" "))}`,
+    ]),
+    "",
+    g("Press / in a session to search them all."),
     "",
     g("More: morrow projects | conversations | presets | tools | symbols | audit | skills | import hermes | serve | logs"),
     g("Options: --json --no-color --project --in --provider --model --preset --plan --read-only --yolo"),

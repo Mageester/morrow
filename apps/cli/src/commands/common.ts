@@ -89,7 +89,17 @@ export async function resolveProject(
   // should find out from the terminal, not by noticing later that changes
   // landed somewhere unexpected.
   if (configured) {
-    if (configuredProject) {
+    // Standing inside a Git repository is an unambiguous statement about where
+    // the work is. Falling back to an unrelated default from here is the
+    // dangerous case, not the convenient one: it silently pointed sessions at
+    // another checkout while the user was plainly working in this one. A
+    // repository with no registered project gets the explicit choice below
+    // (init here, or pick deliberately) instead of a warning nobody reads.
+    //
+    // The fallback survives only where there is no "here" to speak of — an
+    // ordinary directory outside any repository, where a remembered default is
+    // genuinely the most useful answer.
+    if (configuredProject && !gitRoot) {
       if (!ctx.out.json) {
         ctx.out.warn(
           `This directory isn't a registered Morrow project — resuming "${configuredProject.name}" instead. Run \`morrow init\` here to start fresh in this directory.`

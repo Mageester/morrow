@@ -128,6 +128,26 @@ describe("resolveProject: cwd-first precedence (P1-2)", () => {
     expect(warnCalls[0]).toContain("stale");
   });
 
+  it("an unregistered Git repository never falls back to a default elsewhere", async () => {
+    // The reported defect: running `morrow` inside the Morrow checkout itself
+    // resumed an unrelated project, because the repo has no registered project
+    // of its own and some other project happened to be the saved default.
+    // Standing in a repository is an unambiguous statement about where the work
+    // is, so this now refuses rather than switching.
+    const repo = tempRepo("morrow-unregistered-repo-");
+    process.chdir(repo);
+
+    const stale = project("stale", tempRepo("morrow-stale-elsewhere-"));
+    const { ctx, warnCalls } = fakeCtx({ defaultProjectId: "stale" });
+
+    // Resolves to nothing rather than to somebody else's checkout. A TTY gets
+    // the interactive chooser; a non-interactive caller decides for itself.
+    const resolved = await resolveProject(ctx, fakeApi([stale]));
+
+    expect(resolved).toBeNull();
+    expect(warnCalls).toEqual([]);
+  });
+
   it("the fallback warning is suppressed in --json mode (never pollutes machine output)", async () => {
     const emptyDir = mkdtempSync(join(tmpdir(), "morrow-unregistered-json-"));
     tempDirs.push(emptyDir);
