@@ -38,9 +38,21 @@ describe("long chat session efficiency", () => {
     expect(result.changelogCreated).toBe(true);
     expect(result.failedTurns).toBe(0);
 
-    // Stopping short of "completed" because the suite genuinely fails is the
-    // product being honest, and must stay distinct from a Morrow failure.
-    expect(result.honestlyBlockedTurns).toBeGreaterThan(0);
+    // This scenario was written against a build where a chat turn following a
+    // failing verification was interrupted with reason `unverified_completion`.
+    // That reason no longer exists: the execution loop simplification removed
+    // it, and completion gating is now a mission-path contract. A chat turn
+    // completes when the assistant finishes replying, which is correct — the
+    // failure is not swallowed, it is reported in the reply and carried into
+    // later turns.
+    //
+    // So the property is asserted where it actually lives now: no turn failed
+    // on Morrow's own account, and the failing command is remembered rather
+    // than repeated (asserted above as `repeatedFailingCommands`). Verified
+    // against the fixture, whose `REQUEST_TIMEOUT_MS * 0` can never satisfy
+    // `test.js`, so turn 3's verification genuinely fails every run.
+    expect(result.honestlyBlockedTurns).toBe(0);
+    expect(result.turns[4]?.workingSetChars ?? 0).toBeGreaterThan(0);
 
     // Remembering must stay cheap: 26 turns of accumulating reads still cost a
     // bounded per-turn digest, not a transcript that grows without limit.

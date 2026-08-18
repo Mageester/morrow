@@ -6,6 +6,59 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-17
+
+First non-prerelease. Morrow leaves beta with the conversation, not the event
+log, as the thing you look at.
+
+### Added - the chat reads as a conversation
+
+- **Execution telemetry left the transcript.** Normal chat rendered the full
+  activity projection, so an ordinary turn became a wall of `Thinking`,
+  `Route selected`, `Context budget calculated` and `Provider failure
+  classified` rows with the answer somewhere inside it. A chat-side projection
+  now classifies each event as narration, work, an exceptional transition, or
+  routine bookkeeping, and the reading column shows only the first three. On a
+  real conversation that removed 26 rows from the transcript. Nothing was
+  deleted: every event stays in Activity / Inspect and in durable storage.
+- **An assistant turn is one unit** — a compact work summary, any exceptional
+  transition, then the answer. Repeated read-only operations collapse into one
+  row (`Files read · 9`); failures and in-flight steps always keep their own.
+- **Activity is one opt-in drawer.** The permanently docked live-work rail
+  duplicated what the turn summaries already said, and is gone. The drawer
+  narrows the conversation on a wide screen and becomes a sheet below that.
+- **A polished failure surface.** A failed turn recorded its reason as a raw
+  trailing `[Error: …]` on the message. It is now split from the prose,
+  classified as a provider, tool, permission, network or runtime failure, and
+  shown verbatim behind Details, with Retry where the turn supports it.
+- **One live status line** above the composer, reporting the real lifecycle
+  phase and appearing the moment Send is pressed rather than when the provider
+  replies.
+- **Conversations name themselves** from their opening message, so the sidebar
+  stops reading as a column of identical entries.
+
+### Fixed
+
+- A running turn's elapsed time was derived from event timestamps, so the
+  counter visibly froze for the whole stretch the model spent thinking — the
+  part a reader most wants counted. It now runs against the wall clock.
+- Autoscroll watched the document, which never scrolls, instead of the
+  conversation's own scroll container. Following, disengaging on upward scroll,
+  and Jump to latest now work against the element that actually moves.
+- `.morrow-sr-only` had no CSS rule anywhere, so labels intended only for
+  screen readers were rendering as visible page text across the composers and
+  mission surfaces.
+- Tools without a hand-written verb all rendered as `Used tool`, making
+  distinct actions look like one repeated step. They are now named after the
+  tool that ran.
+
+### Changed
+
+- The composer is one row. Thinking depth, workspace trust and the mode
+  consequence moved into two popovers; every control is still present and still
+  in tab order.
+
+
 ### Added - the chat remembers what it already did
 
 - **A follow-up turn no longer starts from nothing.** Earlier turns in a
