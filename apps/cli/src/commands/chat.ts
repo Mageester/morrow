@@ -10,6 +10,8 @@ import { CliError, EXIT, usageError } from "../cli/errors.js";
 import { largeWordmark, greeting, modeLabel, parseModeName, privacyLabel } from "../cli/identity.js";
 import { readLineWithCompletion, PROMPT_EXIT } from "../terminal/prompt.js";
 import { InteractiveSession, type SessionBackend, type SessionSettings } from "../terminal/session.js";
+import { startShell } from "../terminal/ink/shell.js";
+import { buildFileIndex, completeFile } from "../terminal/ink/file-index.js";
 import { SLASH_COMMANDS, type SlashCommand } from "../terminal/commands.js";
 import { skillsAsSlashCommands } from "../skills/registry.js";
 import { localSkillsRoot } from "./skills.js";
@@ -284,6 +286,23 @@ async function runInteractiveSession(
     .filter((m) => m.available)
     .slice(0, 40)
     .map((m) => ({ kind: "model" as const, label: m.model.id, hint: m.model.label, run: `/model ${m.model.id}` }));
+
+  // The Ink shell is the terminal experience. The legacy frame renderer stays
+  // one env var away for a release, because it is what 800-odd tests still
+  // cover and a terminal regression is not something to discover in the field.
+  if (process.env.MORROW_LEGACY_TUI !== "1") {
+    const fileIndex = buildFileIndex(project.workspacePath);
+    const shell = startShell({
+      backend,
+      commands: [...SLASH_COMMANDS, ...skillCommands],
+      cwdLabel: project.name,
+      onCompleteFile: (prefix) => completeFile(fileIndex, prefix),
+      sendOptions: settings,
+      unicode,
+    });
+    await shell.done;
+    return EXIT.OK;
+  }
 
   const app = new InteractiveSession({
     io: nodeTermIO(process.stdout),
