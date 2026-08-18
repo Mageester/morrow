@@ -2,7 +2,6 @@ import { execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { migrateLegacyDatabase } from "@morrow/orchestrator";
 import type { Context } from "../cli/context.js";
 import { CliError, EXIT } from "../cli/errors.js";
 import { MorrowApi } from "../client/api.js";
@@ -39,12 +38,19 @@ export async function isRunning(ctx: Context): Promise<boolean> {
  * server stops (so the calling process stays alive while listening).
  */
 export async function serveForeground(ctx: Context): Promise<number> {
+  // Every symbol from the orchestrator is imported here rather than at the top
+  // of the file, and `migrateLegacyDatabase` belongs in this list for the same
+  // reason as the rest: a static import pulls the entire agent runtime — the
+  // provider stack, the database layer, the mission engine — into *every*
+  // `morrow` invocation. It cost 0.8s on `morrow --version`, which does not
+  // start a server and never touches any of it.
   const {
     openDatabase,
     buildServer,
     TaskRunner,
     createDefaultMissionControllerRunner,
     reconcileMissionsOnStartup,
+    migrateLegacyDatabase,
   } = await import("@morrow/orchestrator");
   const { loadSecretsIntoEnv } = await import("../config/env.js");
 

@@ -1,5 +1,6 @@
 import { Box, Text } from "ink";
 import type { TerminalState } from "../state.js";
+import type { SendOptions } from "../session-types.js";
 import { theme } from "./theme.js";
 
 /**
@@ -10,7 +11,18 @@ import { theme } from "./theme.js";
  * to fill the line — an unknown context window renders as nothing rather than
  * as a reassuring percentage Morrow cannot stand behind.
  */
-export function StatusLine({ state, cwdLabel }: { state: TerminalState; cwdLabel: string }) {
+export function StatusLine({
+  state,
+  cwdLabel,
+  settings,
+}: {
+  state: TerminalState;
+  cwdLabel: string;
+  /** The live send options. Read rather than copied, so a `/mode` or `/yolo`
+   *  taken a moment ago is reflected on the next frame — the status line must
+   *  never describe a session Morrow is no longer in. */
+  settings?: SendOptions | undefined;
+}) {
   const routing = state.routing;
   const context = state.contextUsage;
 
@@ -38,6 +50,19 @@ export function StatusLine({ state, cwdLabel }: { state: TerminalState; cwdLabel
   const branch = state.git?.branch ?? null;
   const dirty = state.git?.dirty === true;
 
+  // Mode is shown only when it is not the default, and auto-approve always.
+  // A permission state that can run commands without asking is not something to
+  // infer from the absence of a label.
+  const mode = settings ? MODE_LABEL[settings.mode] : null;
+  const reasoning =
+    settings?.reasoning && settings.reasoning.mode !== "auto"
+      ? settings.reasoning.mode === "effort"
+        ? settings.reasoning.effort
+        : settings.reasoning.mode === "budget"
+          ? `${Math.round(settings.reasoning.tokens / 1000)}k think`
+          : settings.reasoning.mode
+      : null;
+
   return (
     <Box>
       <Text color={theme.faint}>{cwdLabel}</Text>
@@ -55,6 +80,17 @@ export function StatusLine({ state, cwdLabel }: { state: TerminalState; cwdLabel
           {percentLabel} context
         </Text>
       ) : null}
+      {reasoning ? <Text color={theme.faint}>{"  "}{reasoning}</Text> : null}
+      {mode ? <Text color={theme.faint}>{"  "}{mode}</Text> : null}
+      {settings?.autoApprove ? (
+        <Text color={theme.warning}>{"  "}yolo</Text>
+      ) : null}
     </Box>
   );
 }
+
+const MODE_LABEL: Record<SendOptions["mode"], string> = {
+  agent: "build",
+  "read-only": "ask",
+  "plan-only": "plan",
+};

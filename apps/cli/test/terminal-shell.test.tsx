@@ -491,3 +491,38 @@ describe("shell: work settles with its turn", () => {
     expect(plain(view.lastFrame())).not.toContain("No new observable progress");
   });
 });
+
+describe("shell: the status line tells the truth about permissions", () => {
+  it("shows the mode and flags auto-approval", async () => {
+    const settings = { mode: "agent" as const, autoApprove: true, preset: "balanced", useMemory: true };
+    const { view } = mount({ settings });
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).toContain("build");
+    // A permission state that runs commands without asking must never be
+    // something you infer from the absence of a label.
+    expect(frame).toContain("yolo");
+  });
+
+  it("drops the flag when auto-approval is off", async () => {
+    const settings = { mode: "read-only" as const, autoApprove: false, preset: "balanced", useMemory: true };
+    const { view } = mount({ settings });
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).toContain("ask");
+    expect(frame).not.toContain("yolo");
+  });
+
+  it("shows a non-default reasoning setting", async () => {
+    const settings = {
+      mode: "agent" as const,
+      autoApprove: false,
+      preset: "balanced",
+      useMemory: true,
+      reasoning: { mode: "effort" as const, effort: "high" as const },
+    };
+    const { view } = mount({ settings });
+    await tick();
+    expect(plain(view.lastFrame())).toContain("high");
+  });
+});

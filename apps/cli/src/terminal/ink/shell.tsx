@@ -37,6 +37,10 @@ export interface ShellOptions {
   onHistoryAppend?: (line: string) => void;
   /** Resumes a task already in flight when the shell starts. */
   initialTaskId?: string | null;
+  /** Streams for the renderer. Injected only by tests — the same seam the
+   *  previous session exposed as `TermIO`, and the reason the runtime loop can
+   *  be exercised without a terminal. */
+  io?: { stdout?: NodeJS.WriteStream; stdin?: NodeJS.ReadStream; stderr?: NodeJS.WriteStream };
 }
 
 export interface ShellHandle {
@@ -69,13 +73,27 @@ export function startShell(options: ShellOptions): ShellHandle {
         // forever with nothing on screen, which is the worst thing this surface
         // can do.
         if (raw.type === "approval.requested") {
-          const id = typeof raw.payload?.id === "string" ? raw.payload.id : null;
+          // The runtime names this field `approvalId`. Reading `id` — as this
+          // did — meant every approval resolved to null and was dropped on the
+          // floor: the prompt never appeared, the keystroke answering it went
+          // into the composer, and the task waited for a decision nobody could
+          // see. `id` stays as a fallback rather than an assumption.
+          const payload = raw.payload as { approvalId?: unknown; id?: unknown } | undefined;
+          const raw_id = payload?.approvalId ?? payload?.id;
+          const id = typeof raw_id === "string" ? raw_id : null;
           if (id) {
             try {
               approvals.set(await options.backend.getApproval(id));
             } catch (error) {
               emit({ type: "notice", level: "error", text: `An approval could not be loaded: ${errorText(error)}` });
             }
+          } else {
+            // Better a visible complaint than a session that hangs in silence.
+            emit({
+              type: "notice",
+              level: "error",
+              text: "Morrow needs an approval but did not say which one. Run /panic to cancel.",
+            });
           }
           continue;
         }
@@ -218,10 +236,20 @@ export function startShell(options: ShellOptions): ShellHandle {
       onInterrupt={interrupt}
       onSubmit={submit}
       overlays={overlays}
+      settings={options.sendOptions}
       store={store}
       unicode={options.unicode}
     />,
-    { exitOnCtrlC: false },
+    {
+      exitOnCtrlC: false,
+      // Console patching stays on for a real terminal — a stray console.log
+      // from anywhere in the process would otherwise tear the frame — but it
+      // cannot run against a test runner's console shim.
+      ...(options.io ? { patchConsole: false } : {}),
+      ...(options.io?.stdout ? { stdout: options.io.stdout } : {}),
+      ...(options.io?.stdin ? { stdin: options.io.stdin } : {}),
+      ...(options.io?.stderr ? { stderr: options.io.stderr } : {}),
+    },
   );
 
   const stop = () => {

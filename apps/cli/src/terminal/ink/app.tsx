@@ -67,6 +67,8 @@ export interface AppProps {
   onHistoryAppend?: ((line: string) => void) | undefined;
   /** Leaves the shell. Never `process.exit` from a component. */
   onExit?: (() => void) | undefined;
+  /** Live send options, for the status line. Mutated by commands. */
+  settings?: import("../session-types.js").SendOptions | undefined;
 }
 
 /** Everything the composer owns, held together so one batch of keypresses
@@ -163,6 +165,7 @@ export function App({
   history = [],
   onHistoryAppend,
   onExit,
+  settings,
 }: AppProps) {
   const state = useTerminalState(store);
   const pendingApproval = useApproval(approvals);
@@ -533,7 +536,7 @@ export function App({
       {overlay === null && !pendingApproval ? (
         <>
           <Box marginTop={1}>
-            <StatusLine cwdLabel={cwdLabel} state={state} />
+            <StatusLine cwdLabel={cwdLabel} settings={settings} state={state} />
           </Box>
 
           <Composer
