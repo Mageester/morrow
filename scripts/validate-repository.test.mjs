@@ -10,11 +10,21 @@ test("package is private and unlicensed", async () => {
   assert.equal(packageJson.license, "UNLICENSED");
 });
 
-test("README is honest about beta status and makes no production claims", async () => {
+test("README does not overclaim maturity or platform support", async () => {
   const readme = await readFile("README.md", "utf8");
-  assert.match(readme, /Early Access/i);
-  assert.match(readme, /beta/i);
+
+  // Until 0.1.0 this asserted the README said "beta" and "Early Access". That
+  // was the right way to express "do not overclaim" while Morrow was in beta,
+  // and it is simply false now that it is not — the guard was asserting a
+  // status rather than the honesty it exists to protect.
+  //
+  // What must remain true at any version is that the README does not promise
+  // more than the build delivers, so the two live claims are checked directly:
+  // no production-readiness claim, and platform support stated as it actually
+  // is rather than implied to be universal.
   assert.doesNotMatch(readme, /production[ -]ready/i);
+  assert.match(readme, /Linux via source build/i, "README must not imply a packaged Linux install exists");
+  assert.match(readme, /macOS planned/i, "README must not imply macOS is supported");
 });
 
 test("installer scripts are ASCII-only and force UTF-8 console output", async () => {
