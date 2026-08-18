@@ -237,6 +237,12 @@ writeFileSync(join(cliDst, "bin", "morrow.mjs"), [
   'if (typeof code === "number" && code !== 0) process.exitCode = code;',
   "",
 ].join("\n"));
+// Where each injected workspace dep's source package.json lives, so its export
+// surface can be mirrored rather than guessed.
+const sourceRootOf = (dep) => dep === "orchestrator"
+  ? join(ROOT, "services", "orchestrator")
+  : join(ROOT, "packages", dep);
+
 // Inject the workspace deps the CLI needs that orchestrator's install lacks.
 for (const [dep, distSrc, main] of [
   ["orchestrator", join(orchSrc, "dist"), "src/lib.js"],
@@ -253,9 +259,34 @@ for (const [dep, distSrc, main] of [
     recursive: true,
     filter: (src) => !/[\\/]scripts$/.test(src) && !/[\\/]dist[\\/]scripts[\\/]/.test(src) && !/\.test\.js$/.test(src),
   });
+  // Mirror the real package's export surface rather than restating a fixed
+  // one. This was `{ ".", "./lib" }` hardcoded, so the moment the CLI imported
+  // a new subpath — `@morrow/orchestrator/home`, added to keep the whole agent
+  // runtime out of every `morrow` invocation — the bundled CLI could not
+  // resolve it and the packaged build died. A hand-maintained copy of another
+  // file's exports map is a bug with a delay on it.
+  const sourceManifest = JSON.parse(readFileSync(join(sourceRootOf(dep), "package.json"), "utf8"));
+  const sourceExports = typeof sourceManifest.exports === "string"
+    ? { ".": sourceManifest.exports }
+    : (sourceManifest.exports ?? {});
+  const builtExports = {};
+  for (const [key, value] of Object.entries(sourceExports)) {
+    const target = typeof value === "string" ? value : (value?.import ?? value?.default);
+    if (typeof target !== "string") continue;
+    // The built layout differs per package (orchestrator keeps `src/`,
+    // hermes-compat flattens it), so resolve by asking which candidate the
+    // build actually produced instead of assuming either convention.
+    const relative = target.replace(/^\.\//, "").replace(/\.tsx?$/, ".js");
+    const candidates = [relative, relative.replace(/^src\//, "")];
+    const found = candidates.find((candidate) => existsSync(join(distSrc, candidate)));
+    if (found) builtExports[key] = `./dist/${found}`;
+  }
+  // "." must always resolve; fall back to the known-good main if the source
+  // manifest is shaped unexpectedly.
+  if (!builtExports["."]) builtExports["."] = `./dist/${main}`;
   writeFileSync(join(depDst, "package.json"), JSON.stringify({
     name: `@morrow/${dep}`, version: VERSION, private: true, type: "module",
-    exports: { ".": `./dist/${main}`, "./lib": `./dist/${main}` },
+    exports: builtExports,
   }, null, 2));
 }
 // Hard gate: the compiled CLI must load and route under the bundled runtime,
