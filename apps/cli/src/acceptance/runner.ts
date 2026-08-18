@@ -8,7 +8,7 @@ import { classifyAcceptanceRun, writeAcceptanceReports } from "./report.js";
 import { AcceptanceStore, assertContainedPath } from "./storage.js";
 import type { AcceptanceCheck, AcceptanceRunState, AcceptanceScenarioId, SourceFingerprint } from "./types.js";
 import { runDurableAutonomyScenarios } from "./scenarios/durable-autonomy.js";
-import { runBrowserSiteAcceptance, runCortexLearningAcceptance, runSustainedAutonomyAcceptance, type BrowserSiteAcceptanceResult, type CortexLearningAcceptanceResult, type SustainedAutonomyAcceptanceResult } from "@morrow/orchestrator";
+import { runBrowserSiteAcceptance, runCortexLearningAcceptance, runLongSessionAcceptance, runSustainedAutonomyAcceptance, type BrowserSiteAcceptanceResult, type CortexLearningAcceptanceResult, type LongSessionAcceptanceResult, type SustainedAutonomyAcceptanceResult } from "@morrow/orchestrator";
 
 export interface InvocationResult { exitCode: number; stdout: string; stderr: string }
 export interface InvocationOptions { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }
@@ -37,6 +37,7 @@ export interface AcceptanceRunnerOptions {
   browserSiteScenario?: (input: { root: string }) => Promise<BrowserSiteAcceptanceResult>;
   cortexLearningScenario?: (input: { root: string }) => Promise<CortexLearningAcceptanceResult>;
   sustainedAutonomyScenario?: (input: { root: string }) => Promise<SustainedAutonomyAcceptanceResult>;
+  longSessionScenario?: (input: { root: string }) => Promise<LongSessionAcceptanceResult>;
 }
 
 export interface AcceptanceRunResult { state: AcceptanceRunState; reportJson: string; reportMarkdown: string }
@@ -494,6 +495,51 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
       state.checks.automatic_memory = makeCheck(cortexResult.memoryCreatedAutomatically && cortexResult.memoryRetrievedInMissionB ? "passed" : "failed", cortexResult.memoryCreatedAutomatically && cortexResult.memoryRetrievedInMissionB ? "Mission A memory was captured with evidence and injected into Mission B without a memory command" : "Automatic memory capture or recall was not proven", [entry.id]);
       state.checks.automatic_skills = makeCheck(cortexResult.skillCandidateAfterMissionA && cortexResult.skillActiveAfterMissionB && cortexResult.skillAppliedInMissionC ? "passed" : "failed", cortexResult.skillCandidateAfterMissionA && cortexResult.skillActiveAfterMissionB && cortexResult.skillAppliedInMissionC ? "A repeated workflow progressed from candidate to validated active skill and was applied to Mission C" : "Automatic skill promotion or later application was not proven", [entry.id]);
       completeStep(store, state, "cortex-learning");
+    }
+
+    if (state.scenarioId === "durable-autonomy-v1" && !state.completedSteps.includes("long-session")) {
+      beginStep(store, state, "long-session");
+      const longSessionRoot = assertContainedPath(runRoot, join(runRoot, "long-session"));
+      const longSession = await (options.longSessionScenario ?? runLongSessionAcceptance)({ root: longSessionRoot });
+      const artifact = writeArtifact(store, state, "long-session.json", `${JSON.stringify(longSession, null, 2)}\n`);
+      const entry = store.appendEvidence(state.runId, {
+        step: "long-session",
+        kind: "cross-turn-working-memory",
+        status: longSession.passed ? "passed" : "failed",
+        summary: longSession.passed
+          ? `${longSession.userTurns} chat turns needed ${longSession.totalToolCalls} tool calls with no repeated discovery and no repeated failing command`
+          : `Long session efficiency failed: ${longSession.message ?? "unknown failure"}`,
+        artifact,
+        details: {
+          userTurns: longSession.userTurns,
+          totalToolCalls: longSession.totalToolCalls,
+          redundantDiscoveryCalls: longSession.redundantDiscoveryCalls,
+          repeatedFailingCommands: longSession.repeatedFailingCommands,
+          turnsAnsweredFromMemory: longSession.turnsAnsweredFromMemory,
+          failedTurns: longSession.failedTurns,
+          honestlyBlockedTurns: longSession.honestlyBlockedTurns,
+          maxWorkingSetChars: longSession.maxWorkingSetChars,
+          maxPromptChars: longSession.maxPromptChars,
+        },
+      });
+      const noWaste = longSession.redundantDiscoveryCalls === 0 && longSession.repeatedFailingCommands === 0 && longSession.failedTurns === 0;
+      state.checks.long_session_no_wasted_work = makeCheck(
+        noWaste ? "passed" : "failed",
+        noWaste
+          ? `Every follow-up turn reused what the conversation already established (${longSession.turnsAnsweredFromMemory}/${longSession.userTurns - 1} turns)`
+          : `Wasted work persisted across turns: ${longSession.message ?? "unknown failure"}`,
+        [entry.id],
+      );
+      // Remembering has to stay affordable, or it just trades one waste for another.
+      const bounded = longSession.maxWorkingSetChars <= 3_000;
+      state.checks.long_session_bounded_memory = makeCheck(
+        bounded ? "passed" : "failed",
+        bounded
+          ? `Carried working memory stayed bounded at ${longSession.maxWorkingSetChars} characters across ${longSession.userTurns} turns`
+          : `Carried working memory grew to ${longSession.maxWorkingSetChars} characters`,
+        [entry.id],
+      );
+      completeStep(store, state, "long-session");
     }
 
     if (state.scenarioId === "durable-autonomy-v1" && !state.completedSteps.includes("model-truth")) {

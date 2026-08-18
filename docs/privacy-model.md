@@ -92,6 +92,14 @@ external network access outright. See
 - Automatically learned skills are project-scoped under local Morrow data, need
   two distinct successful mission observations, and cannot request network access
   or secrets. Invalid or modified bundles are quarantined before reuse.
+- Cross-turn chat working memory is *derived*, never separately stored. Each
+  follow-up turn rebuilds a bounded digest from the conversation's existing
+  redacted tool-call records, scoped to the same project, conversation, and
+  worktree, and bounded by the post-compaction window. It carries paths, byte
+  sizes, command lines with exit codes, result counts, and bounded error text —
+  never file contents, and never browser URL credentials or query strings.
+  Deleting or compacting the conversation removes the memory with it, and the
+  digest cannot drift from the audit record.
 - Complete deletion for user-requested local data removal
 - Provider continuation fields needed for protocol correctness are locally
   access-restricted with task state, excluded from public events, logs,
