@@ -37,11 +37,26 @@ const routes = [
 
 beforeEach(() => localStorage.clear());
 
+/**
+ * Secondary controls now live behind the composer's two popovers. The controls
+ * themselves are unchanged — these helpers just open the surface they moved to,
+ * so every assertion below still covers the same behaviour.
+ */
+async function openThinking(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /^Thinking · / }));
+}
+
+async function openSettings(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Workspace and message settings" }));
+}
+
 describe("ChatComposer", () => {
-  it("defaults a fresh install to Build with a trusted workspace", () => {
+  it("defaults a fresh install to Build with a trusted workspace", async () => {
+    const user = userEvent.setup();
     render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
 
     expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-pressed", "true");
+    await openSettings(user);
     expect(screen.getByRole("checkbox", { name: "Trusted workspace" })).toBeChecked();
     expect(screen.getByText("Ordinary workspace actions can continue without stopping; other actions still ask.")).toBeVisible();
   });
@@ -62,6 +77,7 @@ describe("ChatComposer", () => {
     }
     render(<Parent />);
 
+    await openThinking(user);
     const toggle = screen.getByRole("checkbox", { name: "Show thinking" });
     expect(toggle).not.toBeChecked();
     expect(toggle).toBeEnabled();
@@ -224,6 +240,7 @@ describe("ChatComposer", () => {
     render(<Parent />);
 
     await user.selectOptions(screen.getByLabelText("Model route"), "deepseek:v4-pro");
+    await openThinking(user);
     const slider = screen.getByRole("slider", { name: "Reasoning effort" });
     expect(slider).toHaveAttribute("aria-valuetext", "Auto");
     expect(slider).toHaveAttribute("data-value", "auto");
@@ -281,6 +298,7 @@ describe("ChatComposer", () => {
     render(<Parent />);
 
     await user.selectOptions(screen.getByLabelText("Model route"), "gemini:3.7-flash");
+    await openThinking(user);
     const slider = screen.getByRole("slider", { name: "Reasoning effort" });
     // Auto + exactly three provider modes: "minimal" is a real Gemini level,
     // but not on this model, so it must not be offered here.
@@ -293,6 +311,7 @@ describe("ChatComposer", () => {
     // Switching to the sibling model widens the offer to four, with no change
     // to this component: the route reports its own set.
     await user.selectOptions(screen.getByLabelText("Model route"), "gemini:3.5-flash");
+    await openThinking(user);
     const wider = screen.getByRole("slider", { name: "Reasoning effort" });
     expect(wider).toHaveAttribute("max", "4");
     fireEvent.change(wider, { target: { value: "1" } });
@@ -317,6 +336,7 @@ describe("ChatComposer", () => {
 
     render(<ChatComposer draftScope={scope} modelRoutes={[...routes, unknownRoute]} onReasoningConfigChange={vi.fn()} onSubmit={vi.fn()} />);
     await user.selectOptions(screen.getByLabelText("Model route"), "unknown:route");
+    await openThinking(user);
 
     const slider = screen.getByRole("slider", { name: "Reasoning effort" });
     expect(slider).toHaveAttribute("aria-valuetext", "Auto");
@@ -328,12 +348,14 @@ describe("ChatComposer", () => {
     const user = userEvent.setup();
     const first = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
 
+    await openSettings(user);
     await user.click(screen.getByRole("checkbox", { name: "Trusted workspace" }));
     first.unmount();
 
     render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
 
     expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-pressed", "true");
+    await openSettings(user);
     expect(screen.getByRole("checkbox", { name: "Trusted workspace" })).not.toBeChecked();
     expect(screen.getByText("Morrow will ask before workspace changes and commands.")).toBeVisible();
   });
@@ -346,6 +368,7 @@ describe("ChatComposer", () => {
 
     render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
     expect(screen.getByRole("button", { name: "Chat" })).toHaveAttribute("aria-pressed", "true");
+    await openSettings(user);
     expect(screen.queryByRole("checkbox", { name: "Trusted workspace" })).not.toBeInTheDocument();
   });
 

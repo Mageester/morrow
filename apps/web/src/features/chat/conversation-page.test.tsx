@@ -151,10 +151,13 @@ describe("ConversationPage", () => {
     renderPage();
 
     await screen.findByRole("region", { name: `Conversation: ${conversation.title}` });
-    await screen.findByRole("region", { name: "Morrow activity" });
+    // The conversation itself shows one compact work summary, not a row per
+    // event: the internal "Thinking" state must not reach the reading column.
+    await screen.findByTestId("turn-work-summary");
+    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/activity"))).toBe(true);
-    await user.click(screen.getByRole("button", { name: "Show live work" }));
-    await user.click(await screen.findByRole("button", { name: "Open full activity ↗" }));
+
+    await user.click(screen.getByRole("button", { name: "Show activity" }));
 
     const panel = await screen.findByRole("complementary", { name: "Activity / Inspect" });
     const items = within(panel).getAllByRole("listitem");
@@ -172,6 +175,8 @@ describe("ConversationPage", () => {
 
     await user.click(within(panel).getByRole("button", { name: "Close Activity / Inspect" }));
     expect(screen.queryByRole("complementary", { name: "Activity / Inspect" })).not.toBeInTheDocument();
+    // Closing restores the conversation without losing the turn summary.
+    expect(screen.getByTestId("turn-work-summary")).toBeVisible();
   });
 
   it("surfaces a blocking approval inside the conversation and resolving it clears the card", async () => {
@@ -409,7 +414,7 @@ describe("ConversationPage interleaved transcript", () => {
     };
   }
 
-  it("renders narration and tool steps as one stream in run order", async () => {
+  it("renders one work summary and the answer, never the answer twice", async () => {
     const activity = {
       version: 1,
       projectId: "project-1",
@@ -418,40 +423,72 @@ describe("ConversationPage interleaved transcript", () => {
         entry({ id: "n1", sequence: 1, kind: "narration", summary: "Assistant message", text: "First I read the config." }),
         entry({ id: "t1", sequence: 2, kind: "file", summary: "Read package.json", target: "package.json", toolName: "read_file" }),
         entry({ id: "n2", sequence: 3, kind: "narration", summary: "Assistant message", text: "Now applying the fix." }),
-        entry({ id: "t2", sequence: 4, kind: "diff", summary: "Applied patch to src/a.ts", target: "src/a.ts", toolName: "propose_patch" }),
+        entry({ id: "t2", sequence: 4, kind: "diff", summary: "Edited src/a.ts", target: "src/a.ts", toolName: "propose_patch" }),
       ],
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
       if (path.endsWith("/activity")) return json(activity);
       if (path.includes("/approvals")) return json([]);
-      if (path.endsWith("/messages")) return json([message({ content: "First I read the config.\n\nNow applying the fix." })]);
+      if (path.endsWith("/messages")) return json([message({ content: "First I read the config. Now applying the fix." })]);
       if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
       throw new Error(`Unexpected request ${path}`);
     });
     vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
     renderPage();
 
-    const transcript = await screen.findByTestId("conversation-transcript");
+    // The answer renders exactly once: narration is the same words as the
+    // message body, so projecting both would duplicate the whole turn.
+    expect(await screen.findAllByText(/First I read the config/)).toHaveLength(1);
 
-    // Reading the rendered transcript top to bottom must reproduce the run.
-    const steps = Array.from(
-      transcript.querySelectorAll('[data-testid="transcript-narration"], .morrow-activity-timeline li'),
-    ).map((node) => node.textContent?.replace(/\s+/g, " ").trim() ?? "");
+    const summary = await screen.findByTestId("turn-work-summary");
+    expect(summary).toHaveTextContent(/Completed/);
+    expect(summary).toHaveTextContent(/2 tools/);
+    expect(summary).toHaveTextContent(/1 file changed/);
 
-    expect(steps[0]).toContain("First I read the config.");
-    expect(steps[1]).toContain("Read package.json");
-    expect(steps[2]).toContain("Now applying the fix.");
-    expect(steps[3]).toContain("Applied patch to src/a.ts");
-
-    // The flat message body must not also render, or every word appears twice.
-    expect(transcript.parentElement?.querySelectorAll(".morrow-conversation-message__content").length ?? 0).toBe(0);
+    // Steps are behind the summary until asked for.
+    expect(screen.queryByText("Read package.json")).not.toBeInTheDocument();
+    await user.click(within(summary).getByRole("button", { expanded: false }));
+    expect(within(summary).getByText("Read package.json")).toBeVisible();
+    expect(within(summary).getByText("Edited src/a.ts")).toBeVisible();
   });
 
-  it("falls back to the plain body when a turn produced no narration", async () => {
+  it("presents a failed turn as a compact notice with the exact reason behind Details", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/activity")) return json({ version: 1, projectId: "project-1", conversationId: conversation.id, entries: [] });
+      if (path.includes("/approvals")) return json([]);
+      if (path.endsWith("/messages")) {
+        return json([message({
+          content: "I started the rebuild.\n\n[Error: Provider emitted unsupported chunk type text-delta]",
+          streamingState: "failed",
+          taskStatus: "failed",
+        })]);
+      }
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      throw new Error(`Unexpected request ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    const notice = await screen.findByTestId("turn-failure");
+    expect(within(notice).getByText("Provider response failed")).toBeVisible();
+    expect(within(notice).getByText("Provider error")).toBeVisible();
+    // The prose the model did produce still reads as prose.
+    expect(screen.getByText("I started the rebuild.")).toBeVisible();
+    // The raw string is not shown by default, and is not lost either.
+    expect(screen.queryByText(/unsupported chunk type/)).not.toBeInTheDocument();
+
+    await user.click(within(notice).getByRole("button", { name: "Details" }));
+    expect(within(notice).getByText("Provider emitted unsupported chunk type text-delta")).toBeVisible();
+    expect(within(notice).getByRole("button", { name: "Retry" })).toBeEnabled();
+  });
+
+  it("renders the plain body for a turn that recorded no tool work", async () => {
     const activity = {
-      version: 1, projectId: "project-1", conversationId: conversation.id,
-      entries: [entry({ id: "t1", sequence: 1, kind: "file", summary: "Read package.json", toolName: "read_file" })],
+      version: 1, projectId: "project-1", conversationId: conversation.id, entries: [],
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
@@ -465,7 +502,7 @@ describe("ConversationPage interleaved transcript", () => {
     renderPage();
 
     expect(await screen.findByText("Plain answer.")).toBeInTheDocument();
-    expect(screen.queryByTestId("conversation-transcript")).toBeNull();
+    expect(screen.queryByTestId("turn-work-summary")).toBeNull();
   });
 
   it("fetches and shows provider reasoning only after the chat-bar toggle is enabled", async () => {
@@ -496,13 +533,14 @@ describe("ConversationPage interleaved transcript", () => {
     await screen.findByText("Saved answer");
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/reasoning"))).toBe(false);
 
+    await user.click(screen.getByRole("button", { name: /^Thinking · / }));
     await user.click(screen.getByRole("checkbox", { name: "Show thinking" }));
     const disclosure = await screen.findByRole("region", { name: "Model reasoning" });
     expect(within(disclosure).getByText(/smallest coherent change/)).toBeVisible();
     expect(localStorage.getItem("morrow.chat.show-reasoning.v1")).toBe("true");
   });
 
-  it("renders live execution status during an active task and connects to inspector", async () => {
+  it("reports the running phase in place and opens Activity from it", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
       if (path.endsWith("/activity")) {
@@ -564,11 +602,13 @@ describe("ConversationPage interleaved transcript", () => {
     renderPage();
 
     await screen.findByRole("region", { name: `Conversation: ${conversation.title}` });
-    const inspectBtn = await screen.findByRole("button", { name: "Inspect live activity" });
-    expect(inspectBtn).toBeInTheDocument();
-    expect(screen.getByText(/Working ·/)).toBeInTheDocument();
-    expect(screen.getByText("1 step")).toBeInTheDocument();
-    await user.click(inspectBtn);
+    // The live line reports the phase and the run's real numbers; the step
+    // itself is named once, by the turn's own work summary.
+    const live = await screen.findByRole("status");
+    expect(live).toHaveTextContent("Working…");
+    expect(live).toHaveTextContent("1 tool");
+    expect(await screen.findByText("Reading src/index.ts")).toBeInTheDocument();
+    await user.click(within(live).getByRole("button", { name: "Activity" }));
 
     const panel = await screen.findByRole("complementary", { name: "Activity / Inspect" });
     expect(panel).toBeInTheDocument();

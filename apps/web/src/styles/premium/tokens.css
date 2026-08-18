@@ -18,13 +18,15 @@
 :root {
   /* Geometry — identical in both themes. */
   --morrow-premium-gutter: 14px;
-  --morrow-premium-rail: 210px;
-  --morrow-premium-rail-compact: 190px;
+  /* Narrower than before: the sidebar is a way back to things, not a surface
+     that needs to hold prose. The width it gives up goes to the conversation. */
+  --morrow-premium-rail: 194px;
+  --morrow-premium-rail-compact: 178px;
   --morrow-premium-topbar: 56px;
   --morrow-premium-activity: 286px;
   --morrow-premium-content: 1120px;
-  --morrow-premium-reading: 780px;
-  --morrow-premium-composer: 790px;
+  --morrow-premium-reading: 800px;
+  --morrow-premium-composer: 800px;
 
   --morrow-product-radius-sm: 9px;
   --morrow-product-radius-md: 16px;

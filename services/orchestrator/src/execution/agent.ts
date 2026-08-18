@@ -28,6 +28,7 @@ import { symbolIndexRepository } from "../repositories/symbols.js";
 import { auditLogRepository } from "../repositories/audit-log.js";
 import { actionAttemptsRepository, actionEnvironmentFingerprint, normalizeActionSignature } from "../repositories/action-attempts.js";
 import { ApprovalContinuationRegistry } from "./continuation.js";
+import { buildConversationWorkingSet, type WorkingSetTurn } from "./conversation-working-set.js";
 import { buildExecutionProgressSnapshot, fingerprintWorkspacePaths } from "./progress-snapshot.js";
 import { assessProgress, type MissionProgressSnapshot } from "./progress.js";
 import { missionRuntimeRepository } from "../repositories/mission-runtime.js";
@@ -636,6 +637,42 @@ class AgentToolFailure extends Error {
     this.resultJson = JSON.stringify(result);
     this.errorType = errorType;
   }
+}
+
+/**
+ * Workspace paths a completed write tool actually delivered.
+ *
+ * `create_file`/`create_directory` name their target in `path`. `propose_patch`
+ * does not: it names its files only inside the unified diff, so reading
+ * `args.path` alone reports zero artifacts for an edit. That silently failed
+ * the file-delivery completion contract for the most common agent action there
+ * is â€” editing an existing file â€” and reported finished work as interrupted.
+ *
+ * The new side of each hunk is the delivered path; `/dev/null` there is a
+ * deletion, which delivers nothing.
+ */
+export function workspaceWritePaths(argsJson: string | null | undefined): string[] {
+  const paths = new Set<string>();
+  let args: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(argsJson ?? "{}") as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    args = parsed as Record<string, unknown>;
+  } catch {
+    // A malformed argument body cannot be task-owned artifact evidence.
+    return [];
+  }
+  if (typeof args.path === "string" && args.path.trim()) paths.add(args.path.trim());
+  if (Array.isArray(args.files)) {
+    for (const file of args.files) if (typeof file === "string" && file.trim()) paths.add(file.trim());
+  }
+  if (typeof args.patch === "string") {
+    for (const match of args.patch.matchAll(/^\+\+\+\s+(?:b\/)?([^\r\n\t]+?)\s*$/gm)) {
+      const path = match[1]!.trim();
+      if (path && path !== "/dev/null") paths.add(path);
+    }
+  }
+  return [...paths];
 }
 
 /** The file a patch targets (old side, or new side for a creation hunk). */
@@ -1827,6 +1864,34 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const projectedDbMessages = manualProjection
     ? dbMessages.slice(Math.min(dbMessages.length, manualProjection.sourceEndIndex + 1))
     : dbMessages;
+
+  // Cross-turn working memory. Replaying earlier turns as plain text drops
+  // every tool call they made, so a follow-up turn otherwise re-explores the
+  // project from nothing. Rebuild a bounded digest of that work from the
+  // durable tool-call log â€” scoped to this conversation, to the same checkout,
+  // and to the post-compaction window so a user-requested compaction is not
+  // silently undone.
+  const priorTurns: WorkingSetTurn[] = [];
+  for (const msg of projectedDbMessages) {
+    if (msg.id === assistantMessageRow.id) break;
+    if (msg.role !== "assistant" || !msg.taskId || msg.taskId === taskId) continue;
+    const priorTask = tasks.getTaskById(msg.taskId);
+    if (!priorTask) continue;
+    if ((priorTask.worktreeId ?? null) !== (assignedWorktreeId ?? null)) continue;
+    const toolCalls = convs.listToolCallsForTask(msg.taskId);
+    if (toolCalls.length > 0) priorTurns.push({ taskId: msg.taskId, toolCalls });
+  }
+  const workingSet = buildConversationWorkingSet(priorTurns);
+  if (workingSet.content) {
+    chatMessages.push({ role: "system", content: workingSet.content });
+    event("context.working_set", {
+      priorTurns: priorTurns.length,
+      entryCount: workingSet.entryCount,
+      truncated: workingSet.truncated,
+      bytes: Buffer.byteLength(workingSet.content, "utf8"),
+    });
+  }
+
   for (const msg of projectedDbMessages) {
     if (msg.id === assistantMessageRow.id) break;
     chatMessages.push({
@@ -3522,15 +3587,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const paths = new Set<string>();
     for (const call of convs.listToolCallsForMessage(assistantMessageRow.id)) {
       if (!WORKSPACE_WRITE_TOOLS.has(call.toolName) || call.status !== "completed") continue;
-      try {
-        const args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>;
-        if (typeof args.path === "string" && args.path.trim()) paths.add(args.path);
-        if (Array.isArray(args.files)) {
-          for (const file of args.files) if (typeof file === "string" && file.trim()) paths.add(file);
-        }
-      } catch {
-        // A malformed or missing path cannot be task-owned artifact evidence.
-      }
+      for (const path of workspaceWritePaths(call.argsJson)) paths.add(path);
     }
     return [...paths];
   };

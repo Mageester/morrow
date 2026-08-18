@@ -139,6 +139,12 @@ function isTranscriptTool(toolName: string | null): boolean {
   return /^(?:run_command|propose_patch|create_file|create_directory|load_skill|find_skill|read_file|list_files|read_artifact|search_text|search_files|search_symbols|git_status|git_diff|git_log|browser_[a-z_]+)$/.test(toolName);
 }
 
+/** "browser_navigate" -> "browser navigate". The tool's own name, made
+ * readable — never a friendlier name it does not actually have. */
+function readableToolName(toolName: string): string {
+  return toolName.replaceAll("_", " ");
+}
+
 function toolSummary(
   kind: WebActivityKind,
   status: WebActivityStatus,
@@ -156,6 +162,11 @@ function toolSummary(
     : toolName === "find_skill" ? ["Finding skill", "Found skill"]
     : kind === "command" ? ["Running", "Ran"]
     : kind === "process" ? ["Starting process", "Process finished"]
+    // Anything without a hand-written verb — browser actions, artifact reads,
+    // future tools — is named after the tool that ran. "Used tool" repeated
+    // five times told a reader nothing and, worse, made five distinct actions
+    // look like one repeated mistake.
+    : toolName ? [`Using ${readableToolName(toolName)}`, `Used ${readableToolName(toolName)}`]
     : ["Using tool", "Used tool"];
   if (status === "failed") return `${verb[1]}${target ? ` ${target}` : ""} — failed`;
   return `${status === "running" ? verb[0] : verb[1]}${target ? ` ${target}` : ""}`;

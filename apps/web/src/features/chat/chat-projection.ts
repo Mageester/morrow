@@ -152,6 +152,15 @@ export interface TurnWork {
   /** Wall-clock span of the turn's recorded work; null when unknowable. */
   durationMs: number | null;
   status: TurnStatus;
+  /**
+   * When the turn's first recorded event happened, as epoch milliseconds.
+   *
+   * A running turn's elapsed time must come from this plus the current clock,
+   * not from the span between recorded events: between two tool calls the
+   * newest event stops moving, and a timer derived from it visibly freezes
+   * while the run is very much still going.
+   */
+  startedAt: number | null;
   /** The step currently in flight, for the live status line. */
   runningEntry: WebConversationActivityEntry | null;
 }
@@ -164,6 +173,7 @@ const EMPTY_TURN: TurnWork = {
   filesChanged: 0,
   durationMs: null,
   status: "idle",
+  startedAt: null,
   runningEntry: null,
 };
 
@@ -228,8 +238,7 @@ function dedupeNotables(
   return result;
 }
 
-function spanMs(entries: readonly WebConversationActivityEntry[]): number | null {
-  if (entries.length === 0) return null;
+function bounds(entries: readonly WebConversationActivityEntry[]): { first: number; last: number } | null {
   let earliest = Number.POSITIVE_INFINITY;
   let latest = Number.NEGATIVE_INFINITY;
   for (const entry of entries) {
@@ -239,8 +248,7 @@ function spanMs(entries: readonly WebConversationActivityEntry[]): number | null
     if (Number.isFinite(end)) latest = Math.max(latest, end);
   }
   if (!Number.isFinite(earliest) || !Number.isFinite(latest)) return null;
-  const span = latest - earliest;
-  return span >= 0 ? span : null;
+  return { first: earliest, last: Math.max(latest, earliest) };
 }
 
 /**
@@ -294,14 +302,18 @@ export function projectTurnWork(
         ? "completed"
         : "idle";
 
+  const span = bounds(entries);
   return {
     steps: groupSteps(steps),
     notables: dedupeNotables(notables),
     narrations,
     toolCount: steps.length,
     filesChanged: changedFiles.size,
-    durationMs: spanMs(entries),
+    // Settled turns report the span they actually occupied; a running turn
+    // leaves this null and is timed against the wall clock instead.
+    durationMs: status === "running" || !span ? null : span.last - span.first,
     status,
+    startedAt: span?.first ?? null,
     runningEntry,
   };
 }
@@ -324,9 +336,12 @@ export function formatElapsed(ms: number | null | undefined): string | null {
  * state: nothing here claims completion for a run that failed, and an unknown
  * duration is omitted rather than rendered as zero.
  */
-export function workSummaryLabel(work: TurnWork): string {
+export function workSummaryLabel(work: TurnWork, elapsedMs?: number | null): string {
   const parts: string[] = [];
-  const elapsed = formatElapsed(work.durationMs);
+  // A sub-second span is indistinguishable from events that all carry the same
+  // timestamp, so the turn reports no time rather than an authoritative "0ms".
+  const measured = elapsedMs ?? work.durationMs;
+  const elapsed = measured !== null && measured >= 1000 ? formatElapsed(measured) : null;
   if (work.status === "running") {
     parts.push("Working");
   } else if (work.status === "failed") {

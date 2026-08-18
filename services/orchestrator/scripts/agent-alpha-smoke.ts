@@ -87,7 +87,12 @@ async function run() {
       body: JSON.stringify({ title: "Smoke Chat" })
     });
     const conversation = await createConvRes.json();
-    if (createConvRes.status !== 200) throw new Error("Failed to create conversation");
+    // The route answers 201 Created, like POST /api/projects above. Asserting a
+    // bare 200 here failed the smoke on an untouched tree and reported only
+    // "Failed to create conversation", with no status or body to act on.
+    if (![200, 201].includes(createConvRes.status)) {
+      throw new Error(`Failed to create conversation (HTTP ${createConvRes.status}): ${JSON.stringify(conversation)}`);
+    }
 
     // 3. Send message (which starts the task)
     const sendMsgRes = await fetch(`${baseUrl}/api/conversations/${conversation.id}/messages`, {

@@ -6,6 +6,98 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-17
+
+First non-prerelease. Morrow leaves beta with the conversation, not the event
+log, as the thing you look at.
+
+### Added - the chat reads as a conversation
+
+- **Execution telemetry left the transcript.** Normal chat rendered the full
+  activity projection, so an ordinary turn became a wall of `Thinking`,
+  `Route selected`, `Context budget calculated` and `Provider failure
+  classified` rows with the answer somewhere inside it. A chat-side projection
+  now classifies each event as narration, work, an exceptional transition, or
+  routine bookkeeping, and the reading column shows only the first three. On a
+  real conversation that removed 26 rows from the transcript. Nothing was
+  deleted: every event stays in Activity / Inspect and in durable storage.
+- **An assistant turn is one unit** — a compact work summary, any exceptional
+  transition, then the answer. Repeated read-only operations collapse into one
+  row (`Files read · 9`); failures and in-flight steps always keep their own.
+- **Activity is one opt-in drawer.** The permanently docked live-work rail
+  duplicated what the turn summaries already said, and is gone. The drawer
+  narrows the conversation on a wide screen and becomes a sheet below that.
+- **A polished failure surface.** A failed turn recorded its reason as a raw
+  trailing `[Error: …]` on the message. It is now split from the prose,
+  classified as a provider, tool, permission, network or runtime failure, and
+  shown verbatim behind Details, with Retry where the turn supports it.
+- **One live status line** above the composer, reporting the real lifecycle
+  phase and appearing the moment Send is pressed rather than when the provider
+  replies.
+- **Conversations name themselves** from their opening message, so the sidebar
+  stops reading as a column of identical entries.
+
+### Fixed
+
+- A running turn's elapsed time was derived from event timestamps, so the
+  counter visibly froze for the whole stretch the model spent thinking — the
+  part a reader most wants counted. It now runs against the wall clock.
+- Autoscroll watched the document, which never scrolls, instead of the
+  conversation's own scroll container. Following, disengaging on upward scroll,
+  and Jump to latest now work against the element that actually moves.
+- `.morrow-sr-only` had no CSS rule anywhere, so labels intended only for
+  screen readers were rendering as visible page text across the composers and
+  mission surfaces.
+- Tools without a hand-written verb all rendered as `Used tool`, making
+  distinct actions look like one repeated step. They are now named after the
+  tool that ran.
+
+### Changed
+
+- The composer is one row. Thinking depth, workspace trust and the mode
+  consequence moved into two popovers; every control is still present and still
+  in tab order.
+
+
+### Added - the chat remembers what it already did
+
+- **A follow-up turn no longer starts from nothing.** Earlier turns in a
+  conversation were replayed to the model as plain user/assistant text, so every
+  file read, search, command, and patch from those turns was dropped. The model
+  had no way to know it had already looked at a file, and re-explored the project
+  once per turn, forever. Each turn now carries a bounded digest of the work the
+  conversation has already done, rebuilt from the durable tool-call log.
+  Measured on the same 6-turn session: 19 tool calls and 4 wasted discovery
+  calls before, 10 tool calls and none after.
+- **Remembering stays cheap.** The digest is capped at ~2.4 KB over a sliding
+  12-turn window, ordered so changes and command outcomes survive truncation
+  ahead of exploration. A 26-turn session holds it under 900 characters.
+- **A command that already failed is not re-run blind.** Command outcomes carry
+  their exit code across turns, so "try that again" can act on what happened
+  instead of repeating it.
+- **`morrow acceptance run --scenario durable-autonomy-v1` gained a
+  long-session gate.** It drives 26 real chat turns through the production
+  dispatch and execution path and fails if any turn re-discovers what the
+  conversation already established, re-runs a known-failing command, or lets
+  carried memory grow unbounded.
+
+### Fixed - a documented check that could not pass
+
+- **`pnpm --filter @morrow/orchestrator smoke:agent-alpha` failed on an
+  untouched tree.** It asserted HTTP 200 where the conversation route answers
+  201 Created, and reported the failure without a status or body to act on.
+  All four orchestrator smokes now pass.
+
+### Fixed - editing a file counts as delivering it
+
+- **A patch-only turn no longer reports finished work as interrupted.** The
+  completion contract collected delivered artifacts from a write tool's `path`
+  argument, but `propose_patch` names its files only inside the unified diff. So
+  editing an existing file — the most common thing an agent does — produced zero
+  observed artifacts and blocked with `missing_durable_artifact`, after the patch
+  had already applied successfully. Delivered paths are now read from the diff
+  headers too, with a `/dev/null` target correctly delivering nothing.
+
 ## [0.1.0-beta.47] - 2026-08-15
 
 ### Added - NVIDIA NIM and TokenRouter providers
@@ -331,7 +423,6 @@ reached the shell mangled (now passed verbatim).
 `runFlagshipBuild` passed `maxTurns: 24`. A Build Auto on `best-quality` gets
 `maxToolIterations: 8`. The gate was measuring a configuration no user can
 select; it now takes the budget from the preset, like production does.
-
 ### Changed - reliability cycle: bug classes became structural guards
 
 - **Every provider adapter now normalizes the same situations identically, and

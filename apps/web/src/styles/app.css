@@ -3913,6 +3913,10 @@ a {
   font-size: 0.8125rem;
 }
 
+/* `morrow-sr-only` is used across the composers and mission surfaces but was
+   never given a rule, so every label meant only for assistive technology was
+   rendering as visible page text. Same treatment, one definition. */
+.morrow-sr-only,
 .morrow-visually-hidden {
   position: absolute;
   width: 1px;

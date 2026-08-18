@@ -229,6 +229,8 @@ describe("durable autonomy packaged acceptance scenarios", () => {
       sustained_autonomy_terminal: { status: "passed" },
       sustained_autonomy_no_deadline: { status: "passed" },
       sustained_autonomy_integrity: { status: "passed" },
+      long_session_no_wasted_work: { status: "passed" },
+      long_session_bounded_memory: { status: "passed" },
     });
   });
 });
