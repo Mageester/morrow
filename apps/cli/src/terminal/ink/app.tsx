@@ -1,6 +1,10 @@
 import { Box, Static, Text, useInput, useStdout } from "ink";
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import { approvalDecisionForKey } from "../approvals.js";
 import type { SlashCommand } from "../commands.js";
+import type { ApprovalDecision } from "../approvals.js";
+import { ApprovalPrompt } from "./approval.js";
+import type { ApprovalStore } from "./approval-store.js";
 import type { ConversationEntry, TerminalState } from "../state.js";
 import { CommandPalette, filterCommands } from "./palette.js";
 import { StatusLine } from "./status-line.js";
@@ -35,11 +39,26 @@ export interface AppProps {
   commands?: readonly SlashCommand[] | undefined;
   /** Resolves `@` file references. Returns candidate paths for a prefix. */
   onCompleteFile?: ((prefix: string) => string[]) | undefined;
+  /** Pending approval, raised by the runtime loop outside the React tree. */
+  approvals?: ApprovalStore | undefined;
+  /** Answers the pending approval. */
+  onApprovalDecision?: ((decision: ApprovalDecision) => void) | undefined;
 }
 
 function useTerminalState(store: TerminalStore): TerminalState {
   useSyncExternalStore(store.subscribe, store.getVersion, store.getVersion);
   return store.state;
+}
+
+const NO_APPROVAL = () => 0;
+
+function useApproval(approvals: ApprovalStore | undefined) {
+  useSyncExternalStore(
+    approvals?.subscribe ?? (() => () => {}),
+    approvals?.getVersion ?? NO_APPROVAL,
+    approvals?.getVersion ?? NO_APPROVAL,
+  );
+  return approvals?.pending ?? null;
 }
 
 /** A finished turn. Rendered once, then owned by the terminal's scrollback. */
@@ -74,8 +93,11 @@ export function App({
   onInterrupt,
   commands = [],
   onCompleteFile,
+  approvals,
+  onApprovalDecision,
 }: AppProps) {
   const state = useTerminalState(store);
+  const pendingApproval = useApproval(approvals);
   const { stdout } = useStdout();
   const [draft, setDraft] = useState("");
   const [expanded, setExpanded] = useState(false);
@@ -141,6 +163,17 @@ export function App({
   const suggestionCount = paletteOpen ? paletteMatches.length : fileMatches.length;
 
   useInput((input, key) => {
+    // A pending approval takes the keyboard entirely. Nothing else may consume
+    // a keystroke while Morrow is waiting on a decision — least of all the
+    // composer, which would swallow the "y".
+    if (pendingApproval) {
+      const decision = approvalDecisionForKey({
+        str: input,
+        ...(key.ctrl ? { ctrl: true, name: input === "c" ? "c" : input } : {}),
+      });
+      if (decision) onApprovalDecision?.(decision);
+      return;
+    }
     if (key.ctrl && input === "o") {
       setExpanded((value) => !value);
       return;
@@ -221,6 +254,12 @@ export function App({
           <Box flexDirection="column">
             <Text color={theme.copy}>{live.text}</Text>
           </Box>
+        </Box>
+      ) : null}
+
+      {pendingApproval ? (
+        <Box marginTop={1}>
+          <ApprovalPrompt approval={pendingApproval} />
         </Box>
       ) : null}
 

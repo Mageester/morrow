@@ -1,5 +1,7 @@
 import { render } from "ink";
 import { App } from "./app.js";
+import { ApprovalStore } from "./approval-store.js";
+import { approvalDecisionLabel, type ApprovalDecision } from "../approvals.js";
 import { TerminalStore } from "./store.js";
 import { mapTaskEvent } from "../task-event-adapter.js";
 import type { SendOptions, SessionBackend } from "../session.js";
@@ -34,6 +36,7 @@ export interface ShellHandle {
 
 export function startShell(options: ShellOptions): ShellHandle {
   const store = new TerminalStore();
+  const approvals = new ApprovalStore();
   let activeTask: { id: string; abort: AbortController } | null = null;
 
   const runTask = async (taskId: string) => {
@@ -41,6 +44,25 @@ export function startShell(options: ShellOptions): ShellHandle {
     activeTask = { id: taskId, abort };
     try {
       for await (const raw of options.backend.subscribe(taskId, abort.signal)) {
+        // `approval.requested` is an input, not an observation — the adapter
+        // deliberately does not map it. Without handling it here the turn waits
+        // forever with nothing on screen, which is the worst thing this surface
+        // can do.
+        if (raw.type === "approval.requested") {
+          const id = typeof raw.payload?.id === "string" ? raw.payload.id : null;
+          if (id) {
+            try {
+              approvals.set(await options.backend.getApproval(id));
+            } catch (error) {
+              store.apply({
+                type: "notice",
+                level: "error",
+                text: error instanceof Error ? error.message : "An approval could not be loaded.",
+              });
+            }
+          }
+          continue;
+        }
         for (const event of mapTaskEvent(raw)) store.apply(event);
       }
     } catch (error) {
@@ -73,6 +95,31 @@ export function startShell(options: ShellOptions): ShellHandle {
       });
   };
 
+  const decideApproval = (decision: ApprovalDecision) => {
+    const pending = approvals.pending;
+    if (!pending) return;
+    approvals.set(null);
+    // A command trust decision carries the pattern it applies to; anything else
+    // is a bare decision. Mirrors the legacy path exactly.
+    const details = pending.details as { pattern?: unknown };
+    const trust =
+      (decision === "trust_session" || decision === "trust_project") && pending.kind === "command"
+        ? String(details.pattern ?? "")
+        : undefined;
+    store.apply({
+      type: "notice",
+      level: decision === "deny" ? "warn" : "info",
+      text: `${pending.kind === "command" ? "Command" : "Patch"} ${approvalDecisionLabel(decision)}.`,
+    });
+    void options.backend.resolveApproval(pending.id, decision, trust).catch((error: unknown) => {
+      store.apply({
+        type: "notice",
+        level: "error",
+        text: `Approval failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    });
+  };
+
   const interrupt = () => {
     const current = activeTask;
     if (!current) return;
@@ -85,7 +132,9 @@ export function startShell(options: ShellOptions): ShellHandle {
 
   const instance = render(
     <App
+      approvals={approvals}
       commands={options.commands}
+      onApprovalDecision={decideApproval}
       cwdLabel={options.cwdLabel}
       onCompleteFile={options.onCompleteFile}
       onInterrupt={interrupt}
