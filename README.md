@@ -21,6 +21,15 @@ for guided setup. To build something new from nothing, run
 `morrow build "<what you want>"` — it creates the project directory, registers
 it, and builds it end to end.
 
+The shell is a full terminal editor: multi-line composing with real cursor
+movement, word and line motion, kill/yank, history recall, and bracketed paste
+that holds a large block behind a token rather than flooding the line. Press `/`
+for the command palette, `@` to reference a file, `Ctrl+C` to stop running work
+without losing the session, and `Ctrl+G` for the keyboard reference. Sessions
+live in Morrow's database, so a closed or crashed terminal loses the screen and
+nothing else — `/sessions` and `/resume` pick the work back up. See
+[the terminal reference](docs/TERMINAL.md).
+
 Morrow supports 30 model providers. `morrow providers list` browses them grouped
 by kind; `morrow providers configure` runs a guided setup that offers
 subscription sign-in where one really exists, otherwise opens the provider's key

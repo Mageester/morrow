@@ -2,46 +2,66 @@ import { render } from "ink";
 import { App } from "./app.js";
 import { ApprovalStore } from "./approval-store.js";
 import { approvalDecisionLabel, type ApprovalDecision } from "../approvals.js";
+import { createDispatcher } from "./command-dispatch.js";
+import { OverlayStore } from "./overlay-store.js";
 import { TerminalStore } from "./store.js";
 import { mapTaskEvent } from "../task-event-adapter.js";
-import type { SendOptions, SessionBackend } from "../session.js";
-import type { SlashCommand } from "../commands.js";
+import { builtinRegistry, skillCommands, type CommandContext, type CommandRegistry, type SessionInfo } from "../commands/index.js";
+import { errorText } from "../commands/format.js";
+import type { SendOptions, SessionBackend } from "../session-types.js";
+import type { TerminalEvent } from "../events.js";
 
 /**
  * The interactive shell driver.
  *
- * Owns the loop the old `InteractiveSession` owned — send, subscribe, adapt,
- * reduce — but not a single line of drawing. Ink owns the screen; this owns the
- * runtime. That separation is the whole reason the previous renderer was
- * replaceable at all, and it is preserved deliberately.
+ * Owns the runtime loop — send, subscribe, adapt, reduce — and not a single
+ * line of drawing. Ink owns the screen; this owns the session. That separation
+ * is why the renderer was replaceable at all, and it is preserved deliberately.
  *
  * Raw task events are translated by the existing `mapTaskEvent` adapter, so the
  * shell consumes the same normalized `TerminalEvent`s every other surface does
- * and cannot invent a state the reducer doesn't know about.
+ * and cannot invent a state the reducer doesn't know about. There is exactly
+ * one execution path here: `backend.send` into the orchestrator. Commands
+ * change settings and read state; they never run an agent loop of their own.
  */
 export interface ShellOptions {
   backend: SessionBackend;
   sendOptions: SendOptions;
-  commands: readonly SlashCommand[];
+  session: SessionInfo;
   cwdLabel: string;
   unicode: boolean;
   onCompleteFile?: (prefix: string) => string[];
+  /** Locally discovered skills, registered as `/skill:<id>` commands. */
+  skills?: readonly { id: string; description: string }[];
+  history?: readonly string[];
+  onHistoryAppend?: (line: string) => void;
+  /** Resumes a task already in flight when the shell starts. */
+  initialTaskId?: string | null;
 }
 
 export interface ShellHandle {
   /** Resolves when the user exits the shell. */
   done: Promise<void>;
   stop: () => void;
+  /** The assembled command surface, for tests and for `morrow --help`. */
+  registry: CommandRegistry;
 }
 
 export function startShell(options: ShellOptions): ShellHandle {
   const store = new TerminalStore();
   const approvals = new ApprovalStore();
+  const overlays = new OverlayStore();
   let activeTask: { id: string; abort: AbortController } | null = null;
+  let lastTaskId: string | null = options.initialTaskId ?? null;
+  let stopShell = () => {};
+  let clearTerminal = () => {};
+
+  const emit = (event: TerminalEvent) => store.apply(event);
 
   const runTask = async (taskId: string) => {
     const abort = new AbortController();
     activeTask = { id: taskId, abort };
+    lastTaskId = taskId;
     try {
       for await (const raw of options.backend.subscribe(taskId, abort.signal)) {
         // `approval.requested` is an input, not an observation — the adapter
@@ -54,11 +74,7 @@ export function startShell(options: ShellOptions): ShellHandle {
             try {
               approvals.set(await options.backend.getApproval(id));
             } catch (error) {
-              store.apply({
-                type: "notice",
-                level: "error",
-                text: error instanceof Error ? error.message : "An approval could not be loaded.",
-              });
+              emit({ type: "notice", level: "error", text: `An approval could not be loaded: ${errorText(error)}` });
             }
           }
           continue;
@@ -66,33 +82,106 @@ export function startShell(options: ShellOptions): ShellHandle {
         for (const event of mapTaskEvent(raw)) store.apply(event);
       }
     } catch (error) {
-      // A dropped stream is reported as a notice rather than thrown away: the
-      // reducer already models this, and silently ending a turn is the failure
-      // mode that made the old shell feel broken.
-      store.apply({
-        type: "notice",
-        level: "error",
-        text: error instanceof Error ? error.message : "The response stream ended unexpectedly.",
-      });
+      // A dropped stream is reported rather than thrown away: the reducer
+      // already models this, and silently ending a turn is the failure mode
+      // that made the old shell feel broken.
+      emit({ type: "notice", level: "error", text: `The response stream ended unexpectedly: ${errorText(error)}` });
     } finally {
       if (activeTask?.id === taskId) activeTask = null;
+      // A message typed while the task ran is sent now, in order. It is a
+      // normal user message on the same single execution path — never a
+      // side-channel into the running task.
+      const queued = store.state.queuedMessages[0];
+      if (queued) {
+        emit({ type: "redirect.sent" });
+        emit({ type: "user.message", text: queued });
+        void send(queued);
+      }
     }
   };
 
-  const submit = (text: string) => {
-    // Echo immediately. The user's own words must never wait on the network —
-    // that latency is what made the previous shell feel unresponsive.
-    store.apply({ type: "user.message", text });
-    void options.backend
+  const send = (text: string) =>
+    options.backend
       .send(text, options.sendOptions)
       .then((result) => runTask(result.taskId))
       .catch((error: unknown) => {
-        store.apply({
-          type: "notice",
-          level: "error",
-          text: error instanceof Error ? error.message : "Morrow could not accept that message.",
-        });
+        emit({ type: "notice", level: "error", text: `Morrow could not accept that message: ${errorText(error)}` });
       });
+
+  const interrupt = (): boolean => {
+    const current = activeTask;
+    if (!current) return false;
+    current.abort.abort();
+    activeTask = null;
+    emit({ type: "task.interrupted" });
+    void options.backend.cancel(current.id).catch(() => {
+      // Cancellation is best-effort from the client's side; the abort above
+      // has already detached this shell from the stream.
+    });
+    return true;
+  };
+
+  const sendPrompt = (text: string) => {
+    emit({ type: "user.message", text });
+    void send(text);
+  };
+
+  const context: CommandContext = {
+    settings: options.sendOptions,
+    backend: options.backend,
+    overlays,
+    emit,
+    session: options.session,
+    registry: builtinRegistry(),
+    exit: () => stopShell(),
+    // Two halves, both required. The event empties the reducer's transcript;
+    // Ink's own clear wipes what is already on the terminal. Settled turns are
+    // written through <Static> straight into native scrollback, so without the
+    // second half `/clear` left every previous turn on screen and only stopped
+    // Morrow from redrawing it.
+    clearScreen: () => {
+      emit({ type: "session.cleared" });
+      clearTerminal();
+    },
+    interrupt,
+    lastTaskId: () => lastTaskId,
+    activeTaskId: () => activeTask?.id ?? null,
+    contextUsage: () => store.state.contextUsage ?? null,
+    usage: () => store.state.usage ?? null,
+  };
+
+  const registry = context.registry.extend(
+    skillCommands(options.skills ?? [], sendPrompt, (skillId) => {
+      void options.backend.recordSkillUse?.(skillId).catch(() => {});
+    }),
+  );
+  // `/help` must list the skills too, so the context points at the full surface.
+  context.registry = registry;
+
+  const dispatch = createDispatcher({ registry, context, emit });
+
+  const submit = (text: string) => {
+    if (text.startsWith("/")) {
+      // A command is answered locally and never reaches the provider. Not
+      // `user.message`: that event means "a backend task is starting", so it
+      // would flip the shell to working and clear the previous turn.
+      emit({ type: "command.entered", text });
+      void dispatch(text).then((result) => {
+        // A bare "/" is not a command; fall through so the input is not
+        // silently swallowed.
+        if (!result.handled) void send(text);
+      });
+      return;
+    }
+    // Typing during a running task is held, not merged into it and not
+    // dropped. It goes as the next message when this one ends.
+    if (activeTask) {
+      emit({ type: "redirect.queued", text });
+      return;
+    }
+    // Echo immediately. The user's own words must never wait on the network.
+    emit({ type: "user.message", text });
+    void send(text);
   };
 
   const decideApproval = (decision: ApprovalDecision) => {
@@ -100,56 +189,73 @@ export function startShell(options: ShellOptions): ShellHandle {
     if (!pending) return;
     approvals.set(null);
     // A command trust decision carries the pattern it applies to; anything else
-    // is a bare decision. Mirrors the legacy path exactly.
+    // is a bare decision.
     const details = pending.details as { pattern?: unknown };
     const trust =
       (decision === "trust_session" || decision === "trust_project") && pending.kind === "command"
         ? String(details.pattern ?? "")
         : undefined;
-    store.apply({
+    emit({
       type: "notice",
       level: decision === "deny" ? "warn" : "info",
       text: `${pending.kind === "command" ? "Command" : "Patch"} ${approvalDecisionLabel(decision)}.`,
     });
     void options.backend.resolveApproval(pending.id, decision, trust).catch((error: unknown) => {
-      store.apply({
-        type: "notice",
-        level: "error",
-        text: `Approval failed: ${error instanceof Error ? error.message : String(error)}`,
-      });
-    });
-  };
-
-  const interrupt = () => {
-    const current = activeTask;
-    if (!current) return;
-    current.abort.abort();
-    void options.backend.cancel(current.id).catch(() => {
-      // Cancellation is best-effort from the client's side; the abort above
-      // has already detached this shell from the stream.
+      emit({ type: "notice", level: "error", text: `Approval failed: ${errorText(error)}` });
     });
   };
 
   const instance = render(
     <App
       approvals={approvals}
-      commands={options.commands}
-      onApprovalDecision={decideApproval}
+      commands={registry.browseOrder}
       cwdLabel={options.cwdLabel}
+      history={options.history}
+      onApprovalDecision={decideApproval}
       onCompleteFile={options.onCompleteFile}
+      onExit={() => stopShell()}
+      onHistoryAppend={options.onHistoryAppend}
       onInterrupt={interrupt}
       onSubmit={submit}
+      overlays={overlays}
       store={store}
       unicode={options.unicode}
     />,
     { exitOnCtrlC: false },
   );
 
+  const stop = () => {
+    activeTask?.abort.abort();
+    instance.unmount();
+  };
+  stopShell = stop;
+  clearTerminal = () => instance.clear();
+
+  // A task already in flight when the shell opened is adopted rather than
+  // orphaned — this is what makes `morrow` reattach to work started elsewhere
+  // instead of showing an idle prompt while the agent is still running.
+  //
+  // Only if it is genuinely still running. The id comes from the conversation's
+  // last message, which is usually a task that finished days ago; re-subscribing
+  // to that one replays its ending, flips a fresh shell into "working", and then
+  // reports it as stalled. A new session must open idle.
+  if (options.initialTaskId) {
+    const candidate = options.initialTaskId;
+    void options.backend
+      .getTask(candidate)
+      .then((aggregate) => {
+        const status = aggregate.task.status;
+        if (status === "running" || status === "queued") void runTask(candidate);
+      })
+      .catch(() => {
+        // An unreadable task is not a reason to fail the session; it just means
+        // there is nothing to reattach to.
+      });
+  }
+
   return {
     done: instance.waitUntilExit().then(() => undefined),
-    stop: () => {
-      activeTask?.abort.abort();
-      instance.unmount();
-    },
+    stop,
+    registry,
   };
 }

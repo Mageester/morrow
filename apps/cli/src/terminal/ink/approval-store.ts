@@ -1,4 +1,4 @@
-import type { ApprovalView } from "../session.js";
+import type { ApprovalView } from "../session-types.js";
 
 /**
  * The pending approval, held outside the reducer.

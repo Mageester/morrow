@@ -1,35 +1,42 @@
 import { Box, Text } from "ink";
-import { groupCommands } from "../command-groups.js";
-import type { SlashCommand } from "../commands.js";
+import type { Command } from "../commands/registry.js";
 import { theme } from "./theme.js";
 
 /**
- * The `/` palette.
+ * The `/` menu.
  *
- * Fuzzy subsequence matching, because the useful query for `memory-search` is
- * "msearch" and for `checkpoint` is "ckpt". Results stay grouped while the
- * query is empty — that is the browsing case, and a flat alphabetical list is
- * exactly what made seventy-one commands unusable. Once someone types, ranking
- * beats grouping and the list goes flat and ordered by score.
+ * Bounded to a window that scrolls with the selection. The previous palette
+ * rendered every match — with skills installed that was a hundred and twenty
+ * rows, which pushed the composer off the screen the instant anyone pressed
+ * "/". A menu taller than the terminal is not a menu.
+ *
+ * Every row is exactly one line. Not by convention — by construction: the name
+ * lives in a fixed-width `Box` and the summary truncates. Padding a string and
+ * hoping is what produced `/compactsummarise history…`, because a row wide
+ * enough to wrap ate its own trailing spaces.
  */
 
+/** Rows visible at once. Deliberately small: this sits above the composer. */
+export const PALETTE_ROWS = 8;
+
 export interface Scored {
-  command: SlashCommand;
+  command: Command;
   score: number;
 }
 
 /**
  * Subsequence match with a score. Higher is better; -1 means no match.
  *
- * Scoring favours, in order: an exact prefix, matches at word boundaries, and
- * tightly-clustered characters. This is deliberately simple and dependency-free
- * — it runs on every keystroke against ~71 items, so predictability matters
- * more than cleverness.
+ * Favours, in order: an exact match, an exact prefix, matches at word
+ * boundaries, and tightly clustered characters. Deliberately simple and
+ * dependency-free — it runs on every keystroke, so predictability matters more
+ * than cleverness.
  */
 export function fuzzyScore(query: string, target: string): number {
   if (query.length === 0) return 0;
   const q = query.toLowerCase();
   const t = target.toLowerCase();
+  if (t === q) return 2000;
   if (t.startsWith(q)) return 1000 - t.length;
 
   let score = 0;
@@ -38,10 +45,8 @@ export function fuzzyScore(query: string, target: string): number {
   for (const char of q) {
     const at = t.indexOf(char, cursor);
     if (at === -1) return -1;
-    // Adjacent characters are worth more than scattered ones.
     if (at === lastHit + 1) score += 8;
-    // A match right after a separator is a word-boundary hit.
-    if (at === 0 || t[at - 1] === "-" || t[at - 1] === "_") score += 6;
+    if (at === 0 || t[at - 1] === "-" || t[at - 1] === "_" || t[at - 1] === ":") score += 6;
     score += 1;
     lastHit = at;
     cursor = at + 1;
@@ -49,118 +54,107 @@ export function fuzzyScore(query: string, target: string): number {
   return score - t.length / 10;
 }
 
-export function filterCommands(commands: readonly SlashCommand[], query: string): Scored[] {
+const isSkill = (command: Command) => command.name.startsWith("skill:");
+
+export function filterCommands(commands: readonly Command[], query: string): Scored[] {
   const trimmed = query.trim();
-  if (!trimmed) return commands.map((command) => ({ command, score: 0 }));
+  if (!trimmed) {
+    // Empty query is the browsing case, so the order is the registry's own —
+    // grouped by category, most-reached-for first. Skills go last: someone who
+    // just pressed "/" is far more likely to want /model than /skill:linting.
+    return [...commands]
+      .sort((left, right) => Number(isSkill(left)) - Number(isSkill(right)))
+      .map((command) => ({ command, score: 0 }));
+  }
   return commands
     .map((command) => {
-      // A description hit is real but weaker than a name hit, so it is scored
-      // well below one — searching "undo" must not rank a command that merely
-      // mentions undoing above `/undo` itself.
-      const byName = fuzzyScore(trimmed, command.name);
-      const byDescription = fuzzyScore(trimmed, command.description);
-      const score = byName >= 0 ? byName : byDescription >= 0 ? byDescription / 4 : -1;
+      // A description hit is real but weaker than a name hit: searching "undo"
+      // must not rank a command that merely mentions undoing above `/undo`.
+      const byName = Math.max(
+        fuzzyScore(trimmed, command.name),
+        ...(command.aliases ?? []).map((alias) => fuzzyScore(trimmed, alias) - 1),
+      );
+      const byDescription = fuzzyScore(trimmed, command.summary);
+      let score = byName >= 0 ? byName : byDescription >= 0 ? byDescription / 4 : -1;
+      // A skill only outranks a built-in on a genuinely strong match. Without
+      // this, typing "stat" put seven skills whose descriptions merely contain
+      // s-t-a-t above `/changes` — the fuzzy match is technically a match and
+      // completely useless.
+      if (score >= 0 && isSkill(command) && byName < 1000) score /= 8;
       return { command, score };
     })
     .filter((entry) => entry.score >= 0)
     .sort((left, right) => right.score - left.score || left.command.name.localeCompare(right.command.name));
 }
 
-/** One row is one line, always. A skill can carry a paragraph-long description
- * and three of them wrapping turns the palette back into a wall. */
-function clamp(text: string, max: number): string {
-  if (max <= 1) return "";
-  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+/** The window of rows to draw, keeping `selected` inside it. */
+export function windowFor(count: number, selected: number, rows = PALETTE_ROWS): { start: number; end: number } {
+  if (count <= rows) return { start: 0, end: count };
+  const start = Math.min(Math.max(0, selected - Math.floor(rows / 2)), count - rows);
+  return { start, end: start + rows };
 }
 
-function Row({
-  command,
-  selected,
-  width,
-}: {
-  command: SlashCommand;
-  selected: boolean;
-  width: number;
-}) {
-  const name = `/${command.name}${command.arg ? ` ${command.arg}` : ""}`;
-  // Reserve the marker, the gap, and a little breathing room at the edge.
-  const room = Math.max(0, width - name.length - 6);
-  const description = clamp(command.description, room);
-  return (
-    <Box>
-      <Text color={selected ? theme.accent : theme.faint}>{selected ? "❯ " : "  "}</Text>
-      <Text bold={selected} color={selected ? theme.copy : theme.soft} wrap="truncate">
-        {name}
-      </Text>
-      {description ? (
-        <Text color={theme.faint} wrap="truncate">
-          {"  "}
-          {description}
-        </Text>
-      ) : null}
-    </Box>
+/** The widest name column worth spending, given the terminal. */
+function nameColumn(visible: readonly Scored[], width: number): number {
+  const longest = Math.max(
+    8,
+    ...visible.map(({ command }) => command.name.length + 1 + (command.usage ? command.usage.length + 1 : 0)),
   );
+  // Never more than half the terminal: a skill with a long argument hint must
+  // not squeeze every summary out of view.
+  return Math.min(longest, Math.max(12, Math.floor(width / 2)));
 }
 
-export function CommandPalette({
-  commands,
-  query,
-  selectedIndex,
-  maxRows = 12,
-  width = 80,
-}: {
-  commands: readonly SlashCommand[];
-  query: string;
+export interface PaletteProps {
+  matches: readonly Scored[];
   selectedIndex: number;
-  maxRows?: number;
-  width?: number;
-}) {
-  const matches = filterCommands(commands, query);
+  width: number;
+  /** The text being matched, for the empty-state message. */
+  query: string;
+}
 
+export function CommandPalette({ matches, selectedIndex, width, query }: PaletteProps) {
   if (matches.length === 0) {
     return (
       <Box>
-        <Text color={theme.faint}>no command matches “{query}”</Text>
+        <Text color={theme.faint}>{`  no command matches "${query}"`}</Text>
       </Box>
     );
   }
 
-  // Browsing: keep the taxonomy. Searching: ranking wins, so go flat.
-  if (!query.trim()) {
-    const groups = groupCommands(matches.map((entry) => entry.command));
-    let index = 0;
-    return (
-      <Box flexDirection="column">
-        {groups.map((group) => (
-          <Box flexDirection="column" key={group.group} marginTop={1}>
-            <Text color={theme.faint}>{group.title.toUpperCase()}</Text>
-            {group.commands.map((command) => {
-              const selected = index++ === selectedIndex;
-              return <Row command={command} key={command.name} selected={selected} width={width} />;
-            })}
-          </Box>
-        ))}
-      </Box>
-    );
-  }
-
-  // Keep the selection on screen without redrawing the whole list.
-  const start = Math.max(0, Math.min(selectedIndex - Math.floor(maxRows / 2), matches.length - maxRows));
-  const window = matches.slice(Math.max(0, start), Math.max(0, start) + maxRows);
+  const { start, end } = windowFor(matches.length, selectedIndex);
+  const visible = matches.slice(start, end);
+  const column = nameColumn(visible, width);
+  // +2 keeps a gap between the columns; without it the longest name in the
+  // window runs straight into its own summary.
+  const summaryWidth = Math.max(8, width - column - 6);
 
   return (
     <Box flexDirection="column">
-      {window.map((entry, offset) => (
-        <Row
-          command={entry.command}
-          key={entry.command.name}
-          selected={Math.max(0, start) + offset === selectedIndex}
-          width={width}
-        />
-      ))}
-      {matches.length > maxRows ? (
-        <Text color={theme.faint}>  {matches.length - maxRows} more…</Text>
-      ) : null}
+      {start > 0 ? <Text color={theme.faint}>{`  ↑ ${start} more`}</Text> : null}
+      {visible.map(({ command }, index) => {
+        const absolute = start + index;
+        const active = absolute === selectedIndex;
+        const label = `/${command.name}${command.usage ? ` ${command.usage}` : ""}`;
+        return (
+          <Box key={command.name} flexDirection="row">
+            <Box flexShrink={0} width={2}>
+              <Text color={active ? theme.accent : theme.faint}>{active ? "❯ " : "  "}</Text>
+            </Box>
+            <Box flexShrink={0} width={column + 2}>
+              <Text bold={active} color={active ? theme.copy : theme.soft} wrap="truncate-end">
+                {label}
+              </Text>
+            </Box>
+            <Box flexShrink={1} width={summaryWidth}>
+              <Text color={theme.faint} wrap="truncate-end">
+                {command.summary}
+              </Text>
+            </Box>
+          </Box>
+        );
+      })}
+      {matches.length > end ? <Text color={theme.faint}>{`  ↓ ${matches.length - end} more`}</Text> : null}
     </Box>
   );
 }

@@ -1,5 +1,11 @@
 # Beta.29 CLI UX Inventory — information ownership matrix
 
+> **Superseded for the terminal surface (2026-08-18).** The CLI shell described
+> below was replaced: the frame renderer, the composer and the command layer are
+> new, and the seventy-one-command surface was consolidated to forty-four that
+> all work. This document is kept as the record of what was true when it was
+> written. For current behaviour see [`docs/TERMINAL.md`](TERMINAL.md).
+
 > Phase 1 of the beta.29 CLI UX simplification. Captured 2026-07-10 from the
 > real rendering pipeline (`apps/cli/src/terminal/*`). Every fact the terminal
 > can display is mapped to exactly one canonical owner. "Current locations"

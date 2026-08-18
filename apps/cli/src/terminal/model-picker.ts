@@ -13,7 +13,7 @@
 import type { Output } from "../cli/output.js";
 import type { ModelInfo, ModelStatus, ModelBudgetView, ProviderStatus, RouteReasoningCapability } from "@morrow/contracts";
 import { glyphs } from "./view.js";
-import { clampSelection } from "./completion.js";
+import { clampSelection } from "./select.js";
 import { UNKNOWN_REASONING, describeReasoningControl } from "./reasoning.js";
 
 export interface ModelSelection {

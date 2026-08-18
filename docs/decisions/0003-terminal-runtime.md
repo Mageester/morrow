@@ -1,6 +1,6 @@
 # ADR 0003: Event-Driven Terminal Runtime
 
-- **Status:** Accepted, updated 2026-07-08 for beta.28 terminal UX
+- **Status:** Accepted, updated 2026-08-18 for the Ink shell rebuild
 - **Date:** 2026-06-22
 
 ## Context
@@ -133,3 +133,43 @@ body overflows. Resize re-clamps the existing position, while a new task and
 `/clear` return to live output. Mouse-wheel events are not intercepted because
 Node's keypress layer does not expose them reliably; terminal-native scrollback
 and selection remain available.
+
+## Update, 2026-08-18 — the shell rebuild
+
+The pipeline above held. What did not hold was everything downstream of it: the
+renderer was a hand-rolled frame painter, the command layer was a `switch`
+inside a 2,300-line session class, and a second, partial `switch` had grown
+inside the Ink port. A third lived in `chat.ts` for the non-interactive REPL.
+They disagreed about which commands existed.
+
+Four changes, all preserving the event model:
+
+1. **The composer is a pure state machine** (`terminal/ink/editor.ts`). Cursor,
+   word boundaries, multi-line motion, history, kill ring and paste capture are
+   folded by `applyKey`, with no terminal, React or network in reach. The
+   previous composer was a `draft: string` that only appended, which is why
+   arrow keys, Home/End and history all did nothing.
+
+2. **Commands return data, not lines** (`terminal/report.ts`). A handler builds
+   a `Report` and the surface renders it. This is what let the same command
+   serve the Ink shell and the plain-line fallback, and it is why the handlers
+   could be lifted out of the session class at all — the old ones had
+   `requestPaint()` baked into them.
+
+3. **One registry** (`terminal/commands/`). Name, aliases, summary, usage,
+   category, subcommands, argument completion and handler live on one record.
+   The palette, `/help`, completion, `morrow --help` and the dispatcher all read
+   it, so they cannot drift. The surface shrank from seventy-one advertised
+   commands — eleven of which only printed "run `morrow X` in your terminal" —
+   to forty-four that work, with views consolidated under `/cortex` and
+   `/mission`.
+
+4. **The legacy renderer is gone.** `session.ts`, `view.ts`'s frame path,
+   `app-view.ts`, `input-state.ts`, `runtime.ts`, `paint.ts`, `startup-view.ts`,
+   `completion.ts` and the old `commands.ts`/`palette.ts` were deleted rather
+   than kept behind a flag. A second renderer behind an env var is a second
+   renderer nobody tests.
+
+The rule that survives all of it: there is exactly one agent execution path.
+The shell sends through `SessionBackend` and renders the events that come back.
+Commands change settings and read state; none of them runs an agent loop.

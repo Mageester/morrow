@@ -1,6 +1,6 @@
 import { Box, Text } from "ink";
 import { approvalActionsLine } from "../approvals.js";
-import type { ApprovalView } from "../session.js";
+import type { ApprovalView } from "../session-types.js";
 import { theme } from "./theme.js";
 
 /**

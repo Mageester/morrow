@@ -7,23 +7,23 @@ import { streamChatTask } from "./stream.js";
 import { renderMarkdown } from "../cli/markdown.js";
 import { flagString, flagBool } from "../cli/args.js";
 import { CliError, EXIT, usageError } from "../cli/errors.js";
-import { largeWordmark, greeting, modeLabel, parseModeName, privacyLabel } from "../cli/identity.js";
+import { compactWordmark, greeting, modeLabel, parseModeName, privacyLabel } from "../cli/identity.js";
 import { readLineWithCompletion, PROMPT_EXIT } from "../terminal/prompt.js";
-import { InteractiveSession, type SessionBackend, type SessionSettings } from "../terminal/session.js";
+import type { SendOptions, SessionBackend } from "../terminal/session-types.js";
 import { startShell } from "../terminal/ink/shell.js";
 import { buildFileIndex, completeFile } from "../terminal/ink/file-index.js";
-import { SLASH_COMMANDS, type SlashCommand } from "../terminal/commands.js";
-import { skillsAsSlashCommands } from "../skills/registry.js";
+import { discoverSkills } from "../skills/registry.js";
+import { MORROW_VERSION } from "../service/update.js";
+import { builtinRegistry } from "../terminal/commands/index.js";
+import { createLineSurface } from "../terminal/commands/line-surface.js";
 import { localSkillsRoot } from "./skills.js";
 import { loadHistory, appendHistory } from "../terminal/history.js";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { nodeTermIO } from "../terminal/runtime.js";
 import { shouldUseInteractive } from "../terminal/capabilities.js";
 import { oauthLogin, OAUTH_ELIGIBLE } from "./providers.js";
 import { streamTaskEvents } from "../client/sse.js";
 import type { SessionMeta } from "../terminal/events.js";
-import type { PaletteItem } from "../terminal/palette.js";
 import { gitSummary, gitSummaryText, gitStatus } from "../cli/gitinfo.js";
 import { formatContextStatus, formatMissionResult, formatTaskTree } from "../terminal/mission-control.js";
 import { buildTaskReport, defaultReportFilename, findLatestTaskId, type ReportKind } from "../terminal/output-report.js";
@@ -120,6 +120,206 @@ export async function chatCommand(ctx: Context): Promise<number> {
  * The full-screen interactive session: one event-driven terminal application
  * wired to the live orchestrator. Replaces the line REPL on capable terminals.
  */
+/**
+ * The one adapter from the terminal's backend contract to the orchestrator API.
+ *
+ * Both surfaces — the shell and the plain-line fallback — construct their
+ * session through this, so neither can develop a private notion of what
+ * "send a message" or "list checkpoints" means. `active` is mutable because
+ * `/new` and `/resume` change which conversation messages go to.
+ */
+function buildBackend(
+  ctx: Context,
+  api: MorrowApi,
+  project: Project,
+  conversation: Conversation,
+  session: SessionState,
+  /** Mutated in place when the active conversation changes, so `/status` and
+   *  `/sessions` report where messages are actually going. Without this the
+   *  session facts were captured once at startup and quietly went stale the
+   *  moment anyone resumed. */
+  info?: { conversationId: string; conversationTitle: string },
+): SessionBackend {
+  // The active conversation is mutable: `/new` and `/resume` change which one
+  // messages go to. Every method reads `active` rather than closing over the
+  // conversation it started with, or a resumed session would keep writing into
+  // the previous one.
+  let active: Conversation = conversation;
+
+  const adopt = (next: Conversation): Conversation => {
+    active = next;
+    if (info) {
+      info.conversationId = next.id;
+      info.conversationTitle = next.title;
+    }
+    return next;
+  };
+
+  const backend: SessionBackend = {
+    async send(text, opts) {
+      const sent = await api.sendMessage(active.id, text, {
+        preset: opts.preset,
+        ...(opts.provider ? { providerId: opts.provider } : {}),
+        ...(opts.model ? { model: opts.model } : {}),
+        mode: opts.mode,
+        useMemory: opts.useMemory,
+        ...(opts.autoApprove && opts.mode === "agent" ? { autoApprove: true } : {}),
+        ...(session.worktreeId ? { worktreeId: session.worktreeId } : {}),
+        ...(session.missionId ? { missionId: session.missionId } : {}),
+        ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
+      });
+      return {
+        taskId: sent.task.id,
+        routing: {
+          provider: sent.routing.providerId,
+          model: sent.routing.model,
+          preset: sent.routing.presetId,
+          fallback: sent.routing.fallbackUsed,
+          overridden: sent.routing.overridden,
+          privacy: sent.routing.privacy,
+          reasoning: sent.routing.reasoning,
+        },
+      };
+    },
+    subscribe: (taskId, signal, after) => streamTaskEvents(api.baseUrl, taskId, { signal, ...(after !== undefined ? { after } : {}) }),
+    cancel: (taskId) => api.cancelTask(taskId),
+    resume: (taskId) => api.resumeTask(taskId, project.id).then(() => undefined),
+    compact: (taskId, settings) => {
+      const options = {
+        preset: settings.preset,
+        ...(settings.provider ? { providerId: settings.provider } : {}),
+        ...(settings.model ? { model: settings.model } : {}),
+      };
+      const request = taskId
+        ? api.compactTask(taskId, project.id, options)
+        : api.compactConversation(active.id, project.id, options);
+      return request.then((result) => ({ ...result, routing: { provider: result.routing.providerId, model: result.routing.model, preset: result.routing.presetId, fallback: result.routing.fallbackUsed, overridden: result.routing.overridden, privacy: result.routing.privacy, reasoning: result.routing.reasoning } }));
+    },
+    async getApproval(id) {
+      const a = await api.getApproval(id);
+      return { id: a.id, kind: a.kind, details: a.details, projectId: a.projectId };
+    },
+    resolveApproval: (id, decision, trustPattern) =>
+      api
+        .resolveApproval(id, { projectId: project.id, decision: decision as any, ...(trustPattern ? { trustPattern } : {}) })
+        .then(() => undefined),
+    getPlan: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.plan),
+    getTask: (taskId) => api.getTask(taskId),
+    getFinalAnswer: async (taskId) => {
+      const messages = await api.listMessages(active.id);
+      return [...messages].reverse().find((message) => message.taskId === taskId && message.role === "assistant")?.content ?? null;
+    },
+    exportReport: async (taskId, kind, finalAnswer, requestedName) => {
+      const aggregate = await api.getTask(taskId);
+      return writeTaskReport(ctx, taskId, aggregate, kind, finalAnswer, requestedName);
+    },
+    getTaskTree: (taskId) => api.getTaskTree(taskId),
+    getTaskDiff: (taskId) =>
+      api.getTaskDiff(taskId).then((d) => ({ diff: d.diff, files: d.files })),
+    undoTask: (taskId) =>
+      api.undoTask(taskId).then((u) => ({ status: u.status, restoredFiles: u.restoredFiles })),
+    search: (query) =>
+      api
+        .search(project.id, query, { limit: 25 })
+        .then((res) => res.hits.map((h) => ({ kind: h.kind, title: h.title, snippet: h.snippet }))),
+    recordSkillUse: (skillId) => api.recordSkillUse(project.id, skillId).then(() => undefined),
+    getLatestMission: () => api.listMissions(project.id).then((ms) => ms[0] ?? null).catch(() => null),
+    getIntelligence: () => api.getIntelligence(project.id).catch(() => null),
+    patchConvention: async (conventionId, approval) => {
+      const intelligence = await api.getIntelligence(project.id);
+      const fullId = resolveDisplayedRecordId(intelligence.conventions, conventionId, ["conv"]);
+      await api.patchConvention(project.id, fullId, approval);
+    },
+    addRule: async (text) => { await api.addRule(project.id, text); },
+    removeRule: async (ruleId) => {
+      const fullId = resolveDisplayedRecordId(await api.listRules(project.id), ruleId, ["rule"]);
+      await api.deleteRule(project.id, fullId);
+    },
+    getMissionImpact: (missionId) => api.listMissionImpact(missionId).catch(() => []),
+    getMissionRevisions: (missionId) => api.listMissionRevisions(missionId).catch(() => []),
+    listAgents: () => api.listAgents(project.id).catch(() => []),
+    getCapabilities: () => import("./capabilities.js").then((m) => m.reportCapabilities(api)),
+    listModels: () => api.listModels(),
+    getModelBudgets: () => api.getModelBudgets(),
+    listProviders: () => api.listProviders(),
+    getGitStatus: async () => gitStatus(project.workspacePath),
+    getCortexStaleness: () => api.intelligenceStaleness(project.id).catch(() => null),
+    listTasks: () => api.listTasks(project.id),
+
+    // ── The surface the command layer reads ─────────────────────────────────
+    // Thin delegation, deliberately: a command must not be able to reach a URL
+    // of its own, and putting these here is what keeps the whole command
+    // surface testable against one fake.
+    health: () => api.health(),
+    listConversations: () => api.listConversations(project.id),
+    newConversation: async (title) => adopt(await api.createConversation(project.id, title)),
+    switchConversation: async (id) => {
+      const target = await api.getConversation(id);
+      // Never cross a project boundary silently: an id from another project is
+      // a mistake, and following it would send the next message somewhere the
+      // user cannot see.
+      if (target.projectId !== project.id) {
+        throw new Error("That conversation belongs to a different project.");
+      }
+      return adopt(target);
+    },
+    listMessages: () => api.listMessages(active.id),
+
+    listCheckpoints: () => api.listCheckpoints(project.id),
+    saveCheckpoint: async (name) => {
+      const saved = await api.createCheckpoint(project.id, { name });
+      return { name: saved.name, fileCount: saved.fileCount };
+    },
+    restoreCheckpoint: async (name) => {
+      const restored = await api.restoreCheckpoint(project.id, name);
+      return { restoredFiles: restored.restoredFiles, deletedFiles: restored.deletedFiles };
+    },
+    deleteCheckpoint: async (name) => {
+      await api.deleteCheckpoint(project.id, name);
+    },
+
+    listProcesses: () => api.listProcesses(project.id),
+    killProcess: async (id, force) => {
+      await api.terminateProcess(id, force ?? false);
+    },
+
+    listWorktrees: () => api.listWorktrees(project.id),
+    inspectWorktree: (id) => api.getWorktree(id),
+    removeWorktree: async (id, preserve) => {
+      await api.removeWorktree(id, preserve ?? false);
+    },
+    listIntegrations: () => api.listIntegrations(project.id),
+    checkIntegration: (worktreeId) => api.checkIntegration(worktreeId),
+    applyIntegration: (id) => api.applyIntegration(id),
+
+    listMemory: () => api.listProjectMemory(project.id),
+    addMemory: (content) => api.addMemory(project.id, "project", content, active.id),
+    forgetMemory: async (id) => {
+      await api.deleteMemory(project.id, id);
+    },
+
+    listTools: () => api.listTools(),
+    permissions: () => api.permissions(),
+    audit: (limit) => api.audit(project.id, limit),
+    listPresets: () => api.listPresets(),
+
+    listMissions: () => api.listMissions(project.id),
+    getMissionResult: (missionId) => api.getMissionResult(missionId),
+    retryTask: async (taskId) => {
+      const task = await api.retryTask(taskId);
+      return { taskId: task.id };
+    },
+
+    listSkills: async () =>
+      discoverSkills(localSkillsRoot()).map((skill) => ({
+        id: skill.id,
+        description: skill.manifest.description ?? "",
+      })),
+  };
+
+  return backend;
+}
+
 async function runInteractiveSession(
   ctx: Context,
   api: MorrowApi,
@@ -166,7 +366,7 @@ async function runInteractiveSession(
     resumed: priorMessages > 0,
     priorMessages,
   };
-  const settings: SessionSettings = {
+  const settings: SendOptions = {
     mode: session.mode,
     autoApprove: session.autoApprove,
     ...(session.provider ? { provider: session.provider } : {}),
@@ -175,155 +375,43 @@ async function runInteractiveSession(
     useMemory: session.useMemory,
   };
 
-  const backend: SessionBackend = {
-    async send(text, opts) {
-      const sent = await api.sendMessage(conversation.id, text, {
-        preset: opts.preset,
-        ...(opts.provider ? { providerId: opts.provider } : {}),
-        ...(opts.model ? { model: opts.model } : {}),
-        mode: opts.mode,
-        useMemory: opts.useMemory,
-        ...(opts.autoApprove && opts.mode === "agent" ? { autoApprove: true } : {}),
-        ...(session.worktreeId ? { worktreeId: session.worktreeId } : {}),
-        ...(session.missionId ? { missionId: session.missionId } : {}),
-        ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
-      });
-      return {
-        taskId: sent.task.id,
-        routing: {
-          provider: sent.routing.providerId,
-          model: sent.routing.model,
-          preset: sent.routing.presetId,
-          fallback: sent.routing.fallbackUsed,
-          overridden: sent.routing.overridden,
-          privacy: sent.routing.privacy,
-          reasoning: sent.routing.reasoning,
-        },
-      };
-    },
-    subscribe: (taskId, signal, after) => streamTaskEvents(api.baseUrl, taskId, { signal, ...(after !== undefined ? { after } : {}) }),
-    cancel: (taskId) => api.cancelTask(taskId),
-    resume: (taskId) => api.resumeTask(taskId, project.id).then(() => undefined),
-    compact: (taskId, settings) => {
-      const options = {
-        preset: settings.preset,
-        ...(settings.provider ? { providerId: settings.provider } : {}),
-        ...(settings.model ? { model: settings.model } : {}),
-      };
-      const request = taskId
-        ? api.compactTask(taskId, project.id, options)
-        : api.compactConversation(conversation.id, project.id, options);
-      return request.then((result) => ({ ...result, routing: { provider: result.routing.providerId, model: result.routing.model, preset: result.routing.presetId, fallback: result.routing.fallbackUsed, overridden: result.routing.overridden, privacy: result.routing.privacy, reasoning: result.routing.reasoning } }));
-    },
-    async getApproval(id) {
-      const a = await api.getApproval(id);
-      return { id: a.id, kind: a.kind, details: a.details, projectId: a.projectId };
-    },
-    resolveApproval: (id, decision, trustPattern) =>
-      api
-        .resolveApproval(id, { projectId: project.id, decision: decision as any, ...(trustPattern ? { trustPattern } : {}) })
-        .then(() => undefined),
-    getPlan: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.plan),
-    getTask: (taskId) => api.getTask(taskId),
-    getFinalAnswer: async (taskId) => {
-      const messages = await api.listMessages(conversation.id);
-      return [...messages].reverse().find((message) => message.taskId === taskId && message.role === "assistant")?.content ?? null;
-    },
-    exportReport: async (taskId, kind, finalAnswer, requestedName) => {
-      const aggregate = await api.getTask(taskId);
-      return writeTaskReport(ctx, taskId, aggregate, kind, finalAnswer, requestedName);
-    },
-    getTaskTree: (taskId) => api.getTaskTree(taskId),
-    getTaskDiff: (taskId) =>
-      api.getTaskDiff(taskId).then((d) => ({ diff: d.diff, files: d.files })),
-    undoTask: (taskId) =>
-      api.undoTask(taskId).then((u) => ({ status: u.status, restoredFiles: u.restoredFiles })),
-    search: (query) =>
-      api
-        .search(project.id, query, { limit: 25 })
-        .then((res) => res.hits.map((h) => ({ kind: h.kind, title: h.title, snippet: h.snippet }))),
-    recordSkillUse: (skillId) => api.recordSkillUse(project.id, skillId).then(() => undefined),
-    getLatestMission: () => api.listMissions(project.id).then((ms) => ms[0] ?? null).catch(() => null),
-    getIntelligence: () => api.getIntelligence(project.id).catch(() => null),
-    patchConvention: async (conventionId, approval) => {
-      const intelligence = await api.getIntelligence(project.id);
-      const fullId = resolveDisplayedRecordId(intelligence.conventions, conventionId, ["conv"]);
-      await api.patchConvention(project.id, fullId, approval);
-    },
-    addRule: async (text) => { await api.addRule(project.id, text); },
-    removeRule: async (ruleId) => {
-      const fullId = resolveDisplayedRecordId(await api.listRules(project.id), ruleId, ["rule"]);
-      await api.deleteRule(project.id, fullId);
-    },
-    getMissionImpact: (missionId) => api.listMissionImpact(missionId).catch(() => []),
-    getMissionRevisions: (missionId) => api.listMissionRevisions(missionId).catch(() => []),
-    listAgents: () => api.listAgents(project.id).catch(() => []),
-    getCapabilities: () => import("./capabilities.js").then((m) => m.reportCapabilities(api)),
-    listModels: () => api.listModels(),
-    getModelBudgets: () => api.getModelBudgets(),
-    listProviders: () => api.listProviders(),
-    getGitStatus: async () => gitStatus(project.workspacePath),
-    getCortexStaleness: () => api.intelligenceStaleness(project.id).catch(() => null),
-    listTasks: () => api.listTasks(project.id),
+  const sessionInfo = {
+    projectId: project.id,
+    projectName,
+    workspacePath: project.workspacePath,
+    conversationId: conversation.id,
+    conversationTitle: conversation.title,
+    serviceUrl: api.baseUrl,
+    version: MORROW_VERSION,
   };
+  const backend = buildBackend(ctx, api, project, conversation, session, sessionInfo);
 
-  // Verified local skills become namespaced /skill:<id> commands (autocomplete + help).
-  const skillCommands: SlashCommand[] = skillsAsSlashCommands(localSkillsRoot()).map((c) => ({
-    name: c.name,
-    description: c.description,
+
+
+  // Verified local skills become namespaced /skill:<id> commands, registered in
+  // the same registry as everything else so they autocomplete and appear in
+  // /help rather than existing as a parallel naming convention.
+  const localSkills = discoverSkills(localSkillsRoot()).map((skill) => ({
+    id: skill.id,
+    description: skill.manifest.description ?? "",
   }));
 
   const historyFile = join(ctx.paths.home, "history");
 
-  const recentActivity = [...recentConversations]
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-    .slice(0, 4)
-    .map((c) => ({ label: c.title, at: new Date(c.updatedAt).getTime() }));
-
-  // Real model data feeds the Ctrl+K palette (project/session search deferred).
-  const models = await api.listModels().catch(() => []);
-  const extraPaletteItems: PaletteItem[] = models
-    .filter((m) => m.available)
-    .slice(0, 40)
-    .map((m) => ({ kind: "model" as const, label: m.model.id, hint: m.model.label, run: `/model ${m.model.id}` }));
-
-  // The Ink shell is the terminal experience. The legacy frame renderer stays
-  // one env var away for a release, because it is what 800-odd tests still
-  // cover and a terminal regression is not something to discover in the field.
-  if (process.env.MORROW_LEGACY_TUI !== "1") {
-    const fileIndex = buildFileIndex(project.workspacePath);
-    const shell = startShell({
-      backend,
-      commands: [...SLASH_COMMANDS, ...skillCommands],
-      cwdLabel: project.name,
-      onCompleteFile: (prefix) => completeFile(fileIndex, prefix),
-      sendOptions: settings,
-      unicode,
-    });
-    await shell.done;
-    return EXIT.OK;
-  }
-
-  const app = new InteractiveSession({
-    io: nodeTermIO(process.stdout),
-    stdin: process.stdin,
-    out: ctx.out,
-    unicode,
-    meta,
-    settings,
+  const fileIndex = buildFileIndex(project.workspacePath);
+  const shell = startShell({
     backend,
-    commands: [...SLASH_COMMANDS, ...skillCommands],
-    extraPaletteItems,
+    cwdLabel: projectName,
     history: loadHistory(historyFile),
-    onHistory: (line) => appendHistory(historyFile, line),
-    initialTaskId,
-    recentActivity,
+    ...(initialTaskId ? { initialTaskId } : {}),
+    onCompleteFile: (prefix) => completeFile(fileIndex, prefix),
+    onHistoryAppend: (line) => appendHistory(historyFile, line),
+    sendOptions: settings,
+    session: sessionInfo,
+    skills: localSkills,
+    unicode,
   });
-  try {
-    await app.run();
-  } finally {
-    app.teardown();
-  }
+  await shell.done;
   return EXIT.OK;
 }
 
@@ -442,7 +530,11 @@ async function runRepl(ctx: Context, api: MorrowApi, project: Project, initial: 
   const history = await api.listMessages(conversation.id);
   const resuming = history.length > 0;
 
-  for (const line of largeWordmark(out, unicode)) out.print(line);
+  // The compact mark, not the block-letter wordmark. A nine-line ASCII banner
+  // on every single launch is the opposite of restrained branding, and this
+  // surface is the fallback — the one used when the terminal is least able to
+  // spare the rows.
+  out.print(compactWordmark(out, unicode));
   out.print("  " + greeting(new Date()) + (name ? `, ${name}.` : "."));
   out.print();
   out.keyValue([
@@ -468,7 +560,39 @@ async function runRepl(ctx: Context, api: MorrowApi, project: Project, initial: 
     for (const m of history.slice(-6)) renderHistoryMessage(ctx, m.role, m.content, m.streamingState);
   }
 
+  // The same registry the shell uses, rendered as plain lines. A terminal that
+  // cannot host the full surface still gets the whole command set.
+  const lineBackend = buildBackend(ctx, api, project, conversation, session);
+  const lineSettings: SendOptions = {
+    mode: session.mode,
+    autoApprove: session.autoApprove,
+    ...(session.provider ? { provider: session.provider } : {}),
+    ...(session.model ? { model: session.model } : {}),
+    preset: session.preset,
+    useMemory: session.useMemory,
+  };
+  let lineExit = false;
+  const runLineCommand = createLineSurface({
+    registry: builtinRegistry(),
+    backend: lineBackend,
+    settings: lineSettings,
+    session: {
+      projectId: project.id,
+      projectName,
+      workspacePath: project.workspacePath,
+      conversationId: conversation.id,
+      conversationTitle: conversation.title,
+      serviceUrl: api.baseUrl,
+      version: MORROW_VERSION,
+    },
+    print: (text) => out.print(text),
+    exit: () => {
+      lineExit = true;
+    },
+  });
+
   while (true) {
+    if (lineExit) return EXIT.OK;
     out.print();
     const result = await readLineWithCompletion({
       out,
@@ -484,10 +608,9 @@ async function runRepl(ctx: Context, api: MorrowApi, project: Project, initial: 
     if (!line) continue;
 
     if (line.startsWith("/")) {
-      const result = await handleSlash(ctx, api, project.id, conversation, session, line);
-      if (result.exit) return EXIT.OK;
-      if (result.conversation) conversation = result.conversation;
-      continue;
+      const outcome = await runLineCommand(line);
+      if (outcome.exited) return EXIT.OK;
+      if (outcome.handled) continue;
     }
 
     try {
@@ -509,706 +632,6 @@ function renderHistoryMessage(ctx: Context, role: string, content: string, state
     const body = state && state !== "completed" ? out.gray(`[${state}] `) + content : renderMarkdown(content, out);
     out.print(label + body);
   }
-}
-
-interface SlashResult {
-  exit?: boolean;
-  conversation?: Conversation;
-}
-
-async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conversation: Conversation, session: SessionState, line: string): Promise<SlashResult> {
-  const out = ctx.out;
-  const [cmd, ...rest] = line.slice(1).split(/\s+/);
-  const arg = rest.join(" ").trim();
-
-  switch (cmd) {
-    case "help":
-      printReplHelp(ctx);
-      return {};
-    case "capabilities": {
-      const { reportCapabilities, capabilityLines } = await import("./capabilities.js");
-      const report = await reportCapabilities(api);
-      for (const l of capabilityLines(report, out, resolveUnicode(ctx))) out.print(l);
-      return {};
-    }
-    case "exit":
-    case "quit":
-      out.info("Goodbye.");
-      return { exit: true };
-    case "clear":
-      process.stdout.write("\x1bc");
-      out.info("Screen cleared only. Saved conversation and provider context are unchanged; /compact saves a continuation summary, and provider preflight compacts request history when needed.");
-      return {};
-    case "new": {
-      const conv = await api.createConversation(projectId, arg || undefined);
-      out.success(`Started new conversation ${shortId(conv.id)}.`);
-      return { conversation: conv };
-    }
-    case "resume": {
-      if (!arg) {
-        const list = await api.listConversations(projectId);
-        out.heading("Conversations");
-        list.forEach((c) => out.print(`  ${out.cyan(shortId(c.id))}  ${c.title}  ${out.gray(relativeTime(c.updatedAt))}`));
-        return {};
-      }
-      try {
-        const conv = await api.getConversation(arg);
-        if (conv.projectId !== projectId) {
-          out.error(`Conversation ${arg} belongs to a different project. Switch to project ${conv.projectId} before resuming it.`);
-          return {};
-        }
-        out.success(`Resumed ${conv.title} (${shortId(conv.id)}).`);
-        const hist = await api.listMessages(conv.id);
-        for (const m of hist.slice(-6)) renderHistoryMessage(ctx, m.role, m.content, m.streamingState);
-        return { conversation: conv };
-      } catch {
-        out.error(`Conversation not found: ${arg}`);
-        return {};
-      }
-    }
-    case "sessions": {
-      const list = await api.listConversations(projectId);
-      out.heading("Sessions");
-      list.forEach((c) => out.print(`  ${out.cyan(shortId(c.id))}  ${c.title}  ${out.gray(relativeTime(c.updatedAt))}`));
-      return {};
-    }
-    case "project":
-      out.info(`Active project: ${projectId}`);
-      return {};
-    case "provider": {
-      if (arg) {
-        session.provider = arg === "auto" ? undefined : arg;
-        out.success(`Provider set to ${session.provider ?? "auto (preset routing)"}.`);
-      } else {
-        const ps = await api.listProviders();
-        out.heading("Providers");
-        ps.forEach((p) => out.print(`  ${p.configured ? out.green("●") : out.gray("○")} ${p.id}  ${out.gray(p.label)}`));
-      }
-      return {};
-    }
-    case "model": {
-      if (arg) {
-        session.model = arg === "auto" ? undefined : arg;
-        out.success(`Model set to ${session.model ?? "auto (preset routing)"} — session preserved.`);
-      } else {
-        const models = await api.listModels();
-        const { modelPickerLines } = await import("../terminal/model-picker.js");
-        for (const l of modelPickerLines(models, { provider: session.provider, model: session.model }, out, resolveUnicode(ctx))) out.print(l);
-      }
-      return {};
-    }
-    case "preset": {
-      if (arg) {
-        session.preset = arg;
-        out.success(`Preset set to ${arg}.`);
-      } else {
-        const presets = await api.listPresets();
-        out.heading("Presets");
-        presets.forEach((p) => out.print(`  ${p.available ? out.green("●") : out.gray("○")} ${p.preset.id}  ${out.gray(p.preset.description)}`));
-      }
-      return {};
-    }
-    case "mode": {
-      if (!arg) {
-        out.info(`Mode: ${modeLabel(session.mode, session.autoApprove)}  ·  switch: /mode ask|plan|build|mission`);
-        return {};
-      }
-      const next = parseModeName(arg);
-      if (next === null) {
-        out.warn("Usage: /mode [ask|plan|build|mission]");
-        return {};
-      }
-      if (next === "mission") {
-        // Mission is the distinct verified-objective flow. Start one from the
-        // shell prompt or `morrow mission "<objective>"`, then inspect it with
-        // /tree, /result, and /context.
-        out.info("Mission mode runs a verified autonomous objective with criteria, evidence, and review.");
-        out.info(`Start one with:  ${out.cyan('morrow mission "<objective>"')}   ·   inspect with /tree /result /context`);
-        return {};
-      }
-      session.mode = next as AgentMode;
-      // Leaving Build (agent) mode makes auto-approve meaningless; turn it off so
-      // the label can never claim YOLO for a mode that does not execute.
-      if (session.mode !== "agent" && session.autoApprove) session.autoApprove = false;
-      out.success(`Mode set to ${modeLabel(session.mode, session.autoApprove)}.`);
-      return {};
-    }
-    case "yolo": {
-      if (session.mode !== "agent") {
-        out.warn(`YOLO only applies in Build mode (current: ${modeLabel(session.mode)}). Switch with /mode build first.`);
-        return {};
-      }
-      session.autoApprove = arg === "on" ? true : arg === "off" ? false : !session.autoApprove;
-      if (session.autoApprove) {
-        out.warn("YOLO on: commands and patches will run without asking. Denied actions (shells, deletes, history rewrites) stay blocked.");
-      } else {
-        out.success("YOLO off: edits and commands require approval again.");
-      }
-      return {};
-    }
-    case "tools": {
-      const tools = await api.listTools();
-      out.heading("Tools (read-only)");
-      tools.forEach((t) => out.print(`  ${out.cyan(t.name)}  ${out.gray(t.description)}`));
-      return {};
-    }
-    case "permissions": {
-      const perm = await api.permissions();
-      out.heading("Permissions");
-      out.keyValue([
-        ["filesystem", perm.filesystemAccess],
-        ["shell", String(perm.shellExecution)],
-        ["network", perm.networkAccess],
-        ["write", String(perm.writeAccess)],
-      ]);
-      return {};
-    }
-    case "status": {
-      const health = await api.health().catch(() => null);
-      out.heading("Status");
-      out.keyValue([
-        ["service", health ? "running" : "unreachable"],
-        ["conversation", `${conversation.title} (${shortId(conversation.id)})`],
-        ["project", projectId],
-        ["preset", session.preset],
-        ["provider", session.provider ?? "auto"],
-        ["model", session.model ?? "auto"],
-        ["mode", modeLabel(session.mode, session.autoApprove)],
-        ["memory", session.useMemory ? "on" : "off"],
-      ]);
-      return {};
-    }
-    case "history": {
-      const msgs = await api.listMessages(conversation.id);
-      out.heading(`History (${msgs.length})`);
-      for (const m of msgs) renderHistoryMessage(ctx, m.role, m.content, m.streamingState);
-      return {};
-    }
-    case "inspect": {
-      const started = await api.startInspectWorkspace(projectId);
-      out.info("Inspecting workspace…");
-      const { streamTaskEvents } = await import("../client/sse.js");
-      for await (const ev of streamTaskEvents(api.baseUrl, started.taskId, {})) {
-        if (ev.type === "workspace.inspected") out.success(`Inspected workspace (${(ev.payload as any).resultCount} entries).`);
-      }
-      return {};
-    }
-    case "ps": {
-      const parts = (arg ?? "").split(/\s+/).filter(Boolean);
-      try {
-        if (parts[0] === "kill") {
-          if (!parts[1]) { out.warn("Usage: /ps kill <id>"); return {}; }
-          const all = await api.listProcesses(projectId);
-          const matches = all.filter((p) => p.id === parts[1] || p.id.startsWith(parts[1]!));
-          if (matches.length !== 1) { out.warn(matches.length === 0 ? `No process matching "${parts[1]}".` : `"${parts[1]}" is ambiguous.`); return {}; }
-          await api.terminateProcess(matches[0]!.id, true);
-          out.success(`Terminating ${matches[0]!.id.slice(0, 8)}.`);
-          return {};
-        }
-        const processes = await api.listProcesses(projectId);
-        if (processes.length === 0) { out.info("No background processes. Start one with `morrow processes start -- <cmd> …`."); return {}; }
-        out.heading(`Processes (${processes.length})`);
-        for (const p of processes) {
-          const cmd = [p.command, ...p.args].join(" ").slice(0, 60);
-          out.print(`  ${p.id.slice(0, 8)}  ${p.status.padEnd(9)}  ${cmd}${p.exitCode !== null ? out.gray(`  exit ${p.exitCode}`) : ""}`);
-        }
-        return {};
-      } catch (e: any) {
-        out.error(e?.message ?? String(e));
-        return {};
-      }
-    }
-    case "worktrees":
-    case "worktree": {
-      const parts = (arg ?? "").split(/\s+/).filter(Boolean);
-      const verb = parts[0] ?? "list";
-      const ref = parts[1];
-      try {
-        const all = await api.listWorktrees(projectId);
-        const resolve = (value: string | undefined) => {
-          if (!value) return undefined;
-          const matches = all.filter((w) => w.id === value || w.id.startsWith(value) || w.branch === value || w.branch === `morrow/${value}`);
-          return matches.length === 1 ? matches[0] : null;
-        };
-        if (verb === "show") {
-          const match = resolve(ref);
-          if (match === undefined) { out.warn("Usage: /worktrees show <id|name>"); return {}; }
-          if (match === null) { out.warn(`No unambiguous worktree matching "${ref}".`); return {}; }
-          const status = await api.getWorktree(match.id);
-          out.heading(`Worktree ${status.branch}`);
-          out.keyValue([
-            ["status", status.status],
-            ["path", status.path],
-            ["dirty", status.dirty ? `yes (${status.dirtyFiles.length})` : "no"],
-            ["commits ahead", String(status.aheadCommits.length)],
-            ["task", status.taskId ?? "-"],
-            ["agent", status.agentId ?? "-"],
-          ]);
-          for (const f of status.dirtyFiles.slice(0, 10)) out.print(`  M ${f}`);
-          return {};
-        }
-        if (verb === "remove") {
-          const match = resolve(ref);
-          if (match === undefined) { out.warn("Usage: /worktrees remove <id|name>"); return {}; }
-          if (match === null) { out.warn(`No unambiguous worktree matching "${ref}".`); return {}; }
-          await api.removeWorktree(match.id, parts.includes("--preserve"));
-          out.success(`Removed worktree ${match.branch} (branch retained).`);
-          return {};
-        }
-        if (all.length === 0) { out.info("No worktrees. Create one with `morrow worktrees create <name>`."); return {}; }
-        out.heading(`Worktrees (${all.length})`);
-        for (const w of all) {
-          const assoc = [w.taskId ? `task ${w.taskId.slice(0, 8)}` : "", w.agentId ? `agent ${w.agentId.slice(0, 8)}` : ""].filter(Boolean).join(", ");
-          out.print(`  ${w.id.slice(0, 8)}  ${w.status.padEnd(9)}  ${w.branch}  ${out.gray(assoc || w.path)}`);
-        }
-        return {};
-      } catch (e: any) {
-        out.error(e?.message ?? String(e));
-        return {};
-      }
-    }
-    case "checkpoint": {
-      const parts = (arg ?? "").split(/\s+/).filter(Boolean);
-      const verb = parts[0] ?? "list";
-      const name = parts[1];
-      const usage = "Usage: /checkpoint save <name> [file …] | list | restore <name> | delete <name>";
-      try {
-        if (verb === "list") {
-          const list = await api.listCheckpoints(projectId);
-          if (list.length === 0) {
-            out.info("No checkpoints yet. Create one with /checkpoint save <name>.");
-            return {};
-          }
-          out.heading(`Checkpoints (${list.length})`);
-          for (const cp of list) {
-            out.print(`  ${out.bold(cp.name)}  ${out.gray(`${cp.fileCount} file${cp.fileCount === 1 ? "" : "s"} · ${cp.createdAt}`)}`);
-          }
-          return {};
-        }
-        if (!name) { out.warn(usage); return {}; }
-        if (verb === "save") {
-          const files = parts.slice(2);
-          const created = await api.createCheckpoint(projectId, { name, ...(files.length > 0 ? { files } : {}) });
-          out.success(`Checkpoint "${created.name}" saved (${created.fileCount} file${created.fileCount === 1 ? "" : "s"}).`);
-          for (const s of created.skipped) out.warn(`Skipped ${s.path}: ${s.reason}`);
-          return {};
-        }
-        if (verb === "restore") {
-          const res = await api.restoreCheckpoint(projectId, name);
-          const total = res.restoredFiles.length + res.deletedFiles.length;
-          out.success(total === 0 ? `Workspace already matches "${name}".` : `Restored "${name}" (${res.restoredFiles.length} written, ${res.deletedFiles.length} removed).`);
-          if (res.safetyCheckpoint) out.info(`Previous state saved as "${res.safetyCheckpoint}" — restore it to undo.`);
-          return {};
-        }
-        if (verb === "delete") {
-          await api.deleteCheckpoint(projectId, name);
-          out.success(`Deleted checkpoint "${name}".`);
-          return {};
-        }
-        out.warn(usage);
-        return {};
-      } catch (e: any) {
-        out.error(e?.message ?? String(e));
-        return {};
-      }
-    }
-    case "diff": {
-      const msgs = await api.listMessages(conversation.id);
-      const taskIds = msgs.map(m => m.taskId).filter(Boolean) as string[];
-      taskIds.reverse();
-
-      let latestDiff: any = null;
-      let latestTaskId: string | null = null;
-
-      for (const tid of taskIds) {
-        const diffData = await api.getTaskDiff(tid);
-        if (diffData && diffData.diff) {
-          latestDiff = diffData;
-          latestTaskId = tid;
-          break;
-        }
-      }
-
-      if (!latestDiff) {
-        out.info("No Morrow-owned changes exist for this session.");
-        return {};
-      }
-
-      out.print();
-      out.heading(`Latest applied change (Task ${shortId(latestTaskId!)}, state: ${latestDiff.state})`);
-      out.print(`${out.bold("Files changed:")} ${latestDiff.files.join(", ")}`);
-      out.print();
-      out.print(out.bold("Unified Diff:"));
-      const diffLines = latestDiff.diff.split("\n");
-      for (const line of diffLines) {
-        if (line.startsWith("+") && !line.startsWith("+++")) {
-          out.print(out.green(line));
-        } else if (line.startsWith("-") && !line.startsWith("---")) {
-          out.print(out.red(line));
-        } else {
-          out.print(line);
-        }
-      }
-      return {};
-    }
-    case "undo": {
-      const msgs = await api.listMessages(conversation.id);
-      const taskIds = msgs.map(m => m.taskId).filter(Boolean) as string[];
-      taskIds.reverse();
-
-      let targetTaskId: string | null = null;
-      let targetDiff: any = null;
-
-      for (const tid of taskIds) {
-        const diffData = await api.getTaskDiff(tid);
-        if (diffData && diffData.diff && diffData.state === "applied") {
-          targetTaskId = tid;
-          targetDiff = diffData;
-          break;
-        }
-      }
-
-      if (!targetTaskId) {
-        out.info("No applicable Morrow-owned change set found to undo.");
-        return {};
-      }
-
-      out.print();
-      out.heading("Rollback Morrow-Owned Change Set");
-      out.print(`${out.bold("Task:")} ${shortId(targetTaskId)}`);
-      out.print(`${out.bold("Files to restore:")} ${targetDiff.files.join(", ")}`);
-      out.print();
-
-      const answer = (await ask("Confirm targeted rollback of these changes? [y/N]: ")).trim().toLowerCase();
-      if (answer === "y" || answer === "yes") {
-        try {
-          const res = await api.undoTask(targetTaskId);
-          out.success(`Successfully rolled back changes. Restored/removed files: ${res.restoredFiles.join(", ")}`);
-        } catch (e: any) {
-          out.error(`Rollback failed: ${e.message}`);
-        }
-      } else {
-        out.info("Rollback cancelled.");
-      }
-      return {};
-    }
-    case "tree": {
-      const taskId = await latestTaskId(api, conversation.id);
-      if (!taskId) {
-        out.info("No mission task exists yet.");
-        return {};
-      }
-      const tree = await api.getTaskTree(taskId);
-      for (const line of formatTaskTree(tree)) out.print(line);
-      return {};
-    }
-    case "result": {
-      const taskId = await latestTaskId(api, conversation.id);
-      if (!taskId) {
-        out.info("No mission result exists yet.");
-        return {};
-      }
-      const aggregate = await api.getTask(taskId);
-      for (const line of formatMissionResult(aggregate)) out.print(line);
-      return {};
-    }
-    case "context": {
-      const taskId = await latestTaskId(api, conversation.id);
-      if (!taskId) {
-        out.info("No mission context exists yet.");
-        return {};
-      }
-      const aggregate = await api.getTask(taskId);
-      for (const line of formatContextStatus(aggregate)) out.print(line);
-      return {};
-    }
-    case "output": {
-      const request = parseTaskReportArgs(arg);
-      let taskId: string | null;
-      if (request.ref) {
-        const resolution = resolveTaskReference(await api.listTasks(projectId), request.ref);
-        if (resolution.status === "invalid") out.warn(`Invalid task reference "${request.ref}" — use the id shown by /tasks.`);
-        else if (resolution.status === "ambiguous") out.warn(`"${resolution.ref}" matches ${resolution.count} tasks — use more characters.`);
-        else if (resolution.status === "not-found") out.warn(`No task matches "${resolution.ref}" in this project. Run /tasks to see available ids.`);
-        if (resolution.status !== "resolved") return {};
-        taskId = resolution.id;
-      } else {
-        taskId = await latestTaskId(api, conversation.id);
-      }
-      if (!taskId) {
-        out.info("No task output is available yet.");
-        return {};
-      }
-      const [aggregate, messages] = await Promise.all([api.getTask(taskId), api.listMessages(conversation.id)]);
-      const finalAnswer = [...messages].reverse().find((message) => message.taskId === taskId && message.role === "assistant")?.content ?? null;
-      out.print(buildTaskReport(aggregate, { kind: request.kind, ...(finalAnswer ? { legacyFinalAnswerFallback: finalAnswer } : {}) }));
-      return {};
-    }
-    case "export": {
-      const taskId = await latestTaskId(api, conversation.id);
-      if (!taskId) {
-        out.info("No task output is available yet.");
-        return {};
-      }
-      const [aggregate, messages] = await Promise.all([api.getTask(taskId), api.listMessages(conversation.id)]);
-      const finalAnswer = [...messages].reverse().find((message) => message.taskId === taskId && message.role === "assistant")?.content ?? null;
-      const path = writeTaskReport(ctx, taskId, aggregate, "full", finalAnswer, arg || undefined);
-      out.success(`Exported report: ${path}`);
-      return {};
-    }
-    case "cancel":
-      out.info("Nothing is currently streaming (cancel works during a response with Ctrl+C).");
-      return {};
-    case "memory":
-      session.useMemory = !session.useMemory;
-      out.success(`Memory ${session.useMemory ? "enabled" : "disabled"} for this session.`);
-      return {};
-    // ── New commands ──────────────────────────────────────────────────────────
-    case "tasks": {
-      const tasks = await api.listTasks(projectId);
-      const limit = arg ? parseInt(arg, 10) || 10 : 10;
-      const recent = tasks.slice(-limit).reverse();
-      out.heading(`Tasks (${tasks.length} total, showing ${recent.length})`);
-      for (const t of recent) {
-        const statusIcon = t.status === "completed" ? out.green("✓") : t.status === "failed" ? out.red("✗") : t.status === "running" ? out.yellow("⟳") : t.status === "cancelled" ? out.gray("⊘") : "○";
-        out.print(`  ${statusIcon} ${out.cyan(shortId(t.id))}  ${t.status.padEnd(12)}  ${out.gray(t.kind ?? "agent")}`);
-      }
-      return {};
-    }
-    case "stats": {
-      const [tasks, messages, provider] = await Promise.all([
-        api.listTasks(projectId),
-        api.listMessages(conversation.id),
-        api.providerStatus().catch(() => null),
-      ]);
-      const count = (status: string) => tasks.filter((task) => task.status === status).length;
-      out.heading("Session stats");
-      out.keyValue([
-        ["Provider", session.provider ?? provider?.provider ?? "auto"],
-        ["Model", session.model ?? provider?.model ?? "auto"],
-        ["Mode", modeLabel(session.mode, session.autoApprove)],
-        ["User turns", String(messages.filter((message) => message.role === "user").length)],
-        ["Tasks", String(tasks.length)],
-        ["Completed", String(count("completed") + count("verified"))],
-        ["Failed", String(count("failed"))],
-        ["Cancelled", String(count("cancelled"))],
-      ]);
-      return {};
-    }
-    case "memory-search": {
-      if (!arg) { out.warn("Usage: /memory-search <query>"); return {}; }
-      const results = await api.search(projectId, arg, { kinds: ["memory"], limit: 10 });
-      out.heading(`Memory search: "${arg}"`);
-      if (results.hits.length === 0) out.info("No memory entries found.");
-      else for (const h of results.hits) out.print(`  ${out.cyan(`[${h.kind}]`)} ${h.title}  ${out.gray("— " + h.snippet.replace(/\s+/g, " ").trim())}`);
-      return {};
-    }
-    case "audit": {
-      const limit = arg ? parseInt(arg, 10) || 20 : 20;
-      const entries = await api.audit(projectId, limit);
-      out.heading(`Audit log (${entries.length})`);
-      for (const e of entries) {
-        const ts = new Date(e.createdAt).toLocaleTimeString();
-        const status = e.status === "completed" ? out.green("✓") : e.status === "failed" ? out.red("✗") : "○";
-        out.print(`  ${out.gray(ts)}  ${status}  ${e.kind.padEnd(15)}  ${out.gray(e.provider ?? "unknown")}`);
-      }
-      return {};
-    }
-    case "cost": {
-      const msgs = await api.listMessages(conversation.id);
-      const taskIds = msgs.map(m => m.taskId).filter(Boolean) as string[];
-      let total = "not yet calculated";
-      for (const tid of taskIds.reverse()) {
-        try {
-          const agg = await api.getTask(tid);
-          if (agg.disclosure?.estimatedCostUsd) {
-            total = `$${agg.disclosure.estimatedCostUsd}`;
-            break;
-          }
-        } catch {}
-      }
-      out.info(`Estimated session cost: ${total}`);
-      return {};
-    }
-    case "skill-search": {
-      const { localSkillsIndex } = await import("./skills.js");
-      const skills = localSkillsIndex();
-      const q = arg.toLowerCase();
-      const matches = skills.filter(s => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q));
-      out.heading(`Skills matching "${arg}" (${matches.length})`);
-      for (const s of matches.slice(0, 15)) {
-        out.print(`  ${out.cyan(s.name)}  ${out.gray(s.description.slice(0, 80))}`);
-      }
-      if (matches.length > 15) out.gray(`  …and ${matches.length - 15} more`);
-      return {};
-    }
-    case "fork": {
-      const forked = await api.createConversation(projectId, arg || `${conversation.title} (fork)`);
-      out.success(`Forked to ${forked.title} (${shortId(forked.id)}).`);
-      // Copy last N messages to give context
-      const msgs = await api.listMessages(conversation.id);
-      const context = msgs.slice(-6);
-      for (const m of context) {
-        // Insert a summary note as context
-      }
-      return { conversation: forked };
-    }
-    case "stash": {
-      if (!arg) { out.warn("Usage: /stash <name> — saves session as a named checkpoint"); return {}; }
-      const summary = `[Stash: ${arg}] ${new Date().toISOString()}`;
-      await api.addMemory(projectId, "conversation", summary, conversation.id);
-      out.success(`Stashed checkpoint "${arg}" to project memory.`);
-      return {};
-    }
-    case "bench": {
-      out.info("Running provider latency benchmark…");
-      const providers = await api.listProviders();
-      const configured = providers.filter(p => p.configured);
-      if (configured.length === 0) { out.warn("No providers configured."); return {}; }
-      out.heading("Latency (ms)");
-      for (const p of configured) {
-        try {
-          const start = Date.now();
-          const result = await api.testProvider(p.id);
-          const elapsed = Date.now() - start;
-          const status = result.ok ? out.green(`${elapsed}ms`) : out.red("failed");
-          out.print(`  ${p.id.padEnd(15)}  ${status}`);
-        } catch {
-          out.print(`  ${p.id.padEnd(15)}  ${out.red("unreachable")}`);
-        }
-      }
-      return {};
-    }
-    case "versions": {
-      const nodeVer = process.versions.node;
-      const morrowVer = (await import("../main.js")).VERSION;
-      // Use the shared hardened resolver (ranked candidates, no shell, bounded
-      // timeout, .cmd/.bat via ComSpec, semver-validated) instead of a naive
-      // `execSync("pnpm --version")`, which shells out with ambiguous PATH/.cmd
-      // resolution, can hang with no timeout, and leaks stderr/Corepack chatter.
-      const { probePnpm } = await import("../service/pnpm.js");
-      const pnpm = probePnpm(process.env);
-      const pnpmVer = pnpm.ok ? pnpm.detail : "unknown";
-      out.heading("Versions");
-      out.keyValue([["node", nodeVer], ["pnpm", pnpmVer], ["morrow", morrowVer]]);
-      return {};
-    }
-    case "bugs":
-      out.info("Open an issue: https://github.com/Mageester/morrow/issues/new");
-      out.info("Include: `morrow doctor` output, reproduction steps, and logs.");
-      return {};
-    case "theme": {
-      const themes = ["dawn", "midnight", "forest", "ocean", "mono"];
-      if (!arg || !themes.includes(arg)) {
-        out.heading("Available themes");
-        themes.forEach(t => out.print(`  ${t === (ctx.config.get("ui.theme") as string || "dawn") ? out.green("●") : " "} ${t}`));
-        return {};
-      }
-      ctx.config.set("ui.theme", arg, "user");
-      out.success(`Theme set to "${arg}". Restart your session to apply.`);
-      return {};
-    }
-    case "connect": {
-      if (!arg) { out.warn("Usage: /connect <provider-id>"); return {}; }
-      const providers = await api.listProviders();
-      const match = providers.find(p => p.id === arg);
-      if (!match) { out.warn(`Provider "${arg}" not found. Use /provider to list available.`); return {}; }
-      if (match.configured) { out.info(`Provider "${arg}" is already configured.`); return {}; }
-      if (OAUTH_ELIGIBLE.has(match.id)) {
-        await oauthLogin(ctx, api, match.id as "openai" | "anthropic");
-        return {};
-      }
-      out.info(`To configure ${match.label || arg}, set the ${match.id.toUpperCase()}_API_KEY environment variable and restart.`);
-      return {};
-    }
-    case "share": {
-      const fmt = arg || "markdown";
-      const { exportConversationToText } = await import("./conversations.js");
-      const text = await exportConversationToText(api, conversation.id);
-      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const filename = `morrow-session-${ts}.md`;
-      const { writeFileSync } = await import("node:fs");
-      const { join } = await import("node:path");
-      const outPath = join(process.cwd(), filename);
-      writeFileSync(outPath, `# Morrow Session Export\n\n${text}`);
-      out.success(`Exported to ${outPath}`);
-      return {};
-    }
-    case "shortcuts": {
-      out.heading("Keyboard shortcuts");
-      out.keyValue([
-        ["Ctrl+C", "cancel running task (x2 to exit)"],
-        ["Ctrl+K", "open command palette"],
-        ["Ctrl+R", "search command history"],
-        ["Ctrl+O", "view last command output"],
-        ["Ctrl+L", "clear screen / repaint"],
-        ["PgUp", "enter transcript reader mode"],
-        ["↑/↓, Home", "scroll transcript while reader mode is active"],
-        ["End / Esc", "return transcript to live output"],
-        ["Tab", "complete slash command"],
-        ["↑/↓", "history recall"],
-        ["Esc", "close overlay / dismiss completion"],
-      ]);
-      return {};
-    }
-    case "compact":
-      return compact(ctx, api, projectId, conversation, session);
-    default:
-      out.warn(`Unknown command: /${cmd}. Type /help.`);
-      return {};
-  }
-}
-
-async function compact(ctx: Context, api: MorrowApi, projectId: string, conversation: Conversation, session: SessionState): Promise<SlashResult> {
-  const out = ctx.out;
-  out.info("Compacting saved history locally…");
-  const options = { preset: session.preset, ...(session.provider ? { providerId: session.provider } : {}), ...(session.model ? { model: session.model } : {}) };
-  const taskId = await latestTaskId(api, conversation.id);
-  const task = taskId ? await api.getTask(taskId).catch(() => null) : null;
-  const result = taskId && task && (task.task.status === "running" || task.task.status === "interrupted")
-    ? await api.compactTask(taskId, projectId, options)
-    : await api.compactConversation(conversation.id, projectId, options);
-  out.info(`Route: ${result.routing.providerId}/${result.routing.model} · ${result.routing.privacy}`);
-  out.success(`Saved deterministic continuation summary (${result.summary.sourceMessageCount} messages); no model request was made.`);
-  return {};
-}
-
-function printReplHelp(ctx: Context) {
-  const out = ctx.out;
-  out.heading("Chat commands");
-  const rows: Array<[string, string]> = [
-    ["/help", "show this help"],
-    ["/capabilities", "what this build can actually do right now"],
-    ["/new [title]", "start a new conversation"],
-    ["/resume [id]", "list or resume a conversation"],
-    ["/sessions", "list recent conversations"],
-    ["/project", "show the active project"],
-    ["/provider [id]", "show providers or set the active provider"],
-    ["/model [id]", "show models or set the active model"],
-    ["/preset [id]", "show presets or set the active preset"],
-    ["/mode [kind]", "show or set ask | plan | build | mission"],
-    ["/yolo [on|off]", "toggle auto-approve (Build mode); denied actions stay blocked"],
-    ["/tools", "list available read-only tools"],
-    ["/permissions", "show the permission profile"],
-    ["/status", "show service and session status"],
-    ["/history", "show full conversation history"],
-    ["/inspect", "run a safe workspace inspection"],
-    ["/diff", "show the current session's latest Morrow-owned applied change"],
-    ["/undo", "rollback the latest Morrow-owned change in the session"],
-    ["/tree", "show the current mission task tree"],
-    ["/result", "show final evidence and next action"],
-    ["/context", "show context usage, compaction, and token-count confidence"],
-    ["/stats", "show truthful session, provider, and task metrics"],
-    ["/tasks [limit]", "list recent tasks in this project"],
-    ["/output [full|failures] [task-id]", "show a durable report by latest task, full id, or unique prefix"],
-    ["/cancel", "cancel info (use Ctrl+C while streaming)"],
-    ["/memory", "toggle memory for this session"],
-    ["/compact", "durably compact the provider projection"],
-    ["/export [file]", "export a sanitized task report"],
-    ["/clear", "clear the screen only (provider context is unchanged)"],
-    ["/exit", "quit"],
-  ];
-  out.keyValue(rows);
 }
 
 async function latestTaskId(api: MorrowApi, conversationId: string): Promise<string | null> {

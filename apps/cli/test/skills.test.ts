@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { discoverSkills, verifySkill, skillsAsSlashCommands } from "../src/skills/registry.js";
-import { SLASH_COMMANDS } from "../src/terminal/commands.js";
+import { BUILTIN_COMMANDS } from "../src/terminal/commands/index.js";
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
@@ -38,7 +38,7 @@ describe("local skills registry", () => {
     const names = commands.map((c) => c.name);
     for (const known of BUILT_IN_SKILLS) expect(names).toContain(`skill:${known}`);
     expect(commands.find((c) => c.name === "skill:coding")).toMatchObject({ skillId: "coding" });
-    const builtinNames = new Set(SLASH_COMMANDS.map((c) => c.name));
+    const builtinNames = new Set(BUILTIN_COMMANDS.map((c: { name: string }) => c.name));
     expect(commands.some((c) => builtinNames.has(c.name))).toBe(false);
   });
 

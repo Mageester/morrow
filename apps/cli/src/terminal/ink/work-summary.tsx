@@ -81,10 +81,15 @@ export function WorkSummary({
   tools,
   expanded,
   unicode,
+  settled = false,
 }: {
   tools: readonly ToolCard[];
   expanded: boolean;
   unicode: boolean;
+  /** True for a finished turn's work, written once into the transcript. It
+   *  lists its rows rather than collapsing to a line: the turn is over, so this
+   *  is the record of what happened, and Ctrl+O no longer applies to it. */
+  settled?: boolean;
 }) {
   if (tools.length === 0) return null;
   const g = glyphs(unicode);
@@ -93,7 +98,7 @@ export function WorkSummary({
   const failed = tools.some((tool) => tool.status === "failed");
 
   // Collapsed: one line. This is the default and the point of the component.
-  if (!expanded) {
+  if (!expanded && !settled) {
     const mark = running ? g.run : failed ? g.fail : g.done;
     const colour = running ? theme.accent : failed ? theme.danger : theme.success;
     const label = running

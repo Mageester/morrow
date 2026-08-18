@@ -31,8 +31,7 @@ import { uninstallCommand } from "./commands/uninstall.js";
 import { acceptanceCommand, printAcceptanceHelp } from "./commands/acceptance.js";
 import { provenanceCommand } from "./commands/provenance.js";
 import { mcpCommand } from "./commands/mcp.js";
-import { SLASH_COMMANDS } from "./terminal/commands.js";
-import { groupCommands } from "./terminal/command-groups.js";
+import { builtinRegistry, CATEGORY_LABELS, CATEGORY_ORDER } from "./terminal/commands/index.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
 import { aggregateDoctor, pnpmIsCritical, redactDiagnostics, type DoctorCheck } from "./service/doctor-checks.js";
@@ -267,13 +266,14 @@ function printHelp(out: Output): number {
     // this list can never drift from what the palette actually offers
     // (KNOWN_ISSUES #14 — `/tasks` and `/stats` were previously missing here).
     //
-    // Grouped rather than run together: seventy-one commands on one line is a
-    // list nobody reads. The grouping is the palette's own taxonomy, so the
-    // two surfaces stay identical.
-    ...groupCommands(SLASH_COMMANDS).flatMap((group) => [
-      `  ${g(group.title)}`,
-      `    ${g(group.commands.map((c) => `/${c.name}`).join(" "))}`,
-    ]),
+    // Grouped rather than run together, using the registry's own taxonomy so
+    // the two surfaces stay identical.
+    ...CATEGORY_ORDER.flatMap((category) => {
+      const commands = builtinRegistry().inCategory(category);
+      return commands.length === 0
+        ? []
+        : [`  ${g(CATEGORY_LABELS[category])}`, `    ${g(commands.map((command) => `/${command.name}`).join(" "))}`];
+    }),
     "",
     g("Press / in a session to search them all."),
     "",
