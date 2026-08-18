@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { liveBus, type EphemeralEvent } from "./execution/live-bus.js";
 import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type Database from "better-sqlite3";
 import {
@@ -1195,10 +1196,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
     let isClosed = false;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribeLive: (() => void) | undefined;
+
+    const detach = () => {
+      unsubscribeLive?.();
+      unsubscribeLive = undefined;
+    };
 
     request.raw.on("close", () => {
       isClosed = true;
       if (timeoutId) clearTimeout(timeoutId);
+      detach();
     });
 
     const sendEvent = (event: any) => {
@@ -1206,6 +1214,16 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       reply.raw.write(`event: ${event.type}\n`);
       reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
     };
+
+    // Ephemeral frames deliberately carry no `id`, so they never advance the
+    // client's resume cursor: there is nothing stored to resume from. They
+    // exist so a model's reasoning can be watched as it happens without being
+    // written to task_events. See execution/live-bus.ts.
+    unsubscribeLive = liveBus.subscribe(taskId, (event: EphemeralEvent) => {
+      if (isClosed) return;
+      reply.raw.write(`event: ${event.type}\n`);
+      reply.raw.write(`data: ${JSON.stringify({ type: event.type, payload: event.payload, ephemeral: true })}\n\n`);
+    });
 
     const pollEvents = async () => {
       if (isClosed) return;

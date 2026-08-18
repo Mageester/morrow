@@ -77,6 +77,6 @@ export const theme = {
 /** Status glyphs, with ASCII fallbacks for terminals without wide coverage. */
 export function glyphs(unicode: boolean) {
   return unicode
-    ? { done: "✓", fail: "✕", run: "◇", pending: "·", mark: "✦", chevron: "›", bullet: "•", rule: "─", quote: "│" }
-    : { done: "+", fail: "x", run: "*", pending: ".", mark: "*", chevron: ">", bullet: "*", rule: "-", quote: "|" };
+    ? { done: "✓", fail: "✕", run: "◇", pending: "·", mark: "✦", chevron: "›", bullet: "•", rule: "─", quote: "│", think: "✻" }
+    : { done: "+", fail: "x", run: "*", pending: ".", mark: "*", chevron: ">", bullet: "*", rule: "-", quote: "|", think: "~" };
 }

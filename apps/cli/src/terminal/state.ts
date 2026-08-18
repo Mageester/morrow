@@ -33,6 +33,12 @@ export interface ConversationEntry {
   /** Present on `report` entries: structured command output, rendered by the
    *  surface rather than flattened to text here. */
   report?: import("./report.js").Report;
+  /** Present on assistant entries whose turn did visible thinking first. Held
+   *  on the turn rather than in a floating region so it renders where it
+   *  happened — above the answer it produced, not below it. Never persisted:
+   *  it lives only in this in-memory state. */
+  reasoning?: string;
+  reasoningMs?: number;
   /** Present on `work` entries: the tool calls a finished turn made. Settling
    *  these into the transcript is what keeps a turn's work attached to that
    *  turn — left in the live region they float below whatever came next, so a
@@ -139,6 +145,21 @@ export interface TerminalState {
    *  a second task-message channel — each entry is sent as a normal
    *  `user.message` (via `redirect.sent`) once the running task ends. */
   queuedMessages: string[];
+  /** The model's reasoning for the turn in flight, accumulated live.
+   *  Deliberately not part of `conversation`: it is never stored, never
+   *  replayed, and is cleared the moment the turn produces its answer. */
+  reasoning: string;
+  /** Wall-clock start of the current reasoning run, for the elapsed label. */
+  reasoningStartedAt?: number;
+  /** The most recent turn's thinking, kept so Ctrl+R can reopen it.
+   *  Settled turns are written through `<Static>`, which renders once and never
+   *  again — so an expansion toggle can never reach them. This is the copy the
+   *  live region can still draw. */
+  lastReasoning?: string;
+  lastReasoningMs?: number;
+  /** Set once the turn starts answering: how long it thought for. Presence is
+   *  what tells the surface to collapse the live reasoning to a single line. */
+  reasoningMs?: number;
   /** Bumped whenever the transcript is wiped. `<Static>` keys on identity and a
    *  cleared transcript reuses indices from zero, so without this the renderer
    *  treats the first entry after a clear as already-written and never draws
@@ -174,7 +195,7 @@ export const MAX_NOTICES = 6;
 export const MAX_QUEUED = 5;
 
 export function initialState(): TerminalState {
-  return { conversation: [], activity: [], tools: [], patches: [], plan: [], notices: [], status: "idle", processes: [], worktrees: [], agents: [], integrations: [], recoverySuggestions: [], recoveries: [], queuedMessages: [], epoch: 0 };
+  return { conversation: [], activity: [], tools: [], patches: [], plan: [], notices: [], status: "idle", processes: [], worktrees: [], agents: [], integrations: [], recoverySuggestions: [], recoveries: [], queuedMessages: [], epoch: 0, reasoning: "" };
 }
 
 function bounded<T>(items: T[], max: number): T[] {
@@ -244,6 +265,8 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         progressDetail: _progressDetail,
         routing: _routing,
         activeUsage: _activeUsage,
+        reasoningStartedAt: _reasoningStartedAt,
+        reasoningMs: _reasoningMs,
         ...sessionState
       } = state;
       return {
@@ -258,6 +281,14 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         plan: [],
         recoveries: [],
         recoverySuggestions: [],
+        // Notices describe a moment, not the session. "Model set to X" three
+        // turns ago is clutter sitting under the current answer, and clutter is
+        // most of what makes a terminal feel cheap. Anything that mattered is
+        // already in the transcript.
+        notices: [],
+        // A new turn thinks afresh. Reasoning is never carried across turns —
+        // it is not stored anywhere, so there is nothing to carry.
+        reasoning: "",
         status: "streaming",
       };
     }
@@ -275,6 +306,38 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
           MAX_CONVERSATION
         ),
       };
+
+    case "reasoning.delta":
+      return {
+        ...state,
+        reasoning: state.reasoning + event.text,
+        reasoningStartedAt: state.reasoningStartedAt ?? now(),
+      };
+
+    case "reasoning.settled": {
+      // The turn has started answering: move the thinking onto the turn that
+      // produced it. Attaching it here is what puts it above the answer instead
+      // of leaving it floating below everything already settled.
+      if (!state.reasoning) return state;
+      const elapsed = now() - (state.reasoningStartedAt ?? now());
+      const index = state.conversation.findIndex((entry, position) =>
+        position === state.conversation.length - 1 && entry.role === "assistant",
+      );
+      if (index === -1) {
+        // No open assistant turn yet — keep it live and stamp the duration.
+        return state.reasoningMs !== undefined ? state : { ...state, reasoningMs: elapsed };
+      }
+      const conversation = [...state.conversation];
+      conversation[index] = { ...conversation[index]!, reasoning: state.reasoning, reasoningMs: elapsed };
+      const { reasoningStartedAt: _startedAt, reasoningMs: _ms, ...rest } = state;
+      return {
+        ...rest,
+        conversation,
+        reasoning: "",
+        lastReasoning: state.reasoning,
+        lastReasoningMs: elapsed,
+      };
+    }
 
     case "session.cleared":
       // Notices go too: a strip of stale notices under a cleared screen is the

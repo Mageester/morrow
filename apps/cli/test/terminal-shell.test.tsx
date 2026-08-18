@@ -5,7 +5,7 @@ import { TerminalStore } from "../src/terminal/ink/store.js";
 import { OverlayStore } from "../src/terminal/ink/overlay-store.js";
 import { ApprovalStore } from "../src/terminal/ink/approval-store.js";
 import { builtinRegistry } from "../src/terminal/commands/index.js";
-import { workRows } from "../src/terminal/ink/work-summary.js";
+import { toolLabel, workRows } from "../src/terminal/ink/work-summary.js";
 import { report } from "../src/terminal/report.js";
 import type { ToolCard } from "../src/terminal/state.js";
 
@@ -24,6 +24,7 @@ const DOWN = "[B";
 const LEFT = "[D";
 const BACKSPACE = "";
 const CTRL_C = "";
+const CTRL_R = String.fromCharCode(18);
 const TAB = "\t";
 
 /** Ink holds a lone ESC for 20ms before deciding it is not the start of a
@@ -524,5 +525,75 @@ describe("shell: the status line tells the truth about permissions", () => {
     const { view } = mount({ settings });
     await tick();
     expect(plain(view.lastFrame())).toContain("high");
+  });
+});
+
+describe("shell: reasoning", () => {
+  it("streams the model's thinking, dimmed and apart from the answer", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "solve it" });
+    store.apply({ type: "reasoning.delta", text: "27 * 43 = 27*40 + 27*3" });
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).toContain("Thinking");
+    expect(frame).toContain("27 * 43");
+  });
+
+  it("collapses to a duration once the answer starts", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "solve it" });
+    store.apply({ type: "reasoning.delta", text: "thinking about it" });
+    store.apply({ type: "reasoning.settled" });
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).toContain("Thought for");
+    expect(frame).toContain("ctrl+r");
+    // Collapsed means collapsed: the reasoning body is not on screen.
+    expect(frame).not.toContain("thinking about it");
+  });
+
+  it("Ctrl+R reopens the collapsed reasoning", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "solve it" });
+    store.apply({ type: "reasoning.delta", text: "the hidden working" });
+    store.apply({ type: "reasoning.settled" });
+    await tick();
+    view.stdin.write(CTRL_R);
+    await tick();
+    expect(plain(view.lastFrame())).toContain("the hidden working");
+  });
+
+  it("forgets reasoning on the next turn — there is nothing stored to recall", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "first" });
+    store.apply({ type: "reasoning.delta", text: "first turn thoughts" });
+    store.apply({ type: "user.message", text: "second" });
+    await tick();
+    expect(plain(view.lastFrame())).not.toContain("first turn thoughts");
+  });
+});
+
+describe("tool rows say what happened", () => {
+  it("ignores the runtime's status word and composes a real label", () => {
+    // `tool.completed` arrives with summary "completed" for most tools, which
+    // rendered as a tick next to the word completed and told nobody anything.
+    expect(toolLabel({ name: "search_files", purpose: "opencode", summary: "completed" })).toBe(
+      'Searched for opencode',
+    );
+    expect(toolLabel({ name: "inspect_workspace", summary: "completed" })).toBe("Inspected the workspace");
+    expect(toolLabel({ name: "read_file", purpose: "package.json", summary: "completed" })).toBe(
+      "Read package.json",
+    );
+    expect(toolLabel({ name: "run_command", purpose: "pnpm test", summary: "completed" })).toBe("Ran pnpm test");
+  });
+
+  it("prefers a genuine summary when the runtime provides one", () => {
+    expect(toolLabel({ name: "run_command", purpose: "pnpm test", summary: "184 passed, 0 failed" })).toBe(
+      "184 passed, 0 failed",
+    );
+  });
+
+  it("humanises an unknown tool rather than showing a bare identifier", () => {
+    expect(toolLabel({ name: "some_new_tool", purpose: "a.ts", summary: "ok" })).toBe("some new tool a.ts");
   });
 });

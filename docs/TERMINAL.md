@@ -82,6 +82,7 @@ long session as fast as a fresh one.
 | Key | Does |
 |---|---|
 | `Ctrl+O` | expand or collapse tool detail |
+| `Ctrl+R` | read the model's full reasoning |
 | `Ctrl+L` | clear the screen |
 | `Ctrl+G` | keyboard reference |
 
@@ -103,6 +104,40 @@ A paste of eight lines or more is held aside and shown as one token:
 ```
 
 The full text is sent verbatim on Enter. Deleting the token discards the block.
+
+---
+
+## Reasoning
+
+When a model thinks before answering, you see it happen.
+
+```
+ │ Work it out step by step: what is 228 times 436?
+
+✻ Thought for 1s   ctrl+r to read it
+
+✦ 99,408
+```
+
+While it thinks, a dimmed live tail streams under a `Thinking` header. Once the
+answer starts, that collapses to a single line above the answer it produced.
+`Ctrl+R` reopens the full working; `Ctrl+R` again closes it.
+
+**Reasoning is never stored.** Morrow does not write chain-of-thought to its
+database, so it travels on an ephemeral channel that exists only while a client
+is attached (`services/orchestrator/src/execution/live-bus.ts`). The
+consequences are deliberate:
+
+- It is not replayable. Reconnecting mid-turn misses whatever was thought while
+  you were detached.
+- `/output`, `/export` and task reports contain no reasoning, because none was
+  written.
+- A second terminal attaching to the same task sees reasoning only from the
+  moment it attaches.
+
+Providers that do not expose reasoning simply never send any, and the surface
+shows nothing extra. `/reasoning` controls how much thinking is requested; the
+model picker shows which models accept it.
 
 ---
 
@@ -135,9 +170,15 @@ say so specifically rather than failing.
 | `/reasoning [auto\|off\|low\|medium\|high\|<tokens>]` | how much the model thinks first |
 | `/mode [ask\|plan\|build]` | read-only, propose-only, or edit |
 
-The model picker shows each model's provider, context window, pricing and
-whether it is actually reachable. Unreachable models stay listed with the reason
-attached, because hiding one answers the wrong question.
+The model picker lists **every model on every connected provider** — including
+the ones discovered from your account, which is usually most of them. Each row
+shows its provider, context window, pricing and whether it is actually
+reachable, with a detail panel for the highlighted row. Type to filter: exact
+and substring matches on the model's own name rank above looser ones, so
+"llama" returns llama models rather than everything containing those letters.
+
+Unreachable models stay listed with the reason attached, because hiding one
+answers the wrong question for someone looking for exactly that model.
 
 Switching provider clears a model pinned to the old one. Switching to a route
 that cannot honour the active reasoning setting resets it to auto and says so.

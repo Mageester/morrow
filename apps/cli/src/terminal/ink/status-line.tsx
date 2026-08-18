@@ -26,7 +26,11 @@ export function StatusLine({
   const routing = state.routing;
   const context = state.contextUsage;
 
-  const model = routing?.model ?? null;
+  // The resolved route wins once a request has been made; before that, the
+  // session's own setting is the honest answer. Showing nothing until the first
+  // response meant a fresh terminal could not tell you what it was about to
+  // talk to — the single most useful fact on the line.
+  const model = routing?.model ?? settings?.model ?? null;
   const used = context?.usedTokens ?? null;
   // `contextLimitTokens: null` is the registry saying it could not assert the
   // window. That is not the same as a large window, and it must not fall back

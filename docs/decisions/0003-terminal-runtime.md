@@ -173,3 +173,33 @@ Four changes, all preserving the event model:
 The rule that survives all of it: there is exactly one agent execution path.
 The shell sends through `SessionBackend` and renders the events that come back.
 Commands change settings and read state; none of them runs an agent loop.
+
+## Update, 2026-08-18 (later) — reasoning without persistence
+
+Morrow deliberately does not store chain-of-thought: provider adapters capture
+it as `providerContinuation.reasoningContent`, carrying an explicit rule that it
+be kept only in the restricted continuation store and never emitted as a task
+event. That rule is right, and it meant the terminal had nothing to render.
+
+Rather than weaken it, the runtime grew a second channel. `execution/live-bus.ts`
+is an in-memory, per-task emitter; the SSE route subscribes to it and interleaves
+its frames with the polled persisted stream. Ephemeral frames carry no `id`, so
+the client yields them without advancing its resume cursor — there is nothing
+stored to resume from.
+
+The trade is explicit and documented in the module: reasoning is not replayable,
+never appears in `/output` or `/export`, and a client sees it only from the
+moment it attaches. That is the cost of not writing it down, and it is the
+correct cost to pay.
+
+On the surface, reasoning attaches to the assistant turn that produced it, so it
+renders above that answer rather than floating below whatever came last. Because
+settled turns are written through `<Static>` — drawn once, never redrawn — the
+inline copy is always collapsed, and `Ctrl+R` opens the most recent turn's
+reasoning in the live region instead.
+
+One further fix belongs to the same theme. The model picker required
+`lifecycle === "current" || "preview"`, and every model *discovered from a live
+provider account* is recorded as `custom`. On a machine with five providers
+connected that turned 168 reachable models into three. Availability now decides
+what is listed; lifecycle only decides the order.

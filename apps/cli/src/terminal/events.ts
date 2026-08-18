@@ -205,6 +205,16 @@ export type TerminalEvent =
    *  "the last message happens to be streaming". */
   | { type: "assistant.turn_start"; turnId: string }
   | { type: "assistant.delta"; turnId: string; text: string }
+  /** A slice of the model's reasoning, streamed live and never stored. Morrow
+   *  does not persist chain-of-thought, so this arrives on an ephemeral
+   *  channel: it can be watched while it happens, and it is gone afterwards.
+   *  A surface must therefore treat it as transient and must not try to
+   *  reconstruct it on resume. */
+  | { type: "reasoning.delta"; text: string }
+  /** The turn has begun answering, so the live reasoning view collapses to a
+   *  duration. Derived by the surface from the first answer token rather than
+   *  sent by the runtime, which has no notion of "the reader has seen enough". */
+  | { type: "reasoning.settled" }
   /** `final` is true only for the turn that produced no further tool calls —
    *  the user-facing canonical answer. Every other turn is intermediate
    *  narration, kept for diagnostics but never presented as the answer. */

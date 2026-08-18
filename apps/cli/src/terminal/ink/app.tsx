@@ -18,6 +18,7 @@ import { Markdown } from "./markdown.js";
 import { ModelPicker } from "./model-picker.js";
 import type { OverlayStore } from "./overlay-store.js";
 import { CommandPalette, filterCommands, type Scored } from "./palette.js";
+import { ReasoningView } from "./reasoning-view.js";
 import { ReportView } from "./report-view.js";
 import { SelectOverlay } from "./select-overlay.js";
 import { StatusLine } from "./status-line.js";
@@ -142,10 +143,24 @@ function SettledTurn({ entry, unicode, width }: { entry: ConversationEntry; unic
   }
 
   return (
-    <Box marginTop={1} flexDirection="row">
-      <Text color={theme.accent}>{g.mark} </Text>
-      <Box flexDirection="column" flexGrow={1}>
-        <Markdown text={entry.text} unicode={unicode} width={width - 2} />
+    <Box flexDirection="column">
+      {entry.reasoning ? (
+        // Always collapsed here. `<Static>` draws a settled turn once and never
+        // redraws it, so an expanded copy would freeze at whatever state it had
+        // when it scrolled past. Ctrl+R opens the live copy below instead.
+        <ReasoningView
+          elapsedMs={entry.reasoningMs}
+          expanded={false}
+          text={entry.reasoning}
+          unicode={unicode}
+          width={width}
+        />
+      ) : null}
+      <Box marginTop={1} flexDirection="row">
+        <Text color={theme.accent}>{g.mark} </Text>
+        <Box flexDirection="column" flexGrow={1}>
+          <Markdown text={entry.text} unicode={unicode} width={width - 2} />
+        </Box>
       </Box>
     </Box>
   );
@@ -173,6 +188,8 @@ export function App({
   const { stdout } = useStdout();
 
   const [expanded, setExpanded] = useState(false);
+  /** Ctrl+R: read the whole of the model's thinking. */
+  const [reasoningOpen, setReasoningOpen] = useState(false);
   const exitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   /**
@@ -351,6 +368,11 @@ export function App({
         return;
       }
 
+      if (key.ctrl && input === "r") {
+        setReasoningOpen((value) => !value);
+        return;
+      }
+
       if (key.ctrl && input === "l") {
         store.apply({ type: "session.cleared" });
         return;
@@ -458,7 +480,9 @@ export function App({
   return (
     <Box flexDirection="column" width={width}>
       <Static items={staticItems}>
-        {(item) => <SettledTurn entry={item.entry} key={item.key} unicode={unicode} width={width} />}
+        {(item) => (
+          <SettledTurn entry={item.entry} key={item.key} unicode={unicode} width={width} />
+        )}
       </Static>
 
       {streaming && state.tools.length > 0 ? (
@@ -467,11 +491,42 @@ export function App({
         </Box>
       ) : null}
 
+      {state.reasoning ? (
+        <ReasoningView
+          elapsedMs={state.reasoningMs}
+          expanded={reasoningOpen}
+          text={state.reasoning}
+          unicode={unicode}
+          width={width}
+        />
+      ) : null}
+
+      {!state.reasoning && reasoningOpen && state.lastReasoning ? (
+        <ReasoningView
+          elapsedMs={state.lastReasoningMs}
+          expanded
+          text={state.lastReasoning}
+          unicode={unicode}
+          width={width}
+        />
+      ) : null}
+
       {live ? (
-        <Box marginTop={1} flexDirection="row">
-          <Text color={theme.accent}>{g.mark} </Text>
-          <Box flexDirection="column" flexGrow={1}>
-            <Markdown text={live.text} unicode={unicode} width={width - 2} />
+        <Box flexDirection="column">
+          {live.reasoning ? (
+            <ReasoningView
+              elapsedMs={live.reasoningMs}
+              expanded={reasoningOpen}
+              text={live.reasoning}
+              unicode={unicode}
+              width={width}
+            />
+          ) : null}
+          <Box marginTop={1} flexDirection="row">
+            <Text color={theme.accent}>{g.mark} </Text>
+            <Box flexDirection="column" flexGrow={1}>
+              <Markdown text={live.text} unicode={unicode} width={width - 2} />
+            </Box>
           </Box>
         </Box>
       ) : null}

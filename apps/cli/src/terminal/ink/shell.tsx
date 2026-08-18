@@ -97,7 +97,15 @@ export function startShell(options: ShellOptions): ShellHandle {
           }
           continue;
         }
-        for (const event of mapTaskEvent(raw)) store.apply(event);
+        for (const event of mapTaskEvent(raw)) {
+          // The first token of the answer is what ends "thinking" for a reader.
+          // The runtime has no view on that — it only knows it emitted text —
+          // so the boundary is drawn here, once, rather than by every surface.
+          if (event.type === "assistant.delta" && store.state.reasoning && store.state.reasoningMs === undefined) {
+            store.apply({ type: "reasoning.settled" });
+          }
+          store.apply(event);
+        }
       }
     } catch (error) {
       // A dropped stream is reported rather than thrown away: the reducer
@@ -121,7 +129,14 @@ export function startShell(options: ShellOptions): ShellHandle {
   const send = (text: string) =>
     options.backend
       .send(text, options.sendOptions)
-      .then((result) => runTask(result.taskId))
+      .then((result) => {
+        // The route the orchestrator actually resolved, straight from the send
+        // response — not a guess assembled from settings. Without this nothing
+        // ever emitted a `routing` event, so the status line had no model to
+        // show and a session could not tell you what it was talking to.
+        if (result.routing) emit({ type: "routing", ...result.routing });
+        return runTask(result.taskId);
+      })
       .catch((error: unknown) => {
         emit({ type: "notice", level: "error", text: `Morrow could not accept that message: ${errorText(error)}` });
       });

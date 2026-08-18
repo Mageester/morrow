@@ -67,6 +67,16 @@ export async function* streamTaskEvents(
           buffer = buffer.slice(sep + 2);
           const event = parseBlock(block);
           if (!event) continue;
+          // An ephemeral frame (today: reasoning deltas) is never stored and
+          // carries no sequence. It must be yielded without touching the resume
+          // cursor — advancing on it would make a reconnect ask the server to
+          // resume after a sequence that does not exist, silently skipping real
+          // events. It is also not deduplicated, because there is no id to
+          // deduplicate against and nothing will ever replay it.
+          if ((event as { ephemeral?: boolean }).ephemeral) {
+            yield event;
+            continue;
+          }
           if (event.sequence <= highest) continue;
           highest = event.sequence;
           yield event;

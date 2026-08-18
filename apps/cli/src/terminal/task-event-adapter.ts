@@ -183,6 +183,11 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       }]);
     }
 
+    case "assistant.reasoning_delta": {
+      const text = str(p.text);
+      return text ? withSource([{ type: "reasoning.delta", text }]) : [];
+    }
+
     case "task.progress_warning":
       return withSource([
         {
