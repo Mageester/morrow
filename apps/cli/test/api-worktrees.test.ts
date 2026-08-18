@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MorrowApi } from "../src/client/api.js";
-import { SLASH_COMMANDS } from "../src/terminal/commands.js";
+import { BUILTIN_COMMANDS } from "../src/terminal/commands/index.js";
 
 describe("MorrowApi worktrees", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -45,6 +45,6 @@ describe("MorrowApi worktrees", () => {
   });
 
   it("registers /worktrees as a slash command", () => {
-    expect(SLASH_COMMANDS.some((c) => c.name === "worktrees")).toBe(true);
+    expect(BUILTIN_COMMANDS.some((c: { name: string }) => c.name === "worktrees")).toBe(true);
   });
 });

@@ -1,6 +1,11 @@
 import { existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { legacyDatabaseCandidatesForRepo, resolveDefaultDatabasePath, resolveMorrowDevelopmentRoot, resolveMorrowHome } from "@morrow/orchestrator";
+// The `/home` subpath, not the package barrel. These four are pure path
+// helpers over Node built-ins, but reaching them through the barrel loaded the
+// entire agent runtime — provider stack, database layer, mission engine — into
+// every `morrow` invocation, including `--version`. It cost 0.8s of the 1.9s
+// startup, on a module that resolves directory names.
+import { legacyDatabaseCandidatesForRepo, resolveDefaultDatabasePath, resolveMorrowDevelopmentRoot, resolveMorrowHome } from "@morrow/orchestrator/home";
 
 /**
  * Resolves the canonical Morrow filesystem locations. Global service state

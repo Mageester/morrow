@@ -1,6 +1,6 @@
 # ADR 0003: Event-Driven Terminal Runtime
 
-- **Status:** Accepted, updated 2026-07-08 for beta.28 terminal UX
+- **Status:** Accepted, updated 2026-08-18 for the Ink shell rebuild
 - **Date:** 2026-06-22
 
 ## Context
@@ -133,3 +133,73 @@ body overflows. Resize re-clamps the existing position, while a new task and
 `/clear` return to live output. Mouse-wheel events are not intercepted because
 Node's keypress layer does not expose them reliably; terminal-native scrollback
 and selection remain available.
+
+## Update, 2026-08-18 — the shell rebuild
+
+The pipeline above held. What did not hold was everything downstream of it: the
+renderer was a hand-rolled frame painter, the command layer was a `switch`
+inside a 2,300-line session class, and a second, partial `switch` had grown
+inside the Ink port. A third lived in `chat.ts` for the non-interactive REPL.
+They disagreed about which commands existed.
+
+Four changes, all preserving the event model:
+
+1. **The composer is a pure state machine** (`terminal/ink/editor.ts`). Cursor,
+   word boundaries, multi-line motion, history, kill ring and paste capture are
+   folded by `applyKey`, with no terminal, React or network in reach. The
+   previous composer was a `draft: string` that only appended, which is why
+   arrow keys, Home/End and history all did nothing.
+
+2. **Commands return data, not lines** (`terminal/report.ts`). A handler builds
+   a `Report` and the surface renders it. This is what let the same command
+   serve the Ink shell and the plain-line fallback, and it is why the handlers
+   could be lifted out of the session class at all — the old ones had
+   `requestPaint()` baked into them.
+
+3. **One registry** (`terminal/commands/`). Name, aliases, summary, usage,
+   category, subcommands, argument completion and handler live on one record.
+   The palette, `/help`, completion, `morrow --help` and the dispatcher all read
+   it, so they cannot drift. The surface shrank from seventy-one advertised
+   commands — eleven of which only printed "run `morrow X` in your terminal" —
+   to forty-four that work, with views consolidated under `/cortex` and
+   `/mission`.
+
+4. **The legacy renderer is gone.** `session.ts`, `view.ts`'s frame path,
+   `app-view.ts`, `input-state.ts`, `runtime.ts`, `paint.ts`, `startup-view.ts`,
+   `completion.ts` and the old `commands.ts`/`palette.ts` were deleted rather
+   than kept behind a flag. A second renderer behind an env var is a second
+   renderer nobody tests.
+
+The rule that survives all of it: there is exactly one agent execution path.
+The shell sends through `SessionBackend` and renders the events that come back.
+Commands change settings and read state; none of them runs an agent loop.
+
+## Update, 2026-08-18 (later) — reasoning without persistence
+
+Morrow deliberately does not store chain-of-thought: provider adapters capture
+it as `providerContinuation.reasoningContent`, carrying an explicit rule that it
+be kept only in the restricted continuation store and never emitted as a task
+event. That rule is right, and it meant the terminal had nothing to render.
+
+Rather than weaken it, the runtime grew a second channel. `execution/live-bus.ts`
+is an in-memory, per-task emitter; the SSE route subscribes to it and interleaves
+its frames with the polled persisted stream. Ephemeral frames carry no `id`, so
+the client yields them without advancing its resume cursor — there is nothing
+stored to resume from.
+
+The trade is explicit and documented in the module: reasoning is not replayable,
+never appears in `/output` or `/export`, and a client sees it only from the
+moment it attaches. That is the cost of not writing it down, and it is the
+correct cost to pay.
+
+On the surface, reasoning attaches to the assistant turn that produced it, so it
+renders above that answer rather than floating below whatever came last. Because
+settled turns are written through `<Static>` — drawn once, never redrawn — the
+inline copy is always collapsed, and `Ctrl+R` opens the most recent turn's
+reasoning in the live region instead.
+
+One further fix belongs to the same theme. The model picker required
+`lifecycle === "current" || "preview"`, and every model *discovered from a live
+provider account* is recorded as `custom`. On a machine with five providers
+connected that turned 168 reachable models into three. Availability now decides
+what is listed; lifecycle only decides the order.

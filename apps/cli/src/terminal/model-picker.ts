@@ -13,7 +13,7 @@
 import type { Output } from "../cli/output.js";
 import type { ModelInfo, ModelStatus, ModelBudgetView, ProviderStatus, RouteReasoningCapability } from "@morrow/contracts";
 import { glyphs } from "./view.js";
-import { clampSelection } from "./completion.js";
+import { clampSelection } from "./select.js";
 import { UNKNOWN_REASONING, describeReasoningControl } from "./reasoning.js";
 
 export interface ModelSelection {
@@ -140,17 +140,38 @@ export function buildModelPickerItems(
   const items: ModelPickerItem[] = [
     { kind: "auto", id: "auto", providerId: null, label: "Auto — preset routing", available: true, isDefault: false, reasoning: UNKNOWN_REASONING },
   ];
+  // Availability decides what is listed; lifecycle only decides the order.
+  //
+  // This used to require `lifecycle === "current" || "preview"`, which sounds
+  // conservative and is in fact catastrophic: every model *discovered from a
+  // live provider account* is recorded as `custom`. On a machine with five
+  // providers connected that filter turned 168 reachable models into three, so
+  // the picker for a multi-provider agent listed almost nothing it could
+  // actually reach. Discovery is the strongest evidence a model is usable —
+  // the provider just said so — and it was the one signal being thrown away.
   const visible = models.filter((status) => {
     if (status.model.id === currentModelId) return true;
+    // No availability data at all: the registry has not probed. Show it and let
+    // the row carry the uncertainty.
     if (status.availability === undefined) return true;
-    const modern = status.model.lifecycle === "current" || status.model.lifecycle === "preview";
-    // "unknown" availability is not "unavailable": before account discovery has
-    // run (e.g. immediately after an OAuth sign-in), every model reads
-    // "unknown". Hiding them left the picker empty/confusing; show the modern
-    // ones with an explicit "availability unknown" tag instead of dropping them.
-    if (status.availability === "unknown") return modern;
-    return status.availability === "available" && modern;
+    // "unknown" is not "unavailable". Before account discovery runs — right
+    // after an OAuth sign-in, say — everything reads unknown, and hiding it
+    // leaves someone staring at an empty picker.
+    if (status.availability === "unknown") return true;
+    return status.availability === "available";
   });
+  const lifecycleRank = (status: ModelStatus) => {
+    switch (status.model.lifecycle) {
+      case "current": return 0;
+      case "preview": return 1;
+      // Discovered-from-the-account models rank with the first class, not the
+      // last: they are what a connected provider actually serves today.
+      case "custom": return 1;
+      case "legacy": return 3;
+      case "deprecated": return 4;
+      default: return 2;
+    }
+  };
   visible.sort((a, b) => {
     const aCurrent = a.model.id === currentModelId ? 1 : 0;
     const bCurrent = b.model.id === currentModelId ? 1 : 0;
@@ -158,9 +179,17 @@ export function buildModelPickerItems(
     const aConfigured = providerById.get(a.model.providerId)?.configured ? 1 : 0;
     const bConfigured = providerById.get(b.model.providerId)?.configured ? 1 : 0;
     if (aConfigured !== bConfigured) return bConfigured - aConfigured;
-    const lifecycleRank = (status: ModelStatus) => status.model.lifecycle === "current" ? 0 : status.model.lifecycle === "preview" ? 1 : 2;
+    // A provider's own default is the one row someone is most likely to want
+    // from that provider, so it leads its group.
+    const aDefault = defaultByProvider.get(a.model.providerId) === a.model.id ? 1 : 0;
+    const bDefault = defaultByProvider.get(b.model.providerId) === b.model.id ? 1 : 0;
+    if (aDefault !== bDefault) return bDefault - aDefault;
     const lifecycle = lifecycleRank(a) - lifecycleRank(b);
-    return lifecycle;
+    if (lifecycle !== 0) return lifecycle;
+    // Stable, and alphabetical within a provider so a long discovered list is
+    // scannable rather than arbitrary.
+    const provider = a.model.providerId.localeCompare(b.model.providerId);
+    return provider !== 0 ? provider : a.model.id.localeCompare(b.model.id);
   });
   for (const status of visible) {
     const m = status.model;
@@ -203,13 +232,35 @@ export function filterModelItems(query: string, items: ModelPickerItem[]): Model
   if (!q) {
     base = items.slice();
   } else {
-    const scored: Array<{ item: ModelPickerItem; score: number }> = [];
+    // Ranked in tiers, because a bare subsequence match over 169 model ids is
+    // close to meaningless: "llama" matches `snowflake/arctic-embed-l` through
+    // scattered letters and outranked `meta/llama-3.1-8b-instruct`. A literal
+    // substring of the id is what someone typing a model name means, so that
+    // wins outright; everything looser sorts below it.
+    const scored: Array<{ item: ModelPickerItem; score: number; id: string }> = [];
     for (const item of items) {
-      const hay = `${item.label} ${item.id} ${item.providerId ?? ""}`.toLowerCase();
-      const score = subsequenceScore(q, hay);
-      if (score !== null) scored.push({ item, score });
+      const id = item.id.toLowerCase();
+      const label = item.label.toLowerCase();
+      const provider = (item.providerId ?? "").toLowerCase();
+      // The segment after the last "/" is the model's own name — `llama2-70b`
+      // in `meta/llama2-70b` — and matching there beats matching the vendor.
+      const leaf = id.slice(id.lastIndexOf("/") + 1);
+      let score: number | null = null;
+      if (id === q || label === q) score = 10_000;
+      else if (leaf.startsWith(q)) score = 9_000 - leaf.length;
+      else if (id.startsWith(q) || label.startsWith(q)) score = 8_000 - id.length;
+      else if (leaf.includes(q)) score = 7_000 - leaf.length;
+      else if (id.includes(q) || label.includes(q)) score = 6_000 - id.length;
+      else if (provider.includes(q)) score = 5_000 - id.length;
+      else {
+        const loose = subsequenceScore(q, `${label} ${id} ${provider}`);
+        // Loose matches are kept — they are how you find a model whose exact
+        // spelling you have forgotten — but they never displace a real one.
+        if (loose !== null) score = loose;
+      }
+      if (score !== null) scored.push({ item, score, id });
     }
-    scored.sort((a, b) => b.score - a.score);
+    scored.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
     base = scored.map((s) => s.item);
   }
   if (q && !base.some((item) => item.id.toLowerCase() === q)) {

@@ -28,6 +28,57 @@ const GROUPABLE = new Map<string, string>([
 
 const GROUP_THRESHOLD = 3;
 
+/**
+ * Status words the runtime sends in `summary`, which are not descriptions.
+ *
+ * `tool.completed` arrives with `summary: "completed"` for most tools, so
+ * trusting it produced rows that read "✓ completed" — a tick next to the word
+ * completed, saying nothing about what was done. These are recognised and
+ * discarded so a real label can be composed instead.
+ */
+const STATUS_WORDS = new Set(["completed", "complete", "ok", "done", "success", "succeeded", "failed", "error"]);
+
+/** Past-tense verb per tool, so a row reads as a thing that happened. */
+const VERBS = new Map<string, string>([
+  ["read_file", "Read"],
+  ["write_file", "Wrote"],
+  ["create_file", "Created"],
+  ["edit_file", "Edited"],
+  ["apply_patch", "Patched"],
+  ["delete_file", "Deleted"],
+  ["list_files", "Listed"],
+  ["search_files", "Searched for"],
+  ["search_text", "Searched for"],
+  ["search_symbols", "Looked up"],
+  ["run_command", "Ran"],
+  ["inspect_workspace", "Inspected the workspace"],
+  ["git_status", "Checked git status"],
+  ["git_diff", "Read the git diff"],
+  ["git_log", "Read the git log"],
+  ["browser_open", "Opened"],
+  ["browser_click", "Clicked"],
+  ["fetch_url", "Fetched"],
+  ["web_search", "Searched the web for"],
+]);
+
+/**
+ * What a tool call should say it did.
+ *
+ * A genuine summary wins. Otherwise the verb and the target are composed —
+ * "Read package.json", "Ran pnpm test" — and only if there is neither does the
+ * tool's own name appear, humanised.
+ */
+export function toolLabel(tool: Pick<ToolCard, "name" | "purpose" | "summary">): string {
+  const summary = tool.summary?.trim();
+  if (summary && !STATUS_WORDS.has(summary.toLowerCase())) return summary;
+  const verb = VERBS.get(tool.name);
+  const target = tool.purpose?.trim();
+  if (verb && target) return `${verb} ${target}`;
+  if (verb) return verb;
+  const humanised = tool.name.replaceAll("_", " ");
+  return target ? `${humanised} ${target}` : humanised;
+}
+
 export interface WorkRow {
   key: string;
   label: string;
@@ -52,7 +103,7 @@ export function workRows(tools: readonly ToolCard[]): WorkRow[] {
     if (!group || (counts.get(group) ?? 0) < GROUP_THRESHOLD) {
       rows.push({
         key: tool.id,
-        label: tool.summary ?? tool.purpose ?? tool.name.replaceAll("_", " "),
+        label: toolLabel(tool),
         status: tool.status,
         elapsedMs: tool.elapsedMs,
       });
@@ -81,10 +132,15 @@ export function WorkSummary({
   tools,
   expanded,
   unicode,
+  settled = false,
 }: {
   tools: readonly ToolCard[];
   expanded: boolean;
   unicode: boolean;
+  /** True for a finished turn's work, written once into the transcript. It
+   *  lists its rows rather than collapsing to a line: the turn is over, so this
+   *  is the record of what happened, and Ctrl+O no longer applies to it. */
+  settled?: boolean;
 }) {
   if (tools.length === 0) return null;
   const g = glyphs(unicode);
@@ -93,11 +149,11 @@ export function WorkSummary({
   const failed = tools.some((tool) => tool.status === "failed");
 
   // Collapsed: one line. This is the default and the point of the component.
-  if (!expanded) {
+  if (!expanded && !settled) {
     const mark = running ? g.run : failed ? g.fail : g.done;
     const colour = running ? theme.accent : failed ? theme.danger : theme.success;
     const label = running
-      ? (running.summary ?? running.purpose ?? running.name.replaceAll("_", " "))
+      ? toolLabel(running)
       : `${tools.length} tool${tools.length === 1 ? "" : "s"}`;
     return (
       <Box>

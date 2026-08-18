@@ -8,14 +8,17 @@
  * Ctrl+L repaint. It tears the terminal back down fully before resolving, so it
  * composes with the rest of the line-based REPL.
  *
- * The ranking and menu rendering live in `completion.ts` (pure, tested); this
- * module is the thin I/O shell around them.
+ * Candidates come from the same command registry the shell uses, so this
+ * fallback offers exactly the commands that exist — the previous version read
+ * a separate `SLASH_COMMANDS` array, which is how the two surfaces came to
+ * advertise different sets.
  */
 import readline from "node:readline";
 import type { Output } from "../cli/output.js";
 import { stripAnsi } from "../cli/output.js";
-import { SLASH_COMMANDS } from "./commands.js";
-import { clampSelection, completionCandidates, renderMenu } from "./completion.js";
+import { builtinRegistry } from "./commands/index.js";
+import { filterCommands } from "./ink/palette.js";
+import { clampSelection } from "./select.js";
 
 /** Returned when the user asks to leave (Ctrl+C on an empty line). */
 export const PROMPT_EXIT = Symbol("prompt-exit");
@@ -56,13 +59,43 @@ export async function readLineWithCompletion(opts: PromptOptions): Promise<strin
     input.setRawMode(true);
     input.resume();
 
+    const registry = builtinRegistry();
     const menuVisible = (): boolean => buffer.startsWith("/") && /^\/\S*(?:\s+\S*)?$/.test(buffer) && !menuDismissed;
-    const matches = (): ReturnType<typeof completionCandidates> => (menuVisible() ? completionCandidates(buffer, SLASH_COMMANDS) : []);
+
+    /**
+     * Candidates for the line as typed.
+     *
+     * Two levels, like the shell's palette: a bare `/yo` offers commands, and
+     * `/yolo ` offers that command's own subcommands. Dropping the second level
+     * would mean the fallback could complete `/yolo` but never `/yolo on`,
+     * which is the argument someone is actually reaching for.
+     */
+    const matches = (): Array<{ name: string; summary: string; hasArgs: boolean }> => {
+      if (!menuVisible()) return [];
+      const [head = "", ...tail] = buffer.slice(1).split(/\s+/);
+      const command = registry.get(head.toLowerCase());
+      if (command && tail.length > 0) {
+        const prefix = (tail[0] ?? "").toLowerCase();
+        return (command.subcommands ?? [])
+          .filter((sub) => sub.startsWith(prefix))
+          .map((sub) => ({ name: `${command.name} ${sub}`, summary: command.summary, hasArgs: false }));
+      }
+      // Same scorer the shell's palette uses, so the two surfaces rank
+      // identically and "/m" does not mean different things in each.
+      return filterCommands(registry.browseOrder, head).map(({ command: match }) => ({
+        name: match.name,
+        summary: match.summary,
+        hasArgs: Boolean(match.usage ?? match.subcommands?.length),
+      }));
+    };
 
     const render = (): void => {
       const ms = matches();
       selected = clampSelection(selected, ms.length);
-      const menuLines = renderMenu(ms, opts.out, { selected, max: maxRows, unicode: opts.unicode });
+      const menuLines = ms.slice(0, maxRows).map((entry, index) => {
+        const marker = index === selected ? (opts.unicode ? "❯ " : "> ") : "  ";
+        return opts.out.gray(`${marker}/${entry.name}  ${entry.summary}`);
+      });
 
       // Return to prompt-line col 0 and clear it + everything below.
       output.write("\r" + ESC + "0J");
@@ -130,7 +163,7 @@ export async function readLineWithCompletion(opts: PromptOptions): Promise<strin
           const ms = matches();
           if (ms.length > 0) {
             const dir = key?.shift ? -1 : 0;
-            if (dir === 0 && (buffer !== "/" + ms[selected]!.name || ms[selected]!.subcommands?.length)) {
+            if (dir === 0 && (buffer !== "/" + ms[selected]!.name || ms[selected]!.hasArgs)) {
               // First Tab completes to the selected command + a space for args.
               buffer = "/" + ms[selected]!.name + " ";
               cursor = buffer.length;

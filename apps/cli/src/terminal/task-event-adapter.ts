@@ -183,8 +183,20 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       }]);
     }
 
+    case "assistant.reasoning_delta": {
+      const text = str(p.text);
+      return text ? withSource([{ type: "reasoning.delta", text }]) : [];
+    }
+
     case "task.progress_warning":
-      return withSource([{ type: "notice", level: "warn", text: str(p.message) ?? "No new observable progress yet." }]);
+      return withSource([
+        {
+          type: "notice",
+          level: "warn",
+          text: str(p.message) ?? "No new observable progress yet.",
+          transient: true,
+        },
+      ]);
 
     case "task.failed":
       return withSource([{ type: "task.failed", message: str(p.message) ?? "unknown error" }]);

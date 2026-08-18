@@ -1,5 +1,11 @@
 # Beta.30 CLI Acceptance Standard
 
+> **Superseded for the terminal surface (2026-08-18).** The CLI shell described
+> below was replaced: the frame renderer, the composer and the command layer are
+> new, and the seventy-one-command surface was consolidated to forty-four that
+> all work. This document is kept as the record of what was true when it was
+> written. For current behaviour see [`docs/TERMINAL.md`](TERMINAL.md).
+
 > Defines exactly what a great Morrow terminal experience looks like, in
 > service of the product goal in [`docs/BETA30_PRODUCT_GOAL.md`](BETA30_PRODUCT_GOAL.md).
 > Written 2026-07-11. Gap analysis is sourced from

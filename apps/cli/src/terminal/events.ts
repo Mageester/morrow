@@ -205,6 +205,16 @@ export type TerminalEvent =
    *  "the last message happens to be streaming". */
   | { type: "assistant.turn_start"; turnId: string }
   | { type: "assistant.delta"; turnId: string; text: string }
+  /** A slice of the model's reasoning, streamed live and never stored. Morrow
+   *  does not persist chain-of-thought, so this arrives on an ephemeral
+   *  channel: it can be watched while it happens, and it is gone afterwards.
+   *  A surface must therefore treat it as transient and must not try to
+   *  reconstruct it on resume. */
+  | { type: "reasoning.delta"; text: string }
+  /** The turn has begun answering, so the live reasoning view collapses to a
+   *  duration. Derived by the surface from the first answer token rather than
+   *  sent by the runtime, which has no notion of "the reader has seen enough". */
+  | { type: "reasoning.settled" }
   /** `final` is true only for the turn that produced no further tool calls —
    *  the user-facing canonical answer. Every other turn is intermediate
    *  narration, kept for diagnostics but never presented as the answer. */
@@ -246,7 +256,30 @@ export type TerminalEvent =
    *  scopes resolution to that file so an unrelated file's success can never
    *  incorrectly mark this problem recovered. */
   | { type: "recovery.strategy"; tool?: string; strategy: string; detail?: string; file?: string }
-  | { type: "notice"; level: "info" | "warn" | "error"; text: string }
+  /** A slash command the user submitted. Echoed into the transcript so the
+   *  session reads back correctly, but deliberately NOT a `user.message`: a
+   *  command starts no backend task, so it must not flip the shell into a
+   *  working state or clear the previous turn's tools, patches and plan. */
+  | { type: "command.entered"; text: string }
+  /** Structured output from a command. A transcript entry rather than a notice:
+   *  a table, a diff or a permission profile is content someone scrolls back to,
+   *  and notices are a three-line ephemeral strip. This is what let `/status`
+   *  stop being one grey line. */
+  | { type: "command.output"; report: import("./report.js").Report }
+  /** Wipes the visible transcript. Native scrollback and the durable
+   *  conversation are untouched — this is a screen operation, and saying so
+   *  matters because "/clear lost my work" would otherwise be a fair reading. */
+  | { type: "session.cleared" }
+  | {
+      type: "notice";
+      level: "info" | "warn" | "error";
+      text: string;
+      /** True for a notice about a passing moment rather than the session — a
+       *  progress warning, a retry. Cleared when the task reaches a terminal
+       *  state, because "no new observable progress yet" sitting beside a
+       *  finished answer is simply false. */
+      transient?: boolean;
+    }
   | { type: "usage.reported"; provider: string; model: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number; estimatedCostUsd?: number | null; reasoning?: ReasoningConfiguration | undefined }
   | { type: "task.completed" }
   | { type: "task.failed"; message: string }

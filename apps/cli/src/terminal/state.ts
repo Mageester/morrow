@@ -28,8 +28,22 @@ export interface ToolCard {
 }
 
 export interface ConversationEntry {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "command" | "report" | "work";
   text: string;
+  /** Present on `report` entries: structured command output, rendered by the
+   *  surface rather than flattened to text here. */
+  report?: import("./report.js").Report;
+  /** Present on assistant entries whose turn did visible thinking first. Held
+   *  on the turn rather than in a floating region so it renders where it
+   *  happened — above the answer it produced, not below it. Never persisted:
+   *  it lives only in this in-memory state. */
+  reasoning?: string;
+  reasoningMs?: number;
+  /** Present on `work` entries: the tool calls a finished turn made. Settling
+   *  these into the transcript is what keeps a turn's work attached to that
+   *  turn — left in the live region they float below whatever came next, so a
+   *  `/cost` run afterwards appeared to have made the tool calls. */
+  tools?: ToolCard[];
   streaming: boolean;
   /** Present on assistant entries created via `assistant.turn_start`. Absent
    *  on entries reconstructed from a pre-turn-boundary (legacy) event stream. */
@@ -92,6 +106,8 @@ export interface RoutingInfo {
 export interface NoticeEntry {
   level: "info" | "warn" | "error";
   text: string;
+  /** Dropped when the task ends. See the `notice` event. */
+  transient?: boolean;
 }
 
 export interface PlanEntry {
@@ -129,6 +145,48 @@ export interface TerminalState {
    *  a second task-message channel — each entry is sent as a normal
    *  `user.message` (via `redirect.sent`) once the running task ends. */
   queuedMessages: string[];
+  /** The model's reasoning for the turn in flight, accumulated live.
+   *  Deliberately not part of `conversation`: it is never stored, never
+   *  replayed, and is cleared the moment the turn produces its answer. */
+  reasoning: string;
+  /** Wall-clock start of the current reasoning run, for the elapsed label. */
+  reasoningStartedAt?: number;
+  /** The most recent turn's thinking, kept so Ctrl+R can reopen it.
+   *  Settled turns are written through `<Static>`, which renders once and never
+   *  again — so an expansion toggle can never reach them. This is the copy the
+   *  live region can still draw. */
+  lastReasoning?: string;
+  lastReasoningMs?: number;
+  /** Set once the turn starts answering: how long it thought for. Presence is
+   *  what tells the surface to collapse the live reasoning to a single line. */
+  reasoningMs?: number;
+  /** Bumped whenever the transcript is wiped. `<Static>` keys on identity and a
+   *  cleared transcript reuses indices from zero, so without this the renderer
+   *  treats the first entry after a clear as already-written and never draws
+   *  it. */
+  epoch: number;
+}
+
+/**
+ * Move a finished turn's tool calls out of the live region and into the
+ * transcript, so they stay attached to the turn that made them.
+ *
+ * A no-op when the turn used no tools — an empty work row is noise.
+ */
+function settleWork(state: TerminalState): TerminalState {
+  if (state.tools.length === 0) return state;
+  // `tools` is deliberately left in place. It is the finished turn's record and
+  // several consumers still read it — the completion card counts verification
+  // steps from it, and clearing it here reported "0 tools" for a turn that had
+  // just run five. The surface stops drawing the live summary once the turn
+  // ends; it does not need the data deleted to do that.
+  return {
+    ...state,
+    conversation: bounded(
+      [...state.conversation, { role: "work", text: "", streaming: false, tools: state.tools }],
+      MAX_CONVERSATION,
+    ),
+  };
 }
 
 export const MAX_CONVERSATION = 200;
@@ -137,7 +195,7 @@ export const MAX_NOTICES = 6;
 export const MAX_QUEUED = 5;
 
 export function initialState(): TerminalState {
-  return { conversation: [], activity: [], tools: [], patches: [], plan: [], notices: [], status: "idle", processes: [], worktrees: [], agents: [], integrations: [], recoverySuggestions: [], recoveries: [], queuedMessages: [] };
+  return { conversation: [], activity: [], tools: [], patches: [], plan: [], notices: [], status: "idle", processes: [], worktrees: [], agents: [], integrations: [], recoverySuggestions: [], recoveries: [], queuedMessages: [], epoch: 0, reasoning: "" };
 }
 
 function bounded<T>(items: T[], max: number): T[] {
@@ -207,6 +265,8 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         progressDetail: _progressDetail,
         routing: _routing,
         activeUsage: _activeUsage,
+        reasoningStartedAt: _reasoningStartedAt,
+        reasoningMs: _reasoningMs,
         ...sessionState
       } = state;
       return {
@@ -221,9 +281,88 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         plan: [],
         recoveries: [],
         recoverySuggestions: [],
+        // Notices describe a moment, not the session. "Model set to X" three
+        // turns ago is clutter sitting under the current answer, and clutter is
+        // most of what makes a terminal feel cheap. Anything that mattered is
+        // already in the transcript.
+        notices: [],
+        // A new turn thinks afresh. Reasoning is never carried across turns —
+        // it is not stored anywhere, so there is nothing to carry.
+        reasoning: "",
         status: "streaming",
       };
     }
+
+    case "command.entered":
+      // Transcript only. Status, tools, patches and plan are untouched — the
+      // session is exactly where it was, plus a line saying what was run.
+      // Its own role, not "user": a command is not something the model was
+      // asked, and styling it as a message made the transcript read as though
+      // Morrow had ignored every `/status` anyone typed.
+      return {
+        ...state,
+        conversation: bounded(
+          [...state.conversation, { role: "command", text: sanitizeTerminalText(event.text), streaming: false }],
+          MAX_CONVERSATION
+        ),
+      };
+
+    case "reasoning.delta":
+      return {
+        ...state,
+        reasoning: state.reasoning + event.text,
+        reasoningStartedAt: state.reasoningStartedAt ?? now(),
+      };
+
+    case "reasoning.settled": {
+      // The turn has started answering: move the thinking onto the turn that
+      // produced it. Attaching it here is what puts it above the answer instead
+      // of leaving it floating below everything already settled.
+      if (!state.reasoning) return state;
+      const elapsed = now() - (state.reasoningStartedAt ?? now());
+      const index = state.conversation.findIndex((entry, position) =>
+        position === state.conversation.length - 1 && entry.role === "assistant",
+      );
+      if (index === -1) {
+        // No open assistant turn yet — keep it live and stamp the duration.
+        return state.reasoningMs !== undefined ? state : { ...state, reasoningMs: elapsed };
+      }
+      const conversation = [...state.conversation];
+      conversation[index] = { ...conversation[index]!, reasoning: state.reasoning, reasoningMs: elapsed };
+      const { reasoningStartedAt: _startedAt, reasoningMs: _ms, ...rest } = state;
+      return {
+        ...rest,
+        conversation,
+        reasoning: "",
+        lastReasoning: state.reasoning,
+        lastReasoningMs: elapsed,
+      };
+    }
+
+    case "session.cleared":
+      // Notices go too: a strip of stale notices under a cleared screen is the
+      // one thing that makes a clear look like it half-worked.
+      return {
+        ...state,
+        conversation: [],
+        activity: [],
+        tools: [],
+        patches: [],
+        plan: [],
+        notices: [],
+        recoveries: [],
+        recoverySuggestions: [],
+        epoch: state.epoch + 1,
+      };
+
+    case "command.output":
+      return {
+        ...state,
+        conversation: bounded(
+          [...state.conversation, { role: "report", text: event.report.title, streaming: false, report: event.report }],
+          MAX_CONVERSATION
+        ),
+      };
 
     case "assistant.turn_start": {
       // Defensively close a still-open turn first — a well-formed stream always
@@ -492,7 +631,10 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
       const noticeText = sanitizeTerminalText(event.text);
       return {
         ...state,
-        notices: bounded([...state.notices, { level: event.level, text: noticeText }], MAX_NOTICES),
+        notices: bounded(
+          [...state.notices, { level: event.level, text: noticeText, ...(event.transient ? { transient: true } : {}) }],
+          MAX_NOTICES,
+        ),
         ...(event.level === "error" ? { lastError: noticeText } : {}),
       };
     }
@@ -558,16 +700,23 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
     }
 
     case "task.completed":
-      return { ...state, status: "completed" };
+      // A warning about the task not progressing is not a fact about a task
+      // that has now finished. Leaving it on screen beside the answer is the
+      // difference between a terminal that reports and one that nags.
+      return settleWork({
+        ...state,
+        status: "completed",
+        notices: state.notices.filter((notice) => !notice.transient),
+      });
 
     case "task.failed":
-      return { ...state, status: "failed", lastError: sanitizeTerminalText(event.message) };
+      return settleWork({ ...state, status: "failed", lastError: sanitizeTerminalText(event.message) });
 
     case "task.cancelled":
-      return { ...state, status: "cancelled" };
+      return settleWork({ ...state, status: "cancelled" });
 
     case "task.interrupted":
-      return { ...state, status: "interrupted" };
+      return settleWork({ ...state, status: "interrupted" });
     case "task.budget_reached":
       return { ...state, status: "budget-reached", lastError: sanitizeTerminalText(event.message) };
     case "task.stalled":

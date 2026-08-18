@@ -7,36 +7,54 @@ import { CliError, EXIT, usageError } from "./cli/errors.js";
 import { Output, resolveColor } from "./cli/output.js";
 import { ConfigStore } from "./config/config.js";
 import { resolvePaths } from "./config/paths.js";
-import { chatCommand } from "./commands/chat.js";
-import { conversationsCommand } from "./commands/conversations.js";
-import { memoryCommand, auditCommand, permissionsCommand, toolsCommand } from "./commands/observability.js";
-import { modelsCommand } from "./commands/models.js";
-import { presetsCommand } from "./commands/presets.js";
-import { projectsCommand, initCommand } from "./commands/projects.js";
-import { panicCommand } from "./commands/panic.js";
-import { skillsCommand } from "./commands/skills.js";
-import { scheduleCommand } from "./commands/schedule.js";
-import { providersCommand } from "./commands/providers.js";
-import { buildCommand } from "./commands/build.js";
-import { onboardCommand } from "./commands/onboard.js";
-import { importCommand } from "./commands/import.js";
-import { processesCommand } from "./commands/processes.js";
-import { worktreesCommand } from "./commands/worktrees.js";
-import { integrationsCommand } from "./commands/integrations.js";
-import { symbolsCommand } from "./commands/symbols.js";
-import { missionCommand, printMissionHelp } from "./commands/mission.js";
-import { cortexCommand, printCortexHelp } from "./commands/cortex.js";
-import { capabilitiesCommand } from "./commands/capabilities.js";
-import { uninstallCommand } from "./commands/uninstall.js";
-import { acceptanceCommand, printAcceptanceHelp } from "./commands/acceptance.js";
-import { provenanceCommand } from "./commands/provenance.js";
-import { mcpCommand } from "./commands/mcp.js";
-import { SLASH_COMMANDS } from "./terminal/commands.js";
-import { groupCommands } from "./terminal/command-groups.js";
+import { builtinRegistry, CATEGORY_LABELS, CATEGORY_ORDER } from "./terminal/commands/index.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
 import { aggregateDoctor, pnpmIsCritical, redactDiagnostics, type DoctorCheck } from "./service/doctor-checks.js";
 import { checkForUpdate, fetchLatestVersion, MORROW_VERSION } from "./service/update.js";
+
+/**
+ * Command modules are loaded on demand, never at module scope.
+ *
+ * Importing all twenty-five up front pulled the acceptance harness, the mission
+ * engine and (through them) the whole orchestrator into every `morrow`
+ * invocation — `--version` paid 1.9 seconds to print a string. Each dispatch
+ * site now awaits only the module it is about to run.
+ */
+const load = {
+  acceptanceCommand: async () => (await import("./commands/acceptance.js")).acceptanceCommand,
+  auditCommand: async () => (await import("./commands/observability.js")).auditCommand,
+  buildCommand: async () => (await import("./commands/build.js")).buildCommand,
+  capabilitiesCommand: async () => (await import("./commands/capabilities.js")).capabilitiesCommand,
+  chatCommand: async () => (await import("./commands/chat.js")).chatCommand,
+  conversationsCommand: async () => (await import("./commands/conversations.js")).conversationsCommand,
+  cortexCommand: async () => (await import("./commands/cortex.js")).cortexCommand,
+  importCommand: async () => (await import("./commands/import.js")).importCommand,
+  initCommand: async () => (await import("./commands/projects.js")).initCommand,
+  integrationsCommand: async () => (await import("./commands/integrations.js")).integrationsCommand,
+  mcpCommand: async () => (await import("./commands/mcp.js")).mcpCommand,
+  memoryCommand: async () => (await import("./commands/observability.js")).memoryCommand,
+  missionCommand: async () => (await import("./commands/mission.js")).missionCommand,
+  modelsCommand: async () => (await import("./commands/models.js")).modelsCommand,
+  onboardCommand: async () => (await import("./commands/onboard.js")).onboardCommand,
+  panicCommand: async () => (await import("./commands/panic.js")).panicCommand,
+  permissionsCommand: async () => (await import("./commands/observability.js")).permissionsCommand,
+  presetsCommand: async () => (await import("./commands/presets.js")).presetsCommand,
+  printAcceptanceHelp: async () => (await import("./commands/acceptance.js")).printAcceptanceHelp,
+  printCortexHelp: async () => (await import("./commands/cortex.js")).printCortexHelp,
+  printMissionHelp: async () => (await import("./commands/mission.js")).printMissionHelp,
+  processesCommand: async () => (await import("./commands/processes.js")).processesCommand,
+  projectsCommand: async () => (await import("./commands/projects.js")).projectsCommand,
+  provenanceCommand: async () => (await import("./commands/provenance.js")).provenanceCommand,
+  providersCommand: async () => (await import("./commands/providers.js")).providersCommand,
+  scheduleCommand: async () => (await import("./commands/schedule.js")).scheduleCommand,
+  skillsCommand: async () => (await import("./commands/skills.js")).skillsCommand,
+  symbolsCommand: async () => (await import("./commands/symbols.js")).symbolsCommand,
+  toolsCommand: async () => (await import("./commands/observability.js")).toolsCommand,
+  uninstallCommand: async () => (await import("./commands/uninstall.js")).uninstallCommand,
+  worktreesCommand: async () => (await import("./commands/worktrees.js")).worktreesCommand,
+} as const;
+
 
 // Single source of truth lives in service/update.ts (MORROW_VERSION); re-exported
 // here so `morrow --version`, `/versions`, and `--help` never drift from the
@@ -75,9 +93,9 @@ export async function run(argv: string[]): Promise<number> {
   const out = new Output({ json: flagBool(parsed.flags, "json"), quiet: flagBool(parsed.flags, "quiet"), color: resolveColor({ noColorFlag: noColor, json: flagBool(parsed.flags, "json"), env: process.env, isTTY: Boolean(process.stdout.isTTY) }) });
   try {
     if (flagBool(parsed.flags, "help") && parsed.positionals.length === 0) return printHelp(out);
-    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "cortex") return printCortexHelp(out);
-    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "mission") return printMissionHelp(out);
-    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "acceptance") return printAcceptanceHelp(out);
+    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "cortex") return (await load.printCortexHelp())(out);
+    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "mission") return (await load.printMissionHelp())(out);
+    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "acceptance") return (await load.printAcceptanceHelp())(out);
     if (parsed.positionals[0] === "help") return printHelp(out);
     if (flagBool(parsed.flags, "version")) return printVersion(out);
     const invocation = resolveInvocation(parsed.positionals);
@@ -113,16 +131,16 @@ export async function run(argv: string[]): Promise<number> {
       if (!onboarded) {
         out.print(out.bold("Welcome to Morrow! Let's complete the quick setup guide first."));
         out.print();
-        return onboardCommand(ctx, "", []);
+        return (await load.onboardCommand())(ctx, "", []);
       }
     }
     switch (invocation.kind) {
       case "interactive":
-        return await chatCommand(ctx);
+        return await (await load.chatCommand())(ctx);
       case "prompt": {
         if (!invocation.prompt) throw usageError("Missing prompt.", "Run `morrow \"Explain this repository\"` or `morrow run \"…\"`.");
         const promptCtx = new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, message: invocation.prompt } });
-        return await chatCommand(promptCtx);
+        return await (await load.chatCommand())(promptCtx);
       }
       case "command":
         break;
@@ -131,71 +149,71 @@ export async function run(argv: string[]): Promise<number> {
     // Primary product surface: ask (inspect), fix (agent), plan (plan-only),
     // new (fresh agent session). A trailing prompt makes them one-shot.
     const promptOf = () => [sub, ...args].filter((v): v is string => Boolean(v)).join(" ");
-    const chatWith = (extra: Record<string, string | boolean>) =>
-      chatCommand(new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, ...extra } }));
+    const chatWith = async (extra: Record<string, string | boolean>) =>
+      (await load.chatCommand())(new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, ...extra } }));
     switch (root) {
       case "ask": { const p = promptOf(); return await chatWith({ "read-only": true, ...(p ? { message: p } : {}) }); }
       case "fix": { const p = promptOf(); return await chatWith({ ...(p ? { message: p } : {}) }); }
       case "yolo": { const p = promptOf(); return await chatWith({ build: true, yolo: true, ...(p ? { message: p } : {}) }); }
       case "plan": { const p = promptOf(); return await chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
       case "new": return await chatWith({ new: true });
-      case "cortex": return await cortexCommand(ctx, sub, args);
-      case "acceptance": return await acceptanceCommand(ctx, sub, args);
-      case "provenance": return await provenanceCommand(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
-      case "capabilities": return await capabilitiesCommand(ctx);
-      case "build": return await buildCommand(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
+      case "cortex": return await (await load.cortexCommand())(ctx, sub, args);
+      case "acceptance": return await (await load.acceptanceCommand())(ctx, sub, args);
+      case "provenance": return await (await load.provenanceCommand())(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
+      case "capabilities": return await (await load.capabilitiesCommand())(ctx);
+      case "build": return await (await load.buildCommand())(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
       case "mission": {
         // A bare `morrow mission` (no objective/subcommand) opens the interactive
         // shell / Mission Control; otherwise run the Verified Missions lifecycle.
         if (!sub) return await chatWith({});
-        return await missionCommand(ctx, sub, args);
+        return await (await load.missionCommand())(ctx, sub, args);
       }
-      case "model": return await modelsCommand(ctx, sub ?? "", args);
+      case "model": return await (await load.modelsCommand())(ctx, sub ?? "", args);
       case "settings": return await configCommand(ctx, sub ?? "list", args);
-      case "auth": return await providersCommand(ctx, authSub(sub), args);
+      case "auth": return await (await load.providersCommand())(ctx, authSub(sub), args);
       case "status": return await status(ctx);
       case "doctor": return await doctor(ctx);
       case "update": return await update(ctx);
-      case "onboard": return await onboardCommand(ctx, sub ?? "", args);
+      case "onboard": return await (await load.onboardCommand())(ctx, sub ?? "", args);
       case "serve": return flagBool(parsed.flags, "detach") ? (await serveDetached(ctx), EXIT.OK) : await serveForeground(ctx);
       case "start": await serveDetached(ctx); return EXIT.OK;
       case "stop": return await serviceStop(ctx);
       case "restart": return await restart(ctx);
-      case "uninstall": return await uninstallCommand(ctx);
+      case "uninstall": return await (await load.uninstallCommand())(ctx);
       case "logs": return await logs(ctx);
       case "config": return await configCommand(ctx, sub, args);
-      case "projects": return await projectsCommand(ctx, sub ?? "", args);
-      case "init": return await initCommand(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
-      case "chat": return await chatCommand(ctx);
-      case "conversations": return await conversationsCommand(ctx, sub ?? "", args);
-      case "conversation": return await conversationsCommand(ctx, sub ?? "", args);
-      case "sessions": return await conversationsCommand(ctx, "list", []);
-      case "session": return await conversationsCommand(ctx, sub ?? "list", args);
+      case "projects": return await (await load.projectsCommand())(ctx, sub ?? "", args);
+      case "init": return await (await load.initCommand())(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
+      case "chat": return await (await load.chatCommand())(ctx);
+      case "conversations": return await (await load.conversationsCommand())(ctx, sub ?? "", args);
+      case "conversation": return await (await load.conversationsCommand())(ctx, sub ?? "", args);
+      case "sessions": return await (await load.conversationsCommand())(ctx, "list", []);
+      case "session": return await (await load.conversationsCommand())(ctx, sub ?? "list", args);
       case "resume": {
         const resumeCtx = new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, resume: sub ?? "" } });
-        return await chatCommand(resumeCtx);
+        return await (await load.chatCommand())(resumeCtx);
       }
-      case "providers": return await providersCommand(ctx, sub ?? "", args);
-      case "models": return await modelsCommand(ctx, sub ?? "", args);
-      case "presets": return await presetsCommand(ctx, sub, args);
-      case "tools": return await toolsCommand(ctx, sub, args);
-      case "permissions": return await permissionsCommand(ctx, sub);
-      case "audit": return await auditCommand(ctx, sub, args);
-      case "memory": return await memoryCommand(ctx, sub, args);
-      case "panic": return await panicCommand(ctx);
-      case "skills": return await skillsCommand(ctx, sub, args);
-      case "import": return await importCommand(ctx, sub ?? "", args);
+      case "providers": return await (await load.providersCommand())(ctx, sub ?? "", args);
+      case "models": return await (await load.modelsCommand())(ctx, sub ?? "", args);
+      case "presets": return await (await load.presetsCommand())(ctx, sub, args);
+      case "tools": return await (await load.toolsCommand())(ctx, sub, args);
+      case "permissions": return await (await load.permissionsCommand())(ctx, sub);
+      case "audit": return await (await load.auditCommand())(ctx, sub, args);
+      case "memory": return await (await load.memoryCommand())(ctx, sub, args);
+      case "panic": return await (await load.panicCommand())(ctx);
+      case "skills": return await (await load.skillsCommand())(ctx, sub, args);
+      case "import": return await (await load.importCommand())(ctx, sub ?? "", args);
       case "processes":
-      case "ps": return await processesCommand(ctx, sub ?? "", args);
+      case "ps": return await (await load.processesCommand())(ctx, sub ?? "", args);
       case "worktrees":
-      case "worktree": return await worktreesCommand(ctx, sub ?? "", args);
+      case "worktree": return await (await load.worktreesCommand())(ctx, sub ?? "", args);
       case "integrate":
-      case "integrations": return await integrationsCommand(ctx, sub ?? "", args);
+      case "integrations": return await (await load.integrationsCommand())(ctx, sub ?? "", args);
       case "symbols":
-      case "symbol-index": return await symbolsCommand(ctx, sub ?? "", args);
+      case "symbol-index": return await (await load.symbolsCommand())(ctx, sub ?? "", args);
       case "schedule":
-      case "schedules": return await scheduleCommand(ctx, sub, args);
-      case "mcp": return await mcpCommand(ctx, sub, args);
+      case "schedules": return await (await load.scheduleCommand())(ctx, sub, args);
+      case "mcp": return await (await load.mcpCommand())(ctx, sub, args);
       default: throw usageError(`Unknown command: ${root}`, "Run `morrow --help` for commands.");
     }
   } catch (error) {
@@ -267,13 +285,14 @@ function printHelp(out: Output): number {
     // this list can never drift from what the palette actually offers
     // (KNOWN_ISSUES #14 — `/tasks` and `/stats` were previously missing here).
     //
-    // Grouped rather than run together: seventy-one commands on one line is a
-    // list nobody reads. The grouping is the palette's own taxonomy, so the
-    // two surfaces stay identical.
-    ...groupCommands(SLASH_COMMANDS).flatMap((group) => [
-      `  ${g(group.title)}`,
-      `    ${g(group.commands.map((c) => `/${c.name}`).join(" "))}`,
-    ]),
+    // Grouped rather than run together, using the registry's own taxonomy so
+    // the two surfaces stay identical.
+    ...CATEGORY_ORDER.flatMap((category) => {
+      const commands = builtinRegistry().inCategory(category);
+      return commands.length === 0
+        ? []
+        : [`  ${g(CATEGORY_LABELS[category])}`, `    ${g(commands.map((command) => `/${command.name}`).join(" "))}`];
+    }),
     "",
     g("Press / in a session to search them all."),
     "",

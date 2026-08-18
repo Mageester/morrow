@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { MorrowApi } from "../src/client/api.js";
-import { SLASH_COMMANDS } from "../src/terminal/commands.js";
+import { BUILTIN_COMMANDS } from "../src/terminal/commands/index.js";
 
 describe("MorrowApi.search", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -80,8 +80,8 @@ describe("MorrowApi.recordSkillUse", () => {
 
 describe("slash command registry", () => {
   it("registers /search so help and completion stay in sync", () => {
-    const search = SLASH_COMMANDS.find((c) => c.name === "search");
+    const search = BUILTIN_COMMANDS.find((c: { name: string }) => c.name === "search");
     expect(search).toBeDefined();
-    expect(search!.arg).toBe("<query>");
+    expect(search!.usage).toBe("<query>");
   });
 });

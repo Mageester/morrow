@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
+import { publishReasoningDelta } from "./live-bus.js";
 import type Database from "better-sqlite3";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, renameSync, cpSync } from "node:fs";
 import { resolve, relative, join, isAbsolute, dirname } from "node:path";
@@ -4846,6 +4847,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
         if (chunk.providerContinuation?.reasoningContent) {
           currentReasoningContent += chunk.providerContinuation.reasoningContent;
+          // Shown live, never written down. `publishReasoningDelta` goes to the
+          // in-memory bus, not `appendEvent`, so the model's thinking reaches a
+          // watching terminal without entering task_events â€” which is exactly
+          // the boundary `providerContinuation` documents.
+          publishReasoningDelta(taskId, chunk.providerContinuation.reasoningContent);
         }
         if (chunk.providerContinuation?.opaque) {
           currentContinuationOpaque = {

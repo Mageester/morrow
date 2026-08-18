@@ -11,7 +11,7 @@
 import type { Output } from "../cli/output.js";
 import type { ReasoningConfiguration, RouteReasoningCapability } from "@morrow/contracts";
 import { isReasoningCompatible, normalizeReasoningForRoute } from "@morrow/contracts";
-import { clampSelection } from "./completion.js";
+import { clampSelection } from "./select.js";
 
 // isReasoningCompatible/normalizeReasoningForRoute are the single, shared
 // implementation (packages/contracts/src/reasoning.ts) — the orchestrator's
