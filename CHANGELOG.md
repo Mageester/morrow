@@ -6,6 +6,68 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-18
+
+The terminal shell is rebuilt. The CLI advertised seventy-one slash commands
+and implemented eight; arrow keys, Home/End and history did nothing; a
+multiline paste destroyed the line; pressing `/` printed a hundred and twenty
+rows over the composer. Underneath were three separate command implementations
+that disagreed about which commands existed.
+
+### Added
+
+- A real composer (`terminal/ink/editor.ts`) as a pure state machine:
+  grapheme-aware cursor motion, word boundaries, multiline navigation with a
+  remembered goal column, history recall, an Emacs kill ring, and paste capture
+  that holds a tall block behind a token and sends it verbatim.
+- One command registry (`terminal/commands/`). Handlers return a structured
+  `Report` and never paint, so the same command serves the interactive shell and
+  the plain-line fallback.
+- Live reasoning. Providers already captured chain-of-thought but Morrow
+  deliberately never stores it, so it now travels on an ephemeral in-memory
+  channel (`execution/live-bus.ts`) that exists only while a client is attached.
+  It renders above the answer it produced and expands with Ctrl+R. It is not
+  replayable and never appears in `/output` or `/export`.
+- `docs/TERMINAL.md`: keyboard reference, command reference, and the
+  architecture behind them.
+
+### Fixed
+
+- Approvals never appeared. The runtime emits `approvalId`; the shell read
+  `id`, so every approval was discarded, the answering keystroke went into the
+  composer, and the task waited forever for a decision nobody could see.
+- Batched input never sent. A terminal delivers a fast-typed run as one string
+  with the carriage return inside it, and the whole line was inserted as text.
+- Several keypresses arriving in one React tick all read the same stale
+  snapshot, so holding an arrow key moved the caret exactly one column.
+- The model picker hid 165 of 168 reachable models: it required a `current` or
+  `preview` lifecycle, and every model discovered from a live provider account
+  is recorded as `custom`. Availability now decides visibility; lifecycle only
+  decides order.
+- Tool rows read "completed" because the runtime sends that as the summary.
+  They now say what happened: "Read package.json", "Ran pnpm test".
+- Startup adopted an already-finished task and reported it stalled; progress
+  warnings outlived the task they described; `/clear` left everything on screen;
+  `/status` kept naming the conversation you started in after `/resume`.
+
+### Changed
+
+- Startup is 452ms, from 1917ms. `service/lifecycle.ts` and `config/paths.ts`
+  reached the orchestrator barrel at module scope, pulling the agent runtime
+  into every invocation, and `main.ts` eagerly imported all twenty-five command
+  modules.
+- The slash-command surface is 44 commands, from 71. Eleven only printed "run
+  `morrow X` in your terminal"; fifteen views are consolidated under `/cortex`
+  and `/mission`.
+
+### Removed
+
+- The legacy frame renderer, deleted rather than kept behind an env var:
+  `session.ts`, `app-view.ts`, `input-state.ts`, `runtime.ts`, `paint.ts`,
+  `startup-view.ts`, `activity-view.ts`, `commands.ts`, `command-groups.ts`,
+  `completion.ts`, `palette.ts`, `mascot.ts`, and the duplicate `handleSlash`
+  in `chat.ts` — about 12,500 lines.
+
 ## [0.1.0] - 2026-08-17
 
 First non-prerelease. Morrow leaves beta with the conversation, not the event
