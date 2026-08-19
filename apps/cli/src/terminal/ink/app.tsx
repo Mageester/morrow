@@ -17,6 +17,7 @@ import {
 } from "./editor.js";
 import { Markdown } from "./markdown.js";
 import { ModelPicker } from "./model-picker.js";
+import { Outcome } from "./outcome.js";
 import type { OverlayStore } from "./overlay-store.js";
 import { CommandPalette, filterCommands, type Scored } from "./palette.js";
 import { ReasoningView } from "./reasoning-view.js";
@@ -232,6 +233,13 @@ export function App({
   // and wrap every character onto its own line.
   const width = Math.max(40, stdout?.columns || 80);
   const streaming = state.status === "streaming";
+  // `task.progress_warning` is the only transient notice the adapter emits.
+  // Rendered as its own amber line it sat directly under the activity line and
+  // flatly contradicted it — one line reporting the elapsed time and the tool
+  // in flight, the next announcing that nothing observable was happening. The
+  // signal is real, so it moves onto that line rather than being dropped.
+  const quiet = streaming && state.notices.some((notice) => notice.transient === true);
+  const notices = streaming ? state.notices.filter((notice) => notice.transient !== true) : state.notices;
 
   useEffect(() => () => clearTimeout(exitTimer.current), []);
 
@@ -534,8 +542,12 @@ export function App({
 
       {streaming && overlay === null && !pendingApproval ? (
         <Box marginTop={1}>
-          <ActivityLine state={state} unicode={unicode} width={width} />
+          <ActivityLine quiet={quiet} state={state} unicode={unicode} width={width} />
         </Box>
+      ) : null}
+
+      {!streaming && overlay === null && !pendingApproval ? (
+        <Outcome state={state} unicode={unicode} width={width} />
       ) : null}
 
       {state.queuedMessages.length > 0 ? (
@@ -575,9 +587,9 @@ export function App({
         />
       ) : null}
 
-      {state.notices.length > 0 ? (
+      {notices.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>
-          {state.notices.slice(-3).map((notice, index) => {
+          {notices.slice(-3).map((notice, index) => {
             const color =
               notice.level === "error" ? theme.danger : notice.level === "warn" ? theme.warning : theme.soft;
             const mark = notice.level === "error" ? g.fail : notice.level === "warn" ? "!" : g.pending;

@@ -8,6 +8,8 @@ import { builtinRegistry } from "../src/terminal/commands/index.js";
 import { toolLabel, workRows } from "../src/terminal/ink/work-summary.js";
 import { activityLabel, elapsedLabel, tokenLabel } from "../src/terminal/ink/activity-line.js";
 import { phrase } from "../src/terminal/ink/tool-verbs.js";
+import { outcomeFor } from "../src/terminal/ink/outcome.js";
+import { rows } from "../src/terminal/ink/reasoning-view.js";
 import { report } from "../src/terminal/report.js";
 import type { ToolCard } from "../src/terminal/state.js";
 
@@ -587,6 +589,107 @@ describe("shell: work settles with its turn", () => {
     store.apply({ type: "task.completed" });
     await tick();
     expect(plain(view.lastFrame())).not.toContain("No new observable progress");
+  });
+});
+
+describe("shell: a turn that ends without an answer says so", () => {
+  it("shows the failure and the reason the runtime gave", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "build the site" });
+    store.apply({ type: "tool.start", id: "t1", name: "run_command", purpose: "Run pnpm build" });
+    store.apply({ type: "tool.end", id: "t1", status: "completed", summary: "completed" });
+    await tick();
+    store.apply({ type: "task.failed", message: "Provider returned 429 after 5 retries" });
+    await tick();
+    const frame = plain(view.lastFrame());
+    // Before this the whole frame was a green tick and the prompt back: the
+    // reducer stored lastError and no component in the shell ever read it.
+    expect(frame).toContain("Task failed");
+    expect(frame).toContain("Provider returned 429 after 5 retries");
+    expect(frame).toContain("/retry");
+  });
+
+  it("says a budget was reached rather than pretending the turn finished", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "keep going" });
+    store.apply({ type: "task.budget_reached", message: "Turn budget of 8 reached" });
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).toContain("Turn budget reached");
+    expect(frame).toContain("Turn budget of 8 reached");
+    expect(frame).toContain("/continue");
+  });
+
+  it("reports a cancellation quietly, without dressing it as a failure", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "do a thing" });
+    store.apply({ type: "task.interrupted" });
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).toContain("Stopped");
+    expect(frame).not.toContain("failed");
+  });
+
+  it("says nothing after a turn that ended with an answer", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "hello" });
+    store.apply({ type: "task.completed" });
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).not.toContain("Task failed");
+    expect(frame).not.toContain("Stopped");
+  });
+
+  it("covers every ending that is not an answer", () => {
+    expect(outcomeFor("failed")).not.toBeNull();
+    expect(outcomeFor("stalled")).not.toBeNull();
+    expect(outcomeFor("budget-reached")).not.toBeNull();
+    expect(outcomeFor("cancelled")).not.toBeNull();
+    expect(outcomeFor("interrupted")).not.toBeNull();
+    expect(outcomeFor("completed")).toBeNull();
+    expect(outcomeFor("idle")).toBeNull();
+    expect(outcomeFor("streaming")).toBeNull();
+  });
+});
+
+describe("shell: the progress warning does not contradict the activity line", () => {
+  it("folds it into that line instead of shouting beside it", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "overhaul the site" });
+    store.apply({ type: "notice", level: "warn", text: "No new observable progress yet.", transient: true });
+    await tick();
+    const frame = plain(view.lastFrame());
+    // One line saying the elapsed time and the tool in flight, the next saying
+    // nothing observable was happening, was the shell arguing with itself.
+    expect(frame).not.toContain("No new observable progress");
+    expect(frame).toContain("no new output yet");
+    expect(frame).toContain("esc to interrupt");
+  });
+
+  it("still shows notices that are not the progress warning", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "go" });
+    store.apply({ type: "notice", level: "warn", text: "Model fell back to a slower route." });
+    await tick();
+    expect(plain(view.lastFrame())).toContain("Model fell back to a slower route");
+  });
+});
+
+describe("reasoning wraps on words", () => {
+  it("does not cut a word in half at the edge", () => {
+    const out = rows("the workspace contains several packages", 20);
+    expect(out.every((row) => row.length <= 20)).toBe(true);
+    expect(out.join(" ")).toBe("the workspace contains several packages");
+    for (const row of out) expect(row).not.toMatch(/^\s|\s$/);
+  });
+
+  it("still breaks a single word too long to fit", () => {
+    const out = rows("a".repeat(45), 20);
+    expect(out).toEqual(["a".repeat(20), "a".repeat(20), "a".repeat(5)]);
+  });
+
+  it("keeps existing line breaks", () => {
+    expect(rows("one\ntwo", 20)).toEqual(["one", "two"]);
   });
 });
 

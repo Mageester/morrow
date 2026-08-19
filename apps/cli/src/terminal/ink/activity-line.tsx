@@ -92,12 +92,16 @@ export function ActivityLine({
   state,
   unicode,
   width,
+  /** The runtime has reported that it cannot see progress. Said here, softly,
+   *  rather than as a separate amber notice contradicting this very line. */
+  quiet = false,
   /** Injected by tests so a frame can be asserted without waiting on a clock. */
   now = Date.now,
 }: {
   state: TerminalState;
   unicode: boolean;
   width: number;
+  quiet?: boolean;
   now?: () => number;
 }) {
   const active = state.status === "streaming";
@@ -128,9 +132,11 @@ export function ActivityLine({
   const spinner = unicode ? SPINNER_UNICODE : SPINNER_ASCII;
   const dot = unicode ? "·" : "-";
   const hint = "esc to interrupt";
-  const chips = [elapsedLabel(elapsed), tokenLabel(state.activeUsage?.outputTokens)].filter(
-    (chip): chip is string => chip !== null,
-  );
+  const chips = [
+    elapsedLabel(elapsed),
+    tokenLabel(state.activeUsage?.outputTokens),
+    quiet ? "no new output yet" : null,
+  ].filter((chip): chip is string => chip !== null);
   const meta = chips.length > 0 ? ` ${dot} ${chips.join(` ${dot} `)}` : "";
 
   // The label yields before the hint does. A long tool target must never push
@@ -141,8 +147,8 @@ export function ActivityLine({
 
   return (
     <Box>
-      <Text color={theme.accent}>{spinner[frame % spinner.length]} </Text>
-      <Text color={theme.copy}>{label}</Text>
+      <Text color={quiet ? theme.warning : theme.accent}>{spinner[frame % spinner.length]} </Text>
+      <Text color={quiet ? theme.soft : theme.copy}>{label}</Text>
       {meta ? <Text color={theme.faint}>{meta}</Text> : null}
       <Text color={theme.faint}>
         {"  "}
