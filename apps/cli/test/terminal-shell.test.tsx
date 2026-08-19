@@ -858,3 +858,42 @@ describe("tool rows say what happened", () => {
     expect(toolLabel({ name: "some_new_tool", purpose: "a.ts", summary: "ok" })).toBe("some new tool a.ts");
   });
 });
+
+describe("composing somewhere other than one line", () => {
+  it("honours the configured editor, then the conventional variables", async () => {
+    const { editorCommand } = await import("../src/terminal/external-editor.js");
+    expect(editorCommand({ MORROW_EDITOR: "hx", VISUAL: "vim", EDITOR: "nano" }, "linux")).toBe("hx");
+    expect(editorCommand({ VISUAL: "vim", EDITOR: "nano" }, "linux")).toBe("vim");
+    expect(editorCommand({ EDITOR: "nano" }, "linux")).toBe("nano");
+    expect(editorCommand({}, "win32")).toBe("notepad");
+    expect(editorCommand({}, "linux")).toBe("nano");
+    // An empty variable is not a choice.
+    expect(editorCommand({ VISUAL: "  ", EDITOR: "nano" }, "linux")).toBe("nano");
+  });
+
+  it("replaces the draft with what came back", async () => {
+    const onExternalEdit = vi.fn(() => "a much longer message, written properly");
+    const { view, onSubmit } = mount({ onExternalEdit });
+    view.stdin.write("short draft");
+    await tick();
+    view.stdin.write(String.fromCharCode(24)); // Ctrl+X
+    await tick();
+    expect(onExternalEdit).toHaveBeenCalledWith("short draft");
+    view.stdin.write(ENTER);
+    await tick();
+    expect(onSubmit).toHaveBeenCalledWith("a much longer message, written properly");
+  });
+
+  it("leaves the draft alone when the edit is cancelled", async () => {
+    const onExternalEdit = vi.fn(() => null);
+    const { view, onSubmit } = mount({ onExternalEdit });
+    view.stdin.write("keep me");
+    await tick();
+    view.stdin.write(String.fromCharCode(24));
+    await tick();
+    view.stdin.write(ENTER);
+    await tick();
+    // An editor someone quit out of must never eat the draft.
+    expect(onSubmit).toHaveBeenCalledWith("keep me");
+  });
+});

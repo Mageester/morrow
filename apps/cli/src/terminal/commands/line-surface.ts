@@ -30,6 +30,7 @@ export interface LineSurfaceOptions {
   activeTaskId?: () => string | null;
   contextUsage?: () => ContextUsageInfo | null;
   usage?: () => UsageInfo | null;
+  conversation?: () => readonly import("../state.js").ConversationEntry[];
 }
 
 export interface LineDispatchResult {
@@ -62,6 +63,10 @@ export function createLineSurface(options: LineSurfaceOptions) {
     activeTaskId: options.activeTaskId ?? (() => null),
     contextUsage: options.contextUsage ?? (() => null),
     usage: options.usage ?? (() => null),
+    // The line surface holds no transcript of its own; a caller that has one
+    // supplies it. Without it /find and /copy report an empty session rather
+    // than reaching for state this surface does not have.
+    conversation: options.conversation ?? (() => []),
   };
 
   return async function run(line: string): Promise<LineDispatchResult> {

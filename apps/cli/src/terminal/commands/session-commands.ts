@@ -6,6 +6,7 @@
  * is what the mission means by "sessions must use the durable state
  * architecture" — a crashed terminal loses the screen, never the work.
  */
+import { copyToClipboard } from "../clipboard.js";
 import { report, type Report } from "../report.js";
 import { errorText, relativeTime, shortId } from "./format.js";
 import type { Command, CommandContext, CommandResult } from "./registry.js";
@@ -294,6 +295,77 @@ export const exitCommand: Command = {
   },
 };
 
+/** The last thing Morrow said, which is what "copy that" almost always means. */
+function lastAnswer(ctx: CommandContext): string | null {
+  const conversation = ctx.conversation();
+  for (let index = conversation.length - 1; index >= 0; index -= 1) {
+    const entry = conversation[index];
+    if (entry?.role === "assistant" && entry.text.trim()) return entry.text.trim();
+  }
+  return null;
+}
+
+export const copyCommand: Command = {
+  name: "copy",
+  summary: "copy Morrow's last answer to the clipboard",
+  category: "session",
+  details:
+    "Copies the most recent answer, exactly as it was written, including its markdown. Selecting it with the mouse is the alternative, and it picks up the terminal's own wrapping.",
+  run(_args, ctx) {
+    const answer = lastAnswer(ctx);
+    if (!answer) return { notice: { level: "warn", text: "Morrow has not answered anything in this session yet." } };
+    const result = copyToClipboard(answer);
+    return {
+      notice: result.copied
+        ? { level: "info", text: `Copied the last answer (${answer.length} characters).` }
+        : { level: "warn", text: `Could not copy: ${result.detail}.` },
+    };
+  },
+};
+
+/** A single matching turn, with the query kept in view. */
+function excerpt(text: string, query: string, width = 140): string {
+  const at = text.toLowerCase().indexOf(query.toLowerCase());
+  if (at < 0) return text.slice(0, width);
+  const start = Math.max(0, at - Math.floor(width / 3));
+  const slice = text.slice(start, start + width).replace(/\s+/g, " ").trim();
+  return `${start > 0 ? "…" : ""}${slice}${start + width < text.length ? "…" : ""}`;
+}
+
+export const findCommand: Command = {
+  name: "find",
+  aliases: ["grep"],
+  summary: "search this conversation",
+  usage: "<text>",
+  category: "session",
+  details:
+    "Searches what has been said in this session and shows the turns that match. Morrow writes settled turns straight into the terminal's own scrollback, so once they scroll past there is nothing in the app to scroll back through — this is how you get them back.",
+  run(args, ctx) {
+    const query = args.raw.trim();
+    if (!query) return { notice: { level: "warn", text: "Say what to look for: /find <text>." } };
+    const conversation = ctx.conversation();
+    const hits: Array<{ text: string; detail: string; marker: string }> = [];
+    for (const [index, entry] of conversation.entries()) {
+      if (entry.role !== "user" && entry.role !== "assistant") continue;
+      if (!entry.text.toLowerCase().includes(query.toLowerCase())) continue;
+      hits.push({
+        marker: entry.role === "user" ? "you" : "morrow",
+        text: excerpt(entry.text, query),
+        detail: `turn ${index + 1}`,
+      });
+    }
+    if (hits.length === 0) {
+      return { report: report("Find").subtitle(`No turn mentions "${query}".`).build() };
+    }
+    return {
+      report: report("Find")
+        .subtitle(`${hits.length} turn${hits.length === 1 ? "" : "s"} mention "${query}"`)
+        .list(hits)
+        .build(),
+    };
+  },
+};
+
 export function conversationReport(title: string, lines: string[]): Report {
   return report(title).text(lines.join("\n")).build();
 }
@@ -307,5 +379,7 @@ export const SESSION_COMMANDS: Command[] = [
   compactCommand,
   exportCommand,
   clearCommand,
+  copyCommand,
+  findCommand,
   exitCommand,
 ];

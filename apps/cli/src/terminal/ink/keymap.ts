@@ -28,6 +28,8 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
   { group: "Composing", keys: "Ctrl+K", description: "delete to end of line" },
   { group: "Composing", keys: "Ctrl+Y", description: "paste back what you deleted" },
 
+  { group: "Composing", keys: "Ctrl+X", description: "edit the draft in $EDITOR" },
+
   { group: "Commands", keys: "/", description: "open the command palette" },
   { group: "Commands", keys: "@", description: "reference a file" },
   { group: "Commands", keys: "Tab", description: "complete the highlighted suggestion" },

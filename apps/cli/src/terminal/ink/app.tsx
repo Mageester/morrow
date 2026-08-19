@@ -11,6 +11,7 @@ import {
   applyKey,
   clearText,
   initialEditorState,
+  insert,
   insertPaste,
   remember,
   type EditorState,
@@ -67,6 +68,10 @@ export interface AppProps {
   overlays?: OverlayStore | undefined;
   /** Lines recalled with ↑, oldest first. */
   history?: readonly string[] | undefined;
+  /** Hands the draft to an external editor and returns the edited text, or
+   *  null if the edit was cancelled or failed. The shell owns this because it
+   *  owns the terminal: raw mode has to come off before a child can have it. */
+  onExternalEdit?: ((text: string) => string | null) | undefined;
   /** Persists a submitted line. */
   onHistoryAppend?: ((line: string) => void) | undefined;
   /** Leaves the shell. Never `process.exit` from a component. */
@@ -183,6 +188,7 @@ export function App({
   history = [],
   onHistoryAppend,
   onExit,
+  onExternalEdit,
   settings,
 }: AppProps) {
   const state = useTerminalState(store);
@@ -390,6 +396,17 @@ export function App({
 
       if (key.ctrl && input === "g") {
         submit("/shortcuts");
+        return;
+      }
+
+      if (key.ctrl && input === "x" && onExternalEdit) {
+        // The draft goes out to the editor and whatever comes back replaces
+        // it. A cancelled edit returns null and the composer is left exactly
+        // as it was — an editor someone quit out of must never eat the draft.
+        const edited = onExternalEdit(composerRef.current.editor.text);
+        if (edited !== null) {
+          updateComposer({ editor: insert(clearText(composerRef.current.editor), edited), suggestionsClosed: false });
+        }
         return;
       }
 
