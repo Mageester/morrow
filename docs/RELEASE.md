@@ -3,7 +3,16 @@
 ## Versioning
 
 Morrow follows semantic versioning (SemVer 2.0.0): `MAJOR.MINOR.PATCH[-PRERELEASE]`.
-The current release is `v0.1.0-beta.33`.
+
+**The current release is whatever the root `package.json` `version` says.** That
+field is the single source of truth (ADR-0005), and this document deliberately
+does not restate it — an earlier copy here claimed `v0.1.0-beta.33` long after
+that stopped being true. `VERSION` below stands for the canonical value.
+
+Three other surfaces must match it, and `pnpm check` fails when they drift:
+the CLI runtime constant `MORROW_VERSION` in `apps/cli/src/service/update.ts`,
+the README status line, and the newest `CHANGELOG.md` entry. Internal workspace
+package versions are independent by design and are not checked.
 
 - **Pre-release**: `v0.1.0-beta.1`, `v0.1.0-beta.2`, etc.
 - **Release candidate**: `v0.1.0-rc.1`
@@ -30,8 +39,8 @@ The current release is `v0.1.0-beta.33`.
 ## Artifact Naming
 
 ```
-Morrow-v0.1.0-beta.33-windows-x64.zip
-morrow-v0.1.0-beta.33-checksums.txt
+Morrow-vVERSION-windows-x64.zip
+morrow-vVERSION-checksums.txt
 release-manifest.json
 ```
 
@@ -88,8 +97,17 @@ morrow uninstall — Remove application, prompt about user data
 
 ## Publication sequence
 
+0. Bump the canonical version and the three surfaces that must match it, then
+   run `pnpm check` — the drift guard is what stops a release going out
+   describing the version before it. Dry-run the packaging locally with
+   `node scripts/package-release.mjs VERSION --skip-build`: this is the step
+   that caught the hardcoded export surface which broke the first 0.1.1
+   attempt.
 1. Merge the release PR after required CI and independent security review.
-2. Dispatch `.github/workflows/release.yml` with `0.1.0-beta.33`.
+2. Dispatch `.github/workflows/release.yml` with `VERSION`. The workflow
+   rejects an input that does not equal the root `package.json` version, and
+   composes the release notes from that version's CHANGELOG section — a
+   missing section fails the run rather than publishing empty notes.
 3. Confirm the GitHub prerelease contains the ZIP, checksum, `latest.json`, and
    `release-manifest.json`, and that their version/checksum values agree.
 4. Publish `installer/install.ps1` and `dist/latest.json` to the website/CDN
@@ -113,20 +131,20 @@ operator with that deployment authority and step 5 passes.
 
 ```json
 {
-  "version": "0.1.0-beta.33",
+  "version": "VERSION",
   "channel": "beta",
-  "releasedAt": "2026-07-15T00:00:00Z",
+  "releasedAt": "2026-01-01T00:00:00Z",
   "artifacts": [
     {
       "platform": "windows-x64",
       "type": "portable",
-      "filename": "Morrow-v0.1.0-beta.33-windows-x64.zip",
+      "filename": "Morrow-vVERSION-windows-x64.zip",
       "size": 0,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "url": "https://github.com/Mageester/morrow/releases/download/v0.1.0-beta.33/Morrow-v0.1.0-beta.33-windows-x64.zip"
+      "url": "https://github.com/Mageester/morrow/releases/download/vVERSION/Morrow-vVERSION-windows-x64.zip"
     }
   ],
-  "releaseNotes": "https://github.com/Mageester/morrow/releases/tag/v0.1.0-beta.33",
+  "releaseNotes": "https://github.com/Mageester/morrow/releases/tag/vVERSION",
   "minimumNodeVersion": "22.0.0"
 }
 ```
