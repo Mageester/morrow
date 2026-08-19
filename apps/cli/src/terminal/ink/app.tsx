@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncE
 import { approvalDecisionForKey, type ApprovalDecision } from "../approvals.js";
 import type { Command } from "../commands/registry.js";
 import type { ConversationEntry, TerminalState } from "../state.js";
+import { ActivityLine } from "./activity-line.js";
 import { ApprovalPrompt } from "./approval.js";
 import type { ApprovalStore } from "./approval-store.js";
 import { Composer } from "./composer.js";
@@ -487,7 +488,7 @@ export function App({
 
       {streaming && state.tools.length > 0 ? (
         <Box marginTop={1}>
-          <WorkSummary expanded={expanded} tools={state.tools} unicode={unicode} />
+          <WorkSummary expanded={expanded} streaming tools={state.tools} unicode={unicode} />
         </Box>
       ) : null}
 
@@ -528,6 +529,12 @@ export function App({
               <Markdown text={live.text} unicode={unicode} width={width - 2} />
             </Box>
           </Box>
+        </Box>
+      ) : null}
+
+      {streaming && overlay === null && !pendingApproval ? (
+        <Box marginTop={1}>
+          <ActivityLine state={state} unicode={unicode} width={width} />
         </Box>
       ) : null}
 

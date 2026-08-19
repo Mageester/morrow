@@ -1,6 +1,7 @@
 import { Box, Text } from "ink";
 import type { ToolCard } from "../state.js";
 import { glyphs, theme } from "./theme.js";
+import { phrase } from "./tool-verbs.js";
 
 /**
  * The work surface for one turn, in the terminal.
@@ -38,28 +39,6 @@ const GROUP_THRESHOLD = 3;
  */
 const STATUS_WORDS = new Set(["completed", "complete", "ok", "done", "success", "succeeded", "failed", "error"]);
 
-/** Past-tense verb per tool, so a row reads as a thing that happened. */
-const VERBS = new Map<string, string>([
-  ["read_file", "Read"],
-  ["write_file", "Wrote"],
-  ["create_file", "Created"],
-  ["edit_file", "Edited"],
-  ["apply_patch", "Patched"],
-  ["delete_file", "Deleted"],
-  ["list_files", "Listed"],
-  ["search_files", "Searched for"],
-  ["search_text", "Searched for"],
-  ["search_symbols", "Looked up"],
-  ["run_command", "Ran"],
-  ["inspect_workspace", "Inspected the workspace"],
-  ["git_status", "Checked git status"],
-  ["git_diff", "Read the git diff"],
-  ["git_log", "Read the git log"],
-  ["browser_open", "Opened"],
-  ["browser_click", "Clicked"],
-  ["fetch_url", "Fetched"],
-  ["web_search", "Searched the web for"],
-]);
 
 /**
  * What a tool call should say it did.
@@ -71,12 +50,7 @@ const VERBS = new Map<string, string>([
 export function toolLabel(tool: Pick<ToolCard, "name" | "purpose" | "summary">): string {
   const summary = tool.summary?.trim();
   if (summary && !STATUS_WORDS.has(summary.toLowerCase())) return summary;
-  const verb = VERBS.get(tool.name);
-  const target = tool.purpose?.trim();
-  if (verb && target) return `${verb} ${target}`;
-  if (verb) return verb;
-  const humanised = tool.name.replaceAll("_", " ");
-  return target ? `${humanised} ${target}` : humanised;
+  return phrase(tool.name, tool.purpose, "past");
 }
 
 export interface WorkRow {
@@ -133,6 +107,7 @@ export function WorkSummary({
   expanded,
   unicode,
   settled = false,
+  streaming = false,
 }: {
   tools: readonly ToolCard[];
   expanded: boolean;
@@ -141,27 +116,32 @@ export function WorkSummary({
    *  lists its rows rather than collapsing to a line: the turn is over, so this
    *  is the record of what happened, and Ctrl+O no longer applies to it. */
   settled?: boolean;
+  /** True while the turn is still in flight. Without it the collapsed line
+   *  claimed a turn was finished the moment no single tool happened to be
+   *  mid-flight — which is every second the model spends generating. */
+  streaming?: boolean;
 }) {
   if (tools.length === 0) return null;
   const g = glyphs(unicode);
   const rows = workRows(tools);
-  const running = tools.find((tool) => tool.status === "running");
   const failed = tools.some((tool) => tool.status === "failed");
 
   // Collapsed: one line. This is the default and the point of the component.
+  //
+  // It reports what this turn has done so far and nothing about what is
+  // happening now — `ActivityLine` owns the present tense. That split is why
+  // the mark must not be a tick while the turn is still running: a green tick
+  // beside "11 tools" is read as a finished turn, and it was rendered on every
+  // turn that was still very much in progress.
   if (!expanded && !settled) {
-    const mark = running ? g.run : failed ? g.fail : g.done;
-    const colour = running ? theme.accent : failed ? theme.danger : theme.success;
-    const label = running
-      ? toolLabel(running)
-      : `${tools.length} tool${tools.length === 1 ? "" : "s"}`;
+    const mark = failed ? g.fail : streaming ? g.pending : g.done;
+    const colour = failed ? theme.danger : streaming ? theme.faint : theme.success;
+    const label = `${tools.length} tool${tools.length === 1 ? "" : "s"}`;
     return (
       <Box>
         <Text color={colour}>{mark} </Text>
         <Text color={theme.soft}>{label}</Text>
-        {!running && tools.length > 0 ? (
-          <Text color={theme.faint}>  {g.chevron} ctrl+o to expand</Text>
-        ) : null}
+        <Text color={theme.faint}>  {g.chevron} ctrl+o to expand</Text>
       </Box>
     );
   }

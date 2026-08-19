@@ -6,6 +6,8 @@ import { OverlayStore } from "../src/terminal/ink/overlay-store.js";
 import { ApprovalStore } from "../src/terminal/ink/approval-store.js";
 import { builtinRegistry } from "../src/terminal/commands/index.js";
 import { toolLabel, workRows } from "../src/terminal/ink/work-summary.js";
+import { activityLabel, elapsedLabel, tokenLabel } from "../src/terminal/ink/activity-line.js";
+import { phrase } from "../src/terminal/ink/tool-verbs.js";
 import { report } from "../src/terminal/report.js";
 import type { ToolCard } from "../src/terminal/state.js";
 
@@ -452,7 +454,8 @@ describe("shell: work summary", () => {
     store.apply({ type: "user.message", text: "run the tests" });
     store.apply({ type: "tool.start", id: "t1", name: "run_command", purpose: "Run pnpm test" });
     await tick();
-    expect(plain(view.lastFrame())).toContain("Run pnpm test");
+    // Present tense while it runs, and without saying "Run" twice.
+    expect(plain(view.lastFrame())).toContain("Running pnpm test");
 
     store.apply({ type: "tool.end", id: "t1", status: "completed", summary: "Ran pnpm test" });
     store.apply({ type: "task.completed" });
@@ -460,6 +463,100 @@ describe("shell: work summary", () => {
     // Still visible once the turn ends — as a settled transcript row, not as a
     // live indicator that outlives the work it describes.
     expect(plain(view.lastFrame())).toContain("Ran pnpm test");
+  });
+});
+
+describe("shell: the live activity line", () => {
+  it("says it is working the instant a message is sent, before any tool runs", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "overhaul the site" });
+    await tick();
+    const frame = plain(view.lastFrame());
+    // The window between submit and the first token used to render nothing at
+    // all, so a slow provider was indistinguishable from a shell that had
+    // ignored the keystroke.
+    expect(frame).toContain("Thinking");
+    expect(frame).toContain("esc to interrupt");
+  });
+
+  it("never claims a running turn is finished", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "overhaul the site" });
+    // Eleven finished calls with nothing in flight: the model is generating.
+    for (let index = 0; index < 11; index += 1) {
+      store.apply({ type: "tool.start", id: `t${index}`, name: "read_file", purpose: `Read f${index}.ts` });
+      store.apply({ type: "tool.end", id: `t${index}`, status: "completed", summary: "completed" });
+    }
+    await tick();
+    const frame = plain(view.lastFrame());
+    // The bug: this exact state rendered "checkmark 11 tools", which reads as a
+    // finished turn. The count may stay; the completion mark may not.
+    expect(frame).toContain("11 tools");
+    expect(frame).not.toMatch(/[+✓]\s+11 tools/);
+    // And the turn must still be visibly alive.
+    expect(frame).toContain("esc to interrupt");
+  });
+
+  it("names the tool in flight, in the present tense", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "run the tests" });
+    store.apply({ type: "tool.start", id: "t1", name: "run_command", purpose: "Run pnpm test" });
+    await tick();
+    expect(plain(view.lastFrame())).toContain("Running pnpm test");
+  });
+
+  it("disappears when the turn ends", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "hello" });
+    await tick();
+    expect(plain(view.lastFrame())).toContain("esc to interrupt");
+    store.apply({ type: "task.completed" });
+    await tick();
+    expect(plain(view.lastFrame())).not.toContain("esc to interrupt");
+  });
+
+  it("reports what is happening, most specific answer first", () => {
+    const base = { activity: [], tools: [], status: "streaming" as const };
+    expect(activityLabel({ ...base } as never)).toBe("Thinking");
+    expect(
+      activityLabel({ ...base, activity: [{ kind: "verifying", at: 0 }] } as never),
+    ).toBe("Verifying");
+    expect(
+      activityLabel({
+        ...base,
+        activity: [{ kind: "verifying", at: 0 }],
+        tools: [tool({ id: "t1", name: "read_file", purpose: "Read a.ts", status: "running" })],
+      } as never),
+    ).toBe("Reading a.ts");
+  });
+
+  it("shows only figures it actually has", () => {
+    expect(elapsedLabel(400)).toBeNull();
+    expect(elapsedLabel(4_200)).toBe("4s");
+    expect(elapsedLabel(72_000)).toBe("1m 12s");
+    expect(elapsedLabel(120_000)).toBe("2m");
+    expect(tokenLabel(undefined)).toBeNull();
+    expect(tokenLabel(0)).toBeNull();
+    expect(tokenLabel(940)).toBe("940 tokens");
+    expect(tokenLabel(1_400)).toBe("1.4k tokens");
+    expect(tokenLabel(2_000)).toBe("2k tokens");
+  });
+});
+
+describe("tool phrasing does not say the verb twice", () => {
+  it("drops a leading imperative the verb repeats", () => {
+    expect(phrase("run_command", "Run pnpm test", "past")).toBe("Ran pnpm test");
+    expect(phrase("run_command", "Run pnpm test", "present")).toBe("Running pnpm test");
+    expect(phrase("read_file", "Read package.json", "present")).toBe("Reading package.json");
+  });
+
+  it("keeps a target that is not a repeat of the verb", () => {
+    expect(phrase("read_file", "package.json", "past")).toBe("Read package.json");
+    expect(phrase("run_command", "pnpm test", "present")).toBe("Running pnpm test");
+  });
+
+  it("falls back to the humanised tool name when it knows no verb", () => {
+    expect(phrase("weird_tool", "a thing", "present")).toBe("weird tool a thing");
   });
 });
 
