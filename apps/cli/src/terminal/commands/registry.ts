@@ -88,6 +88,10 @@ export interface CommandContext {
   contextUsage: () => import("../events.js").ContextUsageInfo | null;
   /** Cumulative usage for this session, or null before the first response. */
   usage: () => import("../events.js").UsageInfo | null;
+  /** The transcript as reduced state holds it. Read, never mutated — this is
+   *  what lets a command search or copy what was said without the shell
+   *  keeping a second copy that could disagree with the screen. */
+  conversation: () => readonly import("../state.js").ConversationEntry[];
 }
 
 export interface SessionInfo {

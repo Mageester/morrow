@@ -32,17 +32,37 @@ export interface ReasoningViewProps {
   width: number;
 }
 
-/** Wrap to width, so the tail is measured in rows a reader sees. */
-function rows(text: string, width: number): string[] {
+/**
+ * Wrap to width, so the tail is measured in rows a reader sees.
+ *
+ * On words, not on columns. This used to slice at exactly `width`, which cut
+ * every wrapped line mid-word at the terminal edge - the one view in the shell
+ * that did not wrap the way the rest of it does. A word longer than the width
+ * (a path, a URL) is still broken, because the alternative is a row that
+ * overflows its box.
+ */
+export function rows(text: string, width: number): string[] {
   const out: string[] = [];
   for (const line of text.split("\n")) {
     if (line.length <= width) {
       out.push(line);
       continue;
     }
-    for (let index = 0; index < line.length; index += width) {
-      out.push(line.slice(index, index + width));
+    let current = "";
+    for (const word of line.split(" ")) {
+      if (current === "") current = word;
+      else if (current.length + 1 + word.length <= width) current = `${current} ${word}`;
+      else {
+        out.push(current);
+        current = word;
+      }
+      // A single word wider than the row has to be broken somewhere.
+      while (current.length > width) {
+        out.push(current.slice(0, width));
+        current = current.slice(width);
+      }
     }
+    out.push(current);
   }
   return out;
 }

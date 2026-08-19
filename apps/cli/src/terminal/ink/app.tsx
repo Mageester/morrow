@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncE
 import { approvalDecisionForKey, type ApprovalDecision } from "../approvals.js";
 import type { Command } from "../commands/registry.js";
 import type { ConversationEntry, TerminalState } from "../state.js";
+import { ActivityLine } from "./activity-line.js";
 import { ApprovalPrompt } from "./approval.js";
 import type { ApprovalStore } from "./approval-store.js";
 import { Composer } from "./composer.js";
@@ -10,17 +11,21 @@ import {
   applyKey,
   clearText,
   initialEditorState,
+  insert,
   insertPaste,
   remember,
   type EditorState,
 } from "./editor.js";
 import { Markdown } from "./markdown.js";
 import { ModelPicker } from "./model-picker.js";
+import { Outcome } from "./outcome.js";
+import { PlanView } from "./plan-view.js";
 import type { OverlayStore } from "./overlay-store.js";
 import { CommandPalette, filterCommands, type Scored } from "./palette.js";
 import { ReasoningView } from "./reasoning-view.js";
 import { ReportView } from "./report-view.js";
 import { SelectOverlay } from "./select-overlay.js";
+import { TranscriptOverlay } from "./transcript-overlay.js";
 import { StatusLine } from "./status-line.js";
 import type { TerminalStore } from "./store.js";
 import { glyphs, theme } from "./theme.js";
@@ -64,6 +69,10 @@ export interface AppProps {
   overlays?: OverlayStore | undefined;
   /** Lines recalled with ↑, oldest first. */
   history?: readonly string[] | undefined;
+  /** Hands the draft to an external editor and returns the edited text, or
+   *  null if the edit was cancelled or failed. The shell owns this because it
+   *  owns the terminal: raw mode has to come off before a child can have it. */
+  onExternalEdit?: ((text: string) => string | null) | undefined;
   /** Persists a submitted line. */
   onHistoryAppend?: ((line: string) => void) | undefined;
   /** Leaves the shell. Never `process.exit` from a component. */
@@ -180,6 +189,7 @@ export function App({
   history = [],
   onHistoryAppend,
   onExit,
+  onExternalEdit,
   settings,
 }: AppProps) {
   const state = useTerminalState(store);
@@ -231,6 +241,13 @@ export function App({
   // and wrap every character onto its own line.
   const width = Math.max(40, stdout?.columns || 80);
   const streaming = state.status === "streaming";
+  // `task.progress_warning` is the only transient notice the adapter emits.
+  // Rendered as its own amber line it sat directly under the activity line and
+  // flatly contradicted it — one line reporting the elapsed time and the tool
+  // in flight, the next announcing that nothing observable was happening. The
+  // signal is real, so it moves onto that line rather than being dropped.
+  const quiet = streaming && state.notices.some((notice) => notice.transient === true);
+  const notices = streaming ? state.notices.filter((notice) => notice.transient !== true) : state.notices;
 
   useEffect(() => () => clearTimeout(exitTimer.current), []);
 
@@ -383,6 +400,22 @@ export function App({
         return;
       }
 
+      if (key.ctrl && input === "p") {
+        submit("/transcript");
+        return;
+      }
+
+      if (key.ctrl && input === "x" && onExternalEdit) {
+        // The draft goes out to the editor and whatever comes back replaces
+        // it. A cancelled edit returns null and the composer is left exactly
+        // as it was — an editor someone quit out of must never eat the draft.
+        const edited = onExternalEdit(composerRef.current.editor.text);
+        if (edited !== null) {
+          updateComposer({ editor: insert(clearText(composerRef.current.editor), edited), suggestionsClosed: false });
+        }
+        return;
+      }
+
       if (key.escape) {
         // Escape closes a menu, then stops work. It never destroys the draft —
         // losing a half-written paragraph to a stray keypress is unforgivable,
@@ -485,9 +518,13 @@ export function App({
         )}
       </Static>
 
+      {state.plan.length > 0 && overlay === null && !pendingApproval ? (
+        <PlanView expanded={expanded} plan={state.plan} unicode={unicode} width={width} />
+      ) : null}
+
       {streaming && state.tools.length > 0 ? (
         <Box marginTop={1}>
-          <WorkSummary expanded={expanded} tools={state.tools} unicode={unicode} />
+          <WorkSummary expanded={expanded} streaming tools={state.tools} unicode={unicode} />
         </Box>
       ) : null}
 
@@ -531,6 +568,16 @@ export function App({
         </Box>
       ) : null}
 
+      {streaming && overlay === null && !pendingApproval ? (
+        <Box marginTop={1}>
+          <ActivityLine quiet={quiet} state={state} unicode={unicode} width={width} />
+        </Box>
+      ) : null}
+
+      {!streaming && overlay === null && !pendingApproval ? (
+        <Outcome state={state} unicode={unicode} width={width} />
+      ) : null}
+
       {state.queuedMessages.length > 0 ? (
         <Box marginTop={1} flexDirection="column">
           {state.queuedMessages.map((message, index) => (
@@ -557,6 +604,15 @@ export function App({
         />
       ) : null}
 
+      {overlay?.kind === "transcript" ? (
+        <TranscriptOverlay
+          entries={overlay.entries}
+          onClose={() => overlays?.close(null)}
+          unicode={unicode}
+          width={width}
+        />
+      ) : null}
+
       {overlay?.kind === "select" ? (
         <SelectOverlay
           items={overlay.items}
@@ -568,9 +624,9 @@ export function App({
         />
       ) : null}
 
-      {state.notices.length > 0 ? (
+      {notices.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>
-          {state.notices.slice(-3).map((notice, index) => {
+          {notices.slice(-3).map((notice, index) => {
             const color =
               notice.level === "error" ? theme.danger : notice.level === "warn" ? theme.warning : theme.soft;
             const mark = notice.level === "error" ? g.fail : notice.level === "warn" ? "!" : g.pending;

@@ -617,3 +617,37 @@ describe("session facts follow the active conversation", () => {
     expect(table.rows[1]![0]).toBe("●");
   });
 });
+
+describe("reaching back into the conversation", () => {
+  const talk = [
+    { role: "user" as const, text: "rewrite the pricing table", streaming: false },
+    { role: "assistant" as const, text: "Done — the pricing table now reads from config.", streaming: false },
+    { role: "user" as const, text: "and the footer?", streaming: false },
+    { role: "assistant" as const, text: "The footer is untouched so far.", streaming: false },
+  ];
+
+  it("finds the turns that mention a phrase", async () => {
+    const result = await run(harness(fakeBackend(), { conversation: talk }), "/find pricing");
+    const lines = reportToLines(result.report!).join("\n");
+    expect(lines).toContain("2 turns");
+    expect(lines).toContain("rewrite the pricing table");
+    expect(lines).toContain("morrow");
+  });
+
+  it("says so plainly when nothing matches", async () => {
+    const result = await run(harness(fakeBackend(), { conversation: talk }), "/find kubernetes");
+    expect(reportToLines(result.report!).join("\n")).toContain("No turn mentions");
+  });
+
+  it("asks for a term rather than listing the whole session", async () => {
+    const result = await run(harness(fakeBackend(), { conversation: talk }), "/find");
+    expect(result.notice?.level).toBe("warn");
+    expect(result.report).toBeUndefined();
+  });
+
+  it("refuses to copy from a session with no answer yet", async () => {
+    const result = await run(harness(fakeBackend(), { conversation: [] }), "/copy");
+    expect(result.notice).toMatchObject({ level: "warn" });
+    expect(result.notice?.text).toContain("not answered anything");
+  });
+});

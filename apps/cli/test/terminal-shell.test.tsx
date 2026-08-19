@@ -6,6 +6,12 @@ import { OverlayStore } from "../src/terminal/ink/overlay-store.js";
 import { ApprovalStore } from "../src/terminal/ink/approval-store.js";
 import { builtinRegistry } from "../src/terminal/commands/index.js";
 import { toolLabel, workRows } from "../src/terminal/ink/work-summary.js";
+import { activityLabel, elapsedLabel, tokenLabel } from "../src/terminal/ink/activity-line.js";
+import { phrase } from "../src/terminal/ink/tool-verbs.js";
+import { outcomeFor } from "../src/terminal/ink/outcome.js";
+import { planWindow } from "../src/terminal/ink/plan-view.js";
+import { mapTaskEvent } from "../src/terminal/task-event-adapter.js";
+import { rows } from "../src/terminal/ink/reasoning-view.js";
 import { report } from "../src/terminal/report.js";
 import type { ToolCard } from "../src/terminal/state.js";
 
@@ -452,7 +458,8 @@ describe("shell: work summary", () => {
     store.apply({ type: "user.message", text: "run the tests" });
     store.apply({ type: "tool.start", id: "t1", name: "run_command", purpose: "Run pnpm test" });
     await tick();
-    expect(plain(view.lastFrame())).toContain("Run pnpm test");
+    // Present tense while it runs, and without saying "Run" twice.
+    expect(plain(view.lastFrame())).toContain("Running pnpm test");
 
     store.apply({ type: "tool.end", id: "t1", status: "completed", summary: "Ran pnpm test" });
     store.apply({ type: "task.completed" });
@@ -460,6 +467,100 @@ describe("shell: work summary", () => {
     // Still visible once the turn ends — as a settled transcript row, not as a
     // live indicator that outlives the work it describes.
     expect(plain(view.lastFrame())).toContain("Ran pnpm test");
+  });
+});
+
+describe("shell: the live activity line", () => {
+  it("says it is working the instant a message is sent, before any tool runs", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "overhaul the site" });
+    await tick();
+    const frame = plain(view.lastFrame());
+    // The window between submit and the first token used to render nothing at
+    // all, so a slow provider was indistinguishable from a shell that had
+    // ignored the keystroke.
+    expect(frame).toContain("Thinking");
+    expect(frame).toContain("esc to interrupt");
+  });
+
+  it("never claims a running turn is finished", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "overhaul the site" });
+    // Eleven finished calls with nothing in flight: the model is generating.
+    for (let index = 0; index < 11; index += 1) {
+      store.apply({ type: "tool.start", id: `t${index}`, name: "read_file", purpose: `Read f${index}.ts` });
+      store.apply({ type: "tool.end", id: `t${index}`, status: "completed", summary: "completed" });
+    }
+    await tick();
+    const frame = plain(view.lastFrame());
+    // The bug: this exact state rendered "checkmark 11 tools", which reads as a
+    // finished turn. The count may stay; the completion mark may not.
+    expect(frame).toContain("11 tools");
+    expect(frame).not.toMatch(/[+✓]\s+11 tools/);
+    // And the turn must still be visibly alive.
+    expect(frame).toContain("esc to interrupt");
+  });
+
+  it("names the tool in flight, in the present tense", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "run the tests" });
+    store.apply({ type: "tool.start", id: "t1", name: "run_command", purpose: "Run pnpm test" });
+    await tick();
+    expect(plain(view.lastFrame())).toContain("Running pnpm test");
+  });
+
+  it("disappears when the turn ends", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "hello" });
+    await tick();
+    expect(plain(view.lastFrame())).toContain("esc to interrupt");
+    store.apply({ type: "task.completed" });
+    await tick();
+    expect(plain(view.lastFrame())).not.toContain("esc to interrupt");
+  });
+
+  it("reports what is happening, most specific answer first", () => {
+    const base = { activity: [], tools: [], status: "streaming" as const };
+    expect(activityLabel({ ...base } as never)).toBe("Thinking");
+    expect(
+      activityLabel({ ...base, activity: [{ kind: "verifying", at: 0 }] } as never),
+    ).toBe("Verifying");
+    expect(
+      activityLabel({
+        ...base,
+        activity: [{ kind: "verifying", at: 0 }],
+        tools: [tool({ id: "t1", name: "read_file", purpose: "Read a.ts", status: "running" })],
+      } as never),
+    ).toBe("Reading a.ts");
+  });
+
+  it("shows only figures it actually has", () => {
+    expect(elapsedLabel(400)).toBeNull();
+    expect(elapsedLabel(4_200)).toBe("4s");
+    expect(elapsedLabel(72_000)).toBe("1m 12s");
+    expect(elapsedLabel(120_000)).toBe("2m");
+    expect(tokenLabel(undefined)).toBeNull();
+    expect(tokenLabel(0)).toBeNull();
+    expect(tokenLabel(940)).toBe("940 tokens");
+    expect(tokenLabel(1_400)).toBe("1.4k tokens");
+    expect(tokenLabel(2_000)).toBe("2k tokens");
+  });
+});
+
+describe("tool phrasing does not say the verb twice", () => {
+  it("drops a leading imperative the verb repeats", () => {
+    expect(phrase("run_command", "Run pnpm test", "past")).toBe("Ran pnpm test");
+    expect(phrase("run_command", "Run pnpm test", "present")).toBe("Running pnpm test");
+    expect(phrase("read_file", "Read package.json", "present")).toBe("Reading package.json");
+  });
+
+  it("keeps a target that is not a repeat of the verb", () => {
+    expect(phrase("read_file", "package.json", "past")).toBe("Read package.json");
+    expect(phrase("run_command", "pnpm test", "present")).toBe("Running pnpm test");
+  });
+
+  it("falls back to the humanised tool name when it knows no verb", () => {
+    expect(phrase("weird_tool", "a thing", "present")).toBe("weird tool a thing");
   });
 });
 
@@ -490,6 +591,166 @@ describe("shell: work settles with its turn", () => {
     store.apply({ type: "task.completed" });
     await tick();
     expect(plain(view.lastFrame())).not.toContain("No new observable progress");
+  });
+});
+
+describe("shell: a turn that ends without an answer says so", () => {
+  it("shows the failure and the reason the runtime gave", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "build the site" });
+    store.apply({ type: "tool.start", id: "t1", name: "run_command", purpose: "Run pnpm build" });
+    store.apply({ type: "tool.end", id: "t1", status: "completed", summary: "completed" });
+    await tick();
+    store.apply({ type: "task.failed", message: "Provider returned 429 after 5 retries" });
+    await tick();
+    const frame = plain(view.lastFrame());
+    // Before this the whole frame was a green tick and the prompt back: the
+    // reducer stored lastError and no component in the shell ever read it.
+    expect(frame).toContain("Task failed");
+    expect(frame).toContain("Provider returned 429 after 5 retries");
+    expect(frame).toContain("/retry");
+  });
+
+  it("says a budget was reached rather than pretending the turn finished", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "keep going" });
+    store.apply({ type: "task.budget_reached", message: "Turn budget of 8 reached" });
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).toContain("Turn budget reached");
+    expect(frame).toContain("Turn budget of 8 reached");
+    expect(frame).toContain("/continue");
+  });
+
+  it("reports a cancellation quietly, without dressing it as a failure", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "do a thing" });
+    store.apply({ type: "task.interrupted" });
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).toContain("Stopped");
+    expect(frame).not.toContain("failed");
+  });
+
+  it("says nothing after a turn that ended with an answer", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "hello" });
+    store.apply({ type: "task.completed" });
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).not.toContain("Task failed");
+    expect(frame).not.toContain("Stopped");
+  });
+
+  it("covers every ending that is not an answer", () => {
+    expect(outcomeFor("failed")).not.toBeNull();
+    expect(outcomeFor("stalled")).not.toBeNull();
+    expect(outcomeFor("budget-reached")).not.toBeNull();
+    expect(outcomeFor("cancelled")).not.toBeNull();
+    expect(outcomeFor("interrupted")).not.toBeNull();
+    expect(outcomeFor("completed")).toBeNull();
+    expect(outcomeFor("idle")).toBeNull();
+    expect(outcomeFor("streaming")).toBeNull();
+  });
+});
+
+describe("shell: the progress warning does not contradict the activity line", () => {
+  it("folds it into that line instead of shouting beside it", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "overhaul the site" });
+    store.apply({ type: "notice", level: "warn", text: "No new observable progress yet.", transient: true });
+    await tick();
+    const frame = plain(view.lastFrame());
+    // One line saying the elapsed time and the tool in flight, the next saying
+    // nothing observable was happening, was the shell arguing with itself.
+    expect(frame).not.toContain("No new observable progress");
+    expect(frame).toContain("no new output yet");
+    expect(frame).toContain("esc to interrupt");
+  });
+
+  it("still shows notices that are not the progress warning", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "go" });
+    store.apply({ type: "notice", level: "warn", text: "Model fell back to a slower route." });
+    await tick();
+    expect(plain(view.lastFrame())).toContain("Model fell back to a slower route");
+  });
+});
+
+describe("reasoning wraps on words", () => {
+  it("does not cut a word in half at the edge", () => {
+    const out = rows("the workspace contains several packages", 20);
+    expect(out.every((row) => row.length <= 20)).toBe(true);
+    expect(out.join(" ")).toBe("the workspace contains several packages");
+    for (const row of out) expect(row).not.toMatch(/^\s|\s$/);
+  });
+
+  it("still breaks a single word too long to fit", () => {
+    const out = rows("a".repeat(45), 20);
+    expect(out).toEqual(["a".repeat(20), "a".repeat(20), "a".repeat(5)]);
+  });
+
+  it("keeps existing line breaks", () => {
+    expect(rows("one\ntwo", 20)).toEqual(["one", "two"]);
+  });
+});
+
+describe("shell: the plan", () => {
+  it("shows a plan the model published, from the runtime event", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "overhaul the site" });
+    for (const event of mapTaskEvent({
+      type: "plan.published",
+      payload: {
+        steps: [
+          { id: "s1", title: "Audit the current sections", status: "completed" },
+          { id: "s2", title: "Rewrite the hero", status: "running" },
+          { id: "s3", title: "Rebuild the pricing table", status: "pending" },
+        ],
+      },
+    } as never)) {
+      store.apply(event);
+    }
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).toContain("Plan");
+    expect(frame).toContain("Rewrite the hero");
+    expect(frame).toContain("1/3");
+  });
+
+  it("never surfaces the internal three-step scaffold", () => {
+    // `plan.created` is the phase machine built identically on every task.
+    // Painting it would put the same three rows over everyone's work.
+    expect(mapTaskEvent({ type: "plan.created", payload: { stepCount: 3 } } as never)).toEqual([]);
+    expect(mapTaskEvent({ type: "step.started", payload: { stepId: "x" } } as never)).toEqual([]);
+  });
+
+  it("drops a published plan with no usable steps rather than drawing an empty panel", () => {
+    expect(mapTaskEvent({ type: "plan.published", payload: { steps: [] } } as never)).toEqual([]);
+    expect(mapTaskEvent({ type: "plan.published", payload: { steps: [{ title: "  " }] } as never })).toEqual([]);
+  });
+
+  it("defaults an unrecognised status to pending rather than inventing progress", () => {
+    const events = mapTaskEvent({
+      type: "plan.published",
+      payload: { steps: [{ id: "s1", title: "Do the thing", status: "wat" }] },
+    } as never);
+    expect(events[0]).toMatchObject({ type: "plan.snapshot", steps: [{ status: "pending" }] });
+  });
+
+  it("windows a long plan around the running step, keeping it on screen", () => {
+    const plan = Array.from({ length: 12 }, (_, index) => ({
+      id: `s${index}`,
+      title: `Step ${index}`,
+      status: index < 6 ? ("completed" as const) : index === 6 ? ("running" as const) : ("pending" as const),
+    }));
+    const windowed = planWindow(plan, false);
+    expect(windowed.doneBefore).toBe(6);
+    expect(windowed.visible[0]).toMatchObject({ id: "s6", status: "running" });
+    expect(windowed.visible).toHaveLength(4);
+    expect(windowed.moreAfter).toBe(2);
+    // Ctrl+O shows the lot.
+    expect(planWindow(plan, true).visible).toHaveLength(12);
   });
 });
 
@@ -597,3 +858,108 @@ describe("tool rows say what happened", () => {
     expect(toolLabel({ name: "some_new_tool", purpose: "a.ts", summary: "ok" })).toBe("some new tool a.ts");
   });
 });
+
+describe("composing somewhere other than one line", () => {
+  it("honours the configured editor, then the conventional variables", async () => {
+    const { editorCommand } = await import("../src/terminal/external-editor.js");
+    expect(editorCommand({ MORROW_EDITOR: "hx", VISUAL: "vim", EDITOR: "nano" }, "linux")).toBe("hx");
+    expect(editorCommand({ VISUAL: "vim", EDITOR: "nano" }, "linux")).toBe("vim");
+    expect(editorCommand({ EDITOR: "nano" }, "linux")).toBe("nano");
+    expect(editorCommand({}, "win32")).toBe("notepad");
+    expect(editorCommand({}, "linux")).toBe("nano");
+    // An empty variable is not a choice.
+    expect(editorCommand({ VISUAL: "  ", EDITOR: "nano" }, "linux")).toBe("nano");
+  });
+
+  it("quotes a path for the shell only where a shell is used", async () => {
+    const { quoteArgument } = await import("../src/terminal/external-editor.js");
+    // A Windows username with a space is ordinary, and `shell: true`
+    // concatenates argv without escaping, so the path has to survive it.
+    expect(quoteArgument("C:/Users/John Smith/t/message.md", "win32")).toBe('"C:/Users/John Smith/t/message.md"');
+    expect(quoteArgument("/tmp/a b/message.md", "linux")).toBe("'/tmp/a b/message.md'");
+    expect(quoteArgument("/tmp/o'brien/message.md", "linux")).toBe(String.raw`'/tmp/o'\''brien/message.md'`);
+  });
+
+  it("replaces the draft with what came back", async () => {
+    const onExternalEdit = vi.fn(() => "a much longer message, written properly");
+    const { view, onSubmit } = mount({ onExternalEdit });
+    view.stdin.write("short draft");
+    await tick();
+    view.stdin.write(String.fromCharCode(24)); // Ctrl+X
+    await tick();
+    expect(onExternalEdit).toHaveBeenCalledWith("short draft");
+    view.stdin.write(ENTER);
+    await tick();
+    expect(onSubmit).toHaveBeenCalledWith("a much longer message, written properly");
+  });
+
+  it("leaves the draft alone when the edit is cancelled", async () => {
+    const onExternalEdit = vi.fn(() => null);
+    const { view, onSubmit } = mount({ onExternalEdit });
+    view.stdin.write("keep me");
+    await tick();
+    view.stdin.write(String.fromCharCode(24));
+    await tick();
+    view.stdin.write(ENTER);
+    await tick();
+    // An editor someone quit out of must never eat the draft.
+    expect(onSubmit).toHaveBeenCalledWith("keep me");
+  });
+});
+
+describe("reading back through the conversation", () => {
+  const talk = [
+    { role: "user" as const, text: "rewrite the pricing table", streaming: false },
+    { role: "assistant" as const, text: "Done. The pricing table now reads from config.", streaming: false },
+    { role: "user" as const, text: "and the footer?", streaming: false },
+    { role: "assistant" as const, text: "The footer is untouched so far.", streaming: false },
+  ];
+
+  it("flattens turns into rows, attributed and wrapped", async () => {
+    const { transcriptLines } = await import("../src/terminal/ink/transcript-overlay.js");
+    const lines = transcriptLines(talk, 40);
+    expect(lines.filter((line) => line.speaker === "you")).toHaveLength(2);
+    expect(lines.filter((line) => line.speaker === "morrow")).toHaveLength(2);
+    for (const line of lines) expect(line.text.length).toBeLessThanOrEqual(40);
+  });
+
+  it("finds body rows only, never the speaker labels", async () => {
+    const { transcriptLines, matchRows } = await import("../src/terminal/ink/transcript-overlay.js");
+    const lines = transcriptLines(talk, 80);
+    // "you" appears as a label on every user turn; searching for it must not
+    // match those, or every search would hit the scaffolding.
+    expect(matchRows(lines, "you")).toEqual([]);
+    expect(matchRows(lines, "footer")).toHaveLength(2);
+    expect(matchRows(lines, "")).toEqual([]);
+  });
+
+  it("wraps match navigation at both ends", async () => {
+    const { wrapIndex } = await import("../src/terminal/ink/transcript-overlay.js");
+    expect(wrapIndex(3, 3)).toBe(0);
+    expect(wrapIndex(-1, 3)).toBe(2);
+    expect(wrapIndex(0, 0)).toBe(0);
+  });
+
+  it("opens on the conversation and closes on escape", async () => {
+    const { view, store, overlays } = mount();
+    for (const entry of talk) {
+      store.apply(
+        entry.role === "user"
+          ? { type: "user.message", text: entry.text }
+          : { type: "assistant.delta", turnId: "legacy", text: entry.text },
+      );
+    }
+    await tick();
+    overlays.set({ kind: "transcript", entries: store.state.conversation, onChoose: () => {} });
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).toContain("Conversation");
+    expect(frame).toContain("esc close");
+    // The composer is gone while the reader has the keyboard.
+    expect(frame).not.toContain("ask, or / for commands");
+
+    view.stdin.write(ESC);
+    await tick();
+    expect(plain(view.lastFrame())).not.toContain("esc close");
+  });
+})

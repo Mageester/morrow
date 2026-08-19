@@ -30,6 +30,7 @@ export interface LineSurfaceOptions {
   activeTaskId?: () => string | null;
   contextUsage?: () => ContextUsageInfo | null;
   usage?: () => UsageInfo | null;
+  conversation?: () => readonly import("../state.js").ConversationEntry[];
 }
 
 export interface LineDispatchResult {
@@ -62,6 +63,10 @@ export function createLineSurface(options: LineSurfaceOptions) {
     activeTaskId: options.activeTaskId ?? (() => null),
     contextUsage: options.contextUsage ?? (() => null),
     usage: options.usage ?? (() => null),
+    // The line surface holds no transcript of its own; a caller that has one
+    // supplies it. Without it /find and /copy report an empty session rather
+    // than reaching for state this surface does not have.
+    conversation: options.conversation ?? (() => []),
   };
 
   return async function run(line: string): Promise<LineDispatchResult> {
@@ -95,6 +100,12 @@ export function createLineSurface(options: LineSurfaceOptions) {
             options.print(`  ${item.current ? "*" : " "} ${item.label}${item.hint ? `  ${item.hint}` : ""}`);
           }
           options.print(`Pass one as an argument: /${command.name} <id>`);
+        } else if (overlay.kind === "transcript") {
+          // A pager needs a screen to page. On the plain-line surface the
+          // transcript is already above the cursor, so say so rather than
+          // reprinting the whole session under a command that promised a
+          // reader.
+          options.print("The conversation is already above; /find searches it.");
         } else {
           options.print("Available models:");
           for (const item of overlay.items) {

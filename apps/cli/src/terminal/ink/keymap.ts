@@ -28,6 +28,8 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
   { group: "Composing", keys: "Ctrl+K", description: "delete to end of line" },
   { group: "Composing", keys: "Ctrl+Y", description: "paste back what you deleted" },
 
+  { group: "Composing", keys: "Ctrl+X", description: "edit the draft in $EDITOR" },
+
   { group: "Commands", keys: "/", description: "open the command palette" },
   { group: "Commands", keys: "@", description: "reference a file" },
   { group: "Commands", keys: "Tab", description: "complete the highlighted suggestion" },
@@ -40,6 +42,7 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
   { group: "Running work", keys: "Esc", description: "stop the running task" },
   { group: "Running work", keys: "type while working", description: "queued and sent when the task ends" },
 
+  { group: "Screen", keys: "Ctrl+P", description: "read back through the conversation, and search it" },
   { group: "Screen", keys: "Ctrl+O", description: "expand or collapse tool detail" },
   { group: "Screen", keys: "Ctrl+R", description: "read the model's full reasoning" },
   { group: "Screen", keys: "Ctrl+L", description: "clear the screen" },

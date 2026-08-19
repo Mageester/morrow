@@ -50,7 +50,20 @@ export interface SelectOverlay {
   onChoose: (id: string | null) => void;
 }
 
-export type Overlay = ModelOverlay | SelectOverlay;
+/**
+ * The conversation, opened for reading.
+ *
+ * Not a choice to answer — it is dismissed, not chosen — but it belongs here
+ * because it is the same category of thing: a surface that takes the keyboard
+ * until it closes.
+ */
+export interface TranscriptOverlay {
+  kind: "transcript";
+  entries: readonly import("../state.js").ConversationEntry[];
+  onChoose: (id: string | null) => void;
+}
+
+export type Overlay = ModelOverlay | SelectOverlay | TranscriptOverlay;
 
 /** The value an overlay answers with. */
 export type OverlayChoice = ModelPickerItem | string | null;

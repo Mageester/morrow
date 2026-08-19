@@ -499,9 +499,18 @@ function inferIndicators(topLevel: { entries: Array<{ path: string; type: "file"
  * tool count is derived from this one list instead of a hand-maintained
  * literal that silently drifts whenever a read-only tool is added.
  */
+/** Bounds on a model-authored plan: long enough for real work, short enough
+ *  that a runaway list cannot fill the user's terminal. */
+const MAX_PLAN_STEPS = 20;
+type PlanStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+const PLAN_STATUSES = new Set<string>(["pending", "running", "completed", "failed", "skipped"]);
+
 export const READ_ONLY_TOOL_NAMES = new Set([
   "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols",
   "git_status", "git_diff", "git_log", "read_artifact", "find_skill", "load_skill",
+  // Writes only Morrow's own plan record, never a workspace file. A plan-only
+  // turn is the case that needs it most.
+  "write_plan",
 ]);
 
 /** Select an optimization classification only when the request makes the
@@ -1489,6 +1498,28 @@ export async function executeAgentChatTask({
       }
     },
     {
+      name: "write_plan",
+      description: "Publish or update the plan for this task, as the checklist the user watches. Send the WHOLE list every time — it replaces the previous one, so this is also how a step is marked in progress or done. Call it once you know the shape of the work (more than a couple of steps), then again each time a step changes state. Skip it for work that is genuinely one step; a plan for a trivial request is noise.",
+      parameters: {
+        type: "object",
+        properties: {
+          steps: {
+            type: "array",
+            description: "The complete plan, in order. Replaces any previous plan.",
+            items: {
+              type: "object",
+              properties: {
+                title: { type: "string", description: "What this step does, as a short imperative phrase the user would recognise (e.g. 'Rewrite the hero section')." },
+                status: { type: "string", enum: ["pending", "running", "completed", "failed", "skipped"], description: "Exactly one step should be 'running' at a time." }
+              },
+              required: ["title", "status"]
+            }
+          }
+        },
+        required: ["steps"]
+      }
+    },
+    {
       name: "propose_patch",
       description: "Propose a unified diff patch to modify EXISTING workspace files (or create new ones via a '--- /dev/null' hunk). To create a new file from scratch, prefer create_file. Rejects absolute paths, binary files, traversal, and unauthorized directories.",
       parameters: {
@@ -1762,6 +1793,8 @@ ${writeToolInstructions}`;
 You are running in an environment scoped to the project: ${projectName} located at ${workspacePath}.
 
 Act on the request. If it is clear enough to start, start — never open by asking which part to do first, or by listing back what you were already asked to do. Ask only when a wrong guess would waste real work; otherwise state your assumption and proceed. Do every part of a multi-part request.
+
+When the work has more than a couple of distinct steps, call write_plan with the whole list before you start, and call it again — with the whole list — each time a step starts or finishes. That checklist is what the user watches while you work. Do not use it for a one-step request.
 
 You MUST choose relevant files, do NOT automatically ingest the entire repository.
 If you need to explore, call inspect_workspace once for bounded root facts, prefer search_symbols before broad search, then use list_files/search_files/search_text/read_file only for paths relevant to the user's request.
@@ -2607,6 +2640,33 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       });
       event("evidence.persisted", { path: relPath, size: 0, action: "created_directory" });
       return JSON.stringify({ status: "success", path: relPath, created });
+    } else if (toolName === "write_plan") {
+      // The model owns this plan. The three-step scaffold created at task start
+      // is an internal phase machine — identical on every task — and is
+      // deliberately never surfaced. Only a plan somebody actually wrote gets
+      // published to a watching client, which is why this emits its own event
+      // rather than reusing `plan.created`.
+      const submitted = Array.isArray(args.steps) ? args.steps : [];
+      const steps = submitted
+        .map((step: unknown) => (step ?? {}) as Record<string, unknown>)
+        .map((step: Record<string, unknown>, index: number) => ({
+          id: randomUUID(),
+          position: index + 1,
+          title: String(step.title ?? "").trim().slice(0, 200),
+          description: String(step.description ?? step.title ?? "").trim().slice(0, 500),
+          status: (PLAN_STATUSES.has(String(step.status)) ? String(step.status) : "pending") as PlanStepStatus,
+        }))
+        .filter((step: { title: string }) => step.title.length > 0)
+        .slice(0, MAX_PLAN_STEPS);
+      if (steps.length === 0) {
+        return JSON.stringify({ status: "rejected", reason: "A plan needs at least one step with a title." });
+      }
+      transitionAgentState("executing_tool", { tool: "write_plan" });
+      records.replacePlan(taskId, steps);
+      event("plan.published", {
+        steps: steps.map((step: { id: string; title: string; status: PlanStepStatus }) => ({ id: step.id, title: step.title, status: step.status })),
+      });
+      return JSON.stringify({ status: "success", stepCount: steps.length });
     } else if (toolName === "find_skill") {
       const query = (args.query || "").toLowerCase().trim();
       if (!query) return JSON.stringify({ skills: [] });

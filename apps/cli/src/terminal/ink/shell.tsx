@@ -8,6 +8,7 @@ import { TerminalStore } from "./store.js";
 import { mapTaskEvent } from "../task-event-adapter.js";
 import { builtinRegistry, skillCommands, type CommandContext, type CommandRegistry, type SessionInfo } from "../commands/index.js";
 import { errorText } from "../commands/format.js";
+import { editExternally } from "../external-editor.js";
 import type { SendOptions, SessionBackend } from "../session-types.js";
 import type { TerminalEvent } from "../events.js";
 
@@ -181,6 +182,7 @@ export function startShell(options: ShellOptions): ShellHandle {
     activeTaskId: () => activeTask?.id ?? null,
     contextUsage: () => store.state.contextUsage ?? null,
     usage: () => store.state.usage ?? null,
+    conversation: () => store.state.conversation,
   };
 
   const registry = context.registry.extend(
@@ -238,6 +240,38 @@ export function startShell(options: ShellOptions): ShellHandle {
     });
   };
 
+  /**
+   * Hand the terminal to an editor, then take it back.
+   *
+   * Ink holds stdin in raw mode and repaints on its own schedule, so the order
+   * here is the whole trick: stop reading, drop raw mode, let the child own
+   * the real TTY, then restore. `editExternally` uses `spawnSync`, which
+   * blocks this loop, so Ink cannot paint a frame over an editor that is on
+   * screen. Anything that goes wrong comes back as a notice — a failed edit
+   * must never take the session down or silently discard a draft.
+   */
+  const composeExternally = (text: string): string | null => {
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw === true;
+    try {
+      if (wasRaw && typeof stdin.setRawMode === "function") stdin.setRawMode(false);
+      stdin.pause();
+      const result = editExternally(text);
+      if (result.error) {
+        emit({ type: "notice", level: "warn", text: `Could not edit that here: ${result.error}.` });
+        return null;
+      }
+      return result.text;
+    } finally {
+      stdin.resume();
+      if (wasRaw && typeof stdin.setRawMode === "function") stdin.setRawMode(true);
+      // The editor drew over the frame Ink believes is on screen, so the next
+      // render has to start from a clean one rather than patching a screen
+      // that is no longer there.
+      clearTerminal();
+    }
+  };
+
   const instance = render(
     <App
       approvals={approvals}
@@ -247,6 +281,7 @@ export function startShell(options: ShellOptions): ShellHandle {
       onApprovalDecision={decideApproval}
       onCompleteFile={options.onCompleteFile}
       onExit={() => stopShell()}
+      onExternalEdit={composeExternally}
       onHistoryAppend={options.onHistoryAppend}
       onInterrupt={interrupt}
       onSubmit={submit}

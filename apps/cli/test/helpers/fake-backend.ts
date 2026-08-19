@@ -51,6 +51,7 @@ export function harness(
     contextUsage?: ContextUsageInfo | null;
     usage?: UsageInfo | null;
     interruptible?: boolean;
+    conversation?: readonly import("../../src/terminal/state.js").ConversationEntry[];
   } = {},
 ): Harness {
   const overlays = new OverlayStore();
@@ -93,6 +94,7 @@ export function harness(
     lastTaskId: () => over.lastTaskId ?? null,
     activeTaskId: () => over.activeTaskId ?? null,
     contextUsage: () => over.contextUsage ?? null,
+    conversation: () => over.conversation ?? [],
     usage: () => over.usage ?? null,
   };
 

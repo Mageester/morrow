@@ -25,34 +25,58 @@
   `apps/cli` (terminal TUI + client), `apps/web`, `apps/desktop`,
   `skills/` (built-in skills), `packages/{ui,config,hermes-compat}`.
 
-## Baseline (captured 2026-06-22)
+## Baseline (captured 2026-06-22, refreshed 2026-08-19)
 
-- `pnpm test` → **105 tests / 23 files green** (`apps/cli` 105; orchestrator &
-  contracts suites cached green).
-- Orchestrator exposes ~45 HTTP routes (`services/orchestrator/src/server.ts`).
-- 10 agent tools in catalog; 6 signed built-in skills.
+- 2026-06-22: `pnpm test` → 105 tests / 23 files green; ~45 HTTP routes;
+  10 agent tools; 6 signed built-in skills.
+- 2026-08-19: `apps/cli` → **688 passed / 3 failed** across 72 files. The three
+  reproduce with all local changes stashed (`acceptance-durable-autonomy` ×2,
+  `service-lifecycle` ×1) and are this machine's OneDrive path casing, not
+  behaviour. `services/orchestrator` → 2256 passed / 6 failed, of which
+  `flagship-web` ×2 is a Windows `EPERM` flake in an `afterEach` cleanup that
+  varies run to run. **33 agent tools** in the catalog.
 
 ---
 
 ## 1. Terminal / TUI
 
-| Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
+> **Re-verified 2026-08-19 against the post-rebuild tree.** Every row in this
+> section previously cited `terminal/commands.ts`, `completion.ts`,
+> `input-state.ts`, `runtime.ts`, `app-view.ts`, `session.ts` and `paint.ts` as
+> evidence. All seven were deleted in the v0.1.1 CLI shell rebuild (PR #79), so
+> every `VERIFIED` here was resting on files that no longer exist. Rows below
+> name files that do.
+>
+> Comparison set: Hermes `ui-tui/src` (local read-only checkout) and **pi**
+> `@earendil-works/pi-coding-agent` v0.84.2. pi is now installed and on PATH —
+> `docs/harness-efficiency-report-2026-08-11.md` records it as unavailable, and
+> that is out of date.
+
+| Capability | Reference evidence | Morrow status | Morrow evidence | Gap |
 |---|---|---|---|---|
-| Full-screen interactive TUI | `ui-tui/src`, `cli.py` curses loop | PARTIAL | `apps/cli/src/terminal/*` (events→reduce→state→view→renderer) | Alt-screen full-frame layout, live mission header |
-| Multiline input | TUI editor | PARTIAL | `terminal/input-state.ts`, `prompt.ts` | Verify soft-wrap + paste; tests |
-| Slash-command autocomplete | TUI | VERIFIED | `terminal/commands.ts`, `completion.ts`, `terminal-completion.test.ts` | — |
-| Command history | TUI | VERIFIED | in-session ring (`prompt.ts`) + persisted `terminal/history.ts` (load/append, dedup, trim, ignore noise) wired into the session via `onHistory`/`history`. `test/terminal-history.test.ts` (5) | — |
-| Streaming tool cards | TUI streaming | VERIFIED | `terminal/state.ts` ToolCard, `terminal-view.test.ts` | — |
-| Live task tree | Hermes plan view | VERIFIED | `GET /api/tasks/:id/tree` + terminal Mission Control `/tree` render nested child tasks. `services/orchestrator/test/subagents.test.ts`, `apps/cli/test/mission-control.test.ts` | Parent/child terminal-state reconciliation remains tracked in runtime docs |
-| Bounded transcript | TUI scrollback cap | PARTIAL | `state.ts` transcript cap | Verify cap + `/output` overflow |
-| `/output` viewer | TUI | VERIFIED | `commands.ts` + bounded viewer commit `60d72ce` | — |
-| `/diff` | TUI diff | VERIFIED | `commands.ts`, server `/api/tasks/:id/diff`, integration test | — |
-| `/undo` | TUI undo | VERIFIED | `commands.ts`, server `/api/tasks/:id/undo`, integration test | — |
-| Ctrl+K palette | — | VERIFIED | `terminal/palette.ts` (static items = all slash commands + capability modes; fuzzy subsequence ranking, prefix-boosted) + `input-state.ts` Ctrl+K overlay (type-to-filter, ↑/↓/Tab navigation, Enter runs the item through the normal dispatch, Esc/Ctrl+C close, Ctrl+U clears, in-progress buffer preserved) rendered by `app-view.ts`. `test/terminal-palette.test.ts` (11) | Dynamic items (models/projects/sessions) supplied by the session controller where available |
-| Resize handling | TUI | PARTIAL | `renderer.ts` width clip | SIGWINCH reflow test |
-| No-color / ASCII fallback | TUI | VERIFIED | `capabilities.ts`, `view.ts` glyphs, `terminal-capabilities.test.ts` | — |
-| Clean Ctrl+C | TUI | PARTIAL | `runtime.ts` signal handling | Double-Ctrl-C abort test |
-| Crash recovery (no dup / false fail) | TUI reconnect | PARTIAL | `recovery.ts`, SSE resume | Mid-stream reconnect dedup test |
+| One command registry | Hermes splits `cli.py` and `ui-tui/` | VERIFIED | `terminal/commands/registry.ts`; handlers return a `Report` and never paint, so the Ink shell and `commands/line-surface.ts` cannot diverge. `test/terminal-command-registry.test.ts` | — |
+| Slash-command autocomplete | pi `tui.input.tab` | VERIFIED | `ink/palette.tsx`, `ink/editor.ts`; `test/terminal-shell.test.tsx` | — |
+| Command history | pi `tui.editor.historyPrevious` | VERIFIED | `terminal/history.ts` + `ink/editor.ts` ring; `test/terminal-history.test.ts` | — |
+| Live activity indicator | pi spinner + elapsed; Hermes `thinking.tsx` | VERIFIED | `ink/activity-line.tsx` — spinner, present-tense action, elapsed, reported tokens, `esc to interrupt`; `test/terminal-shell.test.tsx` | — |
+| Streaming tool rows | Hermes `streamingAssistant.tsx` | VERIFIED | `ink/work-summary.tsx` collapses repeats, never folds a failure; `ink/tool-verbs.ts` carries both tenses | — |
+| Failure is visible | pi renders errors inline | VERIFIED | `ink/outcome.tsx` covers failed / stalled / budget-reached / cancelled / interrupted with the runtime's reason and next commands | — |
+| Model-authored plan | Hermes `todoPanel.tsx`; pi todo display | VERIFIED | `write_plan` tool + `plan.published` → `ink/plan-view.tsx`, windowed around the running step | — |
+| Reasoning display | pi `app.thinking.toggle` | VERIFIED | `ink/reasoning-view.tsx`, live tail + Ctrl+R; word-wrapped | — |
+| Ctrl+K palette | pi has no equivalent | VERIFIED | `ink/palette.tsx` fuzzy, prefix-boosted; `test/terminal-shell.test.tsx` | — |
+| External editor | pi `app.editor.external` (`ctrl+g`) | VERIFIED | `terminal/external-editor.ts`, Ctrl+X; raw-mode handoff in `ink/shell.tsx` | — |
+| Copy last answer | pi `app.message.copy` (`ctrl+x`) | VERIFIED | `/copy` + `terminal/clipboard.ts` | — |
+| Search the conversation | pi `tui.altScreen.search` (`ctrl+shift+f`) | VERIFIED | `/find` reports matching turns; `ink/transcript-overlay.tsx` searches interactively with `/`, `n`/`N` to step matches | — |
+| Scrollable transcript | pi fullscreen viewport; Hermes `useVirtualHistory.ts` (554 lines) + `app/scroll.ts` | PARTIAL | `ink/transcript-overlay.tsx` (Ctrl+P, `/transcript`): scroll, search, jump between matches, top/bottom | Reading happens in an overlay, not on the live screen. Deliberate: settled turns live in Ink `<Static>`, which is what makes a long session cost the same per frame as an empty one. Scrolling the live transcript means virtualizing it and giving that up. Still missing either way: mouse selection, OSC 8 links, jump-to-previous-prompt on the main surface |
+| Configurable keybindings | pi ~100 namespaced actions + `~/.pi/agent/keybindings.json` + `/reload` | MISSING | `ink/keymap.ts` — 29 bindings, hardcoded, but declared once and rendered by `/shortcuts` so they cannot drift from their documentation | No user rebinding |
+| Session fork / tree | pi `--fork`, `/tree`, rename, delete, filters | MISSING | `/new`, `/resume`, `/sessions`, `/continue` only | Forking a session at a chosen turn has no equivalent |
+| Themes | pi `--theme`, `--use-theme`, discovery | MISSING | `ink/theme.ts`, one palette in two layers (`vars` → roles) | No theme loading |
+| Image paste | pi `app.clipboard.pasteImage` | MISSING | `usePaste` handles text only | Backend must accept images first |
+| Extension management | pi `install/remove/update/list`; Hermes `pluginsHub.tsx`, `skillsHub.tsx` | PARTIAL | `/skills`, `/integrate`, `/cortex` | No in-CLI install/update flow |
+| Non-interactive / scripting | pi `--print`, `--mode json/rpc`, SDK, `--export` | MISSING | Interactive shell, plus `commands/line-surface.ts` as a plain-line fallback | No `--print` or JSON mode, so no CI or pipe use |
+| No-color / ASCII fallback | Hermes TUI | VERIFIED | `terminal/capabilities.ts`, `glyphs(unicode)` in `ink/theme.ts`; `test/terminal-capabilities.test.ts` | — |
+| Clean Ctrl+C | pi `app.clear` | VERIFIED | Ctrl+C stops work, twice on an idle empty line exits; `test/terminal-shell.test.tsx` | — |
+| Crash recovery | pi session resume | PARTIAL | `client/sse.ts` reconnect + resume cursor | Mid-stream reconnect dedup test still missing |
+
 
 ## 2. YOLO / autonomy & safety
 
