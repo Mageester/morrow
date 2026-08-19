@@ -871,6 +871,15 @@ describe("composing somewhere other than one line", () => {
     expect(editorCommand({ VISUAL: "  ", EDITOR: "nano" }, "linux")).toBe("nano");
   });
 
+  it("quotes a path for the shell only where a shell is used", async () => {
+    const { quoteArgument } = await import("../src/terminal/external-editor.js");
+    // A Windows username with a space is ordinary, and `shell: true`
+    // concatenates argv without escaping, so the path has to survive it.
+    expect(quoteArgument("C:/Users/John Smith/t/message.md", "win32")).toBe('"C:/Users/John Smith/t/message.md"');
+    expect(quoteArgument("/tmp/a b/message.md", "linux")).toBe("'/tmp/a b/message.md'");
+    expect(quoteArgument("/tmp/o'brien/message.md", "linux")).toBe(String.raw`'/tmp/o'\''brien/message.md'`);
+  });
+
   it("replaces the draft with what came back", async () => {
     const onExternalEdit = vi.fn(() => "a much longer message, written properly");
     const { view, onSubmit } = mount({ onExternalEdit });

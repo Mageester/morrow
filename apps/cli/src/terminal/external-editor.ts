@@ -24,6 +24,14 @@ export function editorCommand(env: NodeJS.ProcessEnv, platform: NodeJS.Platform)
   return platform === "win32" ? "notepad" : "nano";
 }
 
+/** Quote a path for the platform shell, for the one branch that needs one. */
+export function quoteArgument(value: string, platform: NodeJS.Platform): string {
+  // cmd.exe has no escape for a quote inside a quoted string; a temp path
+  // cannot contain one, and stripping is safer than emitting broken syntax.
+  if (platform === "win32") return `"${value.replaceAll('"', "")}"`;
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 export interface ExternalEditResult {
   /** The edited text, or null when nothing usable came back. */
   text: string | null;
@@ -48,9 +56,18 @@ export function editExternally(
     dir = mkdtempSync(join(tmpdir(), "morrow-compose-"));
     const file = join(dir, "message.md");
     writeFileSync(file, text, "utf8");
-    // `shell: true` so a configured EDITOR carrying its own flags ("code -w")
-    // works the way it does in every other tool that reads that variable.
-    const result = spawnSync(command, [file], { stdio: "inherit", shell: true, windowsHide: false });
+    // A shell is used only when the configured editor carries its own flags
+    // ("code -w"), because that form has to be word-split to work at all.
+    //
+    // It is NOT used for a bare command, and that distinction matters: with
+    // `shell: true` Node concatenates argv without escaping (DEP0190), so the
+    // temp path gets word-split too. Any Windows account whose username holds
+    // a space — C:\Users\John Smith\AppData\... — had the editor opening
+    // C:\Users\John instead of the draft.
+    const needsShell = /\s/.test(command);
+    const result = needsShell
+      ? spawnSync(`${command} ${quoteArgument(file, platform)}`, { stdio: "inherit", shell: true, windowsHide: false })
+      : spawnSync(command, [file], { stdio: "inherit", windowsHide: false });
     if (result.error) return { text: null, error: `${command} could not be started (${result.error.message})` };
     if (typeof result.status === "number" && result.status !== 0) {
       return { text: null, error: `${command} exited with status ${result.status}` };
