@@ -897,3 +897,60 @@ describe("composing somewhere other than one line", () => {
     expect(onSubmit).toHaveBeenCalledWith("keep me");
   });
 });
+
+describe("reading back through the conversation", () => {
+  const talk = [
+    { role: "user" as const, text: "rewrite the pricing table", streaming: false },
+    { role: "assistant" as const, text: "Done. The pricing table now reads from config.", streaming: false },
+    { role: "user" as const, text: "and the footer?", streaming: false },
+    { role: "assistant" as const, text: "The footer is untouched so far.", streaming: false },
+  ];
+
+  it("flattens turns into rows, attributed and wrapped", async () => {
+    const { transcriptLines } = await import("../src/terminal/ink/transcript-overlay.js");
+    const lines = transcriptLines(talk, 40);
+    expect(lines.filter((line) => line.speaker === "you")).toHaveLength(2);
+    expect(lines.filter((line) => line.speaker === "morrow")).toHaveLength(2);
+    for (const line of lines) expect(line.text.length).toBeLessThanOrEqual(40);
+  });
+
+  it("finds body rows only, never the speaker labels", async () => {
+    const { transcriptLines, matchRows } = await import("../src/terminal/ink/transcript-overlay.js");
+    const lines = transcriptLines(talk, 80);
+    // "you" appears as a label on every user turn; searching for it must not
+    // match those, or every search would hit the scaffolding.
+    expect(matchRows(lines, "you")).toEqual([]);
+    expect(matchRows(lines, "footer")).toHaveLength(2);
+    expect(matchRows(lines, "")).toEqual([]);
+  });
+
+  it("wraps match navigation at both ends", async () => {
+    const { wrapIndex } = await import("../src/terminal/ink/transcript-overlay.js");
+    expect(wrapIndex(3, 3)).toBe(0);
+    expect(wrapIndex(-1, 3)).toBe(2);
+    expect(wrapIndex(0, 0)).toBe(0);
+  });
+
+  it("opens on the conversation and closes on escape", async () => {
+    const { view, store, overlays } = mount();
+    for (const entry of talk) {
+      store.apply(
+        entry.role === "user"
+          ? { type: "user.message", text: entry.text }
+          : { type: "assistant.delta", turnId: "legacy", text: entry.text },
+      );
+    }
+    await tick();
+    overlays.set({ kind: "transcript", entries: store.state.conversation, onChoose: () => {} });
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).toContain("Conversation");
+    expect(frame).toContain("esc close");
+    // The composer is gone while the reader has the keyboard.
+    expect(frame).not.toContain("ask, or / for commands");
+
+    view.stdin.write(ESC);
+    await tick();
+    expect(plain(view.lastFrame())).not.toContain("esc close");
+  });
+})

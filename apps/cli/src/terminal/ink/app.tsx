@@ -25,6 +25,7 @@ import { CommandPalette, filterCommands, type Scored } from "./palette.js";
 import { ReasoningView } from "./reasoning-view.js";
 import { ReportView } from "./report-view.js";
 import { SelectOverlay } from "./select-overlay.js";
+import { TranscriptOverlay } from "./transcript-overlay.js";
 import { StatusLine } from "./status-line.js";
 import type { TerminalStore } from "./store.js";
 import { glyphs, theme } from "./theme.js";
@@ -399,6 +400,11 @@ export function App({
         return;
       }
 
+      if (key.ctrl && input === "p") {
+        submit("/transcript");
+        return;
+      }
+
       if (key.ctrl && input === "x" && onExternalEdit) {
         // The draft goes out to the editor and whatever comes back replaces
         // it. A cancelled edit returns null and the composer is left exactly
@@ -593,6 +599,15 @@ export function App({
           currentId={overlay.currentId}
           items={overlay.items}
           onChoose={(item) => overlays?.close(item)}
+          unicode={unicode}
+          width={width}
+        />
+      ) : null}
+
+      {overlay?.kind === "transcript" ? (
+        <TranscriptOverlay
+          entries={overlay.entries}
+          onClose={() => overlays?.close(null)}
           unicode={unicode}
           width={width}
         />

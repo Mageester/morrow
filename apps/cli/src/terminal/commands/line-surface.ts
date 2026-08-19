@@ -100,6 +100,12 @@ export function createLineSurface(options: LineSurfaceOptions) {
             options.print(`  ${item.current ? "*" : " "} ${item.label}${item.hint ? `  ${item.hint}` : ""}`);
           }
           options.print(`Pass one as an argument: /${command.name} <id>`);
+        } else if (overlay.kind === "transcript") {
+          // A pager needs a screen to page. On the plain-line surface the
+          // transcript is already above the cursor, so say so rather than
+          // reprinting the whole session under a command that promised a
+          // reader.
+          options.print("The conversation is already above; /find searches it.");
         } else {
           options.print("Available models:");
           for (const item of overlay.items) {

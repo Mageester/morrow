@@ -366,6 +366,23 @@ export const findCommand: Command = {
   },
 };
 
+export const transcriptCommand: Command = {
+  name: "transcript",
+  aliases: ["scrollback"],
+  summary: "read back through this conversation",
+  category: "session",
+  details:
+    "Opens the session for reading: scroll with the arrows, / to search, n for the next match, esc to close. Morrow writes settled turns into the terminal's own scrollback and never redraws them, which is what keeps a long session cheap — so this is a reader over the same turns rather than a scroll of the live screen.",
+  run(_args, ctx) {
+    const conversation = ctx.conversation();
+    if (conversation.length === 0) {
+      return { notice: { level: "warn", text: "Nothing has been said in this session yet." } };
+    }
+    ctx.overlays.set({ kind: "transcript", entries: conversation, onChoose: () => {} });
+    return { deferred: true };
+  },
+};
+
 export function conversationReport(title: string, lines: string[]): Report {
   return report(title).text(lines.join("\n")).build();
 }
@@ -381,5 +398,6 @@ export const SESSION_COMMANDS: Command[] = [
   clearCommand,
   copyCommand,
   findCommand,
+  transcriptCommand,
   exitCommand,
 ];

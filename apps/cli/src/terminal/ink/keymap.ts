@@ -42,6 +42,7 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
   { group: "Running work", keys: "Esc", description: "stop the running task" },
   { group: "Running work", keys: "type while working", description: "queued and sent when the task ends" },
 
+  { group: "Screen", keys: "Ctrl+P", description: "read back through the conversation, and search it" },
   { group: "Screen", keys: "Ctrl+O", description: "expand or collapse tool detail" },
   { group: "Screen", keys: "Ctrl+R", description: "read the model's full reasoning" },
   { group: "Screen", keys: "Ctrl+L", description: "clear the screen" },
