@@ -6,6 +6,69 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-19
+
+The rebuilt shell was fast and quiet. Too quiet: it went blank between
+submitting a message and the first token, showed a green tick beside a running
+turn's tool count, and said nothing at all when a task failed. A provider error
+left the last successful tool's checkmark on screen and handed back the prompt,
+so a failure was indistinguishable from an answer that never came.
+
+### Added
+
+- A live activity line (`terminal/ink/activity-line.tsx`): present from submit
+  to settle, carrying a spinner, the tool in flight in the present tense,
+  elapsed time, the tokens the provider actually reported, and `esc to
+  interrupt` — which has always worked and was never advertised.
+- A plan the model writes. The `write_plan` tool takes the whole list on every
+  call, so marking a step running or done needs no incremental events and the
+  terminal cannot drift out of step with the runtime. It publishes
+  `plan.published`, kept separate from the internal `plan.created` scaffold, and
+  renders in `terminal/ink/plan-view.tsx` windowed around the running step.
+- `terminal/ink/outcome.tsx`: every ending that is not an answer — failed,
+  stalled, budget-reached, cancelled, interrupted — with the reason the runtime
+  gave and the commands worth trying next. Cancelling stays quiet.
+- Ctrl+X hands the draft to `$EDITOR` (`terminal/external-editor.ts`), honouring
+  `MORROW_EDITOR`, `VISUAL` and `EDITOR`. Quitting the editor leaves the draft
+  untouched.
+- Ctrl+P opens the conversation for reading (`terminal/ink/transcript-overlay.tsx`):
+  scroll, `/` to search, `n`/`N` to step matches, `g`/`G` for the ends. It is an
+  overlay rather than a scroll of the live transcript, because settled turns
+  live in Ink's `<Static>` and that is what keeps a long session as cheap to
+  render as an empty one.
+- `/find` searches this conversation and reports the turns that match; `/copy`
+  puts the last answer on the clipboard.
+
+### Fixed
+
+- The shell claimed a running turn was finished. The collapsed work summary
+  chose its mark from whether a tool was mid-flight, and between calls — every
+  second the model spends generating — none is, so it fell through to a tick and
+  read "completed 11 tools" on a turn that was still going.
+- Nothing rendered between hitting enter and the first token, because the work
+  summary was gated on having tools and the live turn on having text. A slow
+  provider was indistinguishable from a shell that had ignored the keystroke.
+- A failed task printed nothing. `task.failed` set `lastError` in the reducer
+  and no component in the shell ever read it; the plain-line surface had been
+  printing `Task failed: …` the whole time.
+- The progress warning contradicted the line above it, announcing that nothing
+  observable was happening directly beneath a report of the elapsed time and the
+  tool in flight. It now dims that line instead of arguing with it.
+- Tool rows said the verb twice. `run_command` arrives with
+  `purpose: "Run pnpm test"`, so composing verb and target produced "Ran Run
+  pnpm test". Both tenses now come from one table.
+- The model's reasoning wrapped at an exact column, cutting every wrapped line
+  mid-word — the one view in the shell that did not wrap like the rest of it.
+
+### Changed
+
+- `docs/HERMES_PARITY_MATRIX.md` section 1 is re-verified against the current
+  tree. Every row cited `commands.ts`, `completion.ts`, `input-state.ts`,
+  `runtime.ts`, `app-view.ts`, `session.ts` or `paint.ts` as evidence, and all
+  seven were deleted in 0.1.1 — so every `VERIFIED` was resting on files that no
+  longer exist. Statuses are now set against pi v0.84.2 and the local Hermes
+  checkout, and the gaps that remain are named as gaps.
+
 ## [0.1.1] - 2026-08-18
 
 The terminal shell is rebuilt. The CLI advertised seventy-one slash commands
