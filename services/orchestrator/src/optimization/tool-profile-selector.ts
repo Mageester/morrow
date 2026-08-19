@@ -25,6 +25,11 @@ export interface ToolProfileSelection {
 const READ_ONLY_WORKSPACE = [
   "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols",
   "git_status", "git_diff", "git_log", "read_artifact", "find_skill", "load_skill",
+  // Every profile spreads from this list, and a plan is worth having on all of
+  // them — a coding task is exactly the one a user wants a checklist for.
+  // It writes Morrow's own plan record and never a workspace file, so it costs
+  // the read-only profiles nothing.
+  "write_plan",
 ] as const;
 
 const RESEARCH = [

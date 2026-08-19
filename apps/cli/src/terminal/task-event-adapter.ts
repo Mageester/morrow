@@ -25,6 +25,10 @@ export type MappedTerminalEvent = TerminalEvent & { sourceEventId?: string };
 function str(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
 }
+function planStatus(value: unknown): "pending" | "running" | "completed" | "failed" | "skipped" {
+  const text = typeof value === "string" ? value : "";
+  return text === "running" || text === "completed" || text === "failed" || text === "skipped" ? text : "pending";
+}
 function num(v: unknown): number | undefined {
   return typeof v === "number" ? v : undefined;
 }
@@ -186,6 +190,23 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
     case "assistant.reasoning_delta": {
       const text = str(p.text);
       return text ? withSource([{ type: "reasoning.delta", text }]) : [];
+    }
+
+    case "plan.published": {
+      // Only a model-authored plan reaches the screen. `plan.created` carries
+      // the internal three-step scaffold that is identical on every task, so
+      // surfacing it would paint the same rows over every piece of work and
+      // teach people to ignore the panel.
+      const raw = Array.isArray(p.steps) ? p.steps : [];
+      const steps = raw
+        .map((entry) => (entry ?? {}) as Record<string, unknown>)
+        .map((entry, index) => ({
+          id: str(entry.id) ?? `step-${index + 1}`,
+          title: str(entry.title) ?? "",
+          status: planStatus(entry.status),
+        }))
+        .filter((step) => step.title.trim().length > 0);
+      return steps.length > 0 ? withSource([{ type: "plan.snapshot", steps }]) : [];
     }
 
     case "task.progress_warning":

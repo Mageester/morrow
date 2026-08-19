@@ -9,6 +9,8 @@ import { toolLabel, workRows } from "../src/terminal/ink/work-summary.js";
 import { activityLabel, elapsedLabel, tokenLabel } from "../src/terminal/ink/activity-line.js";
 import { phrase } from "../src/terminal/ink/tool-verbs.js";
 import { outcomeFor } from "../src/terminal/ink/outcome.js";
+import { planWindow } from "../src/terminal/ink/plan-view.js";
+import { mapTaskEvent } from "../src/terminal/task-event-adapter.js";
 import { rows } from "../src/terminal/ink/reasoning-view.js";
 import { report } from "../src/terminal/report.js";
 import type { ToolCard } from "../src/terminal/state.js";
@@ -690,6 +692,65 @@ describe("reasoning wraps on words", () => {
 
   it("keeps existing line breaks", () => {
     expect(rows("one\ntwo", 20)).toEqual(["one", "two"]);
+  });
+});
+
+describe("shell: the plan", () => {
+  it("shows a plan the model published, from the runtime event", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "overhaul the site" });
+    for (const event of mapTaskEvent({
+      type: "plan.published",
+      payload: {
+        steps: [
+          { id: "s1", title: "Audit the current sections", status: "completed" },
+          { id: "s2", title: "Rewrite the hero", status: "running" },
+          { id: "s3", title: "Rebuild the pricing table", status: "pending" },
+        ],
+      },
+    } as never)) {
+      store.apply(event);
+    }
+    await tick();
+    const frame = plain(view.lastFrame());
+    expect(frame).toContain("Plan");
+    expect(frame).toContain("Rewrite the hero");
+    expect(frame).toContain("1/3");
+  });
+
+  it("never surfaces the internal three-step scaffold", () => {
+    // `plan.created` is the phase machine built identically on every task.
+    // Painting it would put the same three rows over everyone's work.
+    expect(mapTaskEvent({ type: "plan.created", payload: { stepCount: 3 } } as never)).toEqual([]);
+    expect(mapTaskEvent({ type: "step.started", payload: { stepId: "x" } } as never)).toEqual([]);
+  });
+
+  it("drops a published plan with no usable steps rather than drawing an empty panel", () => {
+    expect(mapTaskEvent({ type: "plan.published", payload: { steps: [] } } as never)).toEqual([]);
+    expect(mapTaskEvent({ type: "plan.published", payload: { steps: [{ title: "  " }] } as never })).toEqual([]);
+  });
+
+  it("defaults an unrecognised status to pending rather than inventing progress", () => {
+    const events = mapTaskEvent({
+      type: "plan.published",
+      payload: { steps: [{ id: "s1", title: "Do the thing", status: "wat" }] },
+    } as never);
+    expect(events[0]).toMatchObject({ type: "plan.snapshot", steps: [{ status: "pending" }] });
+  });
+
+  it("windows a long plan around the running step, keeping it on screen", () => {
+    const plan = Array.from({ length: 12 }, (_, index) => ({
+      id: `s${index}`,
+      title: `Step ${index}`,
+      status: index < 6 ? ("completed" as const) : index === 6 ? ("running" as const) : ("pending" as const),
+    }));
+    const windowed = planWindow(plan, false);
+    expect(windowed.doneBefore).toBe(6);
+    expect(windowed.visible[0]).toMatchObject({ id: "s6", status: "running" });
+    expect(windowed.visible).toHaveLength(4);
+    expect(windowed.moreAfter).toBe(2);
+    // Ctrl+O shows the lot.
+    expect(planWindow(plan, true).visible).toHaveLength(12);
   });
 });
 

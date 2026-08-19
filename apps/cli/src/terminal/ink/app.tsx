@@ -18,6 +18,7 @@ import {
 import { Markdown } from "./markdown.js";
 import { ModelPicker } from "./model-picker.js";
 import { Outcome } from "./outcome.js";
+import { PlanView } from "./plan-view.js";
 import type { OverlayStore } from "./overlay-store.js";
 import { CommandPalette, filterCommands, type Scored } from "./palette.js";
 import { ReasoningView } from "./reasoning-view.js";
@@ -493,6 +494,10 @@ export function App({
           <SettledTurn entry={item.entry} key={item.key} unicode={unicode} width={width} />
         )}
       </Static>
+
+      {state.plan.length > 0 && overlay === null && !pendingApproval ? (
+        <PlanView expanded={expanded} plan={state.plan} unicode={unicode} width={width} />
+      ) : null}
 
       {streaming && state.tools.length > 0 ? (
         <Box marginTop={1}>
