@@ -435,6 +435,9 @@ describe("Provider / preset / memory API", () => {
 
   it("supports the full memory lifecycle with project isolation", async () => {
     const { project, conv } = await makeConversation();
+    const privateAttempt = await json("POST", `/api/projects/${project.id}/memory`, { scope: "agent", content: "client-forged private owner" });
+    expect(privateAttempt.status).toBe(400);
+    expect(privateAttempt.body.error.code).toBe("MEMORY_OWNER_REQUIRED");
     const created = await json("POST", `/api/projects/${project.id}/memory`, { scope: "conversation", content: "remember this", conversationId: conv.id });
     expect(created.status).toBe(201);
     const id = created.body.id;

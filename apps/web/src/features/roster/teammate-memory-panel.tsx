@@ -15,8 +15,8 @@ function sourceLabel(entry: MemoryEntry): string {
 }
 
 function scopeLabel(entry: MemoryEntry): string {
-  if (entry.scope === "agent") return "Agent scope · project-local";
-  if (entry.scope === "team") return "Shared team scope · project-local";
+  if (entry.scope === "agent") return entry.ownerAgentId ? `Agent scope · owned by ${entry.ownerAgentId}` : "Agent scope · unassigned legacy record";
+  if (entry.scope === "team") return entry.ownerTeamId ? `Shared team scope · owned by ${entry.ownerTeamId}` : "Shared team scope · unassigned legacy record";
   return MEMORY_SCOPE_LABELS[entry.scope] ?? entry.scope;
 }
 
@@ -25,10 +25,10 @@ function hasScope(agent: Agent, scope: "agent" | "team"): boolean {
 }
 
 /**
- * A compact, project-local inspection surface for the scopes a teammate can
- * use. MemoryEntry has no owner column today, so the copy deliberately names
- * the scope instead of pretending a record came from a hidden teammate
- * transcript. Mutations reuse the Memory page's existing routes.
+ * A compact, project-local inspection surface for the exact private rows a
+ * teammate can use. The server remains the authority; this client-side filter
+ * only keeps another teammate's owner out of the selected teammate's panel.
+ * Mutations reuse the Memory page's existing routes.
  */
 export function TeammateMemoryPanel({ agent, projectId }: { agent: Agent; projectId: string }) {
   const queryClient = useQueryClient();
@@ -75,7 +75,11 @@ export function TeammateMemoryPanel({ agent, projectId }: { agent: Agent; projec
   const entries = [
     ...(agentMemory.data ?? []),
     ...(teamMemory.data ?? []),
-  ];
+  ].filter((entry) => entry.scope === "agent"
+    ? entry.ownerAgentId === agent.id
+    : entry.scope === "team"
+      ? entry.ownerTeamId === agent.teamId
+      : true);
   const canInspect = agentScopeEnabled || teamScopeEnabled;
   const heading = agentScopeEnabled && teamScopeEnabled
     ? "Agent and Shared team scope records"
@@ -121,10 +125,10 @@ export function TeammateMemoryPanel({ agent, projectId }: { agent: Agent; projec
     <div id="teammate-memory-panel">
       <h3>{heading}</h3>
       <p>
-        These are durable records in the enabled scopes for {agent.name}&#39;s project, not records owned by {agent.name}. Morrow does not store a per-teammate owner, so this view cannot show what this teammate learned; another teammate with the same scope permission may use these records. Conversation transcripts are never presented as learned teammate memory.
+        These are durable project-local records owned by {agent.name} or its team. Agent records are private to this teammate; team records are private to the exact team. Legacy records whose owner could not be proven remain visible to you but stay disabled. Conversation transcripts are never presented as learned teammate memory.
       </p>
       {entries.length === 0 ? (
-        <p aria-live="polite">No durable records are saved in these scopes for this project. This does not indicate whether {agent.name} has learned anything; this memory model has no per-teammate owner.</p>
+        <p aria-live="polite">No durable records are saved for {agent.name} in these scopes for this project.</p>
       ) : (
         <ul aria-label={`${heading} for this project`}>
           {entries.map((entry) => (
@@ -188,7 +192,7 @@ export function TeammateMemoryPanel({ agent, projectId }: { agent: Agent; projec
                       role="alertdialog"
                     >
                       <h4 id={`delete-memory-heading-${entry.id}`}>Delete this memory?</h4>
-                      <p id={`delete-memory-description-${entry.id}`}>This permanently removes the {scopeLabel(entry)} record from this project. Records are not owned by a teammate, and this cannot be undone.</p>
+                      <p id={`delete-memory-description-${entry.id}`}>This permanently removes the {scopeLabel(entry)} record from this project. This cannot be undone.</p>
                       <button onClick={() => setDeleteConfirmationId(null)} ref={deleteCancelRef} type="button">Keep memory</button>
                       <button
                         data-confirm-delete

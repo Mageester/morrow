@@ -42,6 +42,10 @@ export function clearMcpDiscoveryCache(serverId?: string): void {
 export class McpPool {
   private readonly clients = new Map<string, PooledClient>();
   private readonly connecting = new Map<string, Promise<McpClient>>();
+  private readonly connectingControllers = new Map<string, AbortController>();
+  private readonly connectingGenerations = new Map<string, number>();
+  private generation = 0;
+  private closed = false;
   private readonly trust: ReturnType<typeof mcpTrustStore>;
   private readonly idleTimeoutMs: number;
 
@@ -54,7 +58,16 @@ export class McpPool {
     return this.clients.size;
   }
 
-  async getClient(serverId: string, config: McpServerConfig): Promise<McpClient> {
+  async getClient(serverId: string, config: McpServerConfig, signal?: AbortSignal): Promise<McpClient> {
+    if (this.closed) this.closed = false;
+    if (signal?.aborted) throw new Error("AbortError");
+    const forCaller = (promise: Promise<McpClient>): Promise<McpClient> => {
+      if (!signal) return promise;
+      return Promise.race([
+        promise,
+        new Promise<McpClient>((_, reject) => signal.addEventListener("abort", () => reject(new Error("AbortError")), { once: true })),
+      ]);
+    };
     const existing = this.clients.get(serverId);
     if (existing) {
       existing.lastUsedAt = Date.now();
@@ -62,51 +75,60 @@ export class McpPool {
     }
 
     if (this.connecting.has(serverId)) {
-      return this.connecting.get(serverId)!;
+      return forCaller(this.connecting.get(serverId)!);
     }
 
+    const controller = new AbortController();
+    const generation = ++this.generation;
+    this.connectingGenerations.set(serverId, generation);
+    this.connectingControllers.set(serverId, controller);
+    const connectSignal = controller.signal;
     const connectPromise = (async () => {
       // Check trust before connecting
       if (!this.trust.isServerTrusted(serverId, config)) {
         throw new UntrustedMcpServerError(serverId);
       }
 
-      let transport: RawTransport;
-      if (this.opts.transportFactory) {
-        transport = await this.opts.transportFactory(serverId, config);
-      } else if (config.transport === "sse" || config.url) {
-        if (!config.url) throw new Error(`MCP SSE server "${serverId}" is missing url`);
-        transport = await createSseTransport(config.url, {
-          headers: config.headers,
-        });
-      } else {
-        if (!config.command) throw new Error(`MCP stdio server "${serverId}" is missing command`);
-        const spawned = spawnStdioTransport(config.command, config.args ?? [], {
-          cwd: config.cwd,
-          env: config.env as any,
-        });
-        transport = spawned.transport;
+      let transport: RawTransport | undefined;
+      let client: McpClient | undefined;
+      try {
+        if (this.opts.transportFactory) {
+          transport = await this.opts.transportFactory(serverId, config);
+        } else if (config.transport === "sse" || config.url) {
+          if (!config.url) throw new Error(`MCP SSE server "${serverId}" is missing url`);
+          transport = await createSseTransport(config.url, { headers: config.headers });
+        } else {
+          if (!config.command) throw new Error(`MCP stdio server "${serverId}" is missing command`);
+          const spawned = spawnStdioTransport(config.command, config.args ?? [], {
+            cwd: config.cwd,
+            env: config.env as any,
+          });
+          transport = spawned.transport;
+        }
+        client = new McpClient(transport, { allowedTools: config.allowedTools });
+        await client.initialize(connectSignal);
+        if (this.closed || connectSignal.aborted || this.connectingGenerations.get(serverId) !== generation) {
+          throw new Error("AbortError");
+        }
+        this.clients.set(serverId, { client, lastUsedAt: Date.now(), config });
+        return client;
+      } catch (error) {
+        try { client?.close(); } catch {}
+        if (!client) {
+          try { transport?.close(); } catch {}
+        }
+        throw error;
       }
-
-      const client = new McpClient(transport, {
-        allowedTools: config.allowedTools,
-      });
-
-      await client.initialize();
-
-      this.clients.set(serverId, {
-        client,
-        lastUsedAt: Date.now(),
-        config,
-      });
-
-      return client;
     })().finally(() => {
-      this.connecting.delete(serverId);
+      if (this.connectingGenerations.get(serverId) === generation) {
+        this.connecting.delete(serverId);
+        this.connectingControllers.delete(serverId);
+        this.connectingGenerations.delete(serverId);
+      }
     });
 
     this.connecting.set(serverId, connectPromise);
-    return connectPromise;
+    return forCaller(connectPromise);
   }
 
   async listAllTools(
@@ -192,7 +214,8 @@ export class McpPool {
   async callNamespacedTool(
     namespacedName: string,
     args: unknown,
-    configs: Record<string, McpServerConfig>
+    configs: Record<string, McpServerConfig>,
+    signal?: AbortSignal
   ): Promise<unknown> {
     const match = namespacedName.match(/^mcp__([a-zA-Z0-9_-]+)__(.+)$/);
     if (!match) {
@@ -207,22 +230,31 @@ export class McpPool {
 
     let client: McpClient;
     try {
-      client = await this.getClient(serverId!, config);
+      client = await this.getClient(serverId!, config, signal);
     } catch (err: any) {
+      if (err?.message === "AbortError" || signal?.aborted) throw err;
       if (err instanceof UntrustedMcpServerError) throw err;
       // If cached client errored, remove and retry once
-      this.clients.delete(serverId!);
-      client = await this.getClient(serverId!, config);
+      const cached = this.clients.get(serverId!);
+      if (cached) {
+        try { cached.client.close(); } catch {}
+        this.clients.delete(serverId!);
+      }
+      client = await this.getClient(serverId!, config, signal);
     }
 
     try {
-      return await client.callTool(rawToolName!, args);
+      return await client.callTool(rawToolName!, args, signal);
     } catch (err: any) {
+      if (err?.message === "AbortError" || signal?.aborted) throw err;
       // If connection closed or pipe broken, try reconnecting once
       if (err.message && /closed|broken|disconnected|socket/i.test(err.message)) {
-        this.clients.delete(serverId!);
-        const retryClient = await this.getClient(serverId!, config);
-        return await retryClient.callTool(rawToolName!, args);
+        if (this.clients.get(serverId!)?.client === client) {
+          this.clients.delete(serverId!);
+          try { client.close(); } catch {}
+        }
+        const retryClient = await this.getClient(serverId!, config, signal);
+        return await retryClient.callTool(rawToolName!, args, signal);
       }
       throw err;
     }
@@ -231,14 +263,15 @@ export class McpPool {
   async readResource(
     serverId: string,
     uri: string,
-    configs: Record<string, McpServerConfig>
+    configs: Record<string, McpServerConfig>,
+    signal?: AbortSignal
   ): Promise<{ contents: McpResourceContent[] }> {
     const config = configs[serverId];
     if (!config) {
       throw new Error(`MCP server "${serverId}" is not configured`);
     }
-    const client = await this.getClient(serverId, config);
-    return client.readResource(uri);
+    const client = await this.getClient(serverId, config, signal);
+    return client.readResource(uri, signal);
   }
 
   async testServer(
@@ -307,11 +340,17 @@ export class McpPool {
   }
 
   async closeAll(): Promise<void> {
+    this.closed = true;
+    this.generation += 1;
+    for (const controller of this.connectingControllers.values()) controller.abort();
     for (const pooled of this.clients.values()) {
       try {
         pooled.client.close();
       } catch {}
     }
     this.clients.clear();
+    this.connecting.clear();
+    this.connectingControllers.clear();
+    this.connectingGenerations.clear();
   }
 }

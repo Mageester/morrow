@@ -10,6 +10,7 @@ const now = "2026-08-11T12:00:00.000Z";
 const project = { id: "project-1", name: "Local project", version: 1, workspacePath: "C:\\local", createdAt: now };
 const entry = {
   version: 1, id: "mem-1", projectId: project.id, conversationId: null, scope: "project", type: "project_architecture",
+  ownerAgentId: null, ownerTeamId: null,
   content: "Uses pnpm workspaces.", normalizedContent: "uses pnpm workspaces.", source: "user", evidenceReferences: [],
   lifecycle: "active", originTaskId: null, pinned: false, enabled: true, lastVerifiedAt: null, confidence: 1,
   usageCount: 2, successContribution: 0, failureContribution: 0, staleness: "current", supersedesId: null,
@@ -84,6 +85,19 @@ describe("Memory page", () => {
     await user.click(screen.getByRole("button", { name: "Save changes" }));
 
     expect((await screen.findAllByText("Uses pnpm and Turborepo.")).length).toBeGreaterThan(0);
+  });
+
+  it("shows the exact teammate owner and quarantined legacy state", async () => {
+    const privateEntry = { ...entry, id: "agent-memory", scope: "agent", ownerAgentId: "agent-a", enabled: true };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/projects") return Response.json([project]);
+      if (url === "/api/memory/settings") return Response.json({ autoCapture: true });
+      if (url.includes("/memory")) return Response.json([privateEntry]);
+      return Response.json({});
+    }));
+    renderPage();
+    expect(await screen.findByText("Teammate agent-a")).toBeVisible();
   });
 
   it("lets the user save a new memory by hand, and it appears in the list afterward", async () => {

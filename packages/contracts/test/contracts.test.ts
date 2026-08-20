@@ -16,6 +16,7 @@ import {
   ScheduleSchema,
   ScheduleRunSchema,
   UpdateScheduleSchema,
+  CreateMemoryEntrySchema,
 } from "../src/index.js";
 
 function validNode(over: Record<string, unknown> = {}) {
@@ -56,6 +57,11 @@ describe("contracts", () => {
     expect(() => CreateConversationSchema.parse({ title: "x".repeat(201) })).toThrow();
     expect(DeleteConversationSchema.parse({ confirmation: "delete" })).toEqual({ confirmation: "delete" });
     expect(() => DeleteConversationSchema.parse({ confirmation: true })).toThrow();
+  });
+
+  it("keeps memory ownership server-derived rather than client-submitted", () => {
+    expect(CreateMemoryEntrySchema.parse({ scope: "project", content: "shared" })).toEqual({ scope: "project", content: "shared" });
+    expect(() => CreateMemoryEntrySchema.parse({ scope: "agent", content: "private", ownerAgentId: "forged" })).toThrow();
   });
 
   it("keeps browser chat events coarse and canonical message tool activity secret-free", () => {

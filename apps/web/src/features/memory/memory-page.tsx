@@ -4,7 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Search } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { ApiClientError } from "../../api/client.js";
-import { MEMORY_SCOPE_LABELS, VAULT_SCOPES, memoryApi, memoryQueries } from "../../api/memory.js";
+import { agentQueries } from "../../api/agents.js";
+import { MEMORY_CREATE_SCOPES, MEMORY_SCOPE_LABELS, VAULT_SCOPES, memoryApi, memoryQueries } from "../../api/memory.js";
 import { ProductHeader } from "../../components/product-frame.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 
@@ -16,6 +17,17 @@ function sourceLabel(entry: MemoryEntry): string {
   if (entry.source === "user") return "You wrote this";
   if (entry.source === "cortex") return "Morrow suggested this from observed work";
   return "Summarized from a conversation";
+}
+
+function ownerLabel(entry: MemoryEntry): string {
+  if (entry.scope === "agent") return entry.ownerAgentId ? `Teammate ${entry.ownerAgentId}` : "Unassigned legacy owner (disabled)";
+  if (entry.scope === "team") return entry.ownerTeamId ? `Team ${entry.ownerTeamId}` : "Unassigned legacy owner (disabled)";
+  return entry.scope === "user_global" ? "You · all projects" : "Shared in this project";
+}
+
+function isQuarantinedOrphan(entry: MemoryEntry): boolean {
+  return (entry.scope === "agent" && entry.ownerAgentId === null)
+    || (entry.scope === "team" && entry.ownerTeamId === null);
 }
 
 function formatRemembered(iso: string): string {
@@ -32,6 +44,8 @@ export function MemoryPage() {
   const { activeProject } = useActiveProject();
   const queryClient = useQueryClient();
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>("all");
+  const [reassignAgentId, setReassignAgentId] = useState("");
+  const agents = useQuery(agentQueries.list(activeProject?.id ?? ""));
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sourceOpenId, setSourceOpenId] = useState<string | null>(null);
@@ -39,7 +53,7 @@ export function MemoryPage() {
   const [editContent, setEditContent] = useState("");
   const [adding, setAdding] = useState(false);
   const [draftContent, setDraftContent] = useState("");
-  const [draftScope, setDraftScope] = useState<(typeof VAULT_SCOPES)[number]>("project");
+  const [draftScope, setDraftScope] = useState<(typeof MEMORY_CREATE_SCOPES)[number]>("project");
 
   const automatic = useQuery(memoryQueries.settings());
   const setAutomatic = useMutation({
@@ -82,6 +96,10 @@ export function MemoryPage() {
       if (selectedId === removed.id) setSelectedId(null);
       invalidate();
     },
+  });
+  const reassignOwner = useMutation({
+    mutationFn: ({ id, projectId, ownerAgentId }: { id: string; projectId: string; ownerAgentId: string }) => memoryApi.reassignOwner(id, projectId, ownerAgentId),
+    onSuccess: () => { setReassignAgentId(""); invalidate(); },
   });
 
   function submitMemory(event: FormEvent<HTMLFormElement>) {
@@ -145,7 +163,7 @@ export function MemoryPage() {
               <p className="morrow-memory__add-note">Add or pin something directly whenever you want exact control.</p>
               <form className="morrow-memory__add-form" onSubmit={submitMemory}>
                 <label className="morrow-memory__add-field"><span>What should Morrow remember?</span><input onChange={(event) => setDraftContent(event.target.value)} placeholder="e.g. I prefer concise answers." value={draftContent} /></label>
-                <label className="morrow-memory__add-field morrow-memory__add-field--scope"><span>Scope</span><select onChange={(event) => setDraftScope(event.target.value as (typeof VAULT_SCOPES)[number])} value={draftScope}>{VAULT_SCOPES.map((scope) => <option key={scope} value={scope}>{MEMORY_SCOPE_LABELS[scope] ?? scope}</option>)}</select></label>
+                <label className="morrow-memory__add-field morrow-memory__add-field--scope"><span>Scope</span><select onChange={(event) => setDraftScope(event.target.value as (typeof MEMORY_CREATE_SCOPES)[number])} value={draftScope}>{MEMORY_CREATE_SCOPES.map((scope) => <option key={scope} value={scope}>{MEMORY_SCOPE_LABELS[scope] ?? scope}</option>)}</select></label>
                 <Button disabled={!draftContent.trim() || addMemory.isPending} type="submit">{addMemory.isPending ? "Saving…" : "Save memory"}</Button>
               </form>
               {addMemory.isError ? <p role="alert">{safeError(addMemory.error, "That memory could not be saved.")}</p> : null}
@@ -185,17 +203,19 @@ export function MemoryPage() {
                   ) : <div className="morrow-dossier__quote">{selected.content}</div>}
                   <dl className="morrow-dossier__facts">
                     <div className="morrow-dossier__fact"><dt>Scope</dt><dd>{MEMORY_SCOPE_LABELS[selected.scope] ?? selected.scope}</dd></div>
+                    <div className="morrow-dossier__fact"><dt>Owner</dt><dd>{ownerLabel(selected)}</dd></div>
                     <div className="morrow-dossier__fact"><dt>Remembered</dt><dd>{formatRemembered(selected.createdAt)}</dd></div>
                     <div className="morrow-dossier__fact"><dt>Source</dt><dd>{sourceLabel(selected)}</dd></div>
                     <div className="morrow-dossier__fact"><dt>Used</dt><dd>{selected.usageCount} time{selected.usageCount === 1 ? "" : "s"}</dd></div>
                   </dl>
-                  <div className="morrow-dossier__trust"><span>✓</span><span>{selected.enabled ? "Approved memory. You control whether Morrow keeps, edits, or forgets it." : "This memory is forgotten and will not be used until you restore it."}</span></div>
+                  <div className="morrow-dossier__trust"><span>✓</span><span>{selected.enabled ? "Approved memory. You control whether Morrow keeps, edits, or forgets it." : isQuarantinedOrphan(selected) ? "Quarantined legacy memory. Its owner could not be proven, so it cannot be restored or used." : "This memory is forgotten and will not be used until you restore it."}</span></div>
+                  {isQuarantinedOrphan(selected) ? <div className="morrow-memory__reassign"><label><span>Verified owner</span><select aria-label="Verified owner" onChange={(event) => setReassignAgentId(event.target.value)} value={reassignAgentId}><option value="">Choose a teammate…</option>{(agents.data ?? []).filter((agent) => agent.enabled).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label><Button disabled={!reassignAgentId || reassignOwner.isPending} onClick={() => reassignOwner.mutate({ id: selected.id, projectId: activeProject!.id, ownerAgentId: reassignAgentId })} variant="secondary">Reassign and restore</Button></div> : null}
                   <button className="morrow-memory__source-toggle" onClick={() => setSourceOpenId(sourceOpenId === selected.id ? null : selected.id)} type="button">{sourceOpenId === selected.id ? "Hide source" : "Why does this exist?"}</button>
                   {sourceOpenId === selected.id ? <dl className="morrow-memory__source"><div><dt>Confidence</dt><dd>{Math.round(selected.confidence * 100)}%</dd></div><div><dt>Lifecycle</dt><dd>{selected.lifecycle}</dd></div><div><dt>Sensitivity</dt><dd>{selected.sensitivity}</dd></div></dl> : null}
                   <div className="morrow-dossier__actions">
                     <Button onClick={() => { setEditingId(selected.id); setEditContent(selected.content); }} variant="secondary">Edit</Button>
                     <Button onClick={() => togglePinned.mutate({ id: selected.id, projectId: selected.projectId, pinned: !selected.pinned })} variant="secondary">{selected.pinned ? "Unpin" : "Pin"}</Button>
-                    <Button onClick={() => toggleEnabled.mutate({ id: selected.id, projectId: selected.projectId, enabled: !selected.enabled })} variant="secondary">{selected.enabled ? "Forget" : "Restore"}</Button>
+                    <Button disabled={!selected.enabled && isQuarantinedOrphan(selected)} onClick={() => toggleEnabled.mutate({ id: selected.id, projectId: selected.projectId, enabled: !selected.enabled })} variant="secondary">{selected.enabled ? "Forget" : isQuarantinedOrphan(selected) ? "Owner required" : "Restore"}</Button>
                     <Button onClick={() => forgetForever.mutate({ id: selected.id, projectId: selected.projectId })} variant="danger">Delete permanently</Button>
                   </div>
                 </aside>
@@ -203,7 +223,7 @@ export function MemoryPage() {
               <aside className="morrow-principle"><b>Memory is a curated private library.</b><span>Every item is readable, traceable, scoped, editable, and under your control.</span></aside>
             </>
           ) : null}
-          {updateMemory.isError || toggleEnabled.isError || togglePinned.isError || forgetForever.isError ? <p role="alert">{safeError(updateMemory.error ?? toggleEnabled.error ?? togglePinned.error ?? forgetForever.error, "That change could not be saved.")}</p> : null}
+          {updateMemory.isError || toggleEnabled.isError || togglePinned.isError || forgetForever.isError || reassignOwner.isError ? <p role="alert">{safeError(updateMemory.error ?? toggleEnabled.error ?? togglePinned.error ?? forgetForever.error ?? reassignOwner.error, "That change could not be saved.")}</p> : null}
         </>
       )}
     </section>

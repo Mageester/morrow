@@ -40,6 +40,8 @@ export const MEMORY_SCOPE_LABELS: Record<string, string> = {
 };
 
 export const VAULT_SCOPES = ["user_global", "project", "agent", "team", "temporary_context"] as const;
+/** Private agent/team rows are attributed by execution, never by this form. */
+export const MEMORY_CREATE_SCOPES = ["user_global", "project", "temporary_context"] as const;
 
 export const memoryApi = {
   setAutoCapture(autoCapture: boolean) {
@@ -60,6 +62,9 @@ export const memoryApi = {
   },
   updateContent(id: string, projectId: string, content: string) {
     return api.patch(`/api/memory/${encodeURIComponent(id)}`, { projectId, content }, MemoryEntrySchema);
+  },
+  reassignOwner(id: string, projectId: string, ownerAgentId: string) {
+    return api.post(`/api/memory/${encodeURIComponent(id)}/reassign`, { projectId, ownerAgentId }, MemoryEntrySchema);
   },
   remove(id: string, projectId: string) {
     return api.deleteWithBody(`/api/memory/${encodeURIComponent(id)}`, { projectId }, z.object({}).nullable());

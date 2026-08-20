@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { migrations, openDatabase } from "../src/database.js";
+import { redactSecrets } from "../src/provider/credentials.js";
 
 describe("database", () => {
   it("migrates in-memory database idempotently", () => {
@@ -53,6 +55,38 @@ describe("database", () => {
       "completed_at",
     ]));
     db.close();
+  });
+
+  it("creates the durable recovery lease columns on a fresh database", () => {
+    const db = openDatabase(":memory:");
+    const columns = (db.prepare("PRAGMA table_info(schedule_runs)").all() as Array<{ name: string }>).map((column) => column.name);
+    expect(columns).toEqual(expect.arrayContaining(["recovery_owner", "recovery_lease_expires_at", "recovery_attempts"]));
+    db.close();
+  });
+
+  it("adds recovery lease columns when upgrading a database already at migrations 54 and 55", () => {
+    const directory = mkdtempSync(join(tmpdir(), "morrow-schedule-recovery-"));
+    const file = join(directory, "morrow.db");
+    const legacy = new Database(file);
+    legacy.pragma("foreign_keys = ON");
+    legacy.function("morrow_redact", { deterministic: true }, (value: unknown) => typeof value === "string" ? redactSecrets(value) : "");
+    legacy.exec("CREATE TABLE schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");
+    const record = legacy.prepare("INSERT INTO schema_migrations VALUES(?,?,?)");
+    for (const migration of migrations.filter(({ id }) => id <= 55)) {
+      legacy.transaction(() => {
+        if (migration.sql) legacy.exec(migration.sql);
+        if (migration.up) migration.up(legacy);
+        record.run(migration.id, migration.name, new Date().toISOString());
+      })();
+    }
+    legacy.close();
+
+    const upgraded = openDatabase(file);
+    const columns = (upgraded.prepare("PRAGMA table_info(schedule_runs)").all() as Array<{ name: string }>).map((column) => column.name);
+    expect(columns).toEqual(expect.arrayContaining(["recovery_owner", "recovery_lease_expires_at", "recovery_attempts"]));
+    expect(upgraded.prepare("SELECT MAX(id) id FROM schema_migrations").get()).toEqual({ id: 57 });
+    upgraded.close();
+    rmSync(directory, { recursive: true, force: true });
   });
 
   it("enforces event sequence", () => {

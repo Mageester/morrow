@@ -11,6 +11,7 @@ import { gitDiff, gitLog, gitStatus, GitInspectionError } from "../tools/git.js"
 import { projectRepository } from "../repositories/projects.js";
 import { agentsRepository } from "../repositories/agents.js";
 import { delegationsRepository } from "../repositories/delegations.js";
+import { teamsRepository } from "../repositories/teams.js";
 import { intelligenceRepository } from "../repositories/intelligence.js";
 import { taskRepository } from "../repositories/tasks.js";
 import { taskRecordsRepository } from "../repositories/task-records.js";
@@ -883,6 +884,53 @@ export async function executeAgentChatTask({
   const agentExecutionPolicy: AgentExecutionPolicy | null = assignedAgent
     ? buildAgentExecutionPolicy(assignedAgent, agentRepo.listToolPermissions(assignedAgent.id), assignedDelegation)
     : null;
+  // Memory ownership is derived from the durable task assignment. The
+  // built-in/default teammate has no private owner and therefore cannot recall
+  // agent/team rows even when its scope policy is otherwise broad.
+  const memoryActor = assignedAgent
+    ? { kind: "agent" as const, agentId: assignedAgent.id, teamId: assignedAgent.teamId }
+    : { kind: "default" as const };
+  const actorStillAuthorized = (): boolean => {
+    try {
+      if (!assignedAgent) return true;
+      const current = agentRepo.get(assignedAgent.id);
+      if (!current || !current.enabled || current.projectId !== projectId) return false;
+      if (!current.teamId) return true;
+      const team = teamsRepository(db).get(current.teamId);
+      if (!team || team.status !== "active") return false;
+      if (!teamsRepository(db).listMembers(current.teamId).some((member) => member.agentId === current.id)) return false;
+      const delegation = delegationRepo.getByChildTask(taskId);
+      return Boolean(delegation && delegation.status === "running" && delegation.agentId === current.id);
+    } catch {
+      return false;
+    }
+  };
+  const actorRevocationController = new AbortController();
+  const executionAbortSignal = abortSignal
+    ? AbortSignal.any([abortSignal, actorRevocationController.signal])
+    : actorRevocationController.signal;
+  const awaitApprovalChecked = async (approvalId: string): Promise<string> => {
+    if (!actorStillAuthorized()) {
+      actorRevocationController.abort("actor_revoked");
+      throw new Error("Task execution cancelled");
+    }
+    const watcher = setInterval(() => {
+      if (!actorStillAuthorized()) actorRevocationController.abort("actor_revoked");
+    }, 50);
+    try {
+      const decision = await ApprovalContinuationRegistry.awaitApproval(approvalId, executionAbortSignal);
+      if (!actorStillAuthorized()) {
+        actorRevocationController.abort("actor_revoked");
+        throw new Error("Task execution cancelled");
+      }
+      return decision;
+    } finally {
+      clearInterval(watcher);
+    }
+  };
+  const actorRevocationMonitor = setInterval(() => {
+    if (!actorStillAuthorized()) actorRevocationController.abort("actor_revoked");
+  }, 50);
   const parseAskTeammateInput = (raw: Record<string, unknown>): { agentId: string; objective: string; profileHash: string; targetName: string } => {
     // Continuations carry the internal profile binding alongside the strict
     // model-authored fields; validate only the public contract here.
@@ -2002,6 +2050,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       now(),
       20,
       agentExecutionPolicy?.readScopes,
+      memoryActor,
     );
     const lines: string[] = [];
     let used = 0;
@@ -2119,7 +2168,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     if (!restoreUrl) throw new Error("Open an approved browser URL before using this browser tool");
     const target = parseBrowserTarget(restoreUrl);
     if (!approvedBrowserDomains.includes(target.hostname)) approvedBrowserDomains.push(target.hostname);
-    browserSnapshot = await controller.open(target.url, abortSignal ? { signal: abortSignal } : undefined);
+      browserSnapshot = await controller.open(target.url, { signal: executionAbortSignal });
     return controller;
   };
 
@@ -2169,7 +2218,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   async function executeBrowserTool(toolName: string, args: any): Promise<string> {
     transitionAgentState("executing_tool", { tool: toolName });
-    const options = abortSignal ? { signal: abortSignal } : undefined;
+      const options = { signal: executionAbortSignal };
     if (toolName === "browser_open") {
       const target = parseBrowserTarget(args.url);
       if (!approvedBrowserDomains.includes(target.hostname)) approvedBrowserDomains.push(target.hostname);
@@ -2250,6 +2299,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   }
 
   async function executeApprovedTool(toolName: string, args: any, tcId: string): Promise<string> {
+    if (!actorStillAuthorized()) {
+      actorRevocationController.abort("actor_revoked");
+      throw new Error("Task execution cancelled");
+    }
     renewExecutionLease();
     const requirementResult = enforceToolRequirement(
       { toolName, args: (args && typeof args === "object" && !Array.isArray(args)) ? args as Record<string, unknown> : {} },
@@ -2353,9 +2406,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         timeoutMs: Math.min(requestedTimeoutMs, policyTimeoutMs),
         maxOutputBytes: 65536,
       };
-      if (abortSignal) {
-        runOptions.abortSignal = abortSignal;
-      }
+      runOptions.abortSignal = executionAbortSignal;
 
       // Durable action audit: every invocation gets its own attempt row so
       // restart/replay reconciliation can distinguish a fresh call from an
@@ -3080,7 +3131,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         if (approvalRecord.status === "pending") {
           transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
           event("approval.requested", { approvalId: approvalRecord.id, kind: approvalRecord.kind });
-          decision = (await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal)) as any;
+          decision = (await awaitApprovalChecked(approvalRecord.id)) as any;
         }
 
         const updatedApproval = approvals.get(approvalRecord.id)!;
@@ -3727,7 +3778,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     let gitPaths: string[] = [];
     let gitMeasured = false;
     try {
-      const status = await gitStatus(workspacePath, { maxOutputBytes: 16 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) });
+      const status = await gitStatus(workspacePath, { maxOutputBytes: 16 * 1024, timeoutMs: 1_000, signal: executionAbortSignal });
       gitLines = status.lines;
       gitPaths = pathsFromGitStatus(status.lines);
       gitMeasured = !status.timedOut && !status.truncated;
@@ -4061,7 +4112,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
    * read-only turns never spawn a subprocess.
    */
   const dirtyWorkspacePaths = async (): Promise<string[]> => {
-    const status = await gitStatus(workspacePath, { maxOutputBytes: 16 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) })
+    const status = await gitStatus(workspacePath, { maxOutputBytes: 16 * 1024, timeoutMs: 1_000, signal: executionAbortSignal })
       .catch(() => null);
     // A failed or timed-out Git read yields no candidates, which reads as "not
     // measured" rather than "unchanged".
@@ -4306,7 +4357,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   // Handle AbortSignal cancellation
   const checkCancelled = (): boolean => {
-    if (abortSignal?.aborted || tasks.getTaskById(taskId)?.status === "cancelled") {
+    if (executionAbortSignal.aborted || tasks.getTaskById(taskId)?.status === "cancelled") {
       return true;
     }
     return false;
@@ -4483,6 +4534,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
 
     if (checkCancelled()) {
+      handleCancellation();
+      return;
+    }
+    if (!actorStillAuthorized()) {
+      records.transitionTask(taskId, "cancelled", { id: randomUUID(), createdAt: now(), payload: { reason: "memory_owner_revoked" } });
       handleCancellation();
       return;
     }
@@ -4779,7 +4835,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           && ((exactReasoningCapability?.mode === "none") || resolution.reasoning.control === "none" || recoveryReasoning?.mode === "off");
         const candidateTools = requestCapabilities.tools === "unsupported" ? [] : exposedTools;
         const candidateOptions = {
-          ...(abortSignal ? { abortSignal } : {}),
+          abortSignal: executionAbortSignal,
           tools: candidateTools,
           model: candidateModel,
           ...(effectiveTimeoutMs() !== undefined ? { timeoutMs: effectiveTimeoutMs()! } : {}),
@@ -4952,11 +5008,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const candidatesWithinBudget = providerCallsRemaining === null
         ? admittedCandidates
         : admittedCandidates.slice(0, providerCallsRemaining);
+      if (!actorStillAuthorized()) {
+        actorRevocationController.abort("actor_revoked");
+        throw new Error("Task execution cancelled");
+      }
       const opened = await openStreamWithFallback(
         candidatesWithinBudget,
         preparedContext.messages,
         {
-          ...(abortSignal ? { abortSignal } : {}),
+          abortSignal: executionAbortSignal,
           tools: exposedTools,
           model: resolvedModel || assistantMessageRow.model || undefined,
           ...(effectiveTimeoutMs() !== undefined ? { timeoutMs: effectiveTimeoutMs()! } : {}),
@@ -4976,6 +5036,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         },
         globalRateGuard,
         (candidate) => {
+          if (!actorStillAuthorized()) {
+            actorRevocationController.abort("actor_revoked");
+            throw new Error("Task execution cancelled");
+          }
           agentProviderCallCount += 1;
           return event("provider.request_started", {
             provider: candidate.id,
@@ -5076,6 +5140,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           flushStreamedText(true);
           handleCancellation();
           return;
+        }
+        if (!actorStillAuthorized()) {
+          records.transitionTask(taskId, "cancelled", { id: randomUUID(), createdAt: now(), payload: { reason: "memory_owner_revoked" } });
+          throw new Error("Task execution cancelled");
         }
 
         // Coalescing must never reorder the event log: buffered text is
@@ -5225,7 +5293,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       flushStreamedText(true);
       // A cancellation that surfaced as a thrown error (e.g. abort before the
       // first chunk) is a cancel, not a provider failure.
-      if (checkCancelled() || abortSignal?.aborted) {
+      if (checkCancelled() || executionAbortSignal.aborted) {
         handleCancellation();
         return;
       }
@@ -5395,6 +5463,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       chatMessages.push(providerAssistantTurn);
 
       for (const tc of currentToolCalls) {
+        if (!actorStillAuthorized()) {
+          records.transitionTask(taskId, "cancelled", { id: randomUUID(), createdAt: now(), payload: { reason: "memory_owner_revoked" } });
+          handleCancellation();
+          return;
+        }
         if (!tc.id || !tc.name) continue;
 
         // Persist tool call state
@@ -5596,7 +5669,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           }
 
           if (tc.name === "inspect_workspace") {
-            resultStr = await buildWorkspaceDiscovery(project, symbolIndex, abortSignal);
+            resultStr = await buildWorkspaceDiscovery(project, symbolIndex, executionAbortSignal);
             const parsed = JSON.parse(resultStr) as { topLevel?: { entries?: unknown[] } };
             event("workspace.inspected", { kind: "workspace_discovery", resultCount: parsed.topLevel?.entries?.length ?? 0 });
           } else if (tc.name === "list_files") {
@@ -5641,7 +5714,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               maxFiles: 500,
               maxFileBytes: Math.min(fileBytesLimit, 64 * 1024),
               timeoutMs: 1_000,
-              ...(abortSignal ? { signal: abortSignal } : {}),
+              signal: executionAbortSignal,
             });
             resultStr = JSON.stringify(result);
             totalBytesRead += Buffer.byteLength(resultStr, "utf8");
@@ -5655,7 +5728,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               maxResults: 100,
               maxFiles: 500,
               timeoutMs: 1_000,
-              ...(abortSignal ? { signal: abortSignal } : {}),
+              signal: executionAbortSignal,
             });
             resultStr = JSON.stringify(result);
             totalBytesRead += Buffer.byteLength(resultStr, "utf8");
@@ -5687,19 +5760,19 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
             event("workspace.inspected", { kind: "search_symbols", query: args.query, resultCount: matches.length, empty: status.fileCount === 0 });
           } else if (tc.name === "git_status") {
-            const result = await gitStatus(project.workspacePath, { maxOutputBytes: 64 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) });
+            const result = await gitStatus(project.workspacePath, { maxOutputBytes: 64 * 1024, timeoutMs: 1_000, signal: executionAbortSignal });
             resultStr = JSON.stringify(result);
             totalBytesRead += Buffer.byteLength(resultStr, "utf8");
             if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
             event("workspace.inspected", { kind: "git_status", resultCount: result.lines.length, truncated: result.truncated || result.timedOut });
           } else if (tc.name === "git_diff") {
-            const result = await gitDiff(project.workspacePath, { maxOutputBytes: 64 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) });
+            const result = await gitDiff(project.workspacePath, { maxOutputBytes: 64 * 1024, timeoutMs: 1_000, signal: executionAbortSignal });
             resultStr = JSON.stringify(result);
             totalBytesRead += Buffer.byteLength(resultStr, "utf8");
             if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
             event("workspace.inspected", { kind: "git_diff", resultCount: result.files.length, truncated: result.truncated || result.timedOut });
           } else if (tc.name === "git_log") {
-            const result = await gitLog(project.workspacePath, { maxOutputBytes: 64 * 1024, timeoutMs: 1_000, limit: typeof args.limit === "number" ? Math.min(Math.max(Math.floor(args.limit), 1), 20) : 20, ...(abortSignal ? { signal: abortSignal } : {}) });
+            const result = await gitLog(project.workspacePath, { maxOutputBytes: 64 * 1024, timeoutMs: 1_000, limit: typeof args.limit === "number" ? Math.min(Math.max(Math.floor(args.limit), 1), 20) : 20, signal: executionAbortSignal });
             resultStr = JSON.stringify(result);
             totalBytesRead += Buffer.byteLength(resultStr, "utf8");
             if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
@@ -5789,7 +5862,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
               event("approval.requested", { approvalId: approvalRecord.id, kind: "command", tool: ASK_TEAMMATE_TOOL_NAME });
               await persistExecutionCheckpoint("waiting_for_approval");
-              await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
+              await awaitApprovalChecked(approvalRecord.id);
               continuationsRepo.delete(taskId);
               const updatedApproval = approvals.get(approvalRecord.id);
               if (updatedApproval?.status === "approved" && updatedApproval.decision === "allow_once") {
@@ -5834,7 +5907,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
               event("approval.requested", { approvalId: approvalRecord.id, kind: "command" });
               await persistExecutionCheckpoint("waiting_for_approval");
-              await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
+              await awaitApprovalChecked(approvalRecord.id);
               continuationsRepo.delete(taskId);
               isApproved = approvals.get(approvalRecord.id)?.status === "approved";
             }
@@ -5956,7 +6029,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
                 event("approval.requested", { approvalId: approvalRecord.id, kind: "command" });
                 await persistExecutionCheckpoint("waiting_for_approval");
-                await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
+                await awaitApprovalChecked(approvalRecord.id);
                 continuationsRepo.delete(taskId);
 
                 const updatedApproval = approvals.get(approvalRecord.id)!;
@@ -6084,7 +6157,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
               event("approval.requested", { approvalId: approvalRecord.id, kind: "change_set", operation: "create_file_overwrite" });
               await persistExecutionCheckpoint("waiting_for_approval");
-              await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
+              await awaitApprovalChecked(approvalRecord.id);
               continuationsRepo.delete(taskId);
               const updatedApproval = approvals.get(approvalRecord.id)!;
               if (updatedApproval.status === "approved") isApproved = true;
@@ -6268,7 +6341,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 await persistExecutionCheckpoint("waiting_for_approval");
 
                 // Block in-process
-                const decision = await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
+                const decision = await awaitApprovalChecked(approvalRecord.id);
 
                 // Clean up continuation
                 continuationsRepo.delete(taskId);
@@ -6397,7 +6470,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
               event("approval.requested", { approvalId: approvalRecord.id, kind: "change_set" });
               await persistExecutionCheckpoint("waiting_for_approval");
-              await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
+              await awaitApprovalChecked(approvalRecord.id);
               continuationsRepo.delete(taskId);
               isApproved = approvals.get(approvalRecord.id)?.status === "approved";
               if (!isApproved) throw new Error("Workspace change denied by user.");
@@ -6446,7 +6519,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
               event("approval.requested", { approvalId: approvalRecord.id, kind: "command" });
               await persistExecutionCheckpoint("waiting_for_approval");
-              await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
+              await awaitApprovalChecked(approvalRecord.id);
               continuationsRepo.delete(taskId);
               if (approvals.get(approvalRecord.id)!.status === "approved") isApproved = true;
               else throw new Error(`Directory creation denied by user.`);
@@ -6513,7 +6586,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                     transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
                     event("approval.requested", { approvalId: approvalRecord.id, kind: "command", tool: tc.name });
                     await persistExecutionCheckpoint("waiting_for_approval");
-                    await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
+                    await awaitApprovalChecked(approvalRecord.id);
                     continuationsRepo.delete(taskId);
                     const finalAppr = approvals.get(approvalRecord.id);
                     if (finalAppr?.status === "approved") {
@@ -6530,7 +6603,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             }
 
             if (isApproved) {
-              const mcpExec = await executeMcpTool(tc.name, args, mcpPool, mcpConfigs);
+              const mcpExec = await executeMcpTool(tc.name, args, mcpPool, mcpConfigs, executionAbortSignal);
               resultStr = mcpExec.content;
               if (mcpExec.isError) {
                 isSuccess = false;
@@ -6904,6 +6977,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   completeWithCanonicalAnswer(canonicalFinalText, finalTurn.turnKey);
   } finally {
+    clearInterval(actorRevocationMonitor);
     await closeBrowserSession();
     await mcpPool.closeAll().catch(() => {});
   }

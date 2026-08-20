@@ -554,6 +554,12 @@ export const MemoryEntrySchema=z.object({
   projectId:z.string(),
   conversationId:z.string().nullable(),
   scope:MemoryScopeSchema,
+  // Private teammate/team memory is attributed by the orchestrator from the
+  // trusted execution actor. Project/global (and every other shared scope)
+  // deliberately remain unowned. These are nullable for legacy rows that
+  // were quarantined because ownership could not be proven during migration.
+  ownerAgentId:z.string().nullable().default(null),
+  ownerTeamId:z.string().nullable().default(null),
   type:MemoryTypeSchema.default("project_architecture"),
   content:z.string().min(1),
   normalizedContent:z.string().min(1),

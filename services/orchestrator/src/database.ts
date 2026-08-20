@@ -1493,20 +1493,255 @@ export const migrations:Migration[]=[
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       started_at TEXT,
-      completed_at TEXT,
-      -- A recovery claim is a durable fence around restart replay. The
-      -- owner/expiry pair survives process death so another ticker cannot
-      -- replay a task merely because the first runner returned before it
-      -- reached a terminal state.
-      recovery_owner TEXT,
-      recovery_lease_expires_at TEXT,
-      recovery_attempts INTEGER NOT NULL DEFAULT 0
+      completed_at TEXT
     );
     CREATE UNIQUE INDEX schedule_runs_occurrence_idx ON schedule_runs(schedule_id,occurrence_key);
     CREATE INDEX schedule_runs_schedule_idx ON schedule_runs(schedule_id,created_at DESC,id DESC);
     CREATE INDEX schedule_runs_project_idx ON schedule_runs(project_id,created_at DESC,id DESC);
     CREATE INDEX schedule_runs_task_idx ON schedule_runs(task_id) WHERE task_id IS NOT NULL;
   `}
+  ,{id:55,name:"memory_teammate_ownership",sql:`
+    -- Private memory is owned by the durable teammate identity (or its team),
+    -- never by a client-supplied label. Nullable columns preserve the
+    -- project/global rows that intentionally have no private owner.
+    ALTER TABLE memory_entries ADD COLUMN owner_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL;
+    ALTER TABLE memory_entries ADD COLUMN owner_team_id TEXT REFERENCES teams(id) ON DELETE SET NULL;
+    CREATE INDEX memory_entries_owner_agent_idx ON memory_entries(project_id,owner_agent_id,scope);
+    CREATE INDEX memory_entries_owner_team_idx ON memory_entries(project_id,owner_team_id,scope);
+
+    -- A legacy private row is safe to retain only when its origin task and
+    -- conversation agree on the same enabled teammate. Team ownership is
+    -- derived from that teammate's durable team membership. Rows without an
+    -- exact proof are quarantined (disabled) but remain user-visible for
+    -- inspection/deletion; no transcript content is copied or synthesized.
+    UPDATE memory_entries
+       SET owner_agent_id=(
+         SELECT t.agent_id
+           FROM tasks t
+           JOIN conversations c ON c.id=memory_entries.conversation_id
+           JOIN agents a ON a.id=t.agent_id
+          WHERE t.id=memory_entries.origin_task_id
+            AND t.project_id=memory_entries.project_id
+            AND c.project_id=memory_entries.project_id
+            AND t.agent_id IS NOT NULL
+           AND c.agent_id=t.agent_id
+           AND (a.team_id IS NULL OR EXISTS (
+             SELECT 1 FROM team_members tm JOIN teams active_team ON active_team.id=tm.team_id
+              WHERE tm.team_id=a.team_id AND tm.agent_id=a.id AND active_team.status='active'
+           ))
+       )
+     WHERE scope='agent'
+       AND origin_task_id IS NOT NULL
+       AND conversation_id IS NOT NULL;
+    UPDATE memory_entries
+       SET owner_team_id=(
+         SELECT a.team_id
+           FROM tasks t
+           JOIN conversations c ON c.id=memory_entries.conversation_id
+           JOIN agents a ON a.id=t.agent_id
+           JOIN teams tm ON tm.id=a.team_id
+          WHERE t.id=memory_entries.origin_task_id
+            AND t.project_id=memory_entries.project_id
+            AND c.project_id=memory_entries.project_id
+            AND t.agent_id IS NOT NULL
+            AND c.agent_id=t.agent_id
+            AND a.enabled<>0
+            AND EXISTS (SELECT 1 FROM team_members tmbr WHERE tmbr.team_id=a.team_id AND tmbr.agent_id=a.id)
+            AND tm.status='active'
+            AND a.team_id IS NOT NULL
+       )
+     WHERE scope='team'
+       AND origin_task_id IS NOT NULL
+       AND conversation_id IS NOT NULL;
+    UPDATE memory_entries
+       SET enabled=0
+     WHERE (scope='agent' AND owner_agent_id IS NULL)
+        OR (scope='team' AND owner_team_id IS NULL);
+    UPDATE memory_entries SET enabled=0
+      WHERE scope='agent' AND owner_agent_id IN (SELECT id FROM agents WHERE enabled=0);
+
+    -- Enforce the shape at the database boundary too. Disabled ownerless
+    -- private rows are the deliberate quarantine state for ambiguous legacy
+    -- data and for deleted/disabled owners.
+    CREATE TRIGGER memory_entries_ownership_insert
+      BEFORE INSERT ON memory_entries
+      WHEN (NEW.scope='agent' AND NEW.owner_agent_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='team' AND NEW.owner_team_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='agent' AND NEW.owner_team_id IS NOT NULL)
+        OR (NEW.scope='team' AND NEW.owner_agent_id IS NOT NULL)
+        OR (NEW.scope NOT IN ('agent','team') AND (NEW.owner_agent_id IS NOT NULL OR NEW.owner_team_id IS NOT NULL))
+      BEGIN
+        SELECT RAISE(ABORT,'memory ownership does not match scope');
+      END;
+    CREATE TRIGGER memory_entries_ownership_update
+      BEFORE UPDATE OF scope,owner_agent_id,owner_team_id,enabled ON memory_entries
+      WHEN (NEW.scope='agent' AND NEW.owner_agent_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='team' AND NEW.owner_team_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='agent' AND NEW.owner_team_id IS NOT NULL)
+        OR (NEW.scope='team' AND NEW.owner_agent_id IS NOT NULL)
+        OR (NEW.scope NOT IN ('agent','team') AND (NEW.owner_agent_id IS NOT NULL OR NEW.owner_team_id IS NOT NULL))
+      BEGIN
+        SELECT RAISE(ABORT,'memory ownership does not match scope');
+      END;
+
+    -- Deleting an owner never silently reactivates private knowledge. The
+    -- owner id is then nulled by the FK action, leaving a truthful disabled
+    -- orphan row in the user's vault.
+    CREATE TRIGGER memory_entries_quarantine_deleted_agent
+      BEFORE DELETE ON agents
+      BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='agent' AND owner_agent_id=OLD.id;
+      END;
+    CREATE TRIGGER memory_entries_quarantine_disabled_agent
+      AFTER UPDATE OF enabled ON agents
+      WHEN NEW.enabled=0 AND OLD.enabled<>0
+      BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='agent' AND owner_agent_id=NEW.id;
+      END;
+    CREATE TRIGGER memory_entries_quarantine_deleted_team
+      BEFORE DELETE ON teams
+      BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='team' AND owner_team_id=OLD.id;
+      END;
+    CREATE TRIGGER memory_entries_quarantine_inactive_team
+      AFTER UPDATE OF status ON teams
+      WHEN NEW.status<>'active' AND OLD.status='active'
+      BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='team' AND owner_team_id=NEW.id;
+      END;
+  `}
+  ,{id:56,name:"schedule_recovery_leases",up:(db:Database.Database)=>{
+    const columns=new Set((db.prepare("PRAGMA table_info(schedule_runs)").all()as Array<{name:string}>).map(column=>column.name));
+    if(!columns.has("recovery_owner"))db.exec("ALTER TABLE schedule_runs ADD COLUMN recovery_owner TEXT");
+    if(!columns.has("recovery_lease_expires_at"))db.exec("ALTER TABLE schedule_runs ADD COLUMN recovery_lease_expires_at TEXT");
+    if(!columns.has("recovery_attempts"))db.exec("ALTER TABLE schedule_runs ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0");
+    db.exec("CREATE INDEX IF NOT EXISTS schedule_runs_recovery_idx ON schedule_runs(status,recovery_lease_expires_at,created_at,id)");
+  }}
+  ,{id:57,name:"memory_global_survives_project_deletion",up:(db:Database.Database)=>{
+    // 55/56 are immutable. Rebuild only the memory table to remove the
+    // project cascade: user_global rows retain their provenance project id,
+    // while a project-delete trigger removes every other memory row.
+    db.exec(`
+      DROP TRIGGER IF EXISTS memory_entries_ownership_insert;
+      DROP TRIGGER IF EXISTS memory_entries_ownership_update;
+      DROP TRIGGER IF EXISTS memory_entries_quarantine_deleted_agent;
+      DROP TRIGGER IF EXISTS memory_entries_quarantine_disabled_agent;
+      DROP TRIGGER IF EXISTS memory_entries_quarantine_deleted_team;
+      DROP TRIGGER IF EXISTS memory_entries_quarantine_inactive_team;
+      DROP TRIGGER IF EXISTS search_mem_ai;
+      DROP TRIGGER IF EXISTS search_mem_au;
+      DROP TRIGGER IF EXISTS search_mem_ad;
+      DROP INDEX IF EXISTS memory_entries_project_idx;
+      DROP INDEX IF EXISTS memory_entries_conversation_idx;
+      DROP INDEX IF EXISTS memory_entries_origin_idx;
+      DROP INDEX IF EXISTS memory_entries_lifecycle_idx;
+      DROP INDEX IF EXISTS memory_entries_owner_agent_idx;
+      DROP INDEX IF EXISTS memory_entries_owner_team_idx;
+      ALTER TABLE memory_entries RENAME TO memory_entries_55;
+      CREATE TABLE memory_entries (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        conversation_id TEXT,
+        scope TEXT NOT NULL,
+        content TEXT NOT NULL,
+        source TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        origin_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+        normalized_content TEXT NOT NULL DEFAULT '',
+        type TEXT NOT NULL DEFAULT 'project_architecture',
+        evidence_references_json TEXT NOT NULL DEFAULT '[]',
+        lifecycle TEXT NOT NULL DEFAULT 'active',
+        last_verified_at TEXT,
+        confidence REAL NOT NULL DEFAULT 0.5,
+        usage_count INTEGER NOT NULL DEFAULT 0,
+        success_contribution INTEGER NOT NULL DEFAULT 0,
+        failure_contribution INTEGER NOT NULL DEFAULT 0,
+        staleness TEXT NOT NULL DEFAULT 'current',
+        supersedes_id TEXT,
+        conflicts_with_ids_json TEXT NOT NULL DEFAULT '[]',
+        sensitivity TEXT NOT NULL DEFAULT 'internal',
+        expiration_policy TEXT NOT NULL DEFAULT 'never',
+        expires_at TEXT,
+        owner_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+        owner_team_id TEXT REFERENCES teams(id) ON DELETE SET NULL
+      );
+      INSERT INTO memory_entries
+        SELECT id,project_id,
+          CASE WHEN scope='user_global' THEN NULL ELSE conversation_id END,
+          scope,content,source,enabled,created_at,updated_at,pinned,origin_task_id,
+          normalized_content,type,evidence_references_json,lifecycle,last_verified_at,
+          confidence,usage_count,success_contribution,failure_contribution,staleness,
+          supersedes_id,conflicts_with_ids_json,sensitivity,expiration_policy,expires_at,
+          owner_agent_id,owner_team_id
+        FROM memory_entries_55;
+      DROP TABLE memory_entries_55;
+      CREATE INDEX memory_entries_project_idx ON memory_entries(project_id);
+      CREATE INDEX memory_entries_conversation_idx ON memory_entries(conversation_id);
+      CREATE INDEX memory_entries_origin_idx ON memory_entries(origin_task_id);
+      CREATE INDEX memory_entries_lifecycle_idx ON memory_entries(project_id,lifecycle,staleness,enabled);
+      CREATE INDEX memory_entries_owner_agent_idx ON memory_entries(project_id,owner_agent_id,scope);
+      CREATE INDEX memory_entries_owner_team_idx ON memory_entries(project_id,owner_team_id,scope);
+
+      CREATE TRIGGER memory_entries_ownership_insert BEFORE INSERT ON memory_entries
+      WHEN (NEW.scope='agent' AND NEW.owner_agent_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='team' AND NEW.owner_team_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='agent' AND NEW.owner_team_id IS NOT NULL)
+        OR (NEW.scope='team' AND NEW.owner_agent_id IS NOT NULL)
+        OR (NEW.scope NOT IN ('agent','team') AND (NEW.owner_agent_id IS NOT NULL OR NEW.owner_team_id IS NOT NULL))
+      BEGIN SELECT RAISE(ABORT,'memory ownership does not match scope'); END;
+      CREATE TRIGGER memory_entries_ownership_update BEFORE UPDATE OF scope,owner_agent_id,owner_team_id,enabled ON memory_entries
+      WHEN (NEW.scope='agent' AND NEW.owner_agent_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='team' AND NEW.owner_team_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='agent' AND NEW.owner_team_id IS NOT NULL)
+        OR (NEW.scope='team' AND NEW.owner_agent_id IS NOT NULL)
+        OR (NEW.scope NOT IN ('agent','team') AND (NEW.owner_agent_id IS NOT NULL OR NEW.owner_team_id IS NOT NULL))
+      BEGIN SELECT RAISE(ABORT,'memory ownership does not match scope'); END;
+      CREATE TRIGGER memory_entries_quarantine_deleted_agent BEFORE DELETE ON agents BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='agent' AND owner_agent_id=OLD.id;
+      END;
+      CREATE TRIGGER memory_entries_quarantine_disabled_agent AFTER UPDATE OF enabled ON agents
+      WHEN NEW.enabled=0 AND OLD.enabled<>0 BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='agent' AND owner_agent_id=NEW.id;
+      END;
+      CREATE TRIGGER memory_entries_quarantine_deleted_team BEFORE DELETE ON teams BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='team' AND owner_team_id=OLD.id;
+      END;
+      CREATE TRIGGER memory_entries_quarantine_inactive_team AFTER UPDATE OF status ON teams
+      WHEN NEW.status<>'active' AND OLD.status='active' BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='team' AND owner_team_id=NEW.id;
+        UPDATE delegations SET status='rejected',updated_at=NEW.updated_at
+          WHERE team_id=NEW.id AND status IN ('pending_approval','approved','running');
+      END;
+      CREATE TRIGGER memory_entries_quarantine_removed_member AFTER DELETE ON team_members BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='team' AND owner_team_id=OLD.team_id;
+        UPDATE delegations SET status='rejected',updated_at=datetime('now')
+          WHERE team_id=OLD.team_id AND agent_id=OLD.agent_id
+            AND status IN ('pending_approval','approved','running');
+      END;
+      CREATE TRIGGER memory_entries_project_delete BEFORE DELETE ON projects BEGIN
+        DELETE FROM memory_entries WHERE project_id=OLD.id AND scope<>'user_global';
+        UPDATE search_index SET project_id=NULL WHERE kind='memory' AND project_id=OLD.id AND title='user_global';
+      END;
+      CREATE TRIGGER memory_entries_conversation_delete BEFORE DELETE ON conversations BEGIN
+        DELETE FROM memory_entries WHERE conversation_id=OLD.id AND scope<>'user_global';
+        UPDATE memory_entries SET conversation_id=NULL WHERE conversation_id=OLD.id AND scope='user_global';
+        UPDATE search_index SET conversation_id=NULL WHERE kind='memory' AND conversation_id=OLD.id AND title='user_global';
+      END;
+      CREATE TRIGGER search_mem_ai AFTER INSERT ON memory_entries BEGIN
+        INSERT INTO search_index(kind,ref_id,project_id,conversation_id,title,body,created_at)
+        VALUES('memory',new.id,new.project_id,new.conversation_id,new.scope,new.content,new.created_at);
+      END;
+      CREATE TRIGGER search_mem_au AFTER UPDATE OF content ON memory_entries BEGIN
+        UPDATE search_index SET body=new.content WHERE kind='memory' AND ref_id=new.id;
+      END;
+      CREATE TRIGGER search_mem_ad AFTER DELETE ON memory_entries BEGIN
+        DELETE FROM search_index WHERE kind='memory' AND ref_id=old.id;
+      END;
+    `);
+  }}
 ];
 /**
  * Durability mode for committed writes.

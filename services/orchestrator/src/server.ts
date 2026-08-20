@@ -58,7 +58,7 @@ import { taskRepository } from "./repositories/tasks.js";
 import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
 import { taskRoutingRepository } from "./repositories/task-routing.js";
-import { memoryRepository } from "./repositories/memory.js";
+import { memoryRepository, MemoryOwnershipError } from "./repositories/memory.js";
 import { searchRepository } from "./repositories/search.js";
 import { skillUsageRepository } from "./repositories/skill-usage.js";
 import { learnedSkillsRepository } from "./repositories/learned-skills.js";
@@ -4068,6 +4068,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
     const body = CreateMemoryEntrySchema.parse(request.body);
+    if (body.scope === "agent" || body.scope === "team") {
+      throw new ApiError(400, "Private teammate memory must be created by its assigned execution actor", "MEMORY_OWNER_REQUIRED");
+    }
     if (body.scope === "conversation") {
       if (!body.conversationId) throw new ApiError(400, "conversationId is required for conversation-scoped memory", "VALIDATION_ERROR");
       const conv = convs.getConversation(body.conversationId);
@@ -4080,6 +4083,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       scope: body.scope,
       content: body.content,
       source: "user",
+      actor: { kind: "user" },
       ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
       createdAt: new Date().toISOString(),
     });
@@ -4101,11 +4105,33 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const body = UpdateMemoryEntrySchema.parse(request.body);
     if (existing.projectId !== body.projectId) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
     const now = new Date().toISOString();
-    let updated = existing;
-    if (body.content !== undefined) updated = memory.updateContent(id, body.content, now)!;
-    if (body.enabled !== undefined) updated = memory.setEnabled(id, body.enabled, now)!;
-    if (body.pinned !== undefined) updated = memory.setPinned(id, body.pinned, now)!;
-    return updated;
+    try {
+      let updated = existing;
+      if (body.content !== undefined) updated = memory.updateContent(id, body.content, now)!;
+      if (body.enabled !== undefined) updated = memory.setEnabled(id, body.enabled, now)!;
+      if (body.pinned !== undefined) updated = memory.setPinned(id, body.pinned, now)!;
+      return updated;
+    } catch (error) {
+      if (error instanceof MemoryOwnershipError) throw new ApiError(409, error.message, error.code);
+      throw error;
+    }
+  });
+
+  app.post("/api/memory/:id/reassign", async (request) => {
+    const { id } = request.params as { id: string };
+    const body = z.object({ projectId: z.string().min(1), ownerAgentId: z.string().min(1) }).parse(request.body);
+    const existing = memory.get(id);
+    if (!existing || existing.projectId !== body.projectId) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
+    const owner = agents.get(body.ownerAgentId);
+    if (!owner || owner.projectId !== body.projectId) throw new ApiError(404, "Owner teammate not found in project", "NOT_FOUND");
+    try {
+      const updated = memory.reassignOwner(id, { kind: "agent", agentId: owner.id, teamId: owner.teamId }, new Date().toISOString());
+      if (!updated) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
+      return updated;
+    } catch (error) {
+      if (error instanceof MemoryOwnershipError) throw new ApiError(409, error.message, error.code);
+      throw error;
+    }
   });
 
   app.delete("/api/memory/:id", async (request, reply) => {
