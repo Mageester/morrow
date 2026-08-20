@@ -18,10 +18,12 @@
 :root {
   /* Geometry — identical in both themes. */
   --morrow-premium-gutter: 14px;
-  /* Narrower than before: the sidebar is a way back to things, not a surface
-     that needs to hold prose. The width it gives up goes to the conversation. */
-  --morrow-premium-rail: 194px;
-  --morrow-premium-rail-compact: 178px;
+  /* The rail carries a roster now, not a conversation list: an avatar, a name,
+     what that teammate last did, when, and a live status. 194px clipped the
+     second line to nothing, which is the one line worth reading. Still well
+     short of a content column — it holds identity and state, never prose. */
+  --morrow-premium-rail: 258px;
+  --morrow-premium-rail-compact: 232px;
   --morrow-premium-topbar: 56px;
   --morrow-premium-activity: 286px;
   --morrow-premium-content: 1120px;

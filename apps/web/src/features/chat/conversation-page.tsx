@@ -32,6 +32,8 @@ import { NotableEvent, WorkSummary } from "./work-summary.js";
 import { parseTurnFailure } from "./turn-failure.js";
 import { TurnFailureNotice } from "./turn-failure-notice.js";
 import { LiveTurnStatus } from "./live-status.js";
+import { TeammateAvatar } from "../roster/teammate-avatar.js";
+import { useThreadTeammate } from "../roster/use-thread-teammate.js";
 
 const ACTIVE_STATES = new Set(["queued", "streaming"]);
 const FAILED_STATES = new Set(["failed", "interrupted"]);
@@ -154,6 +156,9 @@ export interface ConversationMessageItemProps {
   actionBusy: boolean;
   onRetry: (taskId: string) => void;
   onOpenActivity: () => void;
+  /** Who is speaking. Falls back to the product's own voice when the thread's
+   * teammate cannot be resolved, rather than inventing a name. */
+  teammate?: { name: string; isDefault: boolean } | undefined;
 }
 
 /**
@@ -178,6 +183,7 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
   actionBusy,
   onRetry,
   onOpenActivity,
+  teammate,
 }: ConversationMessageItemProps) {
   const streaming = ACTIVE_STATES.has(message.streamingState);
   const failed = FAILED_STATES.has(message.streamingState);
@@ -206,6 +212,7 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
   }
 
   const label = routingLabel(message);
+  const speaker = teammate?.name ?? "Morrow";
   const body = failure ? failure.content : message.content;
   // Exactly one waiting signal per turn: the line below until work starts, the
   // work summary once it has, the answer once there is one.
@@ -216,7 +223,14 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
       className="morrow-conversation-message morrow-conversation-message--assistant"
       data-testid="conversation-message-assistant"
     >
-      <p className="morrow-conversation-message__author">Morrow</p>
+      {/* The gutter mark carries identity; the name is for screen readers,
+          which have no colour to read. A visible per-turn name would be noise
+          in a thread with one speaker — Step 3's handoff rows name the agent
+          at the point where it actually changes. */}
+      <p className="morrow-conversation-message__author">
+        <TeammateAvatar isDefault={teammate?.isDefault ?? true} name={speaker} />
+        <span className="morrow-visually-hidden">{speaker}</span>
+      </p>
       <div className="morrow-conversation-message__turn">
         {message.taskId ? <WorkSummary onInspect={onOpenActivity} work={work} /> : null}
 
@@ -236,7 +250,7 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
             announcements on every token. */}
         {waiting ? (
           <p className="morrow-typing-indicator">
-            Morrow is responding…
+            {speaker} is responding…
             <span aria-hidden="true" className="morrow-typing-indicator__dots">
               <span />
               <span />
@@ -287,6 +301,12 @@ export function ConversationPageContent({
   const queryClient = useQueryClient();
   const conversation = useQuery(conversationQueries.detail(projectId, conversationId));
   const messages = useQuery(conversationQueries.messages(projectId, conversationId));
+  // Who this thread belongs to. Resolved from the roster the rail already
+  // polls, so opening a thread costs no extra request.
+  const rosterTeammate = useThreadTeammate(projectId, conversation.data?.agentId);
+  const teammate = rosterTeammate
+    ? { name: rosterTeammate.name, isDefault: rosterTeammate.agentId === null }
+    : undefined;
   const activity = useQuery(conversationQueries.activity(projectId, conversationId));
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -623,6 +643,27 @@ export function ConversationPageContent({
 
       <div aria-live="polite" className="morrow-conversation-history" ref={historyRef}>
         <div className="morrow-conversation-history__inner">
+        {/* Whose thread this is, stated once at the top. Without it a thread
+            with a specialist is indistinguishable from a thread with the
+            default assistant, which is the whole distinction the roster
+            introduces. */}
+        {rosterTeammate ? (
+          <div className="morrow-thread-teammate" data-testid="thread-teammate">
+            <TeammateAvatar isDefault={rosterTeammate.agentId === null} name={rosterTeammate.name} />
+            <span className="morrow-thread-teammate__text">
+              <span className="morrow-thread-teammate__name">{rosterTeammate.name}</span>
+              <span className="morrow-thread-teammate__job">
+                {rosterTeammate.instructions
+                  ?? (rosterTeammate.agentId === null
+                    ? "Your general assistant"
+                    : `${rosterTeammate.role.replace(/-/g, " ")} · no standing instructions`)}
+              </span>
+            </span>
+            {rosterTeammate.modelLabel ? (
+              <span className="morrow-thread-teammate__model">{rosterTeammate.modelLabel}</span>
+            ) : null}
+          </div>
+        ) : null}
         <WorkspaceStatusLine projectId={projectId} />
 
         {(conversation.isRefetchError && conversation.data) || (messages.isRefetchError && messages.data) ? (
@@ -664,6 +705,7 @@ export function ConversationPageContent({
             onRetry={handleRetry}
             projectId={projectId}
             showReasoning={showReasoning}
+            teammate={teammate}
           />
         ))}
 
@@ -745,7 +787,7 @@ export function ConversationPageContent({
           onShowReasoningChange={setShowReasoning}
           onStop={stop}
           onSubmit={submit}
-          placeholder={activeTaskId ? "Type a follow-up or steering message to queue…" : "Reply to Morrow…"}
+          placeholder={activeTaskId ? "Type a follow-up or steering message to queue…" : `Reply to ${teammate?.name ?? "Morrow"}…`}
           queuedMessage={queuedMessage}
           reasoningConfig={reasoningConfig}
           showReasoning={showReasoning}

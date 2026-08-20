@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import {
   Brain,
@@ -13,12 +12,12 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { conversationQueries } from "../api/conversations.js";
 import { AmbientMark } from "../components/product-frame.js";
 import { NewChatButton } from "../features/chat/new-chat-button.js";
 import { OnboardingExperience } from "../features/onboarding/onboarding-experience.js";
 import { PairingBanner } from "../features/pairing/pairing-banner.js";
 import { useActiveProject } from "../features/projects/use-active-project.js";
+import { RosterRail } from "../features/roster/roster-rail.js";
 import { useRuntimeStatus } from "../state/runtime-status.js";
 import { ShellTitleProvider } from "./shell-title.js";
 import { ShellTopbar } from "./shell-topbar.js";
@@ -137,84 +136,6 @@ function SidebarNewChat() {
   return <NewChatButton projectId={activeProject?.id} />;
 }
 
-/**
- * "3m", "2h", "4d" — enough to order the list at a glance, without a date
- * string competing with the title for the row's width.
- */
-function shortAge(isoDate: string): string | null {
-  const at = Date.parse(isoDate);
-  if (!Number.isFinite(at)) return null;
-  const minutes = Math.max(0, Math.round((Date.now() - at) / 60_000));
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.round(hours / 24);
-  if (days < 7) return `${days}d`;
-  return `${Math.round(days / 7)}w`;
-}
-
-/**
- * A conversation that was never named and never got a first message has no
- * title to show. Saying so is better than five identical rows reading
- * "New Conversation", which is what the sidebar looked like before messages
- * started naming their own conversations.
- */
-function conversationLabel(title: string): string {
-  const trimmed = title.trim();
-  return trimmed.length === 0 || trimmed === "New Conversation" ? "Untitled chat" : trimmed;
-}
-
-function SidebarRecent({ onNavigate }: { onNavigate: () => void }) {
-  const { activeProject } = useActiveProject();
-  // A conversation route names its own project, and that is authoritative for
-  // what "recent" means while you are reading it. Without this the list was
-  // empty for anyone who arrived by link rather than by picking a project
-  // first — which is how every conversation in the sidebar is opened.
-  const routeProjectId = useRouterState({
-    select: (state) => (state.location.search as { projectId?: string } | undefined)?.projectId,
-  });
-  const projectId = activeProject?.id ?? routeProjectId;
-  const conversations = useQuery({
-    ...conversationQueries.list(projectId ?? "", false),
-    enabled: Boolean(projectId),
-  });
-  const recent = (conversations.data ?? [])
-    .filter((conversation) => !conversation.archived)
-    .slice(0, 6);
-
-  if (!projectId || recent.length === 0) return null;
-
-  return (
-    <div className="morrow-nav__recent">
-      <p className="morrow-nav__section" id="sidebar-recent-heading">
-        Recent
-      </p>
-      <ul aria-labelledby="sidebar-recent-heading" className="morrow-nav__recent-list">
-        {recent.map((conversation) => {
-          const age = shortAge(conversation.updatedAt);
-          return (
-            <li key={conversation.id}>
-              <Link
-                activeProps={{ "aria-current": "page" }}
-                className="morrow-nav__recent-link"
-                onClick={onNavigate}
-                params={{ conversationId: conversation.id }}
-                search={{ projectId }}
-                title={conversationLabel(conversation.title)}
-                to="/chats/$conversationId"
-              >
-                <span className="morrow-nav__recent-title">{conversationLabel(conversation.title)}</span>
-                {age ? <span className="morrow-nav__recent-age">{age}</span> : null}
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
-
 function MobileDock({ onMore, onNavigate }: { onMore: () => void; onNavigate: () => void }) {
   return (
     <nav aria-label="Mobile navigation" className="morrow-mobile-dock">
@@ -304,8 +225,12 @@ export function AppShell() {
               <NavItemLink item={item} key={item.label} onNavigate={closeNav} />
             ))}
           </div>
-          <SidebarRecent onNavigate={closeNav} />
         </nav>
+
+        {/* A sibling of the navigation, not a child of it: a roster of
+            teammates is people and their work, not a set of destinations, and
+            a screen reader should not have to walk it to reach Settings. */}
+        <RosterRail onNavigate={closeNav} />
 
         <div className="morrow-sidebar__footer">
           <div

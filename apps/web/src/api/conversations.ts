@@ -96,8 +96,17 @@ export function pendingWebMessage(
 }
 
 export const conversationApi = {
-  create(projectId: string, title?: string) {
-    return api.post(projectPath(projectId), title ? { title } : {}, ConversationSchema);
+  /**
+   * `agentId` binds the new thread to one named teammate for its whole life;
+   * omitting it leaves the thread with the built-in default teammate, which is
+   * what every conversation created before the roster is.
+   */
+  create(projectId: string, title?: string, agentId?: string) {
+    return api.post(
+      projectPath(projectId),
+      { ...(title ? { title } : {}), ...(agentId ? { agentId } : {}) },
+      ConversationSchema,
+    );
   },
 
   list(projectId: string, includeArchived = false) {

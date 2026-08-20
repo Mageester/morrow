@@ -220,24 +220,25 @@
   gap: 14px;
 }
 
-/* The copper mark replaces the "MORROW" label as the speaker signal. */
+/*
+ * The speaker signal is the teammate's own mark, not a fixed product glyph.
+ * With a roster, "who said this" is a real question in a way it never was when
+ * every reply came from the same assistant.
+ */
 .morrow-conversation-message--assistant .morrow-conversation-message__author {
   display: grid;
   width: 30px;
   height: 30px;
   place-items: center;
   margin: 0;
-  border: 1px solid #4b3b31;
-  border-radius: 10px;
-  background: #221914;
-  color: var(--morrow-product-copper);
-  font-size: 0;
   grid-row: span 4;
 }
 
-.morrow-conversation-message--assistant .morrow-conversation-message__author::before {
-  content: "✦";
-  font-size: 13px;
+.morrow-conversation-message--assistant .morrow-conversation-message__author .morrow-teammate-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  font-size: 11px;
 }
 
 .morrow-conversation-message--assistant > *:not(.morrow-conversation-message__author) {

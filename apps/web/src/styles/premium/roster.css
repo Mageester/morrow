@@ -1,0 +1,460 @@
+/*
+ * Premium visual system — the teammate roster.
+ *
+ * The rail's largest surface: one row per teammate carrying an avatar, a name,
+ * what they last did, when, and a live status. Denser than the conversation
+ * list it replaces — four facts per row instead of two — so the type ramp is
+ * tighter and the row is driven by its avatar's height rather than by padding.
+ *
+ * Colour comes from the existing charcoal/paper ramp in tokens.css. Nothing
+ * here introduces a palette of its own.
+ */
+
+.morrow-roster {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  margin-top: 18px;
+  gap: 4px;
+}
+
+.morrow-roster__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 7px 6px;
+  gap: 8px;
+}
+
+.morrow-roster__title {
+  margin: 0;
+  color: var(--morrow-product-copy-quiet);
+  font: 600 10.5px/1 var(--morrow-product-utility);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.morrow-roster__add {
+  display: inline-grid;
+  width: 21px;
+  height: 21px;
+  flex: none;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--morrow-product-copy-quiet);
+  cursor: pointer;
+  transition:
+    border-color var(--morrow-premium-control) var(--morrow-product-shift),
+    color var(--morrow-premium-control) var(--morrow-product-shift),
+    background-color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-roster__add:hover {
+  border-color: var(--morrow-product-copper-line);
+  background: var(--morrow-product-copper-soft);
+  color: var(--morrow-product-copper);
+}
+
+.morrow-roster__list {
+  display: grid;
+  min-height: 0;
+  margin: 0;
+  padding: 0 0 6px;
+  overflow-y: auto;
+  gap: 1px;
+  list-style: none;
+  scrollbar-width: thin;
+}
+
+.morrow-roster__note {
+  margin: 0;
+  padding: 4px 7px;
+  color: var(--morrow-product-copy-quiet);
+  font: 400 11.5px/1.45 var(--morrow-product-utility);
+}
+
+.morrow-roster__note button {
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--morrow-product-copper);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* ── One teammate ────────────────────────────────────────────────────────── */
+
+.morrow-roster__row {
+  display: grid;
+  width: 100%;
+  align-items: center;
+  padding: 7px 7px 7px 6px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  gap: 9px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  text-align: left;
+  transition: background-color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-roster__row:hover:not(:disabled) {
+  background: var(--morrow-product-field-inset);
+}
+
+.morrow-roster__row[aria-current="page"] {
+  background: var(--morrow-product-field-strong);
+}
+
+.morrow-roster__row:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.morrow-roster__row[data-status="disabled"] .morrow-roster__name,
+.morrow-roster__row[data-status="disabled"] .morrow-teammate-avatar {
+  opacity: 0.5;
+}
+
+.morrow-roster__body {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.morrow-roster__line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.morrow-roster__name {
+  overflow: hidden;
+  flex: 1 1 auto;
+  color: var(--morrow-product-copy);
+  font: 560 12.5px/1.35 var(--morrow-product-utility);
+  letter-spacing: -0.005em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-roster__age {
+  flex: none;
+  color: var(--morrow-product-faint, var(--morrow-product-copy-quiet));
+  font: 400 10px/1 var(--morrow-product-utility);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The second line is the whole reason the row is worth its height: it is the
+   only place work happening in another thread becomes visible. One line, hard
+   clipped — a wrapping subtitle would halve how many teammates fit. */
+.morrow-roster__subtitle {
+  overflow: hidden;
+  color: var(--morrow-product-copy-quiet);
+  font: 400 11px/1.4 var(--morrow-product-utility);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-roster__row[data-status="working"] .morrow-roster__subtitle {
+  color: var(--morrow-product-copy-soft);
+}
+
+.morrow-roster__row[data-status="waiting"] .morrow-roster__subtitle {
+  color: var(--morrow-product-copper);
+}
+
+/* ── Status ──────────────────────────────────────────────────────────────── */
+
+.morrow-roster__status {
+  display: inline-grid;
+  width: 12px;
+  height: 12px;
+  flex: none;
+  place-items: center;
+}
+
+.morrow-roster__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--morrow-product-line-strong);
+}
+
+.morrow-roster__status[data-status="idle"] .morrow-roster__dot {
+  background: var(--morrow-product-line-strong);
+}
+
+.morrow-roster__status[data-status="disabled"] .morrow-roster__dot {
+  border: 1px solid var(--morrow-product-line-strong);
+  background: transparent;
+}
+
+.morrow-roster__status[data-status="working"] .morrow-roster__dot {
+  background: var(--morrow-product-success);
+  animation: morrow-roster-pulse 1.9s var(--morrow-product-shift) infinite;
+}
+
+.morrow-roster__status[data-status="waiting"] .morrow-roster__dot {
+  background: var(--morrow-product-copper);
+  box-shadow: 0 0 0 3px var(--morrow-product-copper-soft);
+}
+
+@keyframes morrow-roster-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--morrow-product-success) 45%, transparent); }
+  50% { box-shadow: 0 0 0 4px transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .morrow-roster__status[data-status="working"] .morrow-roster__dot {
+    animation: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--morrow-product-success) 30%, transparent);
+  }
+}
+
+/* ── Avatar ──────────────────────────────────────────────────────────────── */
+
+.morrow-teammate-avatar {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--morrow-teammate-tint, var(--morrow-product-field-strong));
+  color: var(--morrow-teammate-ink, var(--morrow-product-copy));
+  font: 640 10px/1 var(--morrow-product-utility);
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.morrow-teammate-avatar[data-size="sm"] {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  font-size: 8.5px;
+}
+
+/* The default teammate wears the product's own copper mark. */
+.morrow-teammate-avatar[data-default="true"] {
+  background: linear-gradient(135deg, var(--morrow-product-copper-bright), var(--morrow-product-copper-deep));
+  color: #24120b;
+}
+
+/*
+ * Twelve tints derived from the charcoal ramp rather than a second palette:
+ * each is a low-saturation wash over the raised surface, so a roster of a
+ * dozen teammates still reads as one system. The hue set is deliberately
+ * narrow — warm through cool, nothing fully saturated — because these mark
+ * identity, not status. Status is the dot, and it owns green and copper.
+ */
+.morrow-teammate-avatar[data-tint="0"] { --morrow-teammate-tint: #3a3126; --morrow-teammate-ink: #e7cfa8; }
+.morrow-teammate-avatar[data-tint="1"] { --morrow-teammate-tint: #2c3830; --morrow-teammate-ink: #b6d6bf; }
+.morrow-teammate-avatar[data-tint="2"] { --morrow-teammate-tint: #2b3440; --morrow-teammate-ink: #b3cbe4; }
+.morrow-teammate-avatar[data-tint="3"] { --morrow-teammate-tint: #3a2d38; --morrow-teammate-ink: #ddbdd6; }
+.morrow-teammate-avatar[data-tint="4"] { --morrow-teammate-tint: #3b3029; --morrow-teammate-ink: #e4c4ab; }
+.morrow-teammate-avatar[data-tint="5"] { --morrow-teammate-tint: #26373a; --morrow-teammate-ink: #a9d3d8; }
+.morrow-teammate-avatar[data-tint="6"] { --morrow-teammate-tint: #343049; --morrow-teammate-ink: #c3bce8; }
+.morrow-teammate-avatar[data-tint="7"] { --morrow-teammate-tint: #3d2f2c; --morrow-teammate-ink: #e8bcb2; }
+.morrow-teammate-avatar[data-tint="8"] { --morrow-teammate-tint: #333a2a; --morrow-teammate-ink: #cbdba6; }
+.morrow-teammate-avatar[data-tint="9"] { --morrow-teammate-tint: #2a3345; --morrow-teammate-ink: #aec6ea; }
+.morrow-teammate-avatar[data-tint="10"] { --morrow-teammate-tint: #3c3327; --morrow-teammate-ink: #e3cb9d; }
+.morrow-teammate-avatar[data-tint="11"] { --morrow-teammate-tint: #2f3634; --morrow-teammate-ink: #bad4cd; }
+
+/* Paper counterpart: identical geometry, inverted ground, ink dark enough to
+   hold 4.5:1 on its own tint. */
+:root:not([data-theme="dark"]) .morrow-teammate-avatar[data-tint="0"] { --morrow-teammate-tint: #efe3cd; --morrow-teammate-ink: #6b4f21; }
+:root:not([data-theme="dark"]) .morrow-teammate-avatar[data-tint="1"] { --morrow-teammate-tint: #dcebe0; --morrow-teammate-ink: #2f5a3c; }
+:root:not([data-theme="dark"]) .morrow-teammate-avatar[data-tint="2"] { --morrow-teammate-tint: #dde7f2; --morrow-teammate-ink: #2d4e70; }
+:root:not([data-theme="dark"]) .morrow-teammate-avatar[data-tint="3"] { --morrow-teammate-tint: #efdfec; --morrow-teammate-ink: #6a3c60; }
+:root:not([data-theme="dark"]) .morrow-teammate-avatar[data-tint="4"] { --morrow-teammate-tint: #f3e2d3; --morrow-teammate-ink: #74482a; }
+:root:not([data-theme="dark"]) .morrow-teammate-avatar[data-tint="5"] { --morrow-teammate-tint: #d9ecee; --morrow-teammate-ink: #285a60; }
+:root:not([data-theme="dark"]) .morrow-teammate-avatar[data-tint="6"] { --morrow-teammate-tint: #e3e0f4; --morrow-teammate-ink: #45407a; }
+:root:not([data-theme="dark"]) .morrow-teammate-avatar[data-tint="7"] { --morrow-teammate-tint: #f5ded9; --morrow-teammate-ink: #7c3f34; }
+:root:not([data-theme="dark"]) .morrow-teammate-avatar[data-tint="8"] { --morrow-teammate-tint: #e6eed6; --morrow-teammate-ink: #4d5c26; }
+:root:not([data-theme="dark"]) .morrow-teammate-avatar[data-tint="9"] { --morrow-teammate-tint: #dde5f4; --morrow-teammate-ink: #33507c; }
+:root:not([data-theme="dark"]) .morrow-teammate-avatar[data-tint="10"] { --morrow-teammate-tint: #f1e6cd; --morrow-teammate-ink: #6d5522; }
+:root:not([data-theme="dark"]) .morrow-teammate-avatar[data-tint="11"] { --morrow-teammate-tint: #dfe9e6; --morrow-teammate-ink: #35564f; }
+
+/* ── Hiring a teammate ───────────────────────────────────────────────────── */
+
+/*
+ * A panel anchored to the rail rather than a centred modal: creating a
+ * teammate is a rail action, and keeping it beside the roster means the list
+ * you are adding to stays on screen while you do it.
+ */
+.morrow-new-teammate {
+  position: fixed;
+  z-index: 60;
+  top: calc(var(--morrow-premium-gutter) + 64px);
+  left: calc(var(--morrow-premium-rail) + var(--morrow-premium-gutter) + 8px);
+  width: min(360px, calc(100vw - var(--morrow-premium-rail) - 48px));
+  max-height: calc(100vh - var(--morrow-premium-gutter) * 2 - 64px);
+  overflow-y: auto;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-lg);
+  background: var(--morrow-product-field-strong);
+  box-shadow: var(--morrow-product-shadow-float);
+}
+
+.morrow-new-teammate__form {
+  display: grid;
+  padding: 18px;
+  gap: 14px;
+}
+
+.morrow-new-teammate__head {
+  display: grid;
+  align-items: center;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.morrow-new-teammate__head h2 {
+  margin: 0;
+  color: var(--morrow-product-copy);
+  font: 600 15px/1.25 var(--morrow-product-utility);
+  letter-spacing: -0.01em;
+}
+
+.morrow-new-teammate__head p {
+  margin: 2px 0 0;
+  color: var(--morrow-product-copy-quiet);
+  font: 400 11.5px/1.45 var(--morrow-product-utility);
+}
+
+.morrow-field {
+  display: grid;
+  gap: 5px;
+}
+
+.morrow-field__label {
+  color: var(--morrow-product-copy-soft);
+  font: 550 11px/1 var(--morrow-product-utility);
+}
+
+.morrow-field__input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 9px;
+  background: var(--morrow-product-field);
+  color: var(--morrow-product-copy);
+  font: 400 12.5px/1.45 var(--morrow-product-utility);
+}
+
+.morrow-field__input:focus-visible {
+  border-color: var(--morrow-product-copper-line);
+  outline: 2px solid var(--morrow-product-copper-soft);
+  outline-offset: 1px;
+}
+
+.morrow-field__input--area {
+  min-height: 76px;
+  resize: vertical;
+}
+
+.morrow-field__hint {
+  color: var(--morrow-product-copy-quiet);
+  font: 400 10.5px/1.45 var(--morrow-product-utility);
+}
+
+.morrow-new-teammate__error {
+  margin: 0;
+  color: var(--morrow-product-danger);
+  font: 400 11.5px/1.45 var(--morrow-product-utility);
+}
+
+.morrow-new-teammate__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.morrow-new-teammate__cancel,
+.morrow-new-teammate__submit {
+  padding: 8px 14px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--morrow-product-copy-soft);
+  font: 550 12px/1 var(--morrow-product-utility);
+  cursor: pointer;
+}
+
+.morrow-new-teammate__submit {
+  border-color: transparent;
+  background: var(--morrow-product-copper);
+  color: #21110b;
+}
+
+.morrow-new-teammate__submit:disabled {
+  background: var(--morrow-product-field);
+  color: var(--morrow-product-copy-quiet);
+  cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  .morrow-new-teammate {
+    left: 50%;
+    width: min(360px, calc(100vw - 32px));
+    transform: translateX(-50%);
+  }
+}
+
+/* ── Whose thread this is ────────────────────────────────────────────────── */
+
+/*
+ * A banner at the head of the reading column, not a topbar chip: it belongs to
+ * the conversation, scrolls with nothing, and answers the question a roster
+ * creates — "which of them am I talking to?" — before the first message.
+ */
+.morrow-thread-teammate {
+  display: grid;
+  align-items: center;
+  margin: 0 0 14px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid var(--morrow-product-line-soft, var(--morrow-product-line));
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.morrow-thread-teammate__text {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.morrow-thread-teammate__name {
+  color: var(--morrow-product-copy);
+  font: 600 13px/1.3 var(--morrow-product-utility);
+  letter-spacing: -0.01em;
+}
+
+.morrow-thread-teammate__job {
+  overflow: hidden;
+  max-width: 52ch;
+  color: var(--morrow-product-copy-quiet);
+  font: 400 11.5px/1.4 var(--morrow-product-utility);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-thread-teammate__model {
+  padding: 3px 7px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 6px;
+  color: var(--morrow-product-copy-quiet);
+  font: 500 10px/1 var(--morrow-product-utility);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
