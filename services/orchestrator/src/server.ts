@@ -27,6 +27,7 @@ import {
   PatchConventionSchema,
   CreateTeamFromPresetSchema,
   CreateDelegationSchema,
+  CreateThreadHandoffSchema,
   DelegationAccessContextSchema,
   ResolveDelegationSchema,
   CreateHandoffSchema,
@@ -254,6 +255,7 @@ import { projectConversationActivity } from "./web/activity-projection.js";
 import { DEFAULT_CONVERSATION_TITLE, deriveConversationTitle, isDefaultConversationTitle } from "./web/conversation-title.js";
 import { DEFAULT_TEAMMATE_NAME, projectRoster } from "./web/roster-projection.js";
 import { projectToolEvidence } from "./web/tool-evidence.js";
+import { projectThreadHandoffs } from "./web/handoff-projection.js";
 import { registerWebAppRoutes } from "./web/static-app.js";
 
 export class ApiError extends Error {
@@ -1463,6 +1465,55 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!evidence) throw new ApiError(404, "Evidence not found for this step", "NOT_FOUND");
     reply.header("cache-control", "no-store");
     return evidence;
+  });
+
+  /**
+   * The handoffs visible in this thread: work started here and given to
+   * another teammate. Read-only projection over the child tasks themselves,
+   * safe to poll while a handoff is in flight.
+   */
+  app.get("/api/projects/:projectId/conversations/:conversationId/handoffs", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    return projectThreadHandoffs({ db: deps.db, projectId, conversationId });
+  });
+
+  /**
+   * Hand a piece of this thread's work to another teammate.
+   *
+   * The child runs as a real delegated task through the same path the
+   * subagent API uses, so it gets provider routing, agent-state events, and —
+   * critically — its OWN policy: `buildAgentExecutionPolicy` computes its
+   * tools, memory scopes and budget from that agent's durable row, not from
+   * this thread's. Nothing in the request can widen that; the only thing the
+   * caller supplies is the objective.
+   *
+   * An agent on a team is deliberately refused here. Team members carry a
+   * team-level policy that only the delegation API intersects correctly, and
+   * routing them through this simpler path would run them under a policy that
+   * skipped their team's ceiling.
+   */
+  app.post("/api/projects/:projectId/conversations/:conversationId/handoffs", async (request, reply) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    const body = CreateThreadHandoffSchema.parse(request.body);
+    const parent = ownedConversationTask(projectId, conversationId, body.parentTaskId);
+
+    const agent = agents.get(body.agentId);
+    if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
+    if (!agent.enabled) throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
+    if (agent.teamId) {
+      throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+    }
+
+    const result = spawnAgentChatSubagent(parent, agent.id, body.objective);
+    reply.status(202);
+    return {
+      version: 1,
+      handoffTaskId: result.task.id,
+      agentId: agent.id,
+      agentName: agent.name,
+    };
   });
 
   app.patch("/api/projects/:projectId/conversations/:conversationId", async (request) => {

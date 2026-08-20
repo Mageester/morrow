@@ -74,3 +74,58 @@ export const RosterSchema = z.object({
 export type RosterStatus = z.infer<typeof RosterStatusSchema>;
 export type RosterEntry = z.infer<typeof RosterEntrySchema>;
 export type Roster = z.infer<typeof RosterSchema>;
+
+/**
+ * A handoff: one teammate's work, started from inside another teammate's
+ * thread.
+ *
+ * This is a projection over records Morrow already keeps — the child task, its
+ * parent link, its assigned agent, and its own conversation — not a second
+ * store. That matters for trust: what the thread shows about a handoff is the
+ * same durable execution record the runner acted on, so the two cannot drift.
+ *
+ * The child runs under its own agent's policy, computed server-side from
+ * durable rows. Its budget is the agent's own ceiling intersected with the
+ * parent task's authority; nothing in this projection is an input to that, and
+ * nothing a model emits can widen it.
+ */
+export const HandoffStatusSchema = z.enum(["queued", "running", "completed", "failed", "cancelled"]);
+
+export const ThreadHandoffSchema = z.object({
+  version: SchemaVersionSchema,
+  /** The child task. Stable for the life of the handoff. */
+  id: z.string().min(1),
+  /** The turn in this thread that handed the work over. */
+  parentTaskId: z.string().min(1),
+  agentId: z.string().min(1),
+  agentName: z.string().min(1).max(100),
+  status: HandoffStatusSchema,
+  /** What they were asked to do, as the asker wrote it. */
+  objective: z.string().max(2000),
+  /** What came back. Null until they have said something. */
+  result: z.string().max(4000).nullable(),
+  /** The teammate's own thread, so their full working record stays one click away. */
+  conversationId: z.string().min(1).nullable(),
+  toolCount: z.number().int().nonnegative(),
+  startedAt: z.string().datetime(),
+  completedAt: z.string().datetime().nullable(),
+}).strict();
+
+export const ThreadHandoffsSchema = z.object({
+  version: SchemaVersionSchema,
+  projectId: z.string().min(1),
+  conversationId: z.string().min(1),
+  handoffs: z.array(ThreadHandoffSchema),
+}).strict();
+
+export const CreateThreadHandoffSchema = z.object({
+  /** The turn this handoff belongs to — the child's parent task. */
+  parentTaskId: z.string().min(1),
+  agentId: z.string().min(1),
+  objective: z.string().trim().min(1).max(2000),
+}).strict();
+
+export type HandoffStatus = z.infer<typeof HandoffStatusSchema>;
+export type ThreadHandoff = z.infer<typeof ThreadHandoffSchema>;
+export type ThreadHandoffs = z.infer<typeof ThreadHandoffsSchema>;
+export type CreateThreadHandoffInput = z.infer<typeof CreateThreadHandoffSchema>;
