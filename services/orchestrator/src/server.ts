@@ -27,6 +27,7 @@ import {
   PatchConventionSchema,
   CreateTeamFromPresetSchema,
   CreateDelegationSchema,
+  CreateRoutineSchema,
   CreateThreadHandoffSchema,
   DelegationAccessContextSchema,
   ResolveDelegationSchema,
@@ -256,6 +257,8 @@ import { DEFAULT_CONVERSATION_TITLE, deriveConversationTitle, isDefaultConversat
 import { DEFAULT_TEAMMATE_NAME, projectRoster } from "./web/roster-projection.js";
 import { projectToolEvidence } from "./web/tool-evidence.js";
 import { projectThreadHandoffs } from "./web/handoff-projection.js";
+import { projectRoutineProposal, renderRoutineAsMessage } from "./web/routine-proposal.js";
+import { routinesRepository } from "./repositories/routines.js";
 import { registerWebAppRoutes } from "./web/static-app.js";
 
 export class ApiError extends Error {
@@ -365,6 +368,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const delegations = delegationsRepository(deps.db);
   const handoffs = handoffsRepository(deps.db);
   const assistantProfile = assistantProfileRepository(deps.db);
+  const routines = routinesRepository(deps.db);
   const tasks = taskRepository(deps.db);
   const records = taskRecordsRepository(deps.db);
   const convs = conversationsRepository(deps.db);
@@ -1514,6 +1518,147 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       agentId: agent.id,
       agentName: agent.name,
     };
+  });
+
+  // ── Record mode & routines ───────────────────────────────────────────────
+  // "Watch me do this once." A recording is an explicit, opt-in span of one
+  // thread; nothing about how the teammate works changes while it is open. The
+  // proposal at the end is read back from what actually happened, and creating
+  // a routine from it is a separate, explicit act.
+
+  const recordingState = (projectId: string, conversationId: string) => {
+    const recording = routines.latestForConversation(conversationId);
+    return {
+      version: 1 as const,
+      recording: recording ?? null,
+      proposal: recording
+        ? projectRoutineProposal({ db: deps.db, projectId, conversationId, recording })
+        : null,
+    };
+  };
+
+  app.get("/api/projects/:projectId/conversations/:conversationId/recording", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    return recordingState(projectId, conversationId);
+  });
+
+  app.post("/api/projects/:projectId/conversations/:conversationId/recording", async (request, reply) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    const conversation = ownedConversation(projectId, conversationId);
+    if (routines.openForConversation(conversationId)) {
+      throw new ApiError(409, "This thread is already being recorded", "ALREADY_RECORDING");
+    }
+    routines.startRecording({
+      id: crypto.randomUUID(),
+      projectId,
+      conversationId,
+      agentId: conversation.agentId,
+      startedAt: new Date().toISOString(),
+    });
+    reply.status(201);
+    return recordingState(projectId, conversationId);
+  });
+
+  app.delete("/api/projects/:projectId/conversations/:conversationId/recording", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    const open = routines.openForConversation(conversationId);
+    if (!open) throw new ApiError(409, "This thread is not being recorded", "NOT_RECORDING");
+    routines.stopRecording(open.id, new Date().toISOString());
+    return recordingState(projectId, conversationId);
+  });
+
+  app.get("/api/projects/:projectId/routines", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return routines.listByProject(projectId);
+  });
+
+  app.post("/api/projects/:projectId/routines", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = CreateRoutineSchema.parse(request.body);
+    if (body.agentId) {
+      const agent = agents.get(body.agentId);
+      if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
+    }
+    if (body.sourceConversationId) ownedConversation(projectId, body.sourceConversationId);
+
+    const routine = routines.create({
+      id: crypto.randomUUID(),
+      projectId,
+      now: new Date().toISOString(),
+      ...body,
+      agentId: body.agentId ?? null,
+    });
+    // Link the recording this came from, so a routine's provenance stays
+    // inspectable rather than becoming a free-floating saved prompt.
+    if (body.sourceConversationId) {
+      const recording = routines.latestForConversation(body.sourceConversationId);
+      if (recording) routines.attachRoutine(recording.id, routine.id);
+    }
+    reply.status(201);
+    return routine;
+  });
+
+  app.delete("/api/routines/:routineId", async (request, reply) => {
+    const { routineId } = request.params as { routineId: string };
+    const body = z.object({ projectId: z.string().min(1) }).parse(request.body);
+    if (!routines.delete(routineId, body.projectId)) throw new ApiError(404, "Routine not found", "NOT_FOUND");
+    reply.status(204).send();
+  });
+
+  /**
+   * Run a routine: a fresh thread for the teammate that learned it, opened
+   * with the routine written out as an ordinary instruction.
+   *
+   * Deliberately NOT a replay of the recorded tool calls. The steps are given
+   * as context for how this was done before, and the teammate re-decides each
+   * one against the workspace as it is now — replaying captured writes and
+   * commands against a workspace that has moved on is a different feature with
+   * a different risk profile, and Morrow does not claim to do it.
+   */
+  app.post("/api/routines/:routineId/run", async (request, reply) => {
+    const { routineId } = request.params as { routineId: string };
+    const routine = routines.get(routineId);
+    if (!routine) throw new ApiError(404, "Routine not found", "NOT_FOUND");
+    if (routine.agentId) {
+      const agent = agents.get(routine.agentId);
+      if (!agent || agent.projectId !== routine.projectId) {
+        throw new ApiError(409, "The teammate this routine belongs to no longer exists", "AGENT_MISSING");
+      }
+      if (!agent.enabled) throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
+    }
+
+    const now = new Date().toISOString();
+    const conversation = convs.createConversation({
+      id: crypto.randomUUID(),
+      projectId: routine.projectId,
+      title: routine.name,
+      agentId: routine.agentId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    try {
+      const result = dispatchAgentTask({ db: deps.db, runner: deps.runner, env: process.env }, {
+        conversationId: conversation.id,
+        content: renderRoutineAsMessage(routine),
+        mode: "agent",
+      });
+      routines.recordRun(routineId, now);
+      reply.status(202);
+      return {
+        version: 1,
+        routineId,
+        conversationId: conversation.id,
+        taskId: result.task.id,
+        projectId: routine.projectId,
+      };
+    } catch (error) {
+      if (error instanceof AgentTaskDispatchError) throw new ApiError(error.statusCode, error.message, error.code);
+      throw error;
+    }
   });
 
   app.patch("/api/projects/:projectId/conversations/:conversationId", async (request) => {

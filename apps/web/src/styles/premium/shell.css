@@ -78,6 +78,11 @@
   height: 22px;
   flex: none;
   place-items: center;
+  /* The refresh layer draws a copper-outlined, gradient-filled tile here. The
+     brand guide forbids putting the mark on a gradient or inside an outline,
+     so every part of that treatment is cleared rather than partly overridden —
+     leaving the border behind left a copper box floating around the mark. */
+  border: 0;
   border-radius: 0;
   background: none;
   color: var(--morrow-product-copy);
