@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import { skillQueries, type InstalledSkill } from "../../api/skills.js";
 import { ProductHeader } from "../../components/product-frame.js";
 import { useActiveProject } from "../projects/use-active-project.js";
+import { RoutinesPanel } from "./routines-panel.js";
 
 function displayLearnedName(skill: { triggerConditions: string[] }): string {
   const command = skill.triggerConditions[0] ?? "project workflow";
@@ -126,6 +127,11 @@ export function SkillsPage() {
         headingId="skills-heading"
         title="Skills"
       />
+
+      {/* Routines are a different kind of thing from a skill and sit above the
+          cabinet rather than inside it: a skill is a method Morrow ships or
+          proves out; a routine is a job one of your teammates was shown once. */}
+      {activeProject ? <RoutinesPanel projectId={activeProject.id} /> : null}
 
       {installed.isPending || (activeProject && learned.isPending) ? <p aria-live="polite" role="status">Loading skills…</p> : null}
       {installed.isError || learned.isError ? <p role="alert">Skills could not be loaded.</p> : null}

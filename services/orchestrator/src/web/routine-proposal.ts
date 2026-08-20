@@ -34,7 +34,16 @@ export interface RoutineProposalInput {
   recording: RoutineRecording;
 }
 
-/** Tasks whose messages fall inside the recorded span, in the order they ran. */
+/**
+ * Tasks in this thread that were STARTED during the recording, in order.
+ *
+ * Keyed on the task's own creation time rather than on its messages': a turn's
+ * assistant message is stamped slightly ahead of the dispatch that created it,
+ * so a recording stopped promptly after asking for something would have missed
+ * the very work it was recording. "Work you started while recording" is also
+ * the rule a person would state — a task that runs on past the stop is still
+ * part of what you asked for.
+ */
 function tasksInSpan(
   db: Database.Database,
   conversationId: string,
@@ -42,14 +51,13 @@ function tasksInSpan(
   to: string,
 ): Array<{ taskId: string }> {
   return db.prepare(
-    `SELECT DISTINCT message.task_id AS taskId, MIN(message.created_at) AS firstAt
-       FROM conversation_messages message
+    `SELECT DISTINCT task.id AS taskId, task.created_at AS createdAt
+       FROM tasks task
+       JOIN conversation_messages message ON message.task_id = task.id
       WHERE message.conversation_id = ?
-        AND message.task_id IS NOT NULL
-        AND message.created_at >= ?
-        AND message.created_at <= ?
-      GROUP BY message.task_id
-      ORDER BY firstAt ASC, message.task_id ASC`,
+        AND task.created_at >= ?
+        AND task.created_at <= ?
+      ORDER BY createdAt ASC, taskId ASC`,
   ).all(conversationId, from, to) as Array<{ taskId: string }>;
 }
 

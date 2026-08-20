@@ -34,6 +34,7 @@ import { TurnFailureNotice } from "./turn-failure-notice.js";
 import { LiveTurnStatus } from "./live-status.js";
 import { AskTeammate } from "./ask-teammate.js";
 import { HandoffRow } from "./handoff-row.js";
+import { RecordRoutine } from "./record-routine.js";
 import { handoffQueries } from "../../api/handoffs.js";
 import { TeammateAvatar } from "../roster/teammate-avatar.js";
 import { useThreadTeammate } from "../roster/use-thread-teammate.js";
@@ -840,12 +841,19 @@ export function ConversationPageContent({
       <div className="morrow-conversation-composer">
         {/* Beside the composer, not inside it: asking someone else is an act
             on the thread, not a modifier on the message you are writing. */}
-        <AskTeammate
-          conversationId={conversationId}
-          currentAgentId={conversation.data?.agentId ?? null}
-          parentTaskId={latestTaskId ?? null}
-          projectId={projectId}
-        />
+        <div className="morrow-thread-actions">
+          <AskTeammate
+            conversationId={conversationId}
+            currentAgentId={conversation.data?.agentId ?? null}
+            parentTaskId={latestTaskId ?? null}
+            projectId={projectId}
+          />
+          <RecordRoutine
+            agentId={conversation.data?.agentId ?? null}
+            conversationId={conversationId}
+            projectId={projectId}
+          />
+        </div>
         <ChatComposer
           activeTaskId={activeTaskId}
           autoFocus

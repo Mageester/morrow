@@ -772,3 +772,241 @@
   color: var(--morrow-product-faint);
   cursor: not-allowed;
 }
+
+/* ── Recording a routine ─────────────────────────────────────────────────── */
+
+.morrow-thread-actions {
+  display: flex;
+  align-items: flex-start;
+  margin: 0 0 7px;
+  gap: 7px;
+}
+
+.morrow-thread-actions .morrow-ask-teammate {
+  margin: 0;
+}
+
+.morrow-record {
+  position: relative;
+}
+
+.morrow-record__toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 9px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-pill);
+  background: transparent;
+  color: var(--morrow-product-copy-quiet);
+  cursor: pointer;
+  font: 500 11.5px/1 var(--morrow-product-utility);
+  gap: 5px;
+}
+
+.morrow-record__toggle:hover:not(:disabled) {
+  border-color: var(--morrow-product-line-strong);
+  color: var(--morrow-product-copy-soft);
+}
+
+/* Recording is the one state in the thread that must be impossible to miss. */
+.morrow-record__toggle[data-recording="true"] {
+  border-color: var(--morrow-product-danger);
+  color: var(--morrow-product-danger);
+}
+
+.morrow-record__toggle[data-recording="true"] svg {
+  animation: morrow-record-pulse 1.6s var(--morrow-product-shift) infinite;
+}
+
+@keyframes morrow-record-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .morrow-record__toggle[data-recording="true"] svg {
+    animation: none;
+  }
+}
+
+.morrow-record__hint {
+  margin: 5px 0 0;
+  color: var(--morrow-product-faint);
+  font: 400 11px/1.45 var(--morrow-product-utility);
+}
+
+.morrow-record__proposal {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 7px);
+  right: 0;
+  display: grid;
+  width: min(380px, 88vw);
+  max-height: 60vh;
+  padding: 12px;
+  overflow-y: auto;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-md);
+  background: var(--morrow-product-field-strong);
+  box-shadow: var(--morrow-product-shadow-float);
+  gap: 9px;
+}
+
+.morrow-record__proposal h3 {
+  margin: 0;
+  color: var(--morrow-product-copy);
+  font: 600 13px/1.3 var(--morrow-product-utility);
+}
+
+.morrow-record__objective {
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: var(--morrow-product-radius-sm);
+  background: var(--morrow-product-field);
+  color: var(--morrow-product-copy-soft);
+  font: 400 12px/1.5 var(--morrow-product-utility);
+  white-space: pre-wrap;
+}
+
+.morrow-record__steps {
+  display: grid;
+  margin: 0;
+  padding: 0 0 0 17px;
+  gap: 3px;
+}
+
+.morrow-record__steps li {
+  color: var(--morrow-product-copy-soft);
+  font: 400 11.5px/1.45 var(--morrow-product-utility);
+}
+
+.morrow-record__steps code {
+  display: block;
+  color: var(--morrow-product-faint);
+  font-family: var(--morrow-product-mono);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.morrow-record__steps-more {
+  list-style: none;
+  margin-left: -17px;
+  color: var(--morrow-product-faint);
+}
+
+.morrow-record__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.morrow-record__actions button {
+  padding: 6px 11px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-sm);
+  background: transparent;
+  color: var(--morrow-product-copy-soft);
+  cursor: pointer;
+  font: 550 11.5px/1 var(--morrow-product-utility);
+}
+
+.morrow-record__actions .morrow-record__save {
+  border-color: transparent;
+  background: var(--morrow-product-copper);
+  color: var(--morrow-on-accent);
+}
+
+.morrow-record__actions .morrow-record__save:disabled {
+  background: var(--morrow-product-field);
+  color: var(--morrow-product-faint);
+  cursor: not-allowed;
+}
+
+/* ── Routines ────────────────────────────────────────────────────────────── */
+
+.morrow-routines {
+  margin: 0 0 22px;
+}
+
+.morrow-routines__list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--morrow-product-line-soft);
+  border-radius: var(--morrow-product-radius-md);
+  background: var(--morrow-product-field);
+  gap: 0;
+  list-style: none;
+  overflow: hidden;
+}
+
+.morrow-routines__row {
+  display: grid;
+  align-items: center;
+  padding: 9px 11px;
+  border-top: 1px solid var(--morrow-product-line-soft);
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.morrow-routines__row:first-child {
+  border-top: 0;
+}
+
+.morrow-routines__body {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.morrow-routines__name {
+  overflow: hidden;
+  color: var(--morrow-product-copy);
+  font: 550 12.5px/1.35 var(--morrow-product-utility);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-routines__meta {
+  color: var(--morrow-product-faint);
+  font: 400 11px/1.4 var(--morrow-product-utility);
+}
+
+.morrow-routines__run {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-pill);
+  background: transparent;
+  color: var(--morrow-product-copy-soft);
+  cursor: pointer;
+  font: 550 11.5px/1 var(--morrow-product-utility);
+  gap: 5px;
+}
+
+.morrow-routines__run:hover:not(:disabled) {
+  border-color: var(--morrow-product-copper-line);
+  color: var(--morrow-product-copper);
+}
+
+.morrow-routines__delete {
+  display: inline-grid;
+  place-items: center;
+  padding: 5px;
+  border: 0;
+  border-radius: var(--morrow-product-radius-sm);
+  background: transparent;
+  color: var(--morrow-product-faint);
+  cursor: pointer;
+}
+
+.morrow-routines__delete:hover:not(:disabled) {
+  color: var(--morrow-product-danger);
+}
+
+.morrow-routines__error {
+  margin: 0 0 8px;
+  color: var(--morrow-product-danger);
+  font: 400 12px/1.45 var(--morrow-product-utility);
+}
