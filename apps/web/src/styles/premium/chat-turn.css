@@ -357,8 +357,9 @@
 
 .morrow-turn-failure {
   border: 1px solid color-mix(in srgb, var(--morrow-product-danger) 32%, transparent);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--morrow-product-danger) 7%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--morrow-product-danger) 9%, var(--morrow-product-field));
+  box-shadow: 0 6px 22px rgb(0 0 0 / 0.12);
 }
 
 .morrow-turn-failure__head {
@@ -401,22 +402,26 @@
 .morrow-conversation-message .morrow-turn-failure__button {
   min-width: 0;
   min-height: 0;
-  padding: 4px 10px;
+  padding: 5px 11px;
   border: 1px solid var(--morrow-product-line);
-  border-radius: 8px;
-  background: transparent;
+  border-radius: 9px;
+  background: var(--morrow-product-field-inset);
   color: var(--morrow-product-copy-soft);
   cursor: pointer;
   font: inherit;
   font-size: 11.5px;
   transition:
     border-color var(--morrow-premium-control) var(--morrow-product-shift),
-    color var(--morrow-premium-control) var(--morrow-product-shift);
+    color var(--morrow-premium-control) var(--morrow-product-shift),
+    background-color var(--morrow-premium-control) var(--morrow-product-shift),
+    transform var(--morrow-premium-press) var(--morrow-product-shift);
 }
 
 .morrow-conversation-message .morrow-turn-failure__button:hover:not(:disabled) {
   border-color: var(--morrow-product-copper-line);
+  background: var(--morrow-product-copper-soft);
   color: var(--morrow-product-copper);
+  transform: translateY(-1px);
 }
 
 .morrow-conversation-message .morrow-turn-failure__button--primary {
@@ -522,10 +527,10 @@
 
 .morrow-composer-popover__trigger {
   display: inline-flex;
-  height: 30px;
+  height: 32px;
   align-items: center;
   padding: 0 10px;
-  border: 1px solid var(--morrow-product-line-soft);
+  border: 1px solid var(--morrow-product-line);
   border-radius: 9px;
   background: transparent;
   color: var(--morrow-product-copy-quiet);
@@ -554,11 +559,12 @@
   width: max-content;
   max-width: min(340px, 86vw);
   flex-direction: column;
-  padding: 12px;
-  border: 1px solid var(--morrow-product-line);
-  border-radius: 13px;
-  background: var(--morrow-product-field-strong);
-  box-shadow: var(--morrow-product-shadow-float);
+  padding: 13px;
+  border: 1px solid var(--morrow-product-line-strong);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--morrow-product-field-strong) 96%, transparent);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 0.42), 0 0 0 1px rgb(255 255 255 / 0.025);
+  backdrop-filter: blur(18px);
   gap: 10px;
 }
 
@@ -768,10 +774,11 @@
 .morrow-evidence {
   display: grid;
   margin: 3px 0 2px;
-  padding: 9px 11px;
-  border: 1px solid var(--morrow-product-line-soft, var(--morrow-product-line));
-  border-radius: 9px;
-  background: var(--morrow-product-field);
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--morrow-product-field-strong) 78%, transparent);
   gap: 8px;
 }
 
@@ -874,11 +881,13 @@
 /* Output is monospaced, scrolls inside its own box, and is height-capped: a
    step that printed ten thousand lines must not push the answer off screen. */
 .morrow-evidence__body {
+  min-width: 0;
   max-height: 320px;
   margin: 0;
-  padding: 8px 10px;
+  padding: 9px 10px;
   overflow: auto;
-  border-radius: 7px;
+  border: 1px solid var(--morrow-product-line-soft);
+  border-radius: 8px;
   background: var(--morrow-product-canvas);
   color: var(--morrow-product-copy-soft);
   font: 400 11.5px/1.55 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;

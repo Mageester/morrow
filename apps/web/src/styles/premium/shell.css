@@ -320,6 +320,14 @@
   overscroll-behavior: contain;
 }
 
+/* The full roster lives in the desktop navigation rail. On a phone the
+   switcher remains in the reading flow so teammate identity is never hidden
+   behind the More drawer. The roster module supplies its compact children. */
+.morrow-mobile-roster {
+  display: none;
+  min-width: 0;
+}
+
 /* Route change keeps the shell; only the content surface crossfades and rises. */
 @media (prefers-reduced-motion: no-preference) {
   .morrow-route-canvas {
@@ -358,9 +366,7 @@
     height: auto;
     padding: 0;
     overflow: visible;
-    background:
-      radial-gradient(circle at 78% 2%, var(--morrow-product-glow), transparent 34%),
-      var(--morrow-product-canvas);
+    background: var(--morrow-product-canvas);
   }
 
   .morrow-main {
@@ -373,6 +379,18 @@
 
   .morrow-shell-context {
     padding: 0 14px;
+  }
+
+  .morrow-mobile-roster {
+    display: block;
+    width: 100%;
+    overflow: hidden;
+    border-bottom: 1px solid var(--morrow-product-line-soft);
+    background: color-mix(in srgb, var(--morrow-product-shell) 96%, transparent);
+  }
+
+  .morrow-mobile-roster:empty {
+    display: none;
   }
 
   /* The rail becomes the existing accessible drawer, kept framed while open. */
@@ -397,6 +415,13 @@
 @media (max-width: 700px) and (prefers-reduced-motion: reduce) {
   .morrow-sidebar {
     transition: none;
+  }
+}
+
+/* The scrim is deliberately below the interactive drawer. */
+@media (max-width: 700px) {
+  .morrow-app-shell[data-nav-open="true"] .morrow-sidebar {
+    z-index: 41;
   }
 }
 
@@ -452,4 +477,121 @@
   color: var(--morrow-product-faint);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
+}
+
+/* Keep non-chat routes quiet too: the shell is a boundary, not two floating
+   dashboard cards competing with the page inside them. */
+.morrow-app-shell {
+  gap: 8px;
+  padding: 10px;
+}
+
+.morrow-sidebar,
+.morrow-main {
+  border-radius: 16px;
+  box-shadow: none;
+}
+
+/* Conversation mode is a people workspace: the roster gets the stable rail,
+   while global destinations recede into a quiet utility strip. This removes
+   the nested card framing that made a chat feel like another admin page. */
+@media (min-width: 701px) {
+  .morrow-app-shell:has(.morrow-conversation-page) {
+    grid-template-columns: minmax(280px, 300px) minmax(0, 1fr);
+    gap: 0;
+    padding: 0;
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-sidebar,
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-main {
+    border-radius: 0;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-sidebar {
+    border-right: 1px solid var(--morrow-product-line-soft);
+    padding: 20px 16px;
+    background: var(--morrow-product-rail);
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-main {
+    background: var(--morrow-product-canvas);
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-brand {
+    padding: 2px 6px 14px;
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-sidebar__new .morrow-new-chat__button {
+    min-height: 36px;
+    background: var(--morrow-product-field-strong);
+    color: var(--morrow-product-copy-soft);
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-nav {
+    margin-top: 9px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--morrow-product-line-soft);
+    opacity: 0.72;
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-nav__link {
+    min-height: 29px;
+    padding-block: 4px;
+    font-size: 12px;
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-roster {
+    margin-top: 14px;
+  }
+
+  /* Conversation workspaces keep destinations available without letting them
+     consume the people rail. Labels remain in the accessibility tree; the
+     tooltip restores their meaning for sighted pointer/keyboard users. */
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-nav__group {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-nav__link {
+    position: relative;
+    justify-content: center;
+    width: 100%;
+    min-height: 32px;
+    padding: 0;
+    border-radius: 9px;
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-nav__label,
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-nav__soon {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-nav__link:hover::after,
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-nav__link:focus-visible::after {
+    content: attr(aria-label);
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 6px);
+    left: 50%;
+    padding: 5px 8px;
+    border: 1px solid var(--morrow-product-line);
+    border-radius: 7px;
+    background: var(--morrow-product-field-strong);
+    color: var(--morrow-product-copy);
+    font: 500 11px/1 var(--morrow-product-utility);
+    white-space: nowrap;
+    transform: translateX(-50%);
+    pointer-events: none;
+  }
 }

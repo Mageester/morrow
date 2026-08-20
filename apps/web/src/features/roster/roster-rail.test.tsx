@@ -209,6 +209,51 @@ describe("Teammate roster rail", () => {
     await vi.waitFor(() => expect(history.location.href).toBe("/chats/chat-comms?projectId=project-1"));
   });
 
+  it("keeps memory scope controls behind progressive disclosure when hiring a teammate", async () => {
+    const calls = stubFetch(
+      [entry({ agentId: null, name: "Morrow", role: "assistant", conversationId: "chat-default" })],
+      (url, init) => {
+        if (url.endsWith("/agents") && init?.method === "POST") {
+          return Response.json({
+            version: 1, id: "agent-10", projectId: "project-1", name: "Research", role: "researcher",
+            instructions: null, providerOverride: null, modelOverride: null,
+            enabled: true, teamId: null, memoryReadScopes: ["project", "agent", "team"], memoryWriteScopes: ["agent", "project"],
+            maxProviderCalls: null, maxTokenBudget: null, maxWallClockMs: null, maxChildTasks: null,
+            approvalRequired: false, createdBy: "user",
+            createdAt: "2026-08-20T09:00:00.000Z", updatedAt: "2026-08-20T09:00:00.000Z",
+          }, { status: 201 });
+        }
+        return undefined;
+      },
+    );
+    renderRail();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "New teammate" }));
+    const dialog = await screen.findByRole("dialog", { name: "New teammate" });
+    expect(within(dialog).queryByRole("group", { name: /memory access/i })).not.toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: /memory access/i }));
+    expect(within(dialog).getByRole("group", { name: /memory access/i })).toBeVisible();
+    expect(within(dialog).getByText(/no memory scope is granted until you choose one/i)).toBeVisible();
+    expect(within(dialog).getByText(/durable scope permissions, not transcript history/i)).toBeVisible();
+    expect(within(dialog).getByRole("checkbox", { name: "Read Project scope" })).not.toBeChecked();
+    expect(within(dialog).getByRole("checkbox", { name: "Write Agent scope" })).not.toBeChecked();
+    await user.click(within(dialog).getByRole("checkbox", { name: "Read Project scope" }));
+    await user.click(within(dialog).getByRole("checkbox", { name: "Read Agent scope" }));
+    await user.click(within(dialog).getByRole("checkbox", { name: "Read Shared team scope" }));
+    await user.click(within(dialog).getByRole("checkbox", { name: "Write Project scope" }));
+    await user.click(within(dialog).getByRole("checkbox", { name: "Write Agent scope" }));
+    await user.type(within(dialog).getByRole("textbox", { name: /name/i }), "Research");
+    await user.click(within(dialog).getByRole("button", { name: "Create teammate" }));
+
+    const agentPost = calls.find((call) => call.url.endsWith("/agents") && call.init?.method === "POST");
+    expect(JSON.parse(String(agentPost!.init!.body))).toMatchObject({
+      memoryReadScopes: ["project", "agent", "team"],
+      memoryWriteScopes: ["project", "agent"],
+    });
+  });
+
   it("closes the hiring panel on Escape without creating anything", async () => {
     const calls = stubFetch([entry({ agentId: null, name: "Morrow", role: "assistant" })]);
     renderRail();
@@ -220,5 +265,100 @@ describe("Teammate roster rail", () => {
 
     expect(screen.queryByRole("dialog", { name: "New teammate" })).not.toBeInTheDocument();
     expect(calls.some((call) => call.init?.method === "POST")).toBe(false);
+  });
+
+  it("lets a teammate policy inspect and edit project-local agent-scope records", async () => {
+    const agent = {
+      version: 1, id: "agent-1", projectId: "project-1", name: "Research", role: "researcher",
+      instructions: null, providerOverride: null, modelOverride: null, enabled: true, teamId: null,
+      memoryReadScopes: ["project", "agent"], memoryWriteScopes: ["agent"],
+      maxProviderCalls: null, maxTokenBudget: null, maxWallClockMs: null, maxChildTasks: null,
+      approvalRequired: false, createdBy: "user",
+      createdAt: "2026-08-20T09:00:00.000Z", updatedAt: "2026-08-20T09:00:00.000Z",
+    };
+    let current = {
+      version: 1, id: "mem-agent-1", projectId: "project-1", conversationId: null, scope: "agent", type: "project_architecture",
+      content: "Research citations stay in the project.", normalizedContent: "research citations stay in the project", source: "user", evidenceReferences: [],
+      lifecycle: "active", originTaskId: null, pinned: false, enabled: true, lastVerifiedAt: null, confidence: 1,
+      usageCount: 1, successContribution: 0, failureContribution: 0, staleness: "current", supersedesId: null,
+      conflictsWithIds: [], sensitivity: "internal", expirationPolicy: "never", expiresAt: null,
+      createdAt: "2026-08-20T09:00:00.000Z", updatedAt: "2026-08-20T09:00:00.000Z",
+    };
+    const calls = stubFetch([entry({ agentId: "agent-1", name: "Research" })], (url, init) => {
+      if (url === "/api/projects/project-1/agents") return Response.json([agent]);
+      if (url.includes("/memory?scope=agent")) return Response.json([current]);
+      if (url === "/api/memory/mem-agent-1" && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body));
+        current = { ...current, content: body.content, normalizedContent: body.content.toLowerCase() };
+        return Response.json(current);
+      }
+      if (url === "/api/memory/mem-agent-1" && init?.method === "DELETE") return new Response(null, { status: 204 });
+      return undefined;
+    });
+    renderRail();
+    const user = userEvent.setup();
+
+    const row = await screen.findByTestId("roster-row");
+    await user.click(within(row.parentElement!).getByRole("button", { name: "Configure Research" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit teammate Research" });
+    await user.click(within(dialog).getByRole("button", { name: "Inspect scoped memory" }));
+    expect(await within(dialog).findByText("Agent scope records")).toBeVisible();
+    expect(within(dialog).getByText(/not records owned by/i)).toBeVisible();
+    expect(within(dialog).getByText(/does not store a per-teammate owner/i)).toBeVisible();
+    expect(within(dialog).getByText("Research citations stay in the project.")).toBeVisible();
+
+    await user.click(within(dialog).getByRole("button", { name: "Edit record" }));
+    const editor = within(dialog).getByRole("textbox", { name: "Edit scoped memory" });
+    await user.clear(editor);
+    await user.type(editor, "Research citations need a source.");
+    await user.click(within(dialog).getByRole("button", { name: "Save record" }));
+    expect(await within(dialog).findByText("Research citations need a source.")).toBeVisible();
+
+    await user.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
+    expect(calls.some((call) => call.url === "/api/memory/mem-agent-1" && call.init?.method === "DELETE")).toBe(false);
+    const deleteDialog = within(dialog).getByRole("alertdialog", { name: "Delete this memory?" });
+    expect(within(deleteDialog).getByText(/cannot be undone/i)).toBeVisible();
+    await user.click(within(deleteDialog).getByRole("button", { name: "Keep memory" }));
+    expect(within(dialog).queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(calls.some((call) => call.url === "/api/memory/mem-agent-1" && call.init?.method === "DELETE")).toBe(false);
+    await user.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
+    await user.click(within(within(dialog).getByRole("alertdialog", { name: "Delete this memory?" })).getByRole("button", { name: "Delete permanently" }));
+    await vi.waitFor(() => expect(calls.some((call) => call.url === "/api/memory/mem-agent-1" && call.init?.method === "DELETE")).toBe(true));
+  });
+
+  it("updates a teammate's read and write scopes through the existing agent policy route", async () => {
+    const agent = {
+      version: 1, id: "agent-2", projectId: "project-1", name: "Writer", role: "writer",
+      instructions: null, providerOverride: null, modelOverride: null, enabled: true, teamId: null,
+      memoryReadScopes: [], memoryWriteScopes: [],
+      maxProviderCalls: null, maxTokenBudget: null, maxWallClockMs: null, maxChildTasks: null,
+      approvalRequired: false, createdBy: "user",
+      createdAt: "2026-08-20T09:00:00.000Z", updatedAt: "2026-08-20T09:00:00.000Z",
+    };
+    const calls = stubFetch([entry({ agentId: "agent-2", name: "Writer" })], (url, init) => {
+      if (url === "/api/agents/agent-2" && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body));
+        return Response.json({ ...agent, ...body });
+      }
+      if (url === "/api/projects/project-1/agents") return Response.json([agent]);
+      return undefined;
+    });
+    renderRail();
+    const user = userEvent.setup();
+
+    const row = await screen.findByTestId("roster-row");
+    await user.click(within(row.parentElement!).getByRole("button", { name: "Configure Writer" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit teammate Writer" });
+    await user.click(within(dialog).getByRole("button", { name: /memory access/i }));
+    await user.click(within(dialog).getByRole("checkbox", { name: "Read Project scope" }));
+    await user.click(within(dialog).getByRole("checkbox", { name: "Write Agent scope" }));
+    await user.click(within(dialog).getByRole("button", { name: "Save teammate" }));
+
+    const update = calls.find((call) => call.url === "/api/agents/agent-2" && call.init?.method === "PUT");
+    expect(JSON.parse(String(update!.init!.body))).toMatchObject({
+      projectId: "project-1",
+      memoryReadScopes: ["project"],
+      memoryWriteScopes: ["agent"],
+    });
   });
 });

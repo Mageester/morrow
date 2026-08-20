@@ -100,6 +100,7 @@ function NavItemLink({ item, onNavigate }: { item: NavItem; onNavigate: () => vo
         className="morrow-nav__link morrow-nav__link--upcoming"
         data-nav={item.label}
         disabled
+        title={`${item.label} — coming soon`}
         type="button"
       >
         <Icon aria-hidden="true" size={17} strokeWidth={1.8} />
@@ -115,6 +116,8 @@ function NavItemLink({ item, onNavigate }: { item: NavItem; onNavigate: () => vo
       className="morrow-nav__link"
       data-nav={item.label}
       onClick={onNavigate}
+      aria-label={item.label}
+      title={item.label}
       to={item.to}
     >
       <Icon aria-hidden="true" size={17} strokeWidth={1.8} />
@@ -259,6 +262,9 @@ export function AppShell() {
           onToggleNav={() => setNavOpen((open) => !open)}
           routeTitle={getRouteTitle(pathname)}
         />
+        <div className="morrow-mobile-roster">
+          <RosterRail headingId="mobile-roster-heading" onNavigate={closeNav} />
+        </div>
         <div className="morrow-route-canvas" key={pathname}>
           <PairingBanner />
           <Outlet />

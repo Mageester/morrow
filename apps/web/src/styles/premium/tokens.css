@@ -84,29 +84,30 @@
    * Light — the cool counterpart. Same roles, same geometry, ground inverted,
    * copper darkened to hold 4.5:1 on near-white.
    */
-  --morrow-product-canvas: #f4f4f6;
-  --morrow-product-rail: #ececf0;
-  --morrow-product-shell: #ececf0;
+  --morrow-product-canvas: #f5f6f8;
+  --morrow-product-rail: #eceef2;
+  --morrow-product-shell: #eceef2;
   --morrow-product-field: #ffffff;
-  --morrow-product-field-strong: #f7f7f9;
-  --morrow-product-field-warm: #f0f0f3;
-  --morrow-product-field-inset: rgb(17 18 24 / 0.05);
+  --morrow-product-field-strong: #f8f9fb;
+  --morrow-product-field-warm: #f1f3f6;
+  --morrow-product-field-inset: rgb(18 23 32 / 0.055);
   --morrow-product-bubble-them: #ffffff;
-  --morrow-product-bubble-you: #1d1e24;
-  --morrow-product-bubble-you-ink: #f6f6f8;
-  --morrow-product-line: rgb(17 18 24 / 0.13);
-  --morrow-product-line-strong: rgb(17 18 24 / 0.24);
-  --morrow-product-line-soft: rgb(17 18 24 / 0.08);
-  --morrow-product-copy: #14151a;
-  --morrow-product-copy-soft: #4a4c56;
-  --morrow-product-copy-quiet: #6e707b;
-  --morrow-product-quiet: #83858f;
-  --morrow-product-faint: #9497a1;
+  --morrow-product-bubble-you: #252a33;
+  --morrow-product-bubble-you-ink: #f7f8fb;
+  --morrow-product-line: rgb(18 23 32 / 0.14);
+  --morrow-product-line-strong: rgb(18 23 32 / 0.25);
+  --morrow-product-line-soft: rgb(18 23 32 / 0.08);
+  --morrow-product-copy: #151922;
+  --morrow-product-copy-soft: #4a5260;
+  --morrow-product-copy-quiet: #6f7785;
+  --morrow-product-quiet: #858d9b;
+  --morrow-product-faint: #959daa;
   --morrow-product-copper: #9d4a2c;
   --morrow-product-copper-bright: #b45a38;
   --morrow-product-copper-deep: #7d3820;
   --morrow-product-copper-soft: rgb(157 74 44 / 0.12);
   --morrow-product-copper-line: rgb(157 74 44 / 0.32);
+  --morrow-product-copper-glow: rgb(157 74 44 / 0.1);
   --morrow-product-glow: rgb(157 74 44 / 0.1);
   --morrow-product-success: #2c6b48;
   --morrow-product-success-soft: rgb(44 107 72 / 0.12);
@@ -126,30 +127,31 @@
  * the right value without a second palette.
  */
 [data-theme="dark"] {
-  --morrow-product-canvas: #0a0a0b;
-  --morrow-product-rail: #121214;
-  --morrow-product-shell: #121214;
-  --morrow-product-field: #17171a;
-  --morrow-product-field-strong: #1e1e22;
-  --morrow-product-field-warm: #232328;
-  --morrow-product-field-inset: rgb(255 255 255 / 0.045);
+  --morrow-product-canvas: #090b0f;
+  --morrow-product-rail: #101318;
+  --morrow-product-shell: #11151b;
+  --morrow-product-field: #171b22;
+  --morrow-product-field-strong: #1d222b;
+  --morrow-product-field-warm: #252b35;
+  --morrow-product-field-inset: rgb(255 255 255 / 0.052);
   /* A message from a teammate, and one from you. */
-  --morrow-product-bubble-them: rgb(255 255 255 / 0.06);
-  --morrow-product-bubble-you: #26262c;
-  --morrow-product-bubble-you-ink: #f2f2f3;
-  --morrow-product-line: #26262c;
-  --morrow-product-line-strong: #3a3a44;
-  --morrow-product-line-soft: #1d1d21;
-  --morrow-product-copy: #f2f2f3;
-  --morrow-product-copy-soft: #c9cad1;
-  --morrow-product-copy-quiet: #9b9da6;
-  --morrow-product-quiet: #7b7e88;
-  --morrow-product-faint: #62646d;
+  --morrow-product-bubble-them: rgb(255 255 255 / 0.075);
+  --morrow-product-bubble-you: #2a303a;
+  --morrow-product-bubble-you-ink: #f4f6fa;
+  --morrow-product-line: #272d37;
+  --morrow-product-line-strong: #414955;
+  --morrow-product-line-soft: #1f242c;
+  --morrow-product-copy: #f3f5f8;
+  --morrow-product-copy-soft: #c8cdd6;
+  --morrow-product-copy-quiet: #989faa;
+  --morrow-product-quiet: #7b8491;
+  --morrow-product-faint: #68717e;
   --morrow-product-copper: #e08a5e;
   --morrow-product-copper-bright: #efa47c;
   --morrow-product-copper-deep: #b0603a;
   --morrow-product-copper-soft: rgb(224 138 94 / 0.14);
   --morrow-product-copper-line: rgb(224 138 94 / 0.34);
+  --morrow-product-copper-glow: rgb(224 138 94 / 0.12);
   --morrow-product-glow: rgb(224 138 94 / 0.07);
   --morrow-product-success: #6fc38a;
   --morrow-product-success-soft: rgb(111 195 138 / 0.14);

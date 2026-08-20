@@ -63,6 +63,7 @@
 
 .morrow-conversation-history__inner {
   display: flex;
+  min-width: 0;
   max-width: var(--morrow-premium-reading);
   flex-direction: column;
   margin-inline: auto;
@@ -194,9 +195,11 @@
 }
 
 .morrow-conversation-message {
+  min-width: 0;
   padding: 0;
   border: 0;
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 /* ── Your messages ───────────────────────────────────────────────────────── */
@@ -223,11 +226,13 @@
 
 .morrow-conversation-message--user .morrow-conversation-message__bubble {
   width: fit-content;
-  max-width: var(--morrow-premium-bubble);
-  padding: 9px 13px;
-  border-radius: var(--morrow-product-radius-md);
+  max-width: min(640px, 84%);
+  padding: 10px 14px;
+  border: 1px solid rgb(255 255 255 / 0.06);
+  border-radius: 16px 16px 5px;
   background: var(--morrow-product-bubble-you);
   color: var(--morrow-product-bubble-you-ink);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.12);
 }
 
 /* Colour is set on the text, not inherited: earlier layers set an ink colour
@@ -253,25 +258,25 @@
 .morrow-conversation-message--assistant {
   display: grid;
   margin: 0;
-  grid-template-columns: 26px minmax(0, 1fr);
-  gap: 9px;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 10px;
 }
 
 /* The speaker signal is the teammate's own mark, not a fixed product glyph. */
 .morrow-conversation-message--assistant .morrow-conversation-message__author {
   display: grid;
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
   place-items: center;
   margin: 3px 0 0;
   grid-row: span 4;
 }
 
 .morrow-conversation-message--assistant .morrow-conversation-message__author .morrow-teammate-avatar {
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  font-size: 10px;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  font-size: 10.5px;
 }
 
 .morrow-conversation-message--assistant > *:not(.morrow-conversation-message__author) {
@@ -281,8 +286,8 @@
 .morrow-conversation-message__turn {
   display: grid;
   min-width: 0;
-  max-width: var(--morrow-premium-bubble);
-  gap: 5px;
+  max-width: min(680px, 100%);
+  gap: 6px;
 }
 
 .morrow-conversation-message__byline {
@@ -294,8 +299,8 @@
 
 .morrow-conversation-message__speaker {
   color: var(--morrow-product-copy);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 13.5px;
+  font-weight: 650;
   letter-spacing: -0.005em;
 }
 
@@ -311,13 +316,14 @@
  * returns a list or a diff must still be readable.
  */
 .morrow-conversation-message__content--markdown {
-  padding: 9px 13px;
+  padding: 11px 14px;
   border: 1px solid var(--morrow-product-line-soft);
-  border-radius: var(--morrow-product-radius-md);
+  border-radius: 16px 16px 16px 5px;
   background: var(--morrow-product-bubble-them);
   color: var(--morrow-product-copy);
   font-size: var(--morrow-product-text);
-  line-height: var(--morrow-product-leading);
+  line-height: 1.52;
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.08);
 }
 
 .morrow-conversation-message__content--markdown p {
@@ -419,9 +425,9 @@
   flex: none;
   width: auto;
   max-width: none;
-  padding: 18px clamp(28px, 6vw, 88px) 22px;
-  border: 0;
-  background: var(--morrow-product-shell, #151612);
+  padding: 14px clamp(28px, 6vw, 88px) 18px;
+  border-top: 1px solid var(--morrow-product-line-soft);
+  background: color-mix(in srgb, var(--morrow-product-shell, #151612) 96%, transparent);
 }
 
 .morrow-conversation-composer .morrow-chat-composer {
@@ -464,7 +470,7 @@
   }
 
   .morrow-conversation-message--user {
-    max-width: 92%;
+    max-width: 94%;
   }
 
   .morrow-conversation-header {
@@ -671,16 +677,17 @@
 }
 
 .morrow-activity-panel__tabs {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
-  overflow-x: auto;
-  padding-bottom: 2px;
+  overflow: visible;
 }
 
 .morrow-activity-panel__tab {
   display: inline-flex;
+  min-width: 0;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 4px 9px;
   border: 1px solid transparent;
@@ -752,4 +759,65 @@
 
 .morrow-activity-panel__footer p {
   margin: 0;
+}
+
+@media (max-width: 700px) {
+  .morrow-activity-panel {
+    width: 100%;
+    border-left: 0;
+    border-radius: 16px 0 0 16px;
+    box-shadow: -10px 0 32px rgb(0 0 0 / 0.42);
+  }
+
+  .morrow-activity-panel__header {
+    padding: 16px 16px 11px;
+  }
+
+  .morrow-activity-panel__header h2 {
+    font-size: 16px;
+  }
+
+  .morrow-activity-panel__header .morrow-eyebrow,
+  .morrow-activity-panel__footer {
+    display: none;
+  }
+
+  .morrow-activity-panel__controls {
+    padding: 10px 16px 11px;
+    gap: 8px;
+  }
+
+  .morrow-activity-panel__tabs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+    overflow: visible;
+    padding: 0;
+  }
+
+  .morrow-activity-panel__tab {
+    min-width: 0;
+    justify-content: center;
+    padding: 6px 3px;
+    gap: 4px;
+    font-size: 10px;
+  }
+
+  .morrow-activity-panel__tab > span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .morrow-activity-panel__count {
+    flex: none;
+    padding-inline: 4px;
+  }
+
+  .morrow-activity-panel__content {
+    padding: 12px 16px;
+  }
+
+  .morrow-activity-panel__footer {
+    padding: 10px 16px;
+  }
 }

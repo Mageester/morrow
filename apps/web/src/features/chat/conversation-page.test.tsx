@@ -163,6 +163,9 @@ describe("ConversationPage", () => {
     await user.click(screen.getByRole("button", { name: "Show activity" }));
 
     const panel = await screen.findByRole("complementary", { name: "Activity / Inspect" });
+    // Every category remains an individually addressable tab; the responsive
+    // sheet can reflow them without hiding the filter behind a scrollbar.
+    expect(within(panel).getAllByRole("tab")).toHaveLength(7);
     const items = within(panel).getAllByRole("listitem");
     expect(items.map((item) => item.querySelector("summary")?.textContent)).toEqual([
       expect.stringContaining("Thinking"),

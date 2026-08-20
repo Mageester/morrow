@@ -1,12 +1,12 @@
 import type { RosterEntry, RosterStatus } from "@morrow/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { useRouterState } from "@tanstack/react-router";
-import { Plus } from "lucide-react";
+import { Plus, Settings2 } from "lucide-react";
 import { useState } from "react";
 import { agentQueries } from "../../api/agents.js";
 import { conversationQueries } from "../../api/conversations.js";
 import { useActiveProject } from "../projects/use-active-project.js";
-import { NewTeammatePanel } from "./new-teammate-panel.js";
+import { EditTeammatePanel, NewTeammatePanel } from "./new-teammate-panel.js";
 import { TeammateAvatar } from "./teammate-avatar.js";
 import { useOpenTeammateThread } from "./use-open-teammate-thread.js";
 
@@ -53,7 +53,13 @@ function subtitleFor(entry: RosterEntry): string {
   return entry.agentId === null ? "Your general assistant" : "No work yet";
 }
 
-export function RosterRail({ onNavigate }: { onNavigate: () => void }) {
+export function RosterRail({
+  headingId = "roster-heading",
+  onNavigate,
+}: {
+  headingId?: string;
+  onNavigate: () => void;
+}) {
   const { activeProject } = useActiveProject();
   // A conversation route names its own project, and that is authoritative
   // while you are reading it — otherwise arriving by link leaves the rail
@@ -77,6 +83,7 @@ export function RosterRail({ onNavigate }: { onNavigate: () => void }) {
   });
   const { open, openingAgentId, error } = useOpenTeammateThread(projectId);
   const [creating, setCreating] = useState(false);
+  const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
 
   if (!projectId) return null;
 
@@ -87,7 +94,7 @@ export function RosterRail({ onNavigate }: { onNavigate: () => void }) {
   return (
     <div className="morrow-roster">
       <div className="morrow-roster__head">
-        <p className="morrow-roster__title" id="roster-heading">Teammates</p>
+        <p className="morrow-roster__title" id={headingId}>Teammates</p>
         <button
           aria-label="New teammate"
           className="morrow-roster__add"
@@ -106,7 +113,7 @@ export function RosterRail({ onNavigate }: { onNavigate: () => void }) {
           <button onClick={() => void roster.refetch()} type="button">Try again</button>
         </div>
       ) : (
-        <ul aria-labelledby="roster-heading" className="morrow-roster__list">
+        <ul aria-labelledby={headingId} className="morrow-roster__list">
           {entries.map((entry) => (
             <RosterRow
               current={hasOpenThread && currentAgentId === entry.agentId}
@@ -115,6 +122,10 @@ export function RosterRail({ onNavigate }: { onNavigate: () => void }) {
               onOpen={() => {
                 open(entry);
                 onNavigate();
+              }}
+              onEdit={() => {
+                setCreating(false);
+                setEditingAgentId(entry.agentId);
               }}
               opening={openingAgentId === entry.agentId}
             />
@@ -137,6 +148,15 @@ export function RosterRail({ onNavigate }: { onNavigate: () => void }) {
           projectId={projectId}
         />
       ) : null}
+
+      {editingAgentId ? (
+        <EditTeammatePanel
+          agentId={editingAgentId}
+          onClose={() => setEditingAgentId(null)}
+          onUpdated={() => setEditingAgentId(null)}
+          projectId={projectId}
+        />
+      ) : null}
     </div>
   );
 }
@@ -146,11 +166,13 @@ function RosterRow({
   current,
   opening,
   onOpen,
+  onEdit,
 }: {
   entry: RosterEntry;
   current: boolean;
   opening: boolean;
   onOpen: () => void;
+  onEdit: () => void;
 }) {
   const age = shortAge(entry.lastActivityAt);
   const isDefault = entry.agentId === null;
@@ -159,6 +181,7 @@ function RosterRow({
     <li>
       <button
         aria-current={current ? "page" : undefined}
+        aria-label={`${entry.name} — ${STATUS_LABEL[entry.status]}`}
         className="morrow-roster__row"
         data-status={entry.status}
         data-testid="roster-row"
@@ -166,7 +189,7 @@ function RosterRow({
         onClick={onOpen}
         type="button"
       >
-        <TeammateAvatar isDefault={isDefault} name={entry.name} />
+        <TeammateAvatar isDefault={isDefault} name={entry.name} status={entry.status} />
         <span className="morrow-roster__body">
           <span className="morrow-roster__line">
             <span className="morrow-roster__name">{entry.name}</span>
@@ -183,6 +206,17 @@ function RosterRow({
           <span className="morrow-visually-hidden">{STATUS_LABEL[entry.status]}</span>
         </span>
       </button>
+      {entry.agentId ? (
+        <button
+          aria-label={`Configure ${entry.name}`}
+          className="morrow-roster__configure"
+          onClick={onEdit}
+          type="button"
+        >
+          <Settings2 aria-hidden="true" size={13} strokeWidth={1.8} />
+          <span className="morrow-visually-hidden">Configure</span>
+        </button>
+      ) : null}
     </li>
   );
 }

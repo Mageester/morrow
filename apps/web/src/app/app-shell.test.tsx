@@ -110,6 +110,14 @@ describe("Morrow application shell", () => {
     expect(within(navigation).getByRole("link", { name: "Home" })).not.toHaveAttribute("aria-current");
   });
 
+  it("keeps compact navigation understandable to assistive technology", async () => {
+    renderAt("/app/skills");
+    const navigation = await screen.findByRole("navigation", { name: "Primary" });
+    const home = within(navigation).getByRole("link", { name: "Home" });
+    expect(home).toHaveAttribute("aria-label", "Home");
+    expect(home).toHaveAttribute("title", "Home");
+  });
+
   it("updates the title and focuses main content after client navigation", async () => {
     const user = userEvent.setup();
     renderAt("/app/");
@@ -168,6 +176,12 @@ describe("Morrow application shell", () => {
       "aria-expanded",
       "true",
     );
+  });
+
+  it("mounts a mobile teammate switcher beside the route canvas", async () => {
+    renderAt("/app/");
+
+    await waitFor(() => expect(document.querySelector(".morrow-mobile-roster")).toBeInTheDocument());
   });
 
   it("opens global search from the keyboard and exposes a real conversation destination", async () => {

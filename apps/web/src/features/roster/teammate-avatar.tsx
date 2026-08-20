@@ -11,6 +11,8 @@ import { MorrowMark } from "../../components/morrow-mark.js";
 
 const TINTS = 12;
 
+export type TeammateAvatarStatus = "working" | "waiting" | "idle" | "disabled";
+
 function hue(name: string): number {
   let hash = 0;
   for (let index = 0; index < name.length; index += 1) {
@@ -31,20 +33,24 @@ export interface TeammateAvatarProps {
   /** The default teammate wears the product's own mark rather than a tint. */
   isDefault?: boolean;
   size?: "sm" | "md";
+  /** Optional live state used to paint a ring around roster avatars. */
+  status?: TeammateAvatarStatus;
 }
 
-export function TeammateAvatar({ name, isDefault = false, size = "md" }: TeammateAvatarProps) {
+export function TeammateAvatar({ name, isDefault = false, size = "md", status }: TeammateAvatarProps) {
+  const initials = isDefault ? null : teammateInitials(name);
   return (
     <span
       aria-hidden="true"
       className="morrow-teammate-avatar"
       data-default={isDefault ? "true" : undefined}
       data-size={size}
+      data-status={status}
       data-tint={isDefault ? undefined : hue(name)}
     >
       {/* The built-in teammate wears the product's own mark; the named ones
           wear initials, because they are people you hired and named. */}
-      {isDefault ? <MorrowMark size={size === "sm" ? 11 : 14} /> : teammateInitials(name)}
+      {isDefault ? <MorrowMark size={size === "sm" ? 11 : 14} /> : initials}
     </span>
   );
 }

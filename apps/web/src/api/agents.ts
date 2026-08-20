@@ -1,4 +1,4 @@
-import { AgentSchema, RosterSchema, type Agent, type AgentRole, type Roster } from "@morrow/contracts";
+import { AgentSchema, RosterSchema, type Agent, type AgentRole, type MemoryScope, type Roster } from "@morrow/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "./client.js";
 
@@ -32,6 +32,21 @@ export const agentQueries = {
       enabled: Boolean(projectId),
     });
   },
+  detail(projectId: string, agentId: string) {
+    return queryOptions({
+      queryKey: [...agentKeys.list(projectId), agentId] as const,
+      // The standalone agent route is not project-scoped. Reuse the
+      // project-scoped projection so a guessed id cannot disclose another
+      // project's policy before the UI checks ownership.
+      queryFn: async () => {
+        const agents = await api.get(`${projectPath(projectId)}/agents`, AgentSchema.array());
+        const agent = agents.find((candidate) => candidate.id === agentId);
+        if (!agent) throw new Error("Agent not found in this project");
+        return agent;
+      },
+      enabled: Boolean(projectId) && Boolean(agentId),
+    });
+  },
   roster(projectId: string) {
     return queryOptions<Roster>({
       queryKey: agentKeys.roster(projectId),
@@ -53,6 +68,8 @@ export interface CreateTeammateInput {
   instructions?: string | null;
   providerOverride?: string | null;
   modelOverride?: string | null;
+  memoryReadScopes?: MemoryScope[];
+  memoryWriteScopes?: MemoryScope[];
 }
 
 export const agentApi = {

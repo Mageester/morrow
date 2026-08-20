@@ -20,6 +20,17 @@ function approvalTarget(approval: Approval): string | null {
   return null;
 }
 
+function teammateRequest(approval: Approval): { objective: string; targetName: string | null } | null {
+  const details = approval.details as { tool?: unknown; objective?: unknown; targetAgentName?: unknown };
+  if (details.tool !== "ask_teammate" || typeof details.objective !== "string") return null;
+  return {
+    // The API supplies this as a bounded, backend-redacted projection. Keep a
+    // client-side ceiling too, and never fall back to raw args or the summary.
+    objective: details.objective.slice(0, 2_000),
+    targetName: typeof details.targetAgentName === "string" ? details.targetAgentName.slice(0, 100) : null,
+  };
+}
+
 export const ApprovalCard = memo(function ApprovalCard({
   approval,
   busy,
@@ -32,20 +43,29 @@ export const ApprovalCard = memo(function ApprovalCard({
   onDecide: (approvalId: string, decision: ApprovalDecision) => void;
 }) {
   const target = approvalTarget(approval);
+  const teammate = teammateRequest(approval);
   return (
     <article className="morrow-approvals__card" key={approval.id}>
       <header>
         <ShieldAlert aria-hidden="true" size={18} />
         <div>
           <p className="morrow-approvals__eyebrow">
-            {approval.kind === "change_set" ? "File changes" : "Command"} · waiting for you
+            {teammate ? "One-shot teammate delegation" : `${approval.kind === "change_set" ? "File changes" : "Command"} · waiting for you`}
           </p>
-          <h3>{approval.summary}</h3>
+          <h3>{teammate ? `Ask ${teammate.targetName ?? "a teammate"}` : approval.summary}</h3>
         </div>
       </header>
+      {teammate ? (
+        <div className="morrow-approvals__teammate-request">
+          <p><strong>Bounded objective</strong></p>
+          <p>{teammate.objective}</p>
+        </div>
+      ) : null}
       {target ? <code className="morrow-approvals__target">{target}</code> : null}
       <p className="morrow-approvals__hint">
-        Morrow paused this run until you decide. Allowing applies this {approval.kind === "change_set" ? "change" : "command"} once.
+        {teammate
+          ? "Morrow paused this run. Allowing starts this teammate request once; it does not create a project-wide trust rule."
+          : `Morrow paused this run until you decide. Allowing applies this ${approval.kind === "change_set" ? "change" : "command"} once.`}
       </p>
       {error && !busy ? <p role="alert">{error}</p> : null}
       <div className="morrow-approvals__actions">

@@ -160,6 +160,23 @@ describe("ChatComposer", () => {
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
   });
 
+  it("keeps the primary send action after the scrollable secondary controls", () => {
+    const { container } = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
+
+    const toolbar = container.querySelector(".morrow-chat-composer__toolbar");
+    expect(toolbar).not.toBeNull();
+    expect(toolbar?.lastElementChild).toHaveClass("morrow-chat-composer__send");
+  });
+
+  it("keeps the toolbar action lane explicit for contained desktop layouts", () => {
+    const { container } = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
+    const toolbar = container.querySelector(".morrow-chat-composer__toolbar");
+    const send = container.querySelector(".morrow-chat-composer__send");
+    expect(toolbar).toBeInTheDocument();
+    expect(send).toBeInTheDocument();
+    expect(send?.parentElement).toBe(toolbar);
+  });
+
   it("never focuses a disabled textarea and focuses it only after re-enable", async () => {
     const { rerender } = render(
       <ChatComposer autoFocus disabled draftScope={scope} onSubmit={vi.fn()} />,

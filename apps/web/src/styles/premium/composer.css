@@ -20,17 +20,20 @@
 .morrow-chat-composer {
   container-type: inline-size;
   display: grid;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   padding: 9px 10px 8px;
-  border: 1px solid var(--morrow-product-line);
-  border-radius: var(--morrow-product-radius-lg);
-  background: var(--morrow-product-field);
-  box-shadow: none;
+  border: 1px solid var(--morrow-product-line-strong);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--morrow-product-field) 96%, transparent);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
   gap: 0;
 }
 
 .morrow-chat-composer:focus-within {
-  border-color: var(--morrow-product-line-strong);
-  box-shadow: none;
+  border-color: var(--morrow-product-copper-line);
+  box-shadow: 0 0 0 3px var(--morrow-product-copper-soft), 0 10px 28px rgb(0 0 0 / 0.16);
 }
 
 .morrow-chat-composer__input {
@@ -39,9 +42,9 @@
   /* One comfortable line at rest, growing with the message. Two lines of
      reserved emptiness is a document editor's opening posture, not a
      message box's. */
-  min-height: 24px;
+  min-height: 30px;
   max-height: 40vh;
-  padding: 3px 3px 8px;
+  padding: 4px 4px 9px;
   border: 0;
   background: transparent;
   color: var(--morrow-product-copy);
@@ -76,10 +79,17 @@
 
   display: flex;
   align-items: center;
-  padding-top: 7px;
+  min-width: 0;
+  padding-top: 8px;
   border-top: 1px solid var(--morrow-product-line-soft);
   flex-wrap: nowrap;
-  gap: 6px;
+  gap: 7px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.morrow-chat-composer__toolbar::-webkit-scrollbar {
+  display: none;
 }
 
 .morrow-chat-composer__modes-row {
@@ -110,7 +120,7 @@
   flex: none;
   align-items: stretch;
   padding: 2px;
-  border: 1px solid #393b34;
+  border: 1px solid var(--morrow-product-line);
   border-radius: 9px;
   background: transparent;
   gap: 2px;
@@ -129,10 +139,10 @@
   flex: none;
   align-items: center;
   padding: 0 9px;
-  border: 1px solid #363831;
+  border: 1px solid var(--morrow-product-line);
   border-radius: 10px;
-  background: rgb(255 255 255 / 0.018);
-  color: #93958c;
+  background: var(--morrow-product-field-inset);
+  color: var(--morrow-product-copy-quiet);
   cursor: pointer;
   font: inherit;
   font-size: 11px;
@@ -151,7 +161,7 @@
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: #93958c;
+  color: var(--morrow-product-copy-quiet);
   cursor: pointer;
   font: inherit;
   font-size: 11px;
@@ -166,7 +176,7 @@
 .morrow-chat-composer .morrow-chat-composer__select:hover,
 .morrow-chat-composer .morrow-model-picker:hover,
 .morrow-chat-composer .morrow-reasoning-slider:hover {
-  border-color: #4d4f46;
+  border-color: var(--morrow-product-line-strong);
   color: var(--morrow-product-copy-soft);
   transform: none;
 }
@@ -182,7 +192,7 @@
  */
 .morrow-chat-composer .morrow-chat-composer__modes button.is-active,
 .morrow-chat-composer .morrow-chat-composer__modes button[aria-pressed="true"] {
-  background: #373831;
+  background: var(--morrow-product-field-warm);
   color: var(--morrow-product-copy);
   font-weight: 650;
   box-shadow: none;
@@ -190,8 +200,8 @@
 
 .morrow-chat-composer .morrow-chat-composer__reasoning-toggle:has(input:checked),
 .morrow-chat-composer .morrow-chat-composer__auto-approve:has(input:checked) {
-  border-color: #4d4f46;
-  background: #26272120;
+  border-color: var(--morrow-product-copper-line);
+  background: var(--morrow-product-copper-soft);
   color: var(--morrow-product-copy-soft);
 }
 
@@ -223,8 +233,8 @@
 .morrow-chat-composer__send,
 .morrow-chat-composer__stop {
   display: inline-flex;
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   min-width: 0;
   flex: none;
   align-items: center;
@@ -232,11 +242,15 @@
   margin-left: auto;
   padding: 0;
   border: 0;
-  border-radius: 9px;
+  border-radius: 10px;
   background: var(--morrow-product-copper);
   color: #21110a;
   cursor: pointer;
-  box-shadow: none;
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--morrow-product-copper) 26%, transparent);
+  transition:
+    background-color var(--morrow-premium-control) var(--morrow-product-shift),
+    box-shadow var(--morrow-premium-control) var(--morrow-product-shift),
+    transform var(--morrow-premium-press) var(--morrow-product-shift);
 }
 
 .morrow-chat-composer__stop {
@@ -251,6 +265,7 @@
 
 .morrow-chat-composer__send:hover:not(:disabled) {
   background: var(--morrow-product-copper-bright);
+  transform: translateY(-1px);
 }
 
 .morrow-chat-composer__send:disabled {
@@ -654,6 +669,38 @@
   white-space: nowrap;
 }
 
+/* Laptop widths still get a complete primary action. Reserve its lane inside
+   the toolbar so a long model/status row cannot push Send beyond the viewport. */
+@media (min-width: 761px) {
+  .morrow-chat-composer__toolbar {
+    position: relative;
+    box-sizing: border-box;
+    max-width: 100%;
+    padding-right: 42px;
+    overflow: hidden;
+  }
+
+  .morrow-chat-composer .morrow-chat-composer__actions {
+    position: absolute;
+    top: 8px;
+    right: 0;
+    z-index: 2;
+    margin-left: 0;
+    padding-left: 6px;
+    background: var(--morrow-product-field);
+  }
+
+  .morrow-chat-composer__send,
+  .morrow-chat-composer__stop {
+    position: absolute;
+    top: 8px;
+    right: 0;
+    z-index: 3;
+    margin: 0;
+    flex: none;
+  }
+}
+
 @media (max-width: 860px) {
   .morrow-chat-composer .morrow-reasoning-slider__label {
     display: none;
@@ -757,8 +804,11 @@
   .morrow-chat-composer__toolbar {
     --morrow-chip-height: 34px;
 
+    position: relative;
     flex-wrap: nowrap;
+    gap: 4px;
     overflow-x: auto;
+    padding-right: 48px;
     scrollbar-width: none;
   }
 
@@ -772,7 +822,53 @@
 
   .morrow-chat-composer .morrow-chat-composer__modes button {
     width: auto;
+    padding-inline: 6px;
     flex: none;
+  }
+
+  /* Keep the compact, high-signal controls in the first viewport. Tertiary
+     provider telemetry is still available in the activity view; the action
+     and message controls must not compete with it for the send lane. */
+  .morrow-chat-composer .morrow-chat-composer__modes {
+    width: 88px;
+  }
+
+  .morrow-chat-composer .morrow-model-picker {
+    width: 90px;
+    max-width: 90px;
+  }
+
+  .morrow-chat-composer .morrow-model-picker__trigger {
+    max-width: 90px;
+  }
+
+  .morrow-chat-composer .morrow-capability-status {
+    display: none;
+  }
+
+  .morrow-chat-composer .morrow-composer-popover:has(button[title="Thinking and reasoning"]),
+  .morrow-chat-composer .morrow-composer-popover:has(button[title="Workspace and message settings"]) {
+    width: 30px;
+    flex: none;
+  }
+
+  .morrow-chat-composer .morrow-composer-popover:has(button[title="Thinking and reasoning"]) .morrow-composer-popover__trigger {
+    width: 30px;
+    justify-content: center;
+    padding: 0;
+    font-size: 0;
+  }
+
+  .morrow-chat-composer .morrow-composer-popover:has(button[title="Thinking and reasoning"]) .morrow-composer-popover__trigger::before {
+    content: "✦";
+    font-size: 15px;
+    line-height: 1;
+  }
+
+  .morrow-chat-composer .morrow-composer-popover:has(button[title="Workspace and message settings"]) .morrow-composer-popover__trigger {
+    width: 30px;
+    justify-content: center;
+    padding: 0;
   }
 
   .morrow-chat-composer__toolbar::-webkit-scrollbar {
@@ -793,6 +889,19 @@
   .morrow-chat-composer__stop {
     position: sticky;
     right: 0;
+    z-index: 2;
+    flex: 0 0 auto;
     box-shadow: -10px 0 0 6px var(--morrow-product-field);
+  }
+
+  /* Keep a real lane for the primary action. The secondary chips may scroll,
+     but they must never slide underneath the pinned send/stop affordance. */
+  .morrow-chat-composer__stop,
+  .morrow-chat-composer__actions {
+    background: var(--morrow-product-field);
+  }
+
+  .morrow-chat-composer__send {
+    background: var(--morrow-product-copper);
   }
 }

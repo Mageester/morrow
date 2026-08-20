@@ -4,6 +4,7 @@ import {
   type Routine,
   type RoutineRecordingState,
   type RoutineStep,
+  type UpdateRoutineInput,
 } from "@morrow/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { z } from "zod";
@@ -61,6 +62,13 @@ export const routineApi = {
     input: { name: string; objective: string; steps: RoutineStep[]; agentId: string | null; sourceConversationId?: string },
   ) {
     return api.post(routinesPath(projectId), input, RoutineSchema);
+  },
+  update(projectId: string, routineId: string, input: UpdateRoutineInput) {
+    return api.patch(
+      `${routinesPath(projectId)}/${encodeURIComponent(routineId)}`,
+      input,
+      RoutineSchema,
+    );
   },
   run(routineId: string) {
     return api.post(`/api/routines/${encodeURIComponent(routineId)}/run`, {}, RoutineRunSchema);
