@@ -51,6 +51,7 @@ export function conversationsRepository(db: Database.Database) {
       projectId: row.project_id,
       title: row.title,
       archived: Number(row.archived ?? 0) !== 0,
+      agentId: row.agent_id ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     });
@@ -91,10 +92,12 @@ export function conversationsRepository(db: Database.Database) {
   };
 
   return {
-    createConversation(input: Omit<Conversation, "version" | "archived"> & { archived?: boolean }): Conversation {
+    createConversation(
+      input: Omit<Conversation, "version" | "archived" | "agentId"> & { archived?: boolean; agentId?: string | null },
+    ): Conversation {
       db.prepare(
-        "INSERT INTO conversations (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
-      ).run(input.id, input.projectId, input.title, input.createdAt, input.updatedAt);
+        "INSERT INTO conversations (id, project_id, title, agent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(input.id, input.projectId, input.title, input.agentId ?? null, input.createdAt, input.updatedAt);
       return this.getConversation(input.id)!;
     },
 
@@ -108,6 +111,17 @@ export function conversationsRepository(db: Database.Database) {
         ? "SELECT * FROM conversations WHERE project_id = ? ORDER BY updated_at DESC"
         : "SELECT * FROM conversations WHERE project_id = ? AND archived = 0 ORDER BY updated_at DESC";
       return db.prepare(sql).all(projectId).map(mapConversation);
+    },
+
+    listConversationsByAgent(projectId: string, agentId: string | null, includeArchived = false): Conversation[] {
+      const archivedClause = includeArchived ? "" : " AND archived = 0";
+      const sql = agentId === null
+        ? `SELECT * FROM conversations WHERE project_id = ? AND agent_id IS NULL${archivedClause} ORDER BY updated_at DESC`
+        : `SELECT * FROM conversations WHERE project_id = ? AND agent_id = ?${archivedClause} ORDER BY updated_at DESC`;
+      const rows = agentId === null
+        ? db.prepare(sql).all(projectId)
+        : db.prepare(sql).all(projectId, agentId);
+      return rows.map(mapConversation);
     },
 
     renameConversation(id: string, title: string, updatedAt: string): Conversation | undefined {

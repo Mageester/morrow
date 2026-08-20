@@ -211,7 +211,7 @@ export function dispatchAgentTask(
   request: AgentTaskRequest,
 ) {
   const { conversationId, parentTaskId, deferRun, delegationId, ...rawBody } = request;
-  const body = SendMessageSchema.parse(rawBody);
+  const requested = SendMessageSchema.parse(rawBody);
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date());
   const createId = dependencies.createId ?? randomUUID;
@@ -223,6 +223,23 @@ export function dispatchAgentTask(
   const delegations = delegationsRepository(dependencies.db);
   const conversation = conversations.getConversation(conversationId);
   if (!conversation) throw new AgentTaskDispatchError(404, "Conversation not found", "NOT_FOUND");
+
+  // A conversation belongs to one teammate for its whole life. A request that
+  // names no agent inherits that binding, so every turn in the thread runs
+  // under the same agent's policy instead of silently falling back to the
+  // default assistant. A request that names a DIFFERENT agent is refused
+  // rather than honoured: running someone else's agent inside this thread
+  // would execute under a policy the thread was never bound to.
+  if (conversation.agentId && requested.agentId && requested.agentId !== conversation.agentId) {
+    throw new AgentTaskDispatchError(
+      409,
+      "This conversation belongs to another agent; start a thread with that agent instead",
+      "CONVERSATION_AGENT_MISMATCH",
+    );
+  }
+  const body: SendMessageInput = conversation.agentId && !requested.agentId
+    ? { ...requested, agentId: conversation.agentId }
+    : requested;
 
   if (body.agentId) {
     const agent = agents.get(body.agentId);

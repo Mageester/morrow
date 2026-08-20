@@ -51,8 +51,12 @@ export const ExecutionDisclosureSchema=z.object({version:SchemaVersionSchema,tas
 export const VerificationResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:z.literal("verified"),summary:z.string(),details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const StructuredApiErrorSchema=z.object({version:SchemaVersionSchema,error:z.object({code:z.string(),message:z.string()}).strict()}).strict();
 
-export const ConversationSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),title:z.string(),archived:z.boolean().default(false),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
-export const CreateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional()}).strict();
+// `agentId` binds a conversation to one named teammate: every task dispatched
+// in it runs as that agent, under that agent's own policy. Null is the
+// built-in default teammate, which is what every conversation predating the
+// roster is — so the column is additive and never rewrites existing history.
+export const ConversationSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),title:z.string(),archived:z.boolean().default(false),agentId:z.string().nullable().default(null),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+export const CreateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional(),agentId:z.string().trim().min(1).optional()}).strict();
 export const UpdateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional(),archived:z.boolean().optional()}).strict().refine((v)=>v.title!==undefined||v.archived!==undefined,{message:"Provide title or archived"});
 export const DeleteConversationSchema=z.object({confirmation:z.literal("delete")}).strict();
 export const DeleteConversationResultSchema=z.object({version:SchemaVersionSchema,conversationId:z.string(),deleted:z.boolean()}).strict();
@@ -1489,3 +1493,4 @@ export { isReasoningCompatible, normalizeReasoningForRoute, reasoningModesForRou
 
 export * from "./web.js";
 export * from "./teams.js";
+export * from "./roster.js";

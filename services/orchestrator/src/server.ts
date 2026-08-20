@@ -252,6 +252,7 @@ import { registerWebMissionRoutes } from "./web/mission-routes.js";
 import { registerWebMissionStreamRoutes } from "./web/mission-stream.js";
 import { projectConversationActivity } from "./web/activity-projection.js";
 import { DEFAULT_CONVERSATION_TITLE, deriveConversationTitle, isDefaultConversationTitle } from "./web/conversation-title.js";
+import { DEFAULT_TEAMMATE_NAME, projectRoster } from "./web/roster-projection.js";
 import { registerWebAppRoutes } from "./web/static-app.js";
 
 export class ApiError extends Error {
@@ -741,6 +742,19 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { projectId } = request.params as { projectId: string };
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
     return agents.listByProject(projectId);
+  });
+
+  // The teammate roster the left rail renders: every named agent plus the
+  // built-in default teammate, each with live status derived from task and
+  // approval state. Read-only and safe to poll.
+  app.get("/api/projects/:projectId/roster", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return projectRoster({
+      db: deps.db,
+      projectId,
+      defaultTeammateName: assistantProfile.get().assistantName?.trim() || DEFAULT_TEAMMATE_NAME,
+    });
   });
 
   app.post("/api/projects/:projectId/agents", async (request, reply) => {
@@ -1318,11 +1332,20 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     
     const body = CreateConversationSchema.parse(request.body ?? {});
     const title = body?.title?.trim() || DEFAULT_CONVERSATION_TITLE;
-    
+    // A thread belongs to one teammate for its whole life. Validate the
+    // binding here, once, so no later dispatch has to re-establish that the
+    // agent is real, enabled, and owned by this project.
+    if (body.agentId) {
+      const agent = agents.get(body.agentId);
+      if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
+      if (!agent.enabled) throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
+    }
+
     const conversation = convs.createConversation({
       id: crypto.randomUUID(),
       projectId,
       title,
+      agentId: body.agentId ?? null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
@@ -1716,6 +1739,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       id: crypto.randomUUID(),
       projectId: parent.projectId,
       title: label ?? `Delegated: ${agent.name}`,
+      // Bound to the specialist that runs it, so the roster attributes the
+      // delegated work to that teammate rather than to the default one.
+      agentId: agent.id,
       createdAt: now,
       updatedAt: now,
     });

@@ -1416,6 +1416,18 @@ export const migrations:Migration[]=[
     -- ORDER BY, so the sort is served by the index too.
     CREATE INDEX IF NOT EXISTS task_evidence_task_id_created_at_idx ON task_evidence(task_id,created_at);
   `}
+  ,{id:52,name:"conversation_agent_binding",sql:`
+    -- A conversation is a thread with one teammate. Binding the agent here
+    -- rather than re-deriving it from the tasks inside means the thread keeps
+    -- its owner before the first message is ever sent, and an agent that is
+    -- later deleted leaves its history readable under the default teammate
+    -- instead of taking the conversation with it.
+    ALTER TABLE conversations ADD COLUMN agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS conversations_agent_idx ON conversations(agent_id,updated_at DESC);
+    -- The roster's per-teammate status reads live task state by agent. Without
+    -- this every roster render scans the whole task table once per teammate.
+    CREATE INDEX IF NOT EXISTS tasks_agent_status_idx ON tasks(agent_id,status);
+  `}
 ];
 /**
  * Durability mode for committed writes.
