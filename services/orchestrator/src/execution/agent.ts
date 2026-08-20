@@ -79,6 +79,7 @@ import {
   type RequirementToolCall,
 } from "./requirements.js";
 import { normalizeTrailingLegacyToolCalls } from "./legacy-tool-call.js";
+import { resolveAblations } from "./ablation.js";
 import { measureProviderRequest, prepareContextForProvider } from "./context-budget.js";
 import { boundCompletedToolArguments, boundTerminalToolArguments, buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
 import { providerRouteFingerprint } from "../routing/effective-context.js";
@@ -1038,7 +1039,9 @@ export async function executeAgentChatTask({
   const preset = getPreset(presetId as any) ?? getPreset(DEFAULT_PRESET_ID)!;
   const providerId = (routing?.providerId ?? (assistantMessageRow.provider as ProviderId | null) ?? "openai") as ProviderId;
   const resolvedModel: string | undefined = routing?.model ?? assistantMessageRow.model ?? undefined;
-  const useMemory = routing?.useMemory ?? true;
+  // Opt-in measurement seam. Empty for every ordinary run; see ablation.ts.
+  const ablations = resolveAblations();
+  const useMemory = (routing?.useMemory ?? true) && !ablations.has("memory");
   const autoMemoryCapture = (db.prepare("SELECT value FROM settings WHERE key = ?").get("memory.autoCapture") as { value?: string } | undefined)?.value !== "false";
   // The reasoning selection frozen into the routing decision at send time
   // (server.ts already validated it against the primary route). Retry/resume
@@ -1724,6 +1727,7 @@ export async function executeAgentChatTask({
     );
   };
   const loadCurrentExecutionRequirements = () => {
+    if (ablations.has("requirements")) return [];
     const prompt = currentRequirementPrompt();
     return restoreMissionRequirementWaivers(
       restoreExecutionRequirementWaivers(
@@ -1834,7 +1838,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // agent reliably uses them, rather than depending on the model deciding to
   // call find_skill. The model is told to load the best match first; that
   // produces a visible load_skill tool call and grounds it in a real workflow.
-  if (agentMode !== "plan-only" && activeToolProfile !== "none") {
+  if (agentMode !== "plan-only" && activeToolProfile !== "none" && !ablations.has("skills")) {
     const relevantSkills = discoverRelevantSkills(taskIntentPrompt, workspacePath, projectId, process.env, learnedById);
     if (relevantSkills.length > 0) {
       const list = relevantSkills.map((s) => `- ${s.id}: ${s.description || s.name}`).join("\n");
@@ -3092,6 +3096,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const requestsReadOnlyEvidence = taskShape === "read_only"
     && /\b(?:read|inspect|review|analy[sz]e|diagnos(?:e|is)|list|check|verify|examine|search)\b/i.test(taskIntentPrompt);
   const completionContractApplies = (): boolean => {
+    if (ablations.has("completion-contract")) return false;
     if (taskShape !== "read_only") return true;
     if (requestsReadOnlyEvidence || executionRequirements.some((requirement) => requirement.authoritative)) return true;
     const calls = convs.listToolCallsForMessage(assistantMessageRow.id);
@@ -5155,7 +5160,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     // Some compatible routes emit XML-shaped tool calls as assistant text
     // despite receiving structured tool schemas. Recover only trailing calls
     // for tools exposed on this request; normal execution policy still applies.
-    if (!hasToolCalls && activeToolProfile !== "none") {
+    if (!hasToolCalls && activeToolProfile !== "none" && !ablations.has("legacy-tool-calls")) {
       const streamedTurnText = responseContent.slice(responseLengthAtTurnStart);
       const normalized = normalizeTrailingLegacyToolCalls(
         streamedTurnText,
@@ -5332,8 +5337,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // then the cross-tool field aliases. They fix separate model
           // behaviors and are separate passes; the alias pass is the one that
           // reports what it applied.
-          const dialectArgs = normalizeCommandDialect(tc.name, parsedArgs.value);
-          const normalized = normalizeToolArguments(tc.name, dialectArgs);
+          const dialectArgs = ablations.has("command-dialect")
+            ? parsedArgs.value
+            : normalizeCommandDialect(tc.name, parsedArgs.value);
+          const normalized = ablations.has("tool-argument-repair")
+            ? { args: dialectArgs, applied: [] as string[] }
+            : normalizeToolArguments(tc.name, dialectArgs);
           args = normalized.args;
           if (normalized.applied.length > 0) {
             event("tool.arguments_normalized", { toolName: tc.name, applied: normalized.applied });

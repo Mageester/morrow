@@ -644,7 +644,216 @@ const builds: EvalTask[] = [
   },
 ];
 
-export const TASKS: readonly EvalTask[] = [...defects, ...builds];
+// ── Harder tasks ────────────────────────────────────────────────────────────
+//
+// The first twenty tasks are ordinary defect-fix and small-build work, and on a
+// capable model both harnesses saturate them. These five are here because a
+// benchmark whose headline metric everything passes cannot rank anything. Each
+// punishes a specific shortcut: stopping at the visible symptom, trusting a
+// read of the code instead of running it, fixing one defect and declaring the
+// symptom gone, or repairing the new behaviour by breaking the documented old
+// one.
+
+const harder: EvalTask[] = [
+  {
+    id: "two-bugs-one-symptom",
+    category: "defect",
+    summary: "one visible symptom, two independent defects behind it",
+    prompt:
+      "`node repro.mjs` in this workspace prints the wrong total. `SPEC.md` states the intended behaviour of `invoice.js`. Fix `invoice.js` so it matches the spec. Do not change SPEC.md or repro.mjs.",
+    files: {
+      "package.json": pkg("invoice"),
+      "SPEC.md":
+        "# total(items, taxRate)\n\n" +
+        "Computes an invoice total.\n\n" +
+        "- Each item is `{ price, quantity }`. A line is `price * quantity`.\n" +
+        "- An item with no `quantity` counts as quantity 1.\n" +
+        "- The subtotal is the sum of every line.\n" +
+        "- Tax is `subtotal * taxRate`, and the total is subtotal plus tax.\n" +
+        "- The result is rounded to two decimal places.\n",
+      "invoice.js":
+        "export function total(items, taxRate) {\n" +
+        "  let subtotal = 0;\n" +
+        "  for (const item of items) {\n" +
+        "    subtotal += item.price * item.quantity;\n" +
+        "  }\n" +
+        "  return Math.round(subtotal * taxRate * 100) / 100;\n" +
+        "}\n",
+      "repro.mjs":
+        "import { total } from './invoice.js';\n" +
+        "console.log(total([{ price: 10, quantity: 2 }], 0.1));\n" +
+        "// expected 22\n",
+    },
+    check:
+      "const { total } = await import('./invoice.js');\n" +
+      "eq(total([{ price: 10, quantity: 2 }], 0.1), 22, 'the visible repro case');\n" +
+      "eq(total([{ price: 5 }], 0), 5, 'missing quantity counts as one');\n" +
+      "eq(total([{ price: 10, quantity: 2 }, { price: 5 }], 0.1), 27.5, 'both defects, together');\n" +
+      "eq(total([], 0.2), 0, 'empty invoice');\n" +
+      "eq(total([{ price: 0.1, quantity: 3 }], 0), 0.3, 'rounding to two places');\n",
+  },
+  {
+    id: "stateful-bug",
+    category: "defect",
+    summary: "bug appears only on repeated use; reading the code looks fine",
+    prompt:
+      "`stats.js` gives correct answers the first time it is used and wrong ones afterwards. `SPEC.md` states the intended behaviour. Fix it. Keep the exported name and signature.",
+    files: {
+      "package.json": pkg("stats"),
+      "SPEC.md":
+        "# createStats()\n\n" +
+        "Returns `{ add(n), summary() }`.\n\n" +
+        "- `add` records a number.\n" +
+        "- `summary()` returns `{ count, sum, mean }` for the numbers recorded **so far**,\n" +
+        "  and leaves the recorded numbers untouched so it can be called repeatedly.\n" +
+        "- `mean` is 0 when nothing has been recorded.\n" +
+        "- Two independent `createStats()` instances never share state.\n",
+      "stats.js":
+        "const values = [];\n" +
+        "export function createStats() {\n" +
+        "  return {\n" +
+        "    add(n) { values.push(n); },\n" +
+        "    summary() {\n" +
+        "      const count = values.length;\n" +
+        "      const sum = values.reduce((a, b) => a + b, 0);\n" +
+        "      values.length = 0;\n" +
+        "      return { count, sum, mean: count === 0 ? 0 : sum / count };\n" +
+        "    },\n" +
+        "  };\n" +
+        "}\n",
+    },
+    check:
+      "const { createStats } = await import('./stats.js');\n" +
+      "const a = createStats();\n" +
+      "a.add(2); a.add(4);\n" +
+      "eq(a.summary(), { count: 2, sum: 6, mean: 3 }, 'first summary');\n" +
+      "eq(a.summary(), { count: 2, sum: 6, mean: 3 }, 'summary must not consume the data');\n" +
+      "a.add(6);\n" +
+      "eq(a.summary(), { count: 3, sum: 12, mean: 4 }, 'accumulates across calls');\n" +
+      "const b = createStats();\n" +
+      "eq(b.summary(), { count: 0, sum: 0, mean: 0 }, 'a fresh instance shares no state');\n",
+  },
+  {
+    id: "regression-guard",
+    category: "defect",
+    summary: "add a behaviour without breaking the documented existing one",
+    prompt:
+      "`format.js` must gain the behaviour described under 'Relative dates' in `SPEC.md`, which it does not implement yet. Everything else in SPEC.md is existing behaviour that must keep working. Keep the exported name and signature.",
+    files: {
+      "package.json": pkg("format"),
+      "SPEC.md":
+        "# formatDate(date, now)\n\n" +
+        "Renders a `Date` for display, relative to `now`.\n\n" +
+        "## Absolute dates (existing behaviour)\n\n" +
+        "- Seven days or more before `now`: `YYYY-MM-DD` in UTC.\n" +
+        "- Any date in the future: `YYYY-MM-DD` in UTC.\n\n" +
+        "## Relative dates (to add)\n\n" +
+        "- Less than one minute before `now`: `just now`.\n" +
+        "- Less than one hour: `N minutes ago`, N floored, `1 minute ago` when N is 1.\n" +
+        "- Less than one day: `N hours ago`, floored, `1 hour ago` when N is 1.\n" +
+        "- Less than seven days: `N days ago`, floored, `1 day ago` when N is 1.\n",
+      "format.js":
+        "export function formatDate(date, now) {\n" +
+        "  const y = date.getUTCFullYear();\n" +
+        "  const m = String(date.getUTCMonth() + 1).padStart(2, '0');\n" +
+        "  const d = String(date.getUTCDate()).padStart(2, '0');\n" +
+        "  return `${y}-${m}-${d}`;\n" +
+        "}\n",
+    },
+    check:
+      "const { formatDate } = await import('./format.js');\n" +
+      "const now = new Date('2026-06-15T12:00:00Z');\n" +
+      "const ago = (ms) => new Date(now.getTime() - ms);\n" +
+      "eq(formatDate(ago(30 * 1000), now), 'just now', 'under a minute');\n" +
+      "eq(formatDate(ago(60 * 1000), now), '1 minute ago', 'singular minute');\n" +
+      "eq(formatDate(ago(5 * 60 * 1000), now), '5 minutes ago', 'plural minutes');\n" +
+      "eq(formatDate(ago(60 * 60 * 1000), now), '1 hour ago', 'singular hour');\n" +
+      "eq(formatDate(ago(5 * 60 * 60 * 1000), now), '5 hours ago', 'plural hours');\n" +
+      "eq(formatDate(ago(24 * 60 * 60 * 1000), now), '1 day ago', 'singular day');\n" +
+      "eq(formatDate(ago(3 * 24 * 60 * 60 * 1000), now), '3 days ago', 'plural days');\n" +
+      "eq(formatDate(ago(7 * 24 * 60 * 60 * 1000), now), '2026-06-08', 'existing behaviour: seven days back');\n" +
+      "eq(formatDate(ago(400 * 24 * 60 * 60 * 1000), now), '2025-05-11', 'existing behaviour: long past');\n" +
+      "eq(formatDate(new Date('2026-09-01T00:00:00Z'), now), '2026-09-01', 'existing behaviour: future');\n",
+  },
+  {
+    id: "multi-file-contract",
+    category: "defect",
+    summary: "a change that must land in three files at once",
+    prompt:
+      "`node main.mjs` in this workspace crashes. `SPEC.md` states what the pipeline is supposed to do. Fix the workspace so it matches the spec. Do not change SPEC.md.",
+    files: {
+      "package.json": pkg("pipeline"),
+      "SPEC.md":
+        "# The pipeline\n\n" +
+        "`parse.js` turns a raw `\"name:score\"` line into `{ name, score }` with `score` a number.\n" +
+        "`filter.js` exports `keepPassing(records, minimum)`, keeping records whose score is\n" +
+        "greater than or equal to `minimum`.\n" +
+        "`report.js` exports `render(records)`, returning one `\"name: score\"` line per record,\n" +
+        "joined by newlines, in the order given.\n" +
+        "`main.mjs` wires them together and prints the report.\n\n" +
+        "An input line with no `:` is skipped rather than producing a broken record.\n",
+      "parse.js": "export function parseLine(line) {\n  const [name, score] = line.split(':');\n  return { name, score };\n}\n",
+      "filter.js": "export function keepPassing(records, minimum) {\n  return records.filter((record) => record.score > minimum);\n}\n",
+      "report.js": "export function render(records) {\n  return records.map((record) => record.name + ': ' + record.score);\n}\n",
+      "main.mjs":
+        "import { parseLine } from './parse.js';\n" +
+        "import { keepPassing } from './filter.js';\n" +
+        "import { render } from './report.js';\n" +
+        "const lines = ['ada:90', 'grace:70', 'broken', 'alan:70'];\n" +
+        "const records = lines.map(parseLine);\n" +
+        "console.log(render(keepPassing(records, 70)).toUpperCase());\n",
+    },
+    check:
+      "const { parseLine } = await import('./parse.js');\n" +
+      "const { keepPassing } = await import('./filter.js');\n" +
+      "const { render } = await import('./report.js');\n" +
+      "eq(parseLine('ada:90'), { name: 'ada', score: 90 }, 'score must be a number');\n" +
+      "eq(keepPassing([{ name: 'a', score: 70 }, { name: 'b', score: 69 }], 70), [{ name: 'a', score: 70 }], 'minimum is inclusive');\n" +
+      "eq(render([{ name: 'a', score: 70 }, { name: 'b', score: 90 }]), 'a: 70\\nb: 90', 'render joins with newlines');\n" +
+      "const parsed = ['ada:90', 'grace:70', 'broken', 'alan:70'].map(parseLine).filter(Boolean);\n" +
+      "eq(render(keepPassing(parsed, 70)), 'ada: 90\\ngrace: 70\\nalan: 70', 'the whole pipeline');\n" +
+      "import { spawnSync } from 'node:child_process';\n" +
+      "const run = spawnSync(process.execPath, ['main.mjs'], { encoding: 'utf8' });\n" +
+      "eq(run.status, 0, 'main.mjs must run cleanly');\n",
+  },
+  {
+    id: "build-json-pointer",
+    category: "build",
+    summary: "implement a larger spec surface with escaping rules",
+    prompt:
+      "Create `pointer.js` in this workspace, a Node ES module exporting `resolve(document, pointer)`. Implement exactly the behaviour in `SPEC.md`. Do not add dependencies.",
+    files: {
+      "package.json": pkg("pointer"),
+      "SPEC.md":
+        "# resolve(document, pointer)\n\n" +
+        "Resolves a JSON Pointer against a document.\n\n" +
+        "- The empty string `\"\"` resolves to the whole document.\n" +
+        "- A pointer is a sequence of `/`-prefixed reference tokens: `/a/b`.\n" +
+        "- Inside a token, `~1` means a literal `/` and `~0` means a literal `~`.\n" +
+        "  `~1` must be unescaped before `~0`, so `~01` is the two characters `~1`.\n" +
+        "- A token against an array is a base-10 index; a token that is not a valid index\n" +
+        "  resolves to `undefined`.\n" +
+        "- A token that is missing from an object resolves to `undefined`.\n" +
+        "- A pointer that does not start with `/` and is not empty throws a `TypeError`.\n",
+    },
+    check:
+      "const { resolve } = await import('./pointer.js');\n" +
+      "const doc = { foo: { bar: 1 }, list: [10, 20], 'a/b': 'slash', 'm~n': 'tilde', '~1': 'literal' };\n" +
+      "eq(resolve(doc, ''), doc, 'empty pointer is the whole document');\n" +
+      "eq(resolve(doc, '/foo/bar'), 1, 'nested object');\n" +
+      "eq(resolve(doc, '/list/1'), 20, 'array index');\n" +
+      "eq(resolve(doc, '/list/9'), undefined, 'out-of-range index');\n" +
+      "eq(resolve(doc, '/list/x'), undefined, 'non-numeric index');\n" +
+      "eq(resolve(doc, '/missing'), undefined, 'missing key');\n" +
+      "eq(resolve(doc, '/a~1b'), 'slash', '~1 unescapes to a slash');\n" +
+      "eq(resolve(doc, '/m~0n'), 'tilde', '~0 unescapes to a tilde');\n" +
+      "eq(resolve(doc, '/~01'), 'literal', '~01 is the two characters ~1');\n" +
+      "let threw = false; try { resolve(doc, 'foo'); } catch (e) { threw = e instanceof TypeError; }\n" +
+      "ok(threw, 'a pointer not starting with / must throw TypeError');\n",
+  },
+];
+
+export const TASKS: readonly EvalTask[] = [...defects, ...builds, ...harder];
 
 export function taskById(id: string): EvalTask {
   const task = TASKS.find((candidate) => candidate.id === id);

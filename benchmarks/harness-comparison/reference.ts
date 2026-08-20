@@ -280,4 +280,83 @@ export const REFERENCE_SOLUTIONS: Record<string, Record<string, string>> = {
       "const words = text.split(/\\s+/).filter(Boolean).length;\n" +
       "console.log(`${lines} ${words} ${buffer.length}`);\n",
   },
+  "two-bugs-one-symptom": {
+    "invoice.js":
+      "export function total(items, taxRate) {\n" +
+      "  let subtotal = 0;\n" +
+      "  for (const item of items) subtotal += item.price * (item.quantity ?? 1);\n" +
+      "  return Math.round(subtotal * (1 + taxRate) * 100) / 100;\n" +
+      "}\n",
+  },
+  "stateful-bug": {
+    "stats.js":
+      "export function createStats() {\n" +
+      "  const values = [];\n" +
+      "  return {\n" +
+      "    add(n) { values.push(n); },\n" +
+      "    summary() {\n" +
+      "      const count = values.length;\n" +
+      "      const sum = values.reduce((a, b) => a + b, 0);\n" +
+      "      return { count, sum, mean: count === 0 ? 0 : sum / count };\n" +
+      "    },\n" +
+      "  };\n" +
+      "}\n",
+  },
+  "regression-guard": {
+    "format.js":
+      "const MINUTE = 60 * 1000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;\n" +
+      "const plural = (n, unit) => `${n} ${unit}${n === 1 ? '' : 's'} ago`;\n" +
+      "export function formatDate(date, now) {\n" +
+      "  const delta = now.getTime() - date.getTime();\n" +
+      "  if (delta >= 0 && delta < 7 * DAY) {\n" +
+      "    if (delta < MINUTE) return 'just now';\n" +
+      "    if (delta < HOUR) return plural(Math.floor(delta / MINUTE), 'minute');\n" +
+      "    if (delta < DAY) return plural(Math.floor(delta / HOUR), 'hour');\n" +
+      "    return plural(Math.floor(delta / DAY), 'day');\n" +
+      "  }\n" +
+      "  const y = date.getUTCFullYear();\n" +
+      "  const m = String(date.getUTCMonth() + 1).padStart(2, '0');\n" +
+      "  const d = String(date.getUTCDate()).padStart(2, '0');\n" +
+      "  return `${y}-${m}-${d}`;\n" +
+      "}\n",
+  },
+  "multi-file-contract": {
+    "parse.js":
+      "export function parseLine(line) {\n" +
+      "  if (!line.includes(':')) return null;\n" +
+      "  const [name, score] = line.split(':');\n" +
+      "  return { name, score: Number(score) };\n" +
+      "}\n",
+    "filter.js": "export function keepPassing(records, minimum) {\n  return records.filter((record) => record.score >= minimum);\n}\n",
+    "report.js": "export function render(records) {\n  return records.map((record) => record.name + ': ' + record.score).join('\\n');\n}\n",
+    "main.mjs":
+      "import { parseLine } from './parse.js';\n" +
+      "import { keepPassing } from './filter.js';\n" +
+      "import { render } from './report.js';\n" +
+      "const lines = ['ada:90', 'grace:70', 'broken', 'alan:70'];\n" +
+      "const records = lines.map(parseLine).filter(Boolean);\n" +
+      "console.log(render(keepPassing(records, 70)));\n",
+  },
+  "build-json-pointer": {
+    "pointer.js":
+      "const unescape = (token) => token.replace(/~1/g, '/').replace(/~0/g, '~');\n" +
+      "export function resolve(document, pointer) {\n" +
+      "  if (pointer === '') return document;\n" +
+      "  if (!pointer.startsWith('/')) throw new TypeError('a JSON Pointer must be empty or start with /');\n" +
+      "  let node = document;\n" +
+      "  for (const raw of pointer.slice(1).split('/')) {\n" +
+      "    const token = unescape(raw);\n" +
+      "    if (node === null || typeof node !== 'object') return undefined;\n" +
+      "    if (Array.isArray(node)) {\n" +
+      "      if (!/^(0|[1-9][0-9]*)$/.test(token)) return undefined;\n" +
+      "      node = node[Number(token)];\n" +
+      "    } else {\n" +
+      "      if (!Object.prototype.hasOwnProperty.call(node, token)) return undefined;\n" +
+      "      node = node[token];\n" +
+      "    }\n" +
+      "    if (node === undefined) return undefined;\n" +
+      "  }\n" +
+      "  return node;\n" +
+      "}\n",
+  },
 };
