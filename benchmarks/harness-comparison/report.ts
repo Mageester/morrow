@@ -27,6 +27,34 @@ function flag(name: string): string | undefined {
   return value && !value.startsWith("--") ? value : undefined;
 }
 
+/**
+ * Keep only repeats that ran to completion for every harness.
+ *
+ * A run interrupted partway leaves a final repeat covering only the tasks that
+ * happened to come first. Averaging that in silently weights those tasks
+ * double, which is a real bias and an invisible one. Dropping the incomplete
+ * repeat costs a sample and keeps the comparison balanced; the caller is told
+ * what was dropped.
+ */
+export function completeRepeatsOnly(runs: readonly (HarnessRunResult & { repeat?: number })[]): {
+  balanced: HarnessRunResult[];
+  droppedRepeats: number[];
+} {
+  const byRepeat = new Map<number, (HarnessRunResult & { repeat?: number })[]>();
+  for (const run of runs) {
+    const repeat = run.repeat ?? 1;
+    byRepeat.set(repeat, [...(byRepeat.get(repeat) ?? []), run]);
+  }
+  const widest = Math.max(...[...byRepeat.values()].map((group) => group.length));
+  const balanced: HarnessRunResult[] = [];
+  const droppedRepeats: number[] = [];
+  for (const [repeat, group] of [...byRepeat.entries()].sort((a, b) => a[0] - b[0])) {
+    if (group.length === widest) balanced.push(...group);
+    else droppedRepeats.push(repeat);
+  }
+  return { balanced, droppedRepeats };
+}
+
 export function loadRuns(inputDir: string): HarnessRunResult[] {
   const files = readdirSync(inputDir).filter((name) => name.endsWith(".jsonl")).sort();
   const runs: HarnessRunResult[] = [];
@@ -181,9 +209,13 @@ export function renderMarkdown(runs: readonly HarnessRunResult[]): string {
 
 function main(): void {
   const input = resolve(flag("input") ?? join(process.cwd(), "benchmarks", "harness-comparison", "results"));
-  const runs = loadRuns(input);
-  if (runs.length === 0) throw new Error(`No runs found in ${input}`);
-  const markdown = renderMarkdown(runs);
+  const all = loadRuns(input);
+  if (all.length === 0) throw new Error(`No runs found in ${input}`);
+  const { balanced, droppedRepeats } = completeRepeatsOnly(all as (HarnessRunResult & { repeat?: number })[]);
+  if (droppedRepeats.length > 0) {
+    console.log(`dropped incomplete repeat(s) ${droppedRepeats.join(", ")}: ${all.length - balanced.length} run(s) excluded to keep the task coverage balanced`);
+  }
+  const markdown = renderMarkdown(balanced);
   const out = flag("out");
   if (out) {
     writeFileSync(resolve(out), `${markdown}\n`);
