@@ -421,11 +421,47 @@
 .morrow-thread-teammate {
   display: grid;
   align-items: center;
-  margin: 0 0 14px;
-  padding: 0 0 14px;
+  margin: 0 0 12px;
+  padding: 0 0 12px;
   border-bottom: 1px solid var(--morrow-product-line-soft, var(--morrow-product-line));
-  gap: 10px;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 9px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.morrow-thread-teammate__status {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px 3px 7px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-pill);
+  color: var(--morrow-product-copy-quiet);
+  font: 500 10.5px/1 var(--morrow-product-utility);
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.morrow-thread-teammate__status[data-status="working"] {
+  border-color: color-mix(in srgb, var(--morrow-product-success) 34%, transparent);
+  color: var(--morrow-product-success);
+}
+
+.morrow-thread-teammate__status[data-status="waiting"] {
+  border-color: var(--morrow-product-copper-line);
+  color: var(--morrow-product-copper);
+}
+
+/* The dot inside reuses the roster's status marks so one status never wears
+   two different colours across the two surfaces that report it. */
+.morrow-thread-teammate__status .morrow-roster__dot {
+  background: var(--morrow-product-line-strong);
+}
+
+.morrow-thread-teammate__status[data-status="working"] .morrow-roster__dot {
+  background: var(--morrow-product-success);
+}
+
+.morrow-thread-teammate__status[data-status="waiting"] .morrow-roster__dot {
+  background: var(--morrow-product-copper);
 }
 
 .morrow-thread-teammate__text {

@@ -150,14 +150,17 @@
 }
 
 /* Workspace path: quiet provenance, not a banner. */
+/* Provenance for the thread, folded up against the teammate banner above it
+   rather than given a band of its own. Which workspace a teammate is working
+   in matters; it does not matter more than the first message. */
 .morrow-conversation-workspace {
   display: flex;
   max-width: var(--morrow-premium-reading);
-  margin: 0 auto 26px;
+  margin: 0 auto 8px;
   color: var(--morrow-product-faint);
-  font-size: 10px;
-  gap: 10px;
-  letter-spacing: 0.06em;
+  font-size: 10.5px;
+  gap: 9px;
+  letter-spacing: 0.02em;
 }
 
 .morrow-conversation-workspace--blocked {

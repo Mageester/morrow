@@ -709,6 +709,17 @@ export function ConversationPageContent({
                     : `${rosterTeammate.role.replace(/-/g, " ")} · no standing instructions`)}
               </span>
             </span>
+            {/* Live status, from the same projection the rail reads. In a
+                thread you are looking at, "working" is usually obvious; it is
+                the teammate that is waiting on YOU, or switched off, that this
+                has to say out loud. */}
+            <span className="morrow-thread-teammate__status" data-status={rosterTeammate.status}>
+              <span aria-hidden="true" className="morrow-roster__dot" />
+              {rosterTeammate.status === "working" ? "Working"
+                : rosterTeammate.status === "waiting" ? "Waiting on you"
+                : rosterTeammate.status === "disabled" ? "Off"
+                : "Idle"}
+            </span>
             {rosterTeammate.modelLabel ? (
               <span className="morrow-thread-teammate__model">{rosterTeammate.modelLabel}</span>
             ) : null}

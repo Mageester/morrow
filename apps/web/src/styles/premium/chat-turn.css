@@ -196,25 +196,51 @@
   cursor: default;
 }
 
+/*
+ * A step's outcome mark. A settled step gets a glyph rather than a dot: a
+ * column of checks reads as a list of things that happened, and a column of
+ * identical dots reads as decoration. In flight stays a dot, because there is
+ * no outcome yet to assert.
+ */
 .morrow-work__step-state {
-  width: 5px;
-  height: 5px;
+  display: inline-grid;
+  width: 9px;
+  height: 9px;
   flex: none;
-  border-radius: 50%;
-  background: var(--morrow-product-line-strong);
+  place-items: center;
+  color: var(--morrow-product-line-strong);
+  font-size: 9px;
+  line-height: 1;
 }
 
 .morrow-work__step[data-status="completed"] .morrow-work__step-state {
-  background: var(--morrow-product-success);
+  color: var(--morrow-product-success);
 }
 
-.morrow-work__step[data-status="running"] .morrow-work__step-state {
+.morrow-work__step[data-status="completed"] .morrow-work__step-state::before {
+  content: "✓";
+}
+
+.morrow-work__step[data-status="running"] .morrow-work__step-state::before {
+  width: 5px;
+  height: 5px;
+  content: "";
+  border-radius: 50%;
   background: var(--morrow-product-copper);
 }
 
 .morrow-work__step[data-status="failed"] .morrow-work__step-state,
 .morrow-work__step[data-status="blocked"] .morrow-work__step-state {
-  background: var(--morrow-product-danger);
+  color: var(--morrow-product-danger);
+}
+
+.morrow-work__step[data-status="failed"] .morrow-work__step-state::before,
+.morrow-work__step[data-status="blocked"] .morrow-work__step-state::before {
+  content: "✕";
+}
+
+.morrow-work__step[data-status="cancelled"] .morrow-work__step-state::before {
+  content: "–";
 }
 
 .morrow-work__step-icon {
