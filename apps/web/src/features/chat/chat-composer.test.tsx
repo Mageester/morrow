@@ -170,10 +170,13 @@ describe("ChatComposer", () => {
 
   it("keeps the toolbar action lane explicit for contained desktop layouts", () => {
     const { container } = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
+    const composer = container.querySelector(".morrow-chat-composer");
     const toolbar = container.querySelector(".morrow-chat-composer__toolbar");
     const send = container.querySelector(".morrow-chat-composer__send");
+    expect(composer).toBeInTheDocument();
     expect(toolbar).toBeInTheDocument();
     expect(send).toBeInTheDocument();
+    expect(toolbar?.parentElement).toBe(composer);
     expect(send?.parentElement).toBe(toolbar);
   });
 
