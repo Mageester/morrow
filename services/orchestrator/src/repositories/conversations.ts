@@ -189,22 +189,25 @@ export function conversationsRepository(db: Database.Database) {
 
     listMessages(conversationId: string): ConversationMessage[] {
       return db
-        .prepare("SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC")
+        .prepare("SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC")
         .all(conversationId)
         .map(mapMessage);
     },
 
     updateMessageContentAndState(id: string, content: string, streamingState: string, updatedAt: string): ConversationMessage {
-      const current = db.prepare("SELECT role FROM conversation_messages WHERE id = ?").get(id) as { role: string } | undefined;
+      // One scalar read for both decisions. `conversation_id` is immutable for
+      // a message, so reading it before the update is equivalent to the row
+      // re-read this used to do afterwards — and it avoids parsing the whole
+      // message (including the content just written) on a path that runs for
+      // every flush of a streaming response.
+      const current = db.prepare("SELECT role, conversation_id FROM conversation_messages WHERE id = ?").get(id) as { role: string; conversation_id: string } | undefined;
       const safeContent = current?.role === "assistant" ? redactSecrets(content) : content;
       db.transaction(() => {
         db.prepare(
           "UPDATE conversation_messages SET content = ?, streaming_state = ?, updated_at = ? WHERE id = ?"
         ).run(safeContent, streamingState, updatedAt, id);
-        
-        const msg = this.getMessage(id);
-        if (msg) {
-          db.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?").run(updatedAt, msg.conversationId);
+        if (current) {
+          db.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?").run(updatedAt, current.conversation_id);
         }
       })();
       return this.getMessage(id)!;

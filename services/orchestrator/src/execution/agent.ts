@@ -617,6 +617,20 @@ type Dependencies = {
   supervisor?: ProcessSupervisor;
 };
 
+/**
+ * How often streamed assistant text is written through to durable storage.
+ *
+ * Providers emit text a token at a time; the durable representation only has to
+ * be recent enough that a crash loses an imperceptible amount and a watching
+ * client sees smooth output. 60ms is faster than a terminal repaints and cuts
+ * the per-response write count by one to two orders of magnitude. Set
+ * MORROW_STREAM_FLUSH_MS=0 to restore a durable write per chunk.
+ */
+function streamFlushIntervalMs(): number {
+  const configured = Number.parseInt(process.env.MORROW_STREAM_FLUSH_MS ?? "", 10);
+  return Number.isFinite(configured) && configured >= 0 ? configured : 60;
+}
+
 class AgentToolFailure extends Error {
   readonly resultJson: string;
   readonly errorType:
@@ -4357,6 +4371,39 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     let currentRouteFingerprint = primaryRouteFingerprint;
     let cleanEmptyProviderResponse = false;
 
+    // Streamed text arrives one provider chunk â€” often one token â€” at a time.
+    // Persisting each chunk individually cost a full rewrite of the accumulated
+    // assistant message (redacted end to end, so quadratic in the response
+    // length) plus a durable task_events insert, per token. A single long answer
+    // could spend seconds of wall clock inside SQLite before the user saw it.
+    //
+    // Chunks are coalesced into one durable write per flush window instead.
+    // Nothing is dropped and nothing is reordered: `responseContent` still
+    // accumulates every chunk immediately, only runs of consecutive text chunks
+    // are merged (any other chunk forces a flush first), and every exit from the
+    // stream â€” normal end, cancellation, provider error â€” flushes before
+    // anything else is recorded. The window only decides how often the durable
+    // row is rewritten, and at the default 60ms a watching terminal still
+    // updates faster than it can render.
+    let pendingDeltaText = "";
+    let pendingContentWrite = false;
+    let lastStreamFlushAt = 0;
+    const flushStreamedText = (force: boolean): void => {
+      if (!pendingContentWrite && pendingDeltaText === "") return;
+      const at = Date.now();
+      if (!force && at - lastStreamFlushAt < streamFlushIntervalMs()) return;
+      lastStreamFlushAt = at;
+      if (pendingContentWrite) {
+        pendingContentWrite = false;
+        convs.updateMessageContentAndState(assistantMessageRow.id, responseContent, "streaming", now());
+      }
+      if (pendingDeltaText !== "") {
+        const deltaText = pendingDeltaText;
+        pendingDeltaText = "";
+        event("evidence.persisted", { deltaText, turnId: currentTurnId });
+      }
+    };
+
     try {
       const preparedContext = prepareContextForProvider(chatMessages, {
         providerId: providerType,
@@ -4883,9 +4930,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         : (getProviderDefaultModel(opened.servedBy as ProviderId, process.env) ?? `${opened.servedBy}-model`);
       for await (const chunk of stream) {
         if (checkCancelled()) {
+          flushStreamedText(true);
           handleCancellation();
           return;
         }
+
+        // Coalescing must never reorder the event log: buffered text is
+        // flushed before any chunk that emits an event of its own, so a delta
+        // still lands exactly where it would have landed unbuffered. Only runs
+        // of consecutive text chunks â€” the whole point of the window â€” are
+        // merged.
+        if (chunk.type !== "text") flushStreamedText(true);
 
         if (chunk.type === "error") {
           // The provider boundary has already observed a terminal stop, so a
@@ -4982,6 +5037,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         if (chunk.type === "text" && chunk.text) {
           // If we transitioned to generating final text, mark Generate Answer as running
           if (activeStepId !== finalStep.id) {
+            // Text buffered so far belongs to the step that is about to be
+            // closed, so it must be recorded before the transition events.
+            flushStreamedText(true);
             records.updatePlanStepStatus(activeStepId, "completed", now());
             event("step.completed", { stepId: activeStepId });
             activeStepId = finalStep.id;
@@ -4990,11 +5048,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           }
 
           responseContent += chunk.text;
-          convs.updateMessageContentAndState(assistantMessageRow.id, responseContent, "streaming", now());
-
-          // Emit a live streaming text update event, scoped to this turn so
-          // the CLI never has to guess where one turn ends and the next begins.
-          event("evidence.persisted", { deltaText: chunk.text, turnId: currentTurnId });
+          pendingContentWrite = true;
+          // Buffered, then emitted as a live streaming text update scoped to
+          // this turn so the CLI never has to guess where one turn ends and the
+          // next begins. Consumers concatenate deltas, so merging consecutive
+          // chunks into one event is indistinguishable from emitting each.
+          pendingDeltaText += chunk.text;
+          flushStreamedText(false);
         }
 
         if (chunk.type === "tool_call" && chunk.toolCalls) {
@@ -5015,7 +5075,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           }
         }
       }
+      flushStreamedText(true);
     } catch (e: any) {
+      // Whatever ended the stream, the text the model already produced is
+      // durable before the failure is classified or the turn is closed.
+      flushStreamedText(true);
       // A cancellation that surfaced as a thrown error (e.g. abort before the
       // first chunk) is a cancel, not a provider failure.
       if (checkCancelled() || abortSignal?.aborted) {

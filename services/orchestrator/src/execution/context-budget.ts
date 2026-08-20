@@ -139,12 +139,94 @@ export function estimateMessageTokens(message: ChatMessage): number {
   return total;
 }
 
-export function estimateChatTokens(messages: ChatMessage[]): number {
-  return messages.reduce((sum, message) => sum + estimateMessageTokens(message), 3);
+/**
+ * Per-message token memo.
+ *
+ * Counting is the hottest pure computation in a turn: a single provider
+ * projection measures the same history three times (original measurement,
+ * admission, envelope hash), compaction re-measures every candidate, and
+ * trimming walks suffixes. Tokenizing a 300-message context costs ~26ms, so an
+ * unmemoized turn burned ~85ms of CPU re-deriving numbers that had not changed.
+ *
+ * The memo is keyed by message identity but VALIDATED by the exact fields the
+ * counters read, because the agent rewrites message bodies in place (completed
+ * write payloads are replaced with markers). A stale count would silently
+ * mis-budget the context, so an entry is reused only when every counted field
+ * still compares equal — string comparison is ~100x cheaper than tokenizing and
+ * short-circuits on the interned/identical references that dominate in
+ * practice. Entries live and die with their message via WeakMap.
+ */
+interface MessageTokenMemo {
+  content: string;
+  name: string | undefined;
+  toolCallId: string | undefined;
+  toolCallsKey: string;
+  exact?: number;
+  estimate?: number;
 }
 
+const messageTokenMemo = new WeakMap<ChatMessage, MessageTokenMemo>();
+
+function toolCallsKey(message: ChatMessage): string {
+  const calls = message.toolCalls;
+  if (!calls || calls.length === 0) return "";
+  return calls.map((call) => `${call.id}:${call.function.name}:${call.function.arguments}`).join("\n");
+}
+
+function messageMemo(message: ChatMessage): MessageTokenMemo {
+  const key = toolCallsKey(message);
+  const existing = messageTokenMemo.get(message);
+  if (
+    existing
+    && existing.content === message.content
+    && existing.name === message.name
+    && existing.toolCallId === message.toolCallId
+    && existing.toolCallsKey === key
+  ) {
+    return existing;
+  }
+  const memo: MessageTokenMemo = { content: message.content, name: message.name, toolCallId: message.toolCallId, toolCallsKey: key };
+  messageTokenMemo.set(message, memo);
+  return memo;
+}
+
+function memoizedEstimateMessageTokens(message: ChatMessage): number {
+  const memo = messageMemo(message);
+  memo.estimate ??= estimateMessageTokens(message);
+  return memo.estimate;
+}
+
+function memoizedExactMessageTokens(message: ChatMessage, encode: (text: string) => number): number {
+  const memo = messageMemo(message);
+  memo.exact ??= encode(serializeForCounting(message));
+  return memo.exact;
+}
+
+export function estimateChatTokens(messages: ChatMessage[]): number {
+  let total = 3;
+  for (const message of messages) total += memoizedEstimateMessageTokens(message);
+  return total;
+}
+
+/** Provider ids whose models can be counted with the exact OpenAI tokenizer. */
+export const EXACT_TOKENIZER_PROVIDER_IDS = ["openai", "openrouter", "openai-compatible"] as const;
+
 function supportsExactOpenAiTokenizer(providerId: string, model: string): boolean {
-  return ["openai", "openrouter", "openai-compatible"].includes(providerId) && /(?:^|\/)(?:gpt-|o\d|chatgpt)/i.test(model);
+  return (EXACT_TOKENIZER_PROVIDER_IDS as readonly string[]).includes(providerId) && /(?:^|\/)(?:gpt-|o\d|chatgpt)/i.test(model);
+}
+
+/**
+ * Build the exact tokenizer now instead of on the first turn that needs it.
+ *
+ * `getEncoding("o200k_base")` decodes and indexes the full rank table: ~350ms
+ * of synchronous CPU and ~66MB of heap. Paid lazily it lands squarely inside
+ * the user's first request; paid at boot it lands while the process is idle.
+ * The memory is why callers gate this on an OpenAI-family provider actually
+ * being configured — a local-only install must not carry 66MB it never reads.
+ * Idempotent: repeated calls reuse the built encoder.
+ */
+export function warmExactTokenizer(): void {
+  getOpenAiEncoding();
 }
 
 function serializeForCounting(message: ChatMessage): string {
@@ -155,8 +237,9 @@ function serializeForCounting(message: ChatMessage): string {
 export function countChatTokens(messages: ChatMessage[], input: { providerId: string; model: string }): TokenCountResult {
   if (supportsExactOpenAiTokenizer(input.providerId, input.model)) {
     const enc = getOpenAiEncoding();
+    const encode = (text: string) => enc.encode(text).length;
     let tokens = 3;
-    for (const message of messages) tokens += 4 + enc.encode(serializeForCounting(message)).length;
+    for (const message of messages) tokens += 4 + memoizedExactMessageTokens(message, encode);
     return {
       tokens,
       method: "exact",
@@ -223,6 +306,25 @@ function conservativeSchemaTokens(value: unknown): number {
   return Math.max(estimateTextTokens(serialized), Math.ceil(Buffer.byteLength(serialized, "utf8") / 3));
 }
 
+/**
+ * Tool schemas are the same static objects turn after turn, but serializing and
+ * measuring them is proportional to the whole schema set (~11 KB) and was
+ * repeated on every measurement. The reserve is a pure function of the schema
+ * array, so it is memoized on that array's identity.
+ */
+const toolSchemaTokenMemo = new WeakMap<readonly ToolDefinition[], number>();
+
+function toolSchemaTokens(tools: readonly ToolDefinition[]): number {
+  const cached = toolSchemaTokenMemo.get(tools);
+  if (cached !== undefined) return cached;
+  const tokens = conservativeSchemaTokens(tools.map((tool) => ({
+    type: "function",
+    function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+  })));
+  toolSchemaTokenMemo.set(tools, tokens);
+  return tokens;
+}
+
 function conservativeImageTokens(image: NonNullable<ChatMessage["images"]>[number]): number {
   if (image.width !== undefined && image.height !== undefined) {
     // Vision providers charge by decoded pixels/tiles, not base64 wire bytes.
@@ -255,7 +357,12 @@ export function measureProviderRequest(envelope: ProviderRequestEnvelope): Provi
     outputReserveTokens: envelope.outputReserveTokens,
     ...(envelope.visibleContext === undefined ? {} : { visibleContext: envelope.visibleContext }),
   });
-  const messageCount = countChatTokens(envelope.messages.map(({ providerContinuation: _private, providerContinuationRouteFingerprint: _binding, images: _images, ...message }) => message), {
+  // Counted directly against the caller's message objects. The three excluded
+  // fields (providerContinuation, its route binding, and images) are accounted
+  // for separately below and are read by neither counter, so the copy this
+  // previously made was pure allocation — and it defeated the per-message memo
+  // by handing it a fresh object on every measurement.
+  const messageCount = countChatTokens(envelope.messages, {
     providerId: envelope.providerId,
     model: envelope.model,
   });
@@ -267,10 +374,7 @@ export function measureProviderRequest(envelope: ProviderRequestEnvelope): Provi
     if (!message.providerContinuation) return sum;
     return sum + conservativeSerializedTokens(message.providerContinuation);
   }, 0);
-  const toolBase = conservativeSchemaTokens(envelope.tools.map((tool) => ({
-    type: "function",
-    function: { name: tool.name, description: tool.description, parameters: tool.parameters },
-  })));
+  const toolBase = toolSchemaTokens(envelope.tools);
   const protocolBase = PROTOCOL_OVERHEAD[envelope.protocol];
   const toolSchemas = toolBase + Math.ceil(toolBase * 0.15);
   const imageInputs = imageBase + Math.ceil(imageBase * 0.15);
@@ -420,13 +524,19 @@ export function trimMessagesToBudget(messages: ChatMessage[], budget: ContextBud
 
   const { mandatory: systemMessages, groups: nonSystemSegments } = groupMessages(messages);
 
+  // Walk the segments newest-first, accumulating token totals instead of
+  // rebuilding and re-counting the whole candidate history for every position.
+  // The kept set is identical; only the quadratic array copying is gone.
+  const systemTokens = systemMessages.reduce((sum, message) => sum + memoizedEstimateMessageTokens(message), 3);
   const keptSegments: ChatMessage[][] = [];
+  let suffixTokens = 0;
   for (let i = nonSystemSegments.length - 1; i >= 0; i--) {
-    const candidate = [...systemMessages, ...nonSystemSegments.slice(i).flat()];
-    if (estimateChatTokens(candidate) <= budget.maxInputTokens) {
-      keptSegments.unshift(nonSystemSegments[i]!);
+    const segment = nonSystemSegments[i]!;
+    suffixTokens += segment.reduce((sum, message) => sum + memoizedEstimateMessageTokens(message), 0);
+    if (systemTokens + suffixTokens <= budget.maxInputTokens) {
+      keptSegments.unshift(segment);
     } else if (keptSegments.length === 0) {
-      keptSegments.unshift(nonSystemSegments[i]!);
+      keptSegments.unshift(segment);
       break;
     } else {
       break;

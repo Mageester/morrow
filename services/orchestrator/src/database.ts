@@ -1407,8 +1407,76 @@ export const migrations:Migration[]=[
     -- unbounded raw result or manufacture a different synthetic outcome.
     ALTER TABLE message_tool_calls ADD COLUMN context_result_json TEXT;
   `}
+  ,{id:51,name:"task_evidence_task_id_index",sql:`
+    -- Evidence is appended on every workspace read and listed per task, but
+    -- task_evidence had no index on task_id: both the per-task listing and the
+    -- per-task COUNT(*) in the task list endpoint fell back to a full scan of
+    -- every evidence row the install has ever recorded. Index entries are
+    -- ordered by (task_id, created_at, rowid), which is exactly the listing's
+    -- ORDER BY, so the sort is served by the index too.
+    CREATE INDEX IF NOT EXISTS task_evidence_task_id_created_at_idx ON task_evidence(task_id,created_at);
+  `}
 ];
-export function openDatabase(file:string){
+/**
+ * Durability mode for committed writes.
+ *
+ * Under WAL, `synchronous = NORMAL` fsyncs at checkpoints rather than at every
+ * commit. A crashed Morrow process — the failure this database exists to
+ * survive — loses nothing, because the WAL is already on the OS's side of the
+ * boundary; only an OS crash or power loss can drop the most recent commits,
+ * and the database is never corrupted either way. `NORMAL` measures 7x faster
+ * than `FULL` on the durable write path (0.71ms -> 0.10ms per event on SSD),
+ * and a task emits thousands of events.
+ *
+ * This is stated explicitly rather than inherited, because what was inherited
+ * depended on the open. better-sqlite3's SQLite is built with
+ * SQLITE_DEFAULT_WAL_SYNCHRONOUS=1, so opening an already-WAL database quietly
+ * yielded `NORMAL`; only the first open of a fresh database ran `FULL`, because
+ * `journal_mode = WAL` is applied after the connection has already defaulted.
+ * A durability mode should not depend on whether the file existed yet.
+ * Set MORROW_SQLITE_SYNCHRONOUS=FULL to opt back in.
+ */
+function synchronousMode(env:NodeJS.ProcessEnv):"OFF"|"NORMAL"|"FULL"|"EXTRA"{
+  const requested=(env.MORROW_SQLITE_SYNCHRONOUS??"").trim().toUpperCase();
+  return requested==="OFF"||requested==="NORMAL"||requested==="FULL"||requested==="EXTRA"?requested:"NORMAL";
+}
+
+/**
+ * Compiling SQL is not free (~5us per call) and this codebase issues the same
+ * few hundred statements over and over — twice per durable event, and many
+ * times per projection rebuild. better-sqlite3 statements are reusable on their
+ * connection, so `prepare` is memoized by SQL text.
+ *
+ * Two deliberate exclusions keep this transparent: PRAGMA statements are never
+ * cached (they are one-shot, and the single caller that uses one reconfigures
+ * the statement with `.pluck()`), and the cache is bounded so the handful of
+ * call sites that build SQL from a variable column or placeholder list cannot
+ * grow it without limit.
+ */
+const MAX_CACHED_STATEMENTS=512;
+
+function installStatementCache(db:Database.Database):void{
+  const compile=db.prepare.bind(db);
+  const cache=new Map<string,Database.Statement>();
+  Object.defineProperty(db,"prepare",{
+    configurable:true,
+    writable:true,
+    value:(sql:string)=>{
+      if(typeof sql!=="string"||/^\s*pragma\b/i.test(sql))return compile(sql);
+      const cached=cache.get(sql);
+      if(cached!==undefined)return cached;
+      const statement=compile(sql);
+      if(cache.size>=MAX_CACHED_STATEMENTS){
+        const oldest=cache.keys().next();
+        if(!oldest.done)cache.delete(oldest.value);
+      }
+      cache.set(sql,statement);
+      return statement;
+    },
+  });
+}
+
+export function openDatabase(file:string,env:NodeJS.ProcessEnv=process.env){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});
   const db=new Database(file);
   try{
@@ -1416,7 +1484,16 @@ export function openDatabase(file:string){
     db.pragma("busy_timeout = 5000");
     if (file !== ":memory:") {
       db.pragma("journal_mode = WAL");
+      db.pragma(`synchronous = ${synchronousMode(env)}`);
+      // Checkpoint on a larger WAL so a long task is not interrupted by a
+      // synchronous checkpoint every few hundred events.
+      db.pragma("wal_autocheckpoint = 2000");
     }
+    // 64 MB page cache and memory-backed temp objects: the read-heavy
+    // projections rebuild whole conversations, and paging those from disk on
+    // every rebuild is the difference between a warm and a cold projection.
+    db.pragma("cache_size = -65536");
+    db.pragma("temp_store = MEMORY");
     db.function("morrow_redact", { deterministic: true }, (value: unknown) => typeof value === "string" ? redactSecrets(value) : "");
     db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");
     const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));
@@ -1430,6 +1507,9 @@ export function openDatabase(file:string){
     }
     const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;
     if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");
+    // Installed only after migrations: statements compiled against a schema
+    // that a later migration rewrites must never be reused.
+    installStatementCache(db);
     return db;
   }catch(error){
     db.close();
