@@ -7,6 +7,7 @@ import { ApiClientError } from "../../api/client.js";
 import { routineApi, routineKeys, routineQueries } from "../../api/routines.js";
 import { TeammateAvatar } from "../roster/teammate-avatar.js";
 import { useThreadTeammate } from "../roster/use-thread-teammate.js";
+import { RoutineSchedulesPanel } from "./routine-schedules-panel.js";
 
 /**
  * Routines a teammate was taught by demonstration.
@@ -166,6 +167,7 @@ export function RoutinesPanel({ projectId }: { projectId: string }) {
           )
         ))}
       </ul>
+      <RoutineSchedulesPanel projectId={projectId} routines={rows} />
     </section>
   );
 }

@@ -96,11 +96,11 @@ describe("schedules API", () => {
     const list = await app.inject({ method: "GET", url: "/api/projects/p1/schedules" });
     expect(list.json().map((s: any) => s.id)).toEqual([id]);
 
-    const run = await app.inject({ method: "POST", url: `/api/schedules/${id}/run` });
+    const run = await app.inject({ method: "POST", url: `/api/schedules/${id}/run`, payload: { projectId: "p1" } });
     expect(run.statusCode).toBe(202);
     expect(taskRepository(db).listTasksByProject("p1")).toHaveLength(1);
 
-    const del = await app.inject({ method: "DELETE", url: `/api/schedules/${id}` });
+    const del = await app.inject({ method: "DELETE", url: `/api/schedules/${id}`, payload: { projectId: "p1" } });
     expect(del.statusCode).toBe(204);
     expect((await app.inject({ method: "GET", url: "/api/projects/p1/schedules" })).json()).toEqual([]);
   });

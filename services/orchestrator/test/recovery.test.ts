@@ -11,6 +11,7 @@ import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { recoverRunningTasks, reconcileTasksOnStartup, type ReconcilableRunner } from "../src/recovery.js";
 import { TaskRunner } from "../src/runner.js";
 import { createExecutionLeaseOwnerId, executionContinuityRepository } from "../src/repositories/execution-continuity.js";
+import { approvalsRepository } from "../src/repositories/approvals.js";
 
 const now = "2026-01-01T00:00:00.000Z";
 
@@ -62,6 +63,29 @@ describe("restart recovery", () => {
     expect(recoverRunningTasks(db, records, now)).toBe(1);
     expect(convs.getMessage("m1")?.streamingState).toBe("interrupted");
     expect(convs.getMessage("m2")?.streamingState).toBe("queued");
+    db.close();
+  });
+
+  it("keeps a running task with a pending approval waiting across restart", () => {
+    const db = openDatabase(":memory:");
+    projectRepository(db).createProject({ id: "p", name: "project", workspacePath: "C:/workspace", createdAt: now });
+    const tasks = taskRepository(db);
+    const records = taskRecordsRepository(db);
+    tasks.createTask({ id: "approval-task", projectId: "p", kind: "agent_chat", status: "running", createdAt: now });
+    records.transitionAgentState("approval-task", { id: "approval-idle", state: "idle", details: {}, createdAt: now });
+    records.transitionAgentState("approval-task", { id: "approval-understanding", state: "understanding", details: {}, createdAt: now });
+    records.transitionAgentState("approval-task", { id: "approval-planning", state: "planning", details: {}, createdAt: now });
+    records.transitionAgentState("approval-task", { id: "approval-waiting", state: "waiting_for_approval", details: { approvalId: "approval-1" }, createdAt: now });
+    approvalsRepository(db).create({
+      id: "approval-1", taskId: "approval-task", projectId: "p", kind: "command", summary: "Approve command", details: { executable: "npm" }, createdAt: now,
+    });
+    const runner = new FakeRunner();
+
+    const summary = reconcileTasksOnStartup({ db, runner, records, now: () => now });
+    expect(summary.interrupted).toBe(0);
+    expect(summary.requeued).toBe(0);
+    expect(runner.calls).toEqual([]);
+    expect(tasks.getTaskById("approval-task")?.status).toBe("running");
     db.close();
   });
 });

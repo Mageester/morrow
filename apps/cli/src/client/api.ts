@@ -684,8 +684,8 @@ export class MorrowApi {
   createSchedule(projectId: string, cron: string, taskKind: ScheduleTaskKind = "inspect_workspace") {
     return this.req<Schedule>("POST", `/api/projects/${projectId}/schedules`, { cron, taskKind });
   }
-  deleteSchedule(scheduleId: string) { return this.req<void>("DELETE", `/api/schedules/${scheduleId}`); }
-  runSchedule(scheduleId: string) { return this.req<{ scheduleId: string; taskId: string }>("POST", `/api/schedules/${scheduleId}/run`); }
+  deleteSchedule(projectId: string, scheduleId: string) { return this.req<void>("DELETE", `/api/schedules/${scheduleId}`, { projectId }); }
+  runSchedule(projectId: string, scheduleId: string) { return this.req<{ scheduleId: string; taskId: string }>("POST", `/api/schedules/${scheduleId}/run`, { projectId }); }
 
   // ── Onboarding State ────────────────────────────────────────────────────────
   getOnboardingState() {

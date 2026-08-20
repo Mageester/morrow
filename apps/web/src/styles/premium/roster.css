@@ -1413,6 +1413,73 @@
   font: 400 12px/1.45 var(--morrow-product-utility);
 }
 
+.morrow-routine-schedules {
+  margin-top: 16px;
+}
+
+.morrow-routine-schedules__list,
+.morrow-routine-schedules__history {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 6px;
+  list-style: none;
+}
+
+.morrow-routine-schedules__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 9px 11px;
+  border: 1px solid var(--morrow-product-line-soft);
+  border-radius: var(--morrow-product-radius-md);
+  background: var(--morrow-product-field);
+  gap: 7px;
+}
+
+.morrow-routine-schedules__body {
+  display: grid;
+  min-width: 130px;
+  flex: 1 1 150px;
+  gap: 2px;
+}
+
+.morrow-routine-schedules__body span,
+.morrow-routine-schedules__history {
+  color: var(--morrow-product-faint);
+  font: 400 11px/1.4 var(--morrow-product-utility);
+}
+
+.morrow-routine-schedules__cron input {
+  width: 150px;
+  padding: 5px 7px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-sm);
+  background: var(--morrow-product-field-inset);
+  color: var(--morrow-product-copy);
+  font: 400 11px/1 var(--morrow-product-mono);
+}
+
+.morrow-routine-schedules__row > button {
+  padding: 5px 8px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-pill);
+  background: transparent;
+  color: var(--morrow-product-copy-soft);
+  cursor: pointer;
+  font: 550 11px/1 var(--morrow-product-utility);
+}
+
+.morrow-routine-schedules__row > button:hover:not(:disabled) {
+  border-color: var(--morrow-product-copper-line);
+  color: var(--morrow-product-copper);
+}
+
+.morrow-routine-schedules__history {
+  width: 100%;
+  padding: 5px 0 0 10px;
+}
+
 .morrow-routines__editor {
   display: grid;
   padding: 12px;

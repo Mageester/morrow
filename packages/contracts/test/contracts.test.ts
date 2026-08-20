@@ -12,6 +12,10 @@ import {
   WebConversationMessageSchema,
   WebTaskReasoningSchema,
   UpdateRoutineSchema,
+  CreateScheduleSchema,
+  ScheduleSchema,
+  ScheduleRunSchema,
+  UpdateScheduleSchema,
 } from "../src/index.js";
 
 function validNode(over: Record<string, unknown> = {}) {
@@ -138,6 +142,51 @@ describe("contracts", () => {
     });
     expect(UpdateRoutineSchema.safeParse({ sourceConversationId: "conversation-1" }).success).toBe(false);
     expect(UpdateRoutineSchema.safeParse({ runCount: 99 }).success).toBe(false);
+  });
+
+  it("models routine schedules and redacted durable run history", () => {
+    const schedule = ScheduleSchema.parse({
+      version: 1,
+      id: "schedule-1",
+      projectId: "project-1",
+      cron: "0 9 * * 1-5",
+      taskKind: "routine",
+      routineId: "routine-1",
+      agentId: "agent-1",
+      enabled: true,
+      lastRunAt: null,
+      nextRunAt: "2026-08-21T09:00:00.000Z",
+      createdAt: "2026-08-20T10:00:00.000Z",
+      updatedAt: "2026-08-20T10:00:00.000Z",
+    });
+    expect(schedule.taskKind).toBe("routine");
+    expect(CreateScheduleSchema.parse({ cron: "0 9 * * 1-5", routineId: "routine-1" })).toMatchObject({
+      cron: "0 9 * * 1-5",
+      routineId: "routine-1",
+      taskKind: "routine",
+    });
+    expect(UpdateScheduleSchema.parse({ enabled: false, routineId: "routine-2" })).toEqual({ enabled: false, routineId: "routine-2" });
+    const run = ScheduleRunSchema.parse({
+      version: 1,
+      id: "run-1",
+      scheduleId: "schedule-1",
+      projectId: "project-1",
+      routineId: "routine-1",
+      occurrenceAt: "2026-08-21T09:00:00.000Z",
+      occurrenceKey: "2026-08-21T09:00:00.000Z",
+      trigger: "scheduled",
+      status: "waiting_for_approval",
+      taskId: "task-1",
+      errorCode: null,
+      errorMessage: null,
+      coalesced: true,
+      createdAt: "2026-08-21T09:00:00.000Z",
+      updatedAt: "2026-08-21T09:00:00.000Z",
+      startedAt: null,
+      completedAt: null,
+    });
+    expect(run.status).toBe("waiting_for_approval");
+    expect(() => ScheduleRunSchema.parse({ ...run, providerOutput: "secret" })).toThrow();
   });
 
   it("accepts a complete provider-reported OpenRouter catalogue model", () => {

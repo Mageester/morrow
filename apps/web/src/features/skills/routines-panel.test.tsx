@@ -41,6 +41,7 @@ describe("RoutinesPanel", () => {
   it("edits definition fields while keeping the saved run history visible", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(Response.json([routine]))
+      .mockResolvedValueOnce(Response.json([]))
       .mockResolvedValueOnce(Response.json({ ...routine, name: "Monthly report", objective: "Review the month." }))
       .mockResolvedValue(Response.json([{ ...routine, name: "Monthly report", objective: "Review the month." }]));
     vi.stubGlobal("fetch", fetchMock);
@@ -60,9 +61,9 @@ describe("RoutinesPanel", () => {
     await user.type(screen.getByLabelText("Routine step 1"), "Read the monthly changelog");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-    const [, init] = fetchMock.mock.calls[1] as unknown as [RequestInfo, RequestInit];
-    expect(String(fetchMock.mock.calls[1]![0])).toBe("/api/projects/project-1/routines/routine-1");
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    const [, init] = fetchMock.mock.calls[2] as unknown as [RequestInfo, RequestInit];
+    expect(String(fetchMock.mock.calls[2]![0])).toBe("/api/projects/project-1/routines/routine-1");
     expect(init.method).toBe("PATCH");
     expect(JSON.parse(String(init.body))).toMatchObject({
       name: "Monthly report",
@@ -75,6 +76,7 @@ describe("RoutinesPanel", () => {
   it("renders update errors instead of silently dropping an edit", async () => {
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(Response.json([routine]))
+      .mockResolvedValueOnce(Response.json([]))
       .mockResolvedValueOnce(new Response(JSON.stringify({ version: 1, error: { code: "OFFLINE", message: "Routine service is offline." } }), { status: 503 })));
     const user = userEvent.setup();
     renderPanel();

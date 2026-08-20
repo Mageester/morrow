@@ -774,24 +774,69 @@ export type NotifyResult=z.infer<typeof NotifyResultSchema>;
 // A schedule fires isolated task runs on a UTC cron expression. Scheduled work
 // is project-scoped and uses the same task runner + containment as interactive
 // work — nothing runs with elevated privileges because it is unattended.
-export const ScheduleTaskKindSchema=z.enum(["inspect_workspace"]);
+// `inspect_workspace` is the original scheduler target. `routine` adds a
+// durable, teammate-bound target without creating a second scheduler.
+export const ScheduleTaskKindSchema=z.enum(["inspect_workspace","routine"]);
 export const ScheduleSchema=z.object({
   version:SchemaVersionSchema,
   id:z.string(),
   projectId:z.string(),
   cron:z.string(),
   taskKind:ScheduleTaskKindSchema,
+  routineId:z.string().min(1).nullable().default(null),
+  agentId:z.string().min(1).nullable().default(null),
   enabled:z.boolean(),
   lastRunAt:z.string().nullable(),
   nextRunAt:z.string(),
   createdAt:z.string().datetime(),
+  updatedAt:z.string().datetime(),
 }).strict();
-export const CreateScheduleSchema=z.object({
+export const CreateScheduleSchema=z.preprocess((value)=>{
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const input=value as Record<string,unknown>;
+    if (input.routineId !== undefined && input.taskKind === undefined) return { ...input, taskKind: "routine" };
+  }
+  return value;
+},z.object({
   cron:z.string().trim().min(1).max(120),
   taskKind:ScheduleTaskKindSchema.default("inspect_workspace"),
+  routineId:z.string().trim().min(1).optional(),
+  enabled:z.boolean().optional(),
+}).strict());
+export const UpdateScheduleSchema=z.object({
+  cron:z.string().trim().min(1).max(120).optional(),
+  taskKind:ScheduleTaskKindSchema.optional(),
+  routineId:z.string().trim().min(1).nullable().optional(),
+  enabled:z.boolean().optional(),
+}).strict().refine((value)=>value.cron!==undefined||value.taskKind!==undefined||value.routineId!==undefined||value.enabled!==undefined,{message:"Provide cron, target, or enabled"});
+export const ScheduleRunStatusSchema=z.enum(["claimed","queued","running","waiting_for_approval","completed","verified","failed","blocked","cancelled"]);
+export const ScheduleRunTriggerSchema=z.enum(["scheduled","manual"]);
+export const ScheduleRunSchema=z.object({
+  version:SchemaVersionSchema,
+  id:z.string(),
+  scheduleId:z.string(),
+  projectId:z.string(),
+  routineId:z.string().min(1).nullable(),
+  occurrenceAt:z.string().datetime(),
+  occurrenceKey:z.string().min(1),
+  trigger:ScheduleRunTriggerSchema,
+  status:ScheduleRunStatusSchema,
+  taskId:z.string().min(1).nullable(),
+  errorCode:z.string().min(1).nullable(),
+  errorMessage:z.string().max(500).nullable(),
+  coalesced:z.boolean(),
+  createdAt:z.string().datetime(),
+  updatedAt:z.string().datetime(),
+  startedAt:z.string().datetime().nullable(),
+  completedAt:z.string().datetime().nullable(),
 }).strict();
 export type Schedule=z.infer<typeof ScheduleSchema>;
 export type ScheduleTaskKind=z.infer<typeof ScheduleTaskKindSchema>;
+export type CreateScheduleInput=z.infer<typeof CreateScheduleSchema>;
+export type UpdateScheduleInput=z.infer<typeof UpdateScheduleSchema>;
+export type ScheduleRunStatus=z.infer<typeof ScheduleRunStatusSchema>;
+export type ScheduleRunTrigger=z.infer<typeof ScheduleRunTriggerSchema>;
+export type ScheduleRun=z.infer<typeof ScheduleRunSchema>;
 
 // ── Code diagnostics (LSP-style) ─────────────────────────────────────────────
 // Normalized diagnostics from the project's own tools (tsc, eslint), plus a

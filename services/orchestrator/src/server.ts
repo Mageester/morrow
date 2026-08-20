@@ -36,6 +36,9 @@ import {
   UpdateAssistantProfileSchema,
   CreateAssistantGoalSchema,
   GlobalSearchResponseSchema,
+  CreateScheduleSchema,
+  UpdateScheduleSchema,
+  ScheduleRunSchema,
   type PresetId,
   type ProviderId,
   type ProviderAuthMode,
@@ -68,7 +71,7 @@ import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } fro
 import { runProcessSafe } from "./tools/command-executor.js";
 import { gitStatus } from "./tools/git.js";
 import { loadAdaptersFromEnv, notifyAll, type MessageAdapter } from "./messaging/adapter.js";
-import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema, StartProcessSchema, CreateWorktreeSchema } from "@morrow/contracts";
+import { SearchKindSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema, StartProcessSchema, CreateWorktreeSchema } from "@morrow/contracts";
 import { redactJsonText } from "./provider/credentials.js";
 import { loadMcpConfig, parseMcpServerConfig, type McpServerConfig } from "./mcp/config.js";
 import { McpPool } from "./mcp/pool.js";
@@ -214,7 +217,7 @@ import { worktreesRepository } from "./repositories/worktrees.js";
 import { WorktreeManager, WorktreeError } from "./workspace/worktrees.js";
 import { integrationsRepository } from "./repositories/integrations.js";
 import { contextSummariesRepository } from "./repositories/context-summaries.js";
-import { executionContinuityRepository } from "./repositories/execution-continuity.js";
+import { createExecutionLeaseOwnerId, executionContinuityRepository, executionLeaseOwnerStatus } from "./repositories/execution-continuity.js";
 import { symbolIndexRepository } from "./repositories/symbols.js";
 import { IntegrationManager, IntegrationError } from "./workspace/integrations.js";
 import { SymbolIndex } from "./workspace/symbol-index.js";
@@ -259,8 +262,9 @@ import { DEFAULT_CONVERSATION_TITLE, deriveConversationTitle, isDefaultConversat
 import { DEFAULT_TEAMMATE_NAME, projectRoster } from "./web/roster-projection.js";
 import { projectToolEvidence } from "./web/tool-evidence.js";
 import { projectThreadHandoffs } from "./web/handoff-projection.js";
-import { projectRoutineProposal, renderRoutineAsMessage } from "./web/routine-proposal.js";
+import { projectRoutineProposal } from "./web/routine-proposal.js";
 import { routinesRepository } from "./repositories/routines.js";
+import { assertRoutineTarget, dispatchRoutineTask } from "./routines/dispatch.js";
 import { registerWebAppRoutes } from "./web/static-app.js";
 
 export class ApiError extends Error {
@@ -1657,35 +1661,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { routineId } = request.params as { routineId: string };
     const routine = routines.get(routineId);
     if (!routine) throw new ApiError(404, "Routine not found", "NOT_FOUND");
-    if (routine.agentId) {
-      const agent = agents.get(routine.agentId);
-      if (!agent || agent.projectId !== routine.projectId) {
-        throw new ApiError(409, "The teammate this routine belongs to no longer exists", "AGENT_MISSING");
-      }
-      if (!agent.enabled) throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
-    }
-
-    const now = new Date().toISOString();
-    const conversation = convs.createConversation({
-      id: crypto.randomUUID(),
-      projectId: routine.projectId,
-      title: routine.name,
-      agentId: routine.agentId,
-      createdAt: now,
-      updatedAt: now,
-    });
     try {
-      const result = dispatchAgentTask({ db: deps.db, runner: deps.runner, env: process.env }, {
-        conversationId: conversation.id,
-        content: renderRoutineAsMessage(routine),
-        mode: "agent",
-      });
-      routines.recordRun(routineId, now);
+      const result = dispatchRoutineTask(
+        { db: deps.db, runner: deps.runner, env: process.env },
+        routine,
+      );
+      routines.recordRun(routineId, new Date().toISOString());
       reply.status(202);
       return {
         version: 1,
         routineId,
-        conversationId: conversation.id,
+        conversationId: result.conversationId,
         taskId: result.task.id,
         projectId: routine.projectId,
       };
@@ -3110,10 +3096,36 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     });
 
     const t = tasks.getTaskById(approval.taskId);
-    if (t && t.status === "interrupted") {
-      // Resume a task that a restart interrupted while it awaited this approval.
+    const runnerIsActive = deps.runner.isActive(approval.taskId);
+    if (t && (t.status === "interrupted" || ((t.status === "running" || t.status === "queued") && !runnerIsActive))) {
+      // Resume work left without an in-process waiter by a restart. Queue it
+      // before re-dispatch so the executor's normal durable continuation path
+      // can consume the resolved approval safely.
       deps.db.prepare("UPDATE tasks SET status='queued', updated_at=? WHERE id=?").run(new Date().toISOString(), approval.taskId);
-      deps.runner.run(approval.taskId);
+      const runningSegment = executionContinuityRepo.getRunningSegment(approval.taskId);
+      const checkpoint = executionContinuityRepo.latestCheckpoint(approval.taskId);
+      const leaseStatus = executionLeaseOwnerStatus(runningSegment?.ownerId ?? null);
+      const resume = runningSegment && checkpoint && leaseStatus === "dead"
+        ? (() => {
+          const ownerId = createExecutionLeaseOwnerId();
+          const leaseExpiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+          const claim = executionContinuityRepo.claimResumableSegment({
+            taskId: approval.taskId,
+            ownerId,
+            expectedOwnerId: runningSegment.ownerId,
+            expectedGeneration: runningSegment.generation,
+            takeoverReason: "owner_dead",
+            now: new Date().toISOString(),
+            leaseExpiresAt,
+          });
+          return claim ? {
+            resumeCheckpoint: true as const,
+            checkpointCursor: claim.checkpointCursor,
+            executionLease: { segmentId: claim.segment.id, ownerId, generation: claim.segment.generation },
+          } : undefined;
+        })()
+        : undefined;
+      deps.runner.run(approval.taskId, { recovered: true, ...(resume ?? {}) });
     } else if (t && (t.status === "running" || t.status === "queued")) {
       // Wake the live, in-process task.
       ApprovalContinuationRegistry.resolveApproval(approvalId, body.decision);
@@ -3717,38 +3729,196 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return schedules.listByProject(projectId);
   });
 
-  app.post("/api/projects/:projectId/schedules", async (request, reply) => {
-    const { projectId } = request.params as { projectId: string };
+  /** Resolve a routine schedule's durable target at create/edit time. */
+  const scheduleTarget = (projectId: string, taskKind: "inspect_workspace" | "routine", routineId: string | null | undefined, enabled = true) => {
+    if (taskKind !== "routine") {
+      if (routineId) throw new ApiError(400, "routineId is only valid for routine schedules", "INVALID_SCHEDULE_TARGET");
+      return { routineId: null, agentId: null };
+    }
+    if (!routineId) throw new ApiError(400, "routineId is required for routine schedules", "ROUTINE_REQUIRED");
+    const routine = routines.get(routineId);
+    if (!routine || routine.projectId !== projectId) throw new ApiError(404, "Routine not found in this project", "NOT_FOUND");
+    // Pausing a schedule must remain possible even when its teammate was
+    // disabled; re-enabling and firing still re-evaluate the target.
+    if (enabled) {
+      try {
+        assertRoutineTarget(deps.db, routine, { requireAgent: true });
+      } catch (error) {
+        if (error instanceof AgentTaskDispatchError) throw new ApiError(error.statusCode, error.message, error.code);
+        throw error;
+      }
+    }
+    return { routineId: routine.id, agentId: routine.agentId };
+  };
+
+  const createSchedule = (projectId: string, bodyInput: unknown) => {
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
-    const body = CreateScheduleSchema.parse(request.body);
+    const body = CreateScheduleSchema.parse(bodyInput);
     try {
       assertValidCron(body.cron);
     } catch (error) {
       throw new ApiError(400, `Invalid cron expression: ${(error as Error).message}`, "VALIDATION_ERROR");
     }
-    const created = schedules.create({
+    // A newly-created binding must be valid even if the user starts it
+    // paused; resuming later should not hide a bad target behind that pause.
+    const target = scheduleTarget(projectId, body.taskKind, body.routineId ?? null, true);
+    const now = new Date().toISOString();
+    return schedules.create({
       id: crypto.randomUUID(),
       projectId,
       cron: body.cron,
       taskKind: body.taskKind,
+      ...target,
+      ...(body.enabled === undefined ? {} : { enabled: body.enabled }),
       nextRunAt: nextRun(body.cron, new Date()).toISOString(),
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
     });
+  };
+
+  app.post("/api/projects/:projectId/schedules", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const created = createSchedule(projectId, request.body);
     reply.status(201);
     return created;
   });
 
+  const updateSchedule = (projectId: string, scheduleId: string, bodyInput: unknown) => {
+    const current = schedules.get(scheduleId);
+    if (!current || current.projectId !== projectId) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    const body = UpdateScheduleSchema.parse(bodyInput);
+    const taskKind = body.taskKind ?? current.taskKind;
+    const routineId = body.routineId !== undefined ? body.routineId : current.routineId;
+    const enabled = body.enabled ?? current.enabled;
+    const target = scheduleTarget(projectId, taskKind, routineId, enabled);
+    const cron = body.cron ?? current.cron;
+    try {
+      assertValidCron(cron);
+    } catch (error) {
+      throw new ApiError(400, `Invalid cron expression: ${(error as Error).message}`, "VALIDATION_ERROR");
+    }
+    const now = new Date().toISOString();
+    return schedules.update({
+      id: scheduleId,
+      projectId,
+      cron,
+      taskKind,
+      ...target,
+      enabled,
+      // A changed cron starts from the next future boundary. Pause/resume
+      // without changing cron preserves the pending occurrence so resume is
+      // deterministic and does not silently drop work.
+      nextRunAt: body.cron !== undefined ? nextRun(cron, new Date()).toISOString() : current.nextRunAt,
+      updatedAt: now,
+    })!;
+  };
+
+  app.patch("/api/projects/:projectId/schedules/:scheduleId", async (request) => {
+    const { projectId, scheduleId } = request.params as { projectId: string; scheduleId: string };
+    return updateSchedule(projectId, scheduleId, request.body);
+  });
+
+  // A body-carried project id keeps this alias compatible with the existing
+  // id-addressed schedule routes while retaining project ownership checks.
+  app.patch("/api/schedules/:scheduleId", async (request) => {
+    const { scheduleId } = request.params as { scheduleId: string };
+    const body = z.object({ projectId: z.string().min(1) }).passthrough().parse(request.body);
+    const schedule = schedules.get(scheduleId);
+    if (!schedule) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    const input = Object.fromEntries(Object.entries(body).filter(([key]) => key !== "projectId"));
+    return updateSchedule(body.projectId, scheduleId, input);
+  });
+
+  const setSchedulePaused = (scheduleId: string, enabled: boolean, projectId: string) => {
+    const schedule = schedules.get(scheduleId);
+    if (!schedule || schedule.projectId !== projectId) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    return schedules.setEnabled(scheduleId, enabled)!;
+  };
+
+  app.post("/api/schedules/:scheduleId/pause", async (request) => {
+    const { scheduleId } = request.params as { scheduleId: string };
+    const body = z.object({ projectId: z.string().min(1) }).strict().parse(request.body);
+    return setSchedulePaused(scheduleId, false, body.projectId);
+  });
+  app.post("/api/schedules/:scheduleId/resume", async (request) => {
+    const { scheduleId } = request.params as { scheduleId: string };
+    const body = z.object({ projectId: z.string().min(1) }).strict().parse(request.body);
+    const schedule = schedules.get(scheduleId);
+    if (!schedule || schedule.projectId !== body.projectId) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    // Revalidate routine targets when a paused schedule becomes active.
+    if (schedule.taskKind === "routine") scheduleTarget(schedule.projectId, schedule.taskKind, schedule.routineId, true);
+    return setSchedulePaused(scheduleId, true, body.projectId);
+  });
+
   app.delete("/api/schedules/:scheduleId", async (request, reply) => {
     const { scheduleId } = request.params as { scheduleId: string };
-    if (!schedules.get(scheduleId)) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    const schedule = schedules.get(scheduleId);
+    if (!schedule) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    const body = z.object({ projectId: z.string().min(1) }).strict().parse(request.body);
+    if (body.projectId !== schedule.projectId) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
     schedules.delete(scheduleId);
     reply.status(204).send();
+  });
+
+  const listScheduleRuns = (scheduleId: string, projectId?: string) => {
+    const schedule = schedules.get(scheduleId);
+    if (schedule && projectId && schedule.projectId !== projectId) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    const runs = schedules.listRuns(scheduleId);
+    if (projectId && runs.some((run) => run.projectId !== projectId)) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    return runs.map((run) => ScheduleRunSchema.parse(run));
+  };
+
+  app.get("/api/schedules/:scheduleId/runs", async (request) => {
+    const { scheduleId } = request.params as { scheduleId: string };
+    const { projectId } = z.object({ projectId: z.string().min(1) }).strict().parse(request.query);
+    return listScheduleRuns(scheduleId, projectId);
+  });
+  app.get("/api/projects/:projectId/schedules/:scheduleId/runs", async (request) => {
+    const { projectId, scheduleId } = request.params as { projectId: string; scheduleId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return listScheduleRuns(scheduleId, projectId);
+  });
+  app.get("/api/projects/:projectId/schedule-runs", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const query = z.object({ limit: z.coerce.number().int().positive().max(500).optional() }).parse(request.query);
+    return schedules.listRunsByProject(projectId, query.limit);
   });
 
   app.post("/api/schedules/:scheduleId/run", async (request, reply) => {
     const { scheduleId } = request.params as { scheduleId: string };
     const schedule = schedules.get(scheduleId);
     if (!schedule) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    const requestBody = z.object({ projectId: z.string().min(1) }).strict().parse(request.body);
+    if (requestBody.projectId !== schedule.projectId) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    if (schedule.taskKind === "routine") {
+      const routine = schedule.routineId ? routines.get(schedule.routineId) : undefined;
+      if (!routine || routine.projectId !== schedule.projectId) throw new ApiError(409, "Scheduled routine no longer exists in this project", "ROUTINE_MISSING");
+      if (routine.agentId !== schedule.agentId) throw new ApiError(409, "Scheduled routine teammate binding changed", "AGENT_BINDING_CHANGED");
+      try {
+        assertRoutineTarget(deps.db, routine, { requireAgent: true });
+      } catch (error) {
+        if (error instanceof AgentTaskDispatchError) throw new ApiError(error.statusCode, error.message, error.code);
+        throw error;
+      }
+      const now = new Date().toISOString();
+      const run = schedules.createManualRun({ schedule, occurrenceAt: now, now });
+      try {
+        const result = dispatchRoutineTask(
+          { db: deps.db, runner: deps.runner, env: process.env },
+          routine,
+          { requireAgent: true, idempotencyKey: `schedule:${schedule.id}:manual:${run.id}` },
+        );
+        schedules.markDispatched(run.id, result.task.id, now);
+        reply.status(202);
+        return { version: 1, scheduleId, runId: run.id, taskId: result.task.id, conversationId: result.conversationId, projectId: schedule.projectId, aggregateUrl: `/api/tasks/${result.task.id}` };
+      } catch (error) {
+        const code = error instanceof AgentTaskDispatchError ? error.code : "SCHEDULE_DISPATCH_FAILED";
+        schedules.markBlocked(run.id, code, error, now);
+        if (error instanceof AgentTaskDispatchError) throw new ApiError(error.statusCode, error.message, error.code);
+        throw error;
+      }
+    }
     const taskId = crypto.randomUUID();
     tasks.createTask({ id: taskId, projectId: schedule.projectId, kind: schedule.taskKind, status: "queued", createdAt: new Date().toISOString() });
     deps.runner.run(taskId);

@@ -1461,6 +1461,52 @@ export const migrations:Migration[]=[
       ON routine_recordings(conversation_id) WHERE stopped_at IS NULL;
     CREATE INDEX routine_recordings_conversation_idx ON routine_recordings(conversation_id,started_at DESC);
   `}
+  ,{id:54,name:"durable_routine_schedules_and_runs",sql:`
+    -- Schedules predating routine automation remain inspect_workspace rows.
+    -- The target columns are additive so an older install is never rebuilt or
+    -- downgraded; routine schedules bind a routine and the teammate observed
+    -- when it was created, while dispatch still re-checks today's policy.
+    ALTER TABLE schedules ADD COLUMN routine_id TEXT;
+    ALTER TABLE schedules ADD COLUMN agent_id TEXT;
+    ALTER TABLE schedules ADD COLUMN updated_at TEXT;
+    UPDATE schedules SET updated_at=created_at WHERE updated_at IS NULL;
+    CREATE INDEX schedules_routine_idx ON schedules(routine_id);
+
+    -- One row records one claimed occurrence. schedule_id intentionally has no
+    -- foreign key: deleting a schedule must not erase its audit history.
+    -- project_id is retained for scoped history even if the target routine is
+    -- later removed. occurrence_key is the durable idempotency boundary.
+    CREATE TABLE schedule_runs (
+      id TEXT PRIMARY KEY,
+      schedule_id TEXT NOT NULL,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      routine_id TEXT,
+      occurrence_at TEXT NOT NULL,
+      occurrence_key TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      status TEXT NOT NULL,
+      task_id TEXT,
+      error_code TEXT,
+      error_message TEXT,
+      coalesced INTEGER NOT NULL DEFAULT 0,
+      routine_run_recorded INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      -- A recovery claim is a durable fence around restart replay. The
+      -- owner/expiry pair survives process death so another ticker cannot
+      -- replay a task merely because the first runner returned before it
+      -- reached a terminal state.
+      recovery_owner TEXT,
+      recovery_lease_expires_at TEXT,
+      recovery_attempts INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE UNIQUE INDEX schedule_runs_occurrence_idx ON schedule_runs(schedule_id,occurrence_key);
+    CREATE INDEX schedule_runs_schedule_idx ON schedule_runs(schedule_id,created_at DESC,id DESC);
+    CREATE INDEX schedule_runs_project_idx ON schedule_runs(project_id,created_at DESC,id DESC);
+    CREATE INDEX schedule_runs_task_idx ON schedule_runs(task_id) WHERE task_id IS NOT NULL;
+  `}
 ];
 /**
  * Durability mode for committed writes.
