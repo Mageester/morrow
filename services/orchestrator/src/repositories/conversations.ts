@@ -3,6 +3,7 @@ import { ConversationSchema, ConversationMessageSchema, type Conversation, type 
 import { redactJsonText, redactSecrets } from "../provider/credentials.js";
 import { externalizeToolResult, renderExternalizedForContext } from "../execution/artifact-externalization.js";
 import { toolArtifactsRepository } from "./tool-artifacts.js";
+import { conversationsParticipantsRepository } from "./conversation-participants.js";
 
 function safeErrorText(value: string | null | undefined): string | null {
   return value === null || value === undefined ? null : redactSecrets(value).slice(0, 2_000);
@@ -52,6 +53,7 @@ export function conversationsRepository(db: Database.Database) {
       title: row.title,
       archived: Number(row.archived ?? 0) !== 0,
       agentId: row.agent_id ?? null,
+      mode: row.mode ?? "single",
       createdAt: row.created_at,
       updatedAt: row.updated_at
     });
@@ -93,11 +95,34 @@ export function conversationsRepository(db: Database.Database) {
 
   return {
     createConversation(
-      input: Omit<Conversation, "version" | "archived" | "agentId"> & { archived?: boolean; agentId?: string | null },
+      input: Omit<Conversation, "version" | "archived" | "agentId" | "mode"> & { archived?: boolean; agentId?: string | null; mode?: Conversation["mode"] },
     ): Conversation {
+      if (input.mode === "group" && input.agentId) {
+        const conductor = db.prepare("SELECT team_id FROM agents WHERE id=? AND project_id=?").get(input.agentId, input.projectId) as { team_id: string | null } | undefined;
+        if (conductor?.team_id) {
+          const error = new Error("Team agents must be started through the delegation API");
+          Object.assign(error, { code: "TEAM_AGENT_REQUIRES_DELEGATION" });
+          throw error;
+        }
+      }
       db.prepare(
-        "INSERT INTO conversations (id, project_id, title, agent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
-      ).run(input.id, input.projectId, input.title, input.agentId ?? null, input.createdAt, input.updatedAt);
+        "INSERT INTO conversations (id, project_id, title, agent_id, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run(input.id, input.projectId, input.title, input.agentId ?? null, input.mode ?? "single", input.createdAt, input.updatedAt);
+      if (input.mode === "group" && input.agentId) {
+        const agent = db.prepare("SELECT * FROM agents WHERE id=? AND project_id=?").get(input.agentId, input.projectId) as any;
+        if (agent) conversationsParticipantsRepository(db).ensureConductor(input.id, input.projectId, {
+          version: 1,
+          id: String(agent.id), projectId: String(agent.project_id), name: String(agent.name), role: agent.role,
+          instructions: agent.instructions ?? null, providerOverride: agent.provider_override ?? null,
+          modelOverride: agent.model_override ?? null, enabled: Boolean(agent.enabled), teamId: agent.team_id ?? null,
+          memoryReadScopes: JSON.parse(String(agent.memory_read_scopes_json ?? "[]")),
+          memoryWriteScopes: JSON.parse(String(agent.memory_write_scopes_json ?? "[]")),
+          maxProviderCalls: agent.max_provider_calls ?? null, maxTokenBudget: agent.max_token_budget ?? null,
+          maxWallClockMs: agent.max_wall_clock_ms ?? null, maxChildTasks: agent.max_child_tasks ?? null,
+          approvalRequired: Boolean(agent.approval_required), createdBy: agent.created_by ?? "user",
+          createdAt: String(agent.created_at), updatedAt: String(agent.updated_at),
+        }, input.createdAt);
+      }
       return this.getConversation(input.id)!;
     },
 
@@ -131,6 +156,11 @@ export function conversationsRepository(db: Database.Database) {
 
     setArchived(id: string, archived: boolean, updatedAt: string): Conversation | undefined {
       db.prepare("UPDATE conversations SET archived = ?, updated_at = ? WHERE id = ?").run(archived ? 1 : 0, updatedAt, id);
+      return this.getConversation(id);
+    },
+
+    setMode(id: string, mode: Conversation["mode"], updatedAt: string): Conversation | undefined {
+      db.prepare("UPDATE conversations SET mode = ?, updated_at = ? WHERE id = ?").run(mode, updatedAt, id);
       return this.getConversation(id);
     },
 

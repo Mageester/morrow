@@ -1623,3 +1623,197 @@
     display: none;
   }
 }
+
+/* ── Shared-thread participant strip ───────────────────────────────────── */
+
+.morrow-group-participants {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--morrow-product-field-strong) 78%, transparent);
+}
+
+.morrow-group-participants__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.morrow-group-participants__eyebrow,
+.morrow-group-participants__title,
+.morrow-group-participants__note,
+.morrow-group-participants__error {
+  margin: 0;
+}
+
+.morrow-group-participants__eyebrow {
+  color: var(--morrow-product-copy-quiet);
+  font: 600 9px/1.2 var(--morrow-product-utility);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.morrow-group-participants__title {
+  margin-top: 2px;
+  color: var(--morrow-product-copy);
+  font: 600 13px/1.25 var(--morrow-product-utility);
+}
+
+.morrow-group-participants__invite-trigger,
+.morrow-group-participants__invite button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 27px;
+  padding: 0 9px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--morrow-product-copy-quiet);
+  font: 600 10px/1 var(--morrow-product-utility);
+  cursor: pointer;
+}
+
+.morrow-group-participants__invite-trigger:hover,
+.morrow-group-participants__invite button:hover:not(:disabled) {
+  border-color: var(--morrow-product-copper-line);
+  background: var(--morrow-product-copper-soft);
+  color: var(--morrow-product-copper);
+}
+
+.morrow-group-participants__list {
+  display: flex;
+  min-width: 0;
+  gap: 7px;
+  overflow-x: auto;
+  padding: 1px 0 3px;
+  scrollbar-width: thin;
+}
+
+.morrow-group-participants__item {
+  display: flex;
+  min-width: 142px;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 7px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 10px;
+  background: var(--morrow-product-field);
+}
+
+.morrow-group-participants__identity {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  flex: 1 1 auto;
+}
+
+.morrow-group-participants__name,
+.morrow-group-participants__role {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-group-participants__name {
+  color: var(--morrow-product-copy);
+  font: 600 11px/1.2 var(--morrow-product-utility);
+}
+
+.morrow-group-participants__role {
+  color: var(--morrow-product-copy-quiet);
+  font: 400 10px/1.2 var(--morrow-product-utility);
+}
+
+.morrow-group-participants__actions {
+  display: inline-flex;
+  flex: none;
+  gap: 1px;
+}
+
+.morrow-group-participants__actions button {
+  display: inline-grid;
+  width: 21px;
+  height: 21px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--morrow-product-copy-quiet);
+  cursor: pointer;
+}
+
+.morrow-group-participants__actions button:hover:not(:disabled) {
+  background: var(--morrow-product-copper-soft);
+  color: var(--morrow-product-copper);
+}
+
+.morrow-group-participants__actions button:disabled {
+  cursor: not-allowed;
+  opacity: .3;
+}
+
+.morrow-group-participants__conductor-mark {
+  flex: none;
+  color: var(--morrow-product-copper);
+  font: 600 9px/1 var(--morrow-product-utility);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.morrow-group-participants__invite {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding-top: 2px;
+}
+
+.morrow-group-participants__invite label {
+  grid-column: 1 / -1;
+  color: var(--morrow-product-copy-quiet);
+  font: 600 10px/1.2 var(--morrow-product-utility);
+}
+
+.morrow-group-participants__invite select {
+  min-width: 0;
+  height: 29px;
+  padding: 0 7px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 7px;
+  background: var(--morrow-product-field);
+  color: var(--morrow-product-copy);
+  font: 400 11px/1 var(--morrow-product-utility);
+}
+
+.morrow-group-participants__note,
+.morrow-group-participants__error {
+  color: var(--morrow-product-copy-quiet);
+  font: 400 11px/1.4 var(--morrow-product-utility);
+}
+
+.morrow-group-participants__error {
+  color: var(--morrow-product-copper);
+}
+
+@media (max-width: 620px) {
+  .morrow-group-participants {
+    padding: 9px;
+    border-radius: 11px;
+  }
+
+  .morrow-group-participants__list {
+    margin-right: -9px;
+    padding-right: 9px;
+  }
+
+  .morrow-group-participants__item {
+    min-width: 132px;
+  }
+}

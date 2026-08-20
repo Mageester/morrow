@@ -125,6 +125,11 @@ export const CreateThreadHandoffSchema = z.object({
   parentTaskId: z.string().min(1),
   agentId: z.string().min(1),
   objective: z.string().trim().min(1).max(2000),
+  /** Bounded handles to parent-owned artifact/evidence rows; never transcript text. */
+  contextRefs: z.array(z.object({
+    kind: z.enum(["artifact", "evidence"]),
+    id: z.string().trim().min(1).max(200),
+  }).strict()).max(16).default([]),
 }).strict();
 
 export type HandoffStatus = z.infer<typeof HandoffStatusSchema>;

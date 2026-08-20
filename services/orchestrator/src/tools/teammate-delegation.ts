@@ -90,6 +90,7 @@ export type TeammateRefusalCode =
   | "AGENT_CROSS_PROJECT"
   | "AGENT_SELF"
   | "AGENT_TEAM_TARGET"
+  | "AGENT_NOT_PARTICIPANT"
   | "AGENT_PROFILE_CHANGED";
 
 export class TeammateTargetError extends Error {

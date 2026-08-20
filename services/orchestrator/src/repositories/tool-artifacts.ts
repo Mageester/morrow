@@ -97,6 +97,17 @@ export interface ToolArtifactRepository {
 }
 
 export function toolArtifactsRepository(db: Database.Database): ToolArtifactRepository {
+  const recordTaskReference = (artifactId: string, taskId: string | null, createdAt: string): void => {
+    if (!taskId) return;
+    // The mapping has a task FK, while tool_artifacts.task_id predates that
+    // constraint and still accepts legacy/synthetic callers. Only create an
+    // ownership edge when the producing task is durable.
+    const taskExists = db.prepare("SELECT 1 FROM tasks WHERE id=?").get(taskId);
+    if (!taskExists) return;
+    db.prepare(`INSERT INTO tool_artifact_task_refs(artifact_id,task_id,created_at)
+      VALUES(?,?,?) ON CONFLICT(artifact_id,task_id) DO NOTHING`).run(artifactId, taskId, createdAt);
+  };
+
   return {
     create(input, now) {
       const createdAt = now ?? new Date().toISOString();
@@ -110,6 +121,7 @@ export function toolArtifactsRepository(db: Database.Database): ToolArtifactRepo
         .get(contentHash, input.kind, contentType) as PersistedRow | undefined;
       if (existing) {
         db.prepare("UPDATE tool_artifacts SET refcount = refcount + 1 WHERE id = ?").run(existing.id);
+        recordTaskReference(existing.id, input.taskId, createdAt);
         const updated = db.prepare("SELECT * FROM tool_artifacts WHERE id = ?").get(existing.id) as PersistedRow;
         return rowToArtifact(updated);
       }
@@ -133,6 +145,7 @@ export function toolArtifactsRepository(db: Database.Database): ToolArtifactRepo
         buffer,
         createdAt
       );
+      recordTaskReference(id, input.taskId, createdAt);
       const inserted = db.prepare("SELECT * FROM tool_artifacts WHERE id = ?").get(id) as PersistedRow;
       return rowToArtifact(inserted);
     },

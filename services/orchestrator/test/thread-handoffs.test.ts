@@ -6,9 +6,11 @@ import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { agentsRepository } from "../src/repositories/agents.js";
 import { teamsRepository } from "../src/repositories/teams.js";
+import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { buildAgentExecutionPolicy } from "../src/security/agent-execution-policy.js";
 import { ThreadHandoffsSchema } from "@morrow/contracts";
+import { projectThreadHandoffs } from "../src/web/handoff-projection.js";
 
 function ts() { return new Date().toISOString(); }
 
@@ -129,6 +131,38 @@ describe("Handoffs inside a thread", () => {
       ["Research", "Find the facts"],
       ["Comms", "Write it plainly"],
     ]);
+  });
+
+  it("keeps handoff order stable across repeated same-timestamp insertion stress", () => {
+    const agent = agentsRepository(db).create({ id: "ordered-agent", projectId: "p1", name: "Ordered", role: "researcher" });
+    const conversations = conversationsRepository(db);
+    const tasks = taskRepository(db);
+    conversations.createConversation({ id: "ordered-conversation", projectId: "p1", title: "Ordering", createdAt: "2026-08-20T12:00:00.000Z", updatedAt: "2026-08-20T12:00:00.000Z" });
+    tasks.createTask({ id: "ordered-parent", projectId: "p1", kind: "agent_chat", status: "completed", createdAt: "2026-08-20T12:00:00.000Z" });
+    conversations.appendMessage({ id: "ordered-parent-message", conversationId: "ordered-conversation", role: "assistant", content: "Parent", taskId: "ordered-parent", createdAt: "2026-08-20T12:00:00.000Z", updatedAt: "2026-08-20T12:00:00.000Z" });
+
+    const expected: string[] = [];
+    for (let round = 0; round < 5; round += 1) {
+      // Reverse lexical ids deliberately make UUID/id ordering disagree with
+      // the durable SQLite insertion order used by the projection.
+      for (let offset = 24; offset >= 0; offset -= 1) {
+        const id = `ordered-${round}-${String(offset).padStart(2, "0")}`;
+        tasks.createTask({
+          id,
+          projectId: "p1",
+          kind: "agent_chat",
+          status: "queued",
+          idempotencyKey: `ask_teammate:${id}`,
+          parentTaskId: "ordered-parent",
+          agentId: agent.id,
+          createdAt: "2026-08-20T12:00:00.000Z",
+        });
+        expected.push(id);
+      }
+    }
+
+    const projected = projectThreadHandoffs({ db, projectId: "p1", conversationId: "ordered-conversation" });
+    expect(projected.handoffs.map((handoff) => handoff.id)).toEqual(expected);
   });
 
   it("gives each teammate its own budget, taken from its own row and not the thread's", async () => {

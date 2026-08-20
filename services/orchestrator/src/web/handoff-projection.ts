@@ -51,7 +51,8 @@ export function projectThreadHandoffs(input: HandoffProjectionInput): ThreadHand
    * ordinary subtask: work given to somebody.
    */
   const rows = db.prepare(
-    `SELECT DISTINCT child.id            AS id,
+    `SELECT DISTINCT child.rowid         AS child_rowid,
+            child.id                    AS id,
             child.parent_task_id         AS parent_task_id,
             child.agent_id               AS agent_id,
             child.status                 AS status,
@@ -65,8 +66,13 @@ export function projectThreadHandoffs(input: HandoffProjectionInput): ThreadHand
       WHERE parent_message.conversation_id = ?
         AND child.project_id = ?
         AND child.agent_id IS NOT NULL
-      ORDER BY child.created_at ASC, child.id ASC`,
+      -- IDs are opaque UUIDs and do not encode the order in which a model
+      -- handed work to teammates. SQLite's rowid is the durable insertion
+      -- ordinal for the task record, so equal-timestamp handoffs remain in
+      -- the order users saw them created.
+      ORDER BY child.rowid ASC`,
   ).all(conversationId, projectId) as Array<{
+    child_rowid: number;
     id: string;
     parent_task_id: string;
     agent_id: string;

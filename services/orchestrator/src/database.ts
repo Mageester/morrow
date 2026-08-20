@@ -1741,7 +1741,74 @@ export const migrations:Migration[]=[
         DELETE FROM search_index WHERE kind='memory' AND ref_id=old.id;
       END;
     `);
-  }}
+  }},
+  {id:58,name:"group_conversations_and_context_refs",sql:`
+    -- A group thread keeps one immutable conductor in conversations.agent_id.
+    -- The mode flag and participant snapshots are additive so every existing
+    -- single-conductor conversation remains readable and dispatch-compatible.
+    ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'single'
+      CHECK(mode IN ('single','group'));
+
+    CREATE TABLE conversation_participants (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('conductor','participant')),
+      name_snapshot TEXT NOT NULL,
+      role_snapshot TEXT NOT NULL,
+      instructions_snapshot TEXT,
+      provider_override_snapshot TEXT,
+      model_override_snapshot TEXT,
+      profile_fingerprint TEXT NOT NULL,
+      position INTEGER NOT NULL CHECK(position >= 0),
+      status TEXT NOT NULL CHECK(status IN ('active','removed')),
+      joined_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      removed_at TEXT,
+      UNIQUE(conversation_id, agent_id)
+    );
+    CREATE INDEX conversation_participants_order_idx
+      ON conversation_participants(conversation_id,status,position,joined_at,id);
+    CREATE INDEX conversation_participants_agent_idx
+      ON conversation_participants(project_id,agent_id,status);
+
+    -- Context references are handles, not copied transcript. They authorize a
+    -- child to see bounded artifact/evidence records from its parent task while
+    -- retaining independent child conversation/provider policy.
+    CREATE TABLE conversation_context_refs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      source_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      target_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('artifact','evidence')),
+      ref_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(target_task_id,kind,ref_id)
+    );
+    CREATE INDEX conversation_context_refs_source_idx
+      ON conversation_context_refs(source_task_id,kind,ref_id);
+    CREATE INDEX conversation_context_refs_target_idx
+      ON conversation_context_refs(target_task_id,kind,ref_id);
+  `},
+  {id:59,name:"task_artifact_ownership_refs",sql:`
+    -- A deduplicated artifact keeps one canonical blob row, but every task
+    -- that produced/referenced it needs an explicit ownership edge. The
+    -- canonical tool_artifacts.task_id remains a truthful first-owner
+    -- compatibility field; this mapping is authoritative for later producers.
+    CREATE TABLE tool_artifact_task_refs (
+      artifact_id TEXT NOT NULL REFERENCES tool_artifacts(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(artifact_id, task_id)
+    );
+    INSERT INTO tool_artifact_task_refs(artifact_id,task_id,created_at)
+      SELECT id,task_id,created_at FROM tool_artifacts
+       WHERE task_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM tasks WHERE tasks.id=tool_artifacts.task_id);
+    CREATE INDEX tool_artifact_task_refs_task_idx
+      ON tool_artifact_task_refs(task_id,artifact_id);
+  `}
 ];
 /**
  * Durability mode for committed writes.

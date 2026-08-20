@@ -55,11 +55,41 @@ export const StructuredApiErrorSchema=z.object({version:SchemaVersionSchema,erro
 // in it runs as that agent, under that agent's own policy. Null is the
 // built-in default teammate, which is what every conversation predating the
 // roster is — so the column is additive and never rewrites existing history.
-export const ConversationSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),title:z.string(),archived:z.boolean().default(false),agentId:z.string().nullable().default(null),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
-export const CreateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional(),agentId:z.string().trim().min(1).optional()}).strict();
-export const UpdateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional(),archived:z.boolean().optional()}).strict().refine((v)=>v.title!==undefined||v.archived!==undefined,{message:"Provide title or archived"});
+// Group mode adds participants around this immutable conductor; it never
+// changes who owns the conversation's durable tasks.
+export const ConversationModeSchema=z.enum(["single","group"]);
+export const ConversationSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),title:z.string(),archived:z.boolean().default(false),agentId:z.string().nullable().default(null),mode:ConversationModeSchema.default("single"),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+export const CreateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional(),agentId:z.string().trim().min(1).optional(),mode:ConversationModeSchema.optional()}).strict();
+export const UpdateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional(),archived:z.boolean().optional(),mode:ConversationModeSchema.optional()}).strict().refine((v)=>v.title!==undefined||v.archived!==undefined||v.mode!==undefined,{message:"Provide title, archived, or mode"});
 export const DeleteConversationSchema=z.object({confirmation:z.literal("delete")}).strict();
 export const DeleteConversationResultSchema=z.object({version:SchemaVersionSchema,conversationId:z.string(),deleted:z.boolean()}).strict();
+export const ConversationParticipantStatusSchema=z.enum(["active","removed"]);
+export const ConversationParticipantRoleSchema=z.enum(["conductor","participant"]);
+export const ConversationParticipantSchema=z.object({
+  version:SchemaVersionSchema,
+  id:z.string().min(1),
+  conversationId:z.string().min(1),
+  agentId:z.string().nullable(),
+  role:ConversationParticipantRoleSchema,
+  nameSnapshot:z.string().min(1).max(100),
+  roleSnapshot:z.string().min(1).max(60),
+  instructionsSnapshot:z.string().max(8000).nullable(),
+  providerOverrideSnapshot:z.string().max(200).nullable(),
+  modelOverrideSnapshot:z.string().max(200).nullable(),
+  profileFingerprint:z.string().regex(/^[a-f0-9]{64}$/),
+  position:z.number().int().nonnegative(),
+  status:ConversationParticipantStatusSchema,
+  joinedAt:z.string().datetime(),
+  updatedAt:z.string().datetime(),
+  removedAt:z.string().datetime().nullable(),
+  isConductor:z.boolean().default(false),
+}).strict();
+export const ConversationParticipantsSchema=z.object({version:SchemaVersionSchema,projectId:z.string().min(1),conversationId:z.string().min(1),conductorAgentId:z.string().nullable(),participants:z.array(ConversationParticipantSchema)}).strict();
+export const InviteConversationParticipantSchema=z.object({agentId:z.string().trim().min(1).max(120)}).strict();
+export const ReorderConversationParticipantSchema=z.object({position:z.number().int().nonnegative()}).strict();
+export const ConversationContextRefKindSchema=z.enum(["artifact","evidence"]);
+export const ConversationContextRefSchema=z.object({kind:ConversationContextRefKindSchema,id:z.string().trim().min(1).max(200)}).strict();
+export const ConversationContextRefsSchema=z.array(ConversationContextRefSchema).max(16);
 export const ConversationMessageSchema=z.object({version:SchemaVersionSchema,id:z.string(),conversationId:z.string(),role:z.enum(["user","assistant"]),content:z.string(),taskId:z.string().nullable().optional(),streamingState:z.enum(["queued","streaming","completed","failed","cancelled","interrupted"]),provider:z.string().nullable().optional(),model:z.string().nullable().optional(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const ConversationToolActivitySchema=z.object({id:z.string(),toolName:z.string(),status:z.enum(["requested","running","completed","failed","cancelled"]),startedAt:z.string().datetime().nullable(),completedAt:z.string().datetime().nullable()}).strict();
 export const ChatStreamEventTypeSchema=z.enum(["message.updated","tool.updated","task.updated","task.terminal"]);
@@ -902,6 +932,15 @@ export type WebSendMessageResult=z.infer<typeof WebSendMessageResultSchema>;
 export type WebConversationMessage=z.infer<typeof WebConversationMessageSchema>;
 export type WebTaskReasoningEntry=z.infer<typeof WebTaskReasoningEntrySchema>;
 export type WebTaskReasoning=z.infer<typeof WebTaskReasoningSchema>;
+export type ConversationMode=z.infer<typeof ConversationModeSchema>;
+export type ConversationParticipantStatus=z.infer<typeof ConversationParticipantStatusSchema>;
+export type ConversationParticipantRole=z.infer<typeof ConversationParticipantRoleSchema>;
+export type ConversationParticipant=z.infer<typeof ConversationParticipantSchema>;
+export type ConversationParticipants=z.infer<typeof ConversationParticipantsSchema>;
+export type InviteConversationParticipantInput=z.infer<typeof InviteConversationParticipantSchema>;
+export type ReorderConversationParticipantInput=z.infer<typeof ReorderConversationParticipantSchema>;
+export type ConversationContextRefKind=z.infer<typeof ConversationContextRefKindSchema>;
+export type ConversationContextRef=z.infer<typeof ConversationContextRefSchema>;
 export type MemoryEntry=z.infer<typeof MemoryEntrySchema>;
 export type MemoryScope=z.infer<typeof MemoryScopeSchema>;
 export type MemoryType=z.infer<typeof MemoryTypeSchema>;

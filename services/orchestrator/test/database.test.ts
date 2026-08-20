@@ -84,7 +84,7 @@ describe("database", () => {
     const upgraded = openDatabase(file);
     const columns = (upgraded.prepare("PRAGMA table_info(schedule_runs)").all() as Array<{ name: string }>).map((column) => column.name);
     expect(columns).toEqual(expect.arrayContaining(["recovery_owner", "recovery_lease_expires_at", "recovery_attempts"]));
-    expect(upgraded.prepare("SELECT MAX(id) id FROM schema_migrations").get()).toEqual({ id: 57 });
+    expect(upgraded.prepare("SELECT MAX(id) id FROM schema_migrations").get()).toEqual({ id: 59 });
     upgraded.close();
     rmSync(directory, { recursive: true, force: true });
   });

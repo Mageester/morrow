@@ -1,4 +1,5 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import {
   Brain,
   Cable,
@@ -14,6 +15,7 @@ import { useEffect, useRef, useState } from "react";
 import { AmbientMark } from "../components/product-frame.js";
 import { MorrowMark } from "../components/morrow-mark.js";
 import { NewChatButton } from "../features/chat/new-chat-button.js";
+import { GroupParticipantStrip } from "../features/chat/group-participant-strip.js";
 import { OnboardingExperience } from "../features/onboarding/onboarding-experience.js";
 import { PairingBanner } from "../features/pairing/pairing-banner.js";
 import { useActiveProject } from "../features/projects/use-active-project.js";
@@ -21,6 +23,7 @@ import { RosterRail } from "../features/roster/roster-rail.js";
 import { useRuntimeStatus } from "../state/runtime-status.js";
 import { ShellTitleProvider } from "./shell-title.js";
 import { ShellTopbar } from "./shell-topbar.js";
+import { conversationQueries } from "../api/conversations.js";
 
 type ImplementedRoute =
   | "/"
@@ -137,6 +140,32 @@ function SidebarNewChat() {
     );
   }
   return <NewChatButton projectId={activeProject?.id} />;
+}
+
+/**
+ * ConversationPage is a protected prototype boundary. Keep the group strip
+ * at the shell's route boundary instead: it still shares the conversation's
+ * query cache, while the protected conversation implementation remains
+ * untouched.
+ */
+function GroupParticipantBoundary() {
+  const { activeProject } = useActiveProject();
+  const route = useRouterState({
+    select: (state) => ({
+      pathname: state.location.pathname,
+      projectId: (state.location.search as { projectId?: string } | undefined)?.projectId,
+    }),
+  });
+  const match = /^\/chats\/([^/?#]+)$/.exec(route.pathname);
+  const conversationId = match?.[1] ? decodeURIComponent(match[1]) : undefined;
+  const projectId = route.projectId ?? activeProject?.id;
+  const conversation = useQuery({
+    ...conversationQueries.detail(projectId ?? "", conversationId ?? ""),
+    enabled: Boolean(projectId && conversationId),
+  });
+
+  if (!projectId || !conversationId || conversation.data?.mode !== "group") return null;
+  return <GroupParticipantStrip conversationId={conversationId} projectId={projectId} />;
 }
 
 function MobileDock({ onMore, onNavigate }: { onMore: () => void; onNavigate: () => void }) {
@@ -267,6 +296,7 @@ export function AppShell() {
         </div>
         <div className="morrow-route-canvas" key={pathname}>
           <PairingBanner />
+          <GroupParticipantBoundary />
           <Outlet />
         </div>
       </main>

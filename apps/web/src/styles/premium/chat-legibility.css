@@ -48,7 +48,8 @@
  * silently falls back to content size. `:has()` scopes a column flex context to
  * the conversation route alone, leaving every other page's canvas untouched.
  */
-.morrow-route-canvas:has(> .morrow-conversation-page) {
+.morrow-route-canvas:has(> .morrow-conversation-page),
+.morrow-route-canvas:has(> .morrow-group-participants + .morrow-conversation-page) {
   display: flex;
   flex-direction: column;
   min-height: 0;

@@ -16,6 +16,7 @@ import { intelligenceRepository } from "../repositories/intelligence.js";
 import { taskRepository } from "../repositories/tasks.js";
 import { taskRecordsRepository } from "../repositories/task-records.js";
 import { conversationsRepository, type ToolCallRecord } from "../repositories/conversations.js";
+import { conversationContextRefsRepository } from "../repositories/conversation-context-refs.js";
 import { taskRoutingRepository } from "../repositories/task-routing.js";
 import { memoryRepository } from "../repositories/memory.js";
 import { skillUsageRepository } from "../repositories/skill-usage.js";
@@ -842,6 +843,7 @@ export async function executeAgentChatTask({
   const processesRepo = processesRepository(db);
   const procSupervisor = supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
   const convs = conversationsRepository(db);
+  const contextRefsRepo = conversationContextRefsRepository(db);
   const routingRepo = taskRoutingRepository(db);
   const memoryRepo = memoryRepository(db);
   const skillUsage = skillUsageRepository(db);
@@ -890,6 +892,7 @@ export async function executeAgentChatTask({
   const memoryActor = assignedAgent
     ? { kind: "agent" as const, agentId: assignedAgent.id, teamId: assignedAgent.teamId }
     : { kind: "default" as const };
+  const taskContextRefs = contextRefsRepo.listForTask(taskId);
   const actorStillAuthorized = (): boolean => {
     try {
       if (!assignedAgent) return true;
@@ -959,6 +962,21 @@ export async function executeAgentChatTask({
       // The same check runs again in the server spawner after approval, so a
       // target disabled or moved while the prompt is waiting fails closed.
       const target = resolveStandaloneTeammateTarget(task, agentRepo.get(parsed.data.agentId), parsed.data.agentId);
+      const groupConversation = db.prepare(
+        `SELECT c.mode, c.id AS conversation_id
+         FROM conversations c
+         INNER JOIN conversation_messages m ON m.conversation_id = c.id
+         WHERE m.task_id = ? LIMIT 1`,
+      ).get(task.id) as { mode?: string; conversation_id?: string } | undefined;
+      if (groupConversation?.mode === "group" && groupConversation.conversation_id) {
+        const participant = db.prepare(
+          `SELECT 1 FROM conversation_participants
+           WHERE conversation_id = ? AND agent_id = ? AND role = 'participant' AND status = 'active'`,
+        ).get(groupConversation.conversation_id, target.id);
+        if (!participant) {
+          throw new TeammateTargetError("AGENT_NOT_PARTICIPANT", "Invite this teammate to the shared thread before asking them.");
+        }
+      }
       const profileHash = teammateProfileFingerprint(target, agentRepo.listToolPermissions(target.id));
       const boundHash = typeof raw.profileHash === "string" ? raw.profileHash : undefined;
       if (boundHash && boundHash !== profileHash) {
@@ -1982,6 +2000,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   const teammateBrief = buildTeammateBrief(assignedAgent ?? null);
   if (teammateBrief) chatMessages.push({ role: "system", content: teammateBrief });
+
+  if (taskContextRefs.length > 0) {
+    // These are capability handles only. The child receives no parent
+    // transcript, provider output, or stdout; artifact handles are added to
+    // the task-local read_artifact allow-list below and evidence handles stay
+    // metadata-only for explicit user/API inspection.
+    chatMessages.push({
+      role: "system",
+      content: `Bounded context references supplied for this task (handles only; do not infer or request parent transcript):\n${JSON.stringify(taskContextRefs.map((ref) => ({ kind: ref.kind, id: ref.id })))}`,
+    });
+  }
 
   if (activeToolProfile === "agent" && browserToolsRequested) {
     chatMessages.push({
@@ -3040,6 +3069,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // captured output. Seeded from durable tool results below so the permission
   // survives a restart exactly as it survives a turn.
   const offeredArtifactIds = new Set<string>();
+  for (const ref of taskContextRefs) {
+    if (ref.kind === "artifact") offeredArtifactIds.add(ref.id);
+  }
   const modelVisibleToolResult = (toolName: string, result: string, isSuccess: boolean): string => {
     // Failure output is durable context too. A failed command can carry just
     // as much stdout/stderr as a successful one, so it uses the same
@@ -6538,6 +6570,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             // the bytes were produced by a tool call the user already approved.
             const read = readArtifactRange(toolArtifactsRepository(db), offeredArtifactIds, args);
             if (!read.ok) throw new AgentToolFailure(read.error, { error: read.error, kind: "artifact_not_readable", toolName: tc.name });
+            // Artifact pages are raw workspace/tool evidence too. Count the
+            // bytes actually returned (rather than the JSON envelope) against
+            // the same cumulative budget as read_file/search/git results so a
+            // model cannot bypass the task cap by paging one artifact.
+            const returnedBytes = typeof read.payload.returnedBytes === "number"
+              ? read.payload.returnedBytes
+              : Buffer.byteLength(String(read.payload.content ?? ""), "utf8");
+            totalBytesRead += returnedBytes;
+            if (totalBytesRead > contextBytesLimit) {
+              throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
+            }
             resultStr = JSON.stringify(read.payload);
           } else if (tc.name === "find_skill" || tc.name === "load_skill") {
             // Read-only skill discovery/loading: no approval needed. (These were

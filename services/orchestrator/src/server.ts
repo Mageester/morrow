@@ -30,6 +30,10 @@ import {
   CreateRoutineSchema,
   UpdateRoutineSchema,
   CreateThreadHandoffSchema,
+  InviteConversationParticipantSchema,
+  ReorderConversationParticipantSchema,
+  ConversationParticipantsSchema,
+  ConversationParticipantSchema,
   DelegationAccessContextSchema,
   ResolveDelegationSchema,
   CreateHandoffSchema,
@@ -44,6 +48,7 @@ import {
   type ProviderAuthMode,
   type ChatStreamEventType,
   type RoutingDecision,
+  type Conversation,
 } from "@morrow/contracts";
 import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
@@ -57,6 +62,8 @@ import { assistantProfileRepository } from "./repositories/assistant-profile.js"
 import { taskRepository } from "./repositories/tasks.js";
 import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
+import { conversationsParticipantsRepository } from "./repositories/conversation-participants.js";
+import { conversationContextRefsRepository, ConversationContextRefError } from "./repositories/conversation-context-refs.js";
 import { taskRoutingRepository } from "./repositories/task-routing.js";
 import { memoryRepository, MemoryOwnershipError } from "./repositories/memory.js";
 import { searchRepository } from "./repositories/search.js";
@@ -815,6 +822,18 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.delete("/api/agents/:agentId", async (request, reply) => {
     const { agentId } = request.params as { agentId: string };
     const body = z.object({ projectId: z.string().min(1) }).parse(request.body);
+    const agent = agents.get(agentId);
+    if (!agent || agent.projectId !== body.projectId) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    // conversations.agent_id is the immutable conductor binding. Deleting
+    // the agent would leave a dangling task owner (or force an active
+    // tombstone row that falsely looks runnable), so preserve the truthful
+    // binding by refusing deletion until its conversations are retired.
+    const conductorBinding = deps.db.prepare(
+      "SELECT id FROM conversations WHERE project_id=? AND agent_id=? LIMIT 1",
+    ).get(body.projectId, agentId) as { id?: string } | undefined;
+    if (conductorBinding) {
+      throw new ApiError(409, "This teammate is the immutable conductor of a conversation and cannot be deleted", "AGENT_CONVERSATION_CONDUCTOR");
+    }
     if (!agents.delete(agentId, body.projectId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
     reply.status(204).send();
   });
@@ -1338,6 +1357,16 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     let updated = conversation;
     if (body.title !== undefined) updated = convs.renameConversation(conversationId, body.title.trim(), now) ?? updated;
     if (body.archived !== undefined) updated = convs.setArchived(conversationId, body.archived, now) ?? updated;
+    if (body.mode !== undefined) {
+      if (body.mode === "group" && conversation.agentId) {
+        const conductor = agents.get(conversation.agentId);
+        if (conductor?.teamId) {
+          throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+        }
+        if (conductor) conversationParticipants.ensureConductor(conversationId, conversation.projectId, conductor, now);
+      }
+      updated = convs.setMode(conversationId, body.mode, now) ?? updated;
+    }
     return updated;
   });
 
@@ -1355,6 +1384,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       const agent = agents.get(body.agentId);
       if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
       if (!agent.enabled) throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
+      if (body.mode === "group" && agent.teamId) {
+        throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+      }
     }
 
     const conversation = convs.createConversation({
@@ -1362,6 +1394,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       projectId,
       title,
       agentId: body.agentId ?? null,
+      mode: body.mode ?? "single",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
@@ -1387,6 +1420,40 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       throw new ApiError(404, "Conversation task not found in project", "NOT_FOUND");
     }
     return task;
+  };
+
+  const conversationParticipants = conversationsParticipantsRepository(deps.db);
+  const conversationContextRefs = conversationContextRefsRepository(deps.db);
+  const projectConversationParticipants = (projectId: string, conversationId: string, includeRemoved = true) => {
+    const conversation = ownedConversation(projectId, conversationId);
+    if (conversation.mode !== "group") {
+      throw new ApiError(409, "Participants are available only for group conversations", "GROUP_MODE_REQUIRED");
+    }
+    const participants = conversationParticipants.list(conversationId, includeRemoved);
+    if (conversation.agentId && !participants.some((participant) => participant.agentId === conversation.agentId && participant.role === "conductor")) {
+      const conductor = agents.get(conversation.agentId);
+      if (conductor) participants.unshift(conversationParticipants.ensureConductor(conversationId, projectId, conductor, conversation.createdAt));
+    } else if (!conversation.agentId && !participants.some((participant) => participant.role === "conductor")) {
+      participants.unshift(conversationParticipants.defaultConductor(conversationId));
+    }
+    participants.sort((left, right) => left.position - right.position || left.joinedAt.localeCompare(right.joinedAt) || left.id.localeCompare(right.id));
+    return ConversationParticipantsSchema.parse({
+      version: 1,
+      projectId,
+      conversationId,
+      conductorAgentId: conversation.agentId,
+      participants,
+    });
+  };
+
+  const ensureGroupConductor = (conversation: Conversation, now: string) => {
+    if (conversation.agentId) {
+      const conductor = agents.get(conversation.agentId);
+      if (conductor?.teamId) {
+        throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+      }
+      if (conductor) conversationParticipants.ensureConductor(conversation.id, conversation.projectId, conductor, now);
+    }
   };
 
   const webRouting = (decision: RoutingDecision | null | undefined) => decision
@@ -1431,6 +1498,62 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
     ownedConversation(projectId, conversationId);
     return webMessages(conversationId);
+  });
+
+  // Group participant management is a projection/mutation over the same
+  // conversation row that owns the conductor. Participant rows retain the
+  // identity snapshot and policy fingerprint from invitation time; dispatch
+  // still resolves current agent policy from agents/tasks and never trusts a
+  // browser-provided snapshot.
+  app.get("/api/projects/:projectId/conversations/:conversationId/participants", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    const { includeRemoved } = request.query as { includeRemoved?: string };
+    return projectConversationParticipants(projectId, conversationId, includeRemoved === "true" || includeRemoved === "1");
+  });
+
+  app.post("/api/projects/:projectId/conversations/:conversationId/participants", async (request, reply) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    const conversation = ownedConversation(projectId, conversationId);
+    if (conversation.mode !== "group") throw new ApiError(409, "Participants are available only for group conversations", "GROUP_MODE_REQUIRED");
+    const body = InviteConversationParticipantSchema.parse(request.body);
+    if (body.agentId === conversation.agentId) throw new ApiError(409, "The conductor is already part of this conversation", "CONDUCTOR_ALREADY_PARTICIPANT");
+    const agent = agents.get(body.agentId);
+    if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
+    if (!agent.enabled) throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
+    if (agent.teamId) {
+      throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+    }
+    const now = new Date().toISOString();
+    const outcome = conversationParticipants.invite({ conversationId, projectId, agent, now });
+    if (outcome.outcome === "already_active") throw new ApiError(409, "This teammate is already a participant", "PARTICIPANT_ALREADY_ACTIVE");
+    if (outcome.outcome === "conductor") throw new ApiError(409, "The conductor cannot be invited as a participant", "CONDUCTOR_ALREADY_PARTICIPANT");
+    if (outcome.outcome === "team_agent") throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+    if (outcome.outcome === "not_found") throw new ApiError(404, "Participant could not be created", "NOT_FOUND");
+    reply.status(outcome.outcome === "reactivated" ? 200 : 201);
+    return outcome.participant;
+  });
+
+  app.patch("/api/projects/:projectId/conversations/:conversationId/participants/:agentId", async (request) => {
+    const { projectId, conversationId, agentId } = request.params as { projectId: string; conversationId: string; agentId: string };
+    const conversation = ownedConversation(projectId, conversationId);
+    if (conversation.mode !== "group") throw new ApiError(409, "Participants are available only for group conversations", "GROUP_MODE_REQUIRED");
+    const body = ReorderConversationParticipantSchema.parse(request.body);
+    if (agentId === conversation.agentId) throw new ApiError(409, "The conductor stays first", "CONDUCTOR_CANNOT_MOVE");
+    const updated = conversationParticipants.reorder(conversationId, agentId, body.position, new Date().toISOString());
+    if (!updated) throw new ApiError(404, "Participant not found in this conversation", "NOT_FOUND");
+    return updated;
+  });
+
+  app.delete("/api/projects/:projectId/conversations/:conversationId/participants/:agentId", async (request) => {
+    const { projectId, conversationId, agentId } = request.params as { projectId: string; conversationId: string; agentId: string };
+    const conversation = ownedConversation(projectId, conversationId);
+    if (conversation.mode !== "group") throw new ApiError(409, "Participants are available only for group conversations", "GROUP_MODE_REQUIRED");
+    if (agentId === conversation.agentId) throw new ApiError(409, "The conductor cannot be removed from its conversation", "CONDUCTOR_CANNOT_BE_REMOVED");
+    const outcome = conversationParticipants.remove(conversationId, agentId, new Date().toISOString());
+    if (outcome.outcome === "not_found") throw new ApiError(404, "Participant not found in this conversation", "NOT_FOUND");
+    if (outcome.outcome === "conductor") throw new ApiError(409, "The conductor cannot be removed from its conversation", "CONDUCTOR_CANNOT_BE_REMOVED");
+    if (outcome.outcome === "team_agent") throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+    return outcome.participant;
   });
 
   app.get("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/reasoning", async (request, reply) => {
@@ -1508,18 +1631,33 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
    */
   app.post("/api/projects/:projectId/conversations/:conversationId/handoffs", async (request, reply) => {
     const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
-    ownedConversation(projectId, conversationId);
+    const conversation = ownedConversation(projectId, conversationId);
     const body = CreateThreadHandoffSchema.parse(request.body);
     const parent = ownedConversationTask(projectId, conversationId, body.parentTaskId);
+
+    try {
+      conversationContextRefs.validateSourceRefs(projectId, parent.id, body.contextRefs);
+    } catch (error) {
+      if (error instanceof ConversationContextRefError) throw new ApiError(404, error.message, error.code);
+      throw error;
+    }
 
     const agent = agents.get(body.agentId);
     if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
     if (!agent.enabled) throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
+    if (conversation.mode === "group" && agent.id !== conversation.agentId) {
+      const participant = conversationParticipants.get(conversation.id, agent.id);
+      if (!participant || participant.status !== "active" || participant.role !== "participant") {
+        throw new ApiError(409, "Invite this teammate to the shared thread before handing off work", "AGENT_NOT_PARTICIPANT");
+      }
+    }
     if (agent.teamId) {
       throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
     }
 
-    const result = spawnAgentChatSubagent(parent, agent.id, body.objective);
+    const result = spawnAgentChatSubagent(parent, agent.id, body.objective, {
+      ...(body.contextRefs.length > 0 ? { contextRefs: body.contextRefs } : {}),
+    });
     reply.status(202);
     return {
       version: 1,
@@ -1688,6 +1826,10 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const updatedAt = new Date().toISOString();
     if (body.title !== undefined) updated = convs.renameConversation(conversationId, body.title, updatedAt) ?? updated;
     if (body.archived !== undefined) updated = convs.setArchived(conversationId, body.archived, updatedAt) ?? updated;
+    if (body.mode !== undefined) {
+      if (body.mode === "group") ensureGroupConductor(updated, updatedAt);
+      updated = convs.setMode(conversationId, body.mode, updatedAt) ?? updated;
+    }
     return updated;
   });
 
@@ -1957,7 +2099,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     parent: { id: string; projectId: string; agentId?: string | null | undefined },
     agentId: string,
     label: string | undefined,
-    options: { deferRun?: boolean; delegationId?: string; toolCallId?: string; modelInitiated?: boolean } = {},
+    options: { deferRun?: boolean; delegationId?: string; toolCallId?: string; modelInitiated?: boolean; contextRefs?: Array<{ kind: "artifact" | "evidence"; id: string }> } = {},
   ) {
     try {
       return dispatchAgentChatSubagent(
@@ -3097,7 +3239,12 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
     const t = tasks.getTaskById(approval.taskId);
     const runnerIsActive = deps.runner.isActive(approval.taskId);
-    if (t && (t.status === "interrupted" || ((t.status === "running" || t.status === "queued") && !runnerIsActive))) {
+    // Direct executor callers (including recovery tests and embedding hosts)
+    // may not be registered with TaskRunner, but a live execution lease still
+    // proves that an in-process waiter can consume the approval wake-up.
+    const runningSegment = executionContinuityRepo.getRunningSegment(approval.taskId);
+    const executorLeaseLive = runningSegment ? executionLeaseOwnerStatus(runningSegment.ownerId) === "alive" : false;
+    if (t && (t.status === "interrupted" || ((t.status === "running" || t.status === "queued") && !runnerIsActive && !executorLeaseLive))) {
       // Resume work left without an in-process waiter by a restart. Queue it
       // before re-dispatch so the executor's normal durable continuation path
       // can consume the resolved approval safely.

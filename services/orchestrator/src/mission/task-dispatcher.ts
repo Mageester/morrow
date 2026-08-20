@@ -7,6 +7,7 @@ import {
   type RoutingDecision,
   type SendMessageInput,
   type Task,
+  type ConversationContextRef,
 } from "@morrow/contracts";
 import type { ProviderRouteMetadata } from "../provider/base.js";
 import { createProvider } from "../provider/registry.js";
@@ -14,6 +15,7 @@ import { translateReasoning } from "../provider/reasoning.js";
 import { conversationsRepository } from "../repositories/conversations.js";
 import { agentsRepository } from "../repositories/agents.js";
 import { delegationsRepository } from "../repositories/delegations.js";
+import { conversationContextRefsRepository } from "../repositories/conversation-context-refs.js";
 import { missionsRepository } from "../repositories/missions.js";
 import { taskRecordsRepository } from "../repositories/task-records.js";
 import { taskRoutingRepository } from "../repositories/task-routing.js";
@@ -73,6 +75,30 @@ export interface SpawnAgentChatSubagentOptions {
   targetProfileHash?: string;
   /** One process-local registry shared by the server and its task runner. */
   registry?: TeammateSpawnRegistry;
+  /** Parent-owned artifact/evidence handles to authorize for the child task. */
+  contextRefs?: ConversationContextRef[];
+}
+
+/**
+ * A context-bearing child is held before its first run so refs can be
+ * attached. If that boundary fails, remove the entire unstarted bundle in one
+ * transaction; leaving a queued task or empty child thread would make a failed
+ * handoff appear durable and could later run without its promised context.
+ */
+function cleanupUnstartedChild(
+  db: Database.Database,
+  projectId: string,
+  taskId: string,
+  conversationId: string,
+): void {
+  db.transaction(() => {
+    db.prepare("DELETE FROM conversation_context_refs WHERE target_task_id=?").run(taskId);
+    // tool_artifacts predates task foreign-key ownership, so clean it
+    // explicitly alongside the task's cascading execution ledger.
+    db.prepare("DELETE FROM tool_artifacts WHERE task_id=?").run(taskId);
+    db.prepare("DELETE FROM tasks WHERE id=? AND project_id=?").run(taskId, projectId);
+    db.prepare("DELETE FROM conversations WHERE id=? AND project_id=?").run(conversationId, projectId);
+  })();
 }
 
 /**
@@ -98,9 +124,23 @@ export function spawnAgentChatSubagent(
     if (options.modelInitiated) {
       try {
         resolveStandaloneTeammateTarget(parent, agent, agentId);
+        const groupConversation = dependencies.db.prepare(
+          `SELECT c.mode, c.id AS conversation_id
+           FROM conversations c
+           INNER JOIN conversation_messages m ON m.conversation_id = c.id
+           WHERE m.task_id = ? LIMIT 1`,
+        ).get(parent.id) as { mode?: string; conversation_id?: string } | undefined;
+        if (groupConversation?.mode === "group" && groupConversation.conversation_id) {
+          const participant = dependencies.db.prepare(
+            `SELECT 1 FROM conversation_participants
+             WHERE conversation_id=? AND agent_id=? AND role='participant' AND status='active'`,
+          ).get(groupConversation.conversation_id, agent.id);
+          if (!participant) throw new AgentTaskDispatchError(409, "Invite this teammate to the shared thread before asking them.", "AGENT_NOT_PARTICIPANT");
+        }
       } catch (error) {
         const code = error instanceof Error && "code" in error ? String((error as { code: unknown }).code) : "AGENT_NOT_FOUND";
-        const status = code === "AGENT_DISABLED" ? 409 : code === "AGENT_SELF" || code === "AGENT_TEAM_TARGET" ? 409 : 404;
+        const status = code === "AGENT_DISABLED" ? 409 : code === "AGENT_SELF" || code === "AGENT_TEAM_TARGET" || code === "AGENT_NOT_PARTICIPANT" ? 409 : 404;
+        if (error instanceof AgentTaskDispatchError) throw error;
         throw new AgentTaskDispatchError(status, error instanceof Error ? error.message : "Teammate target is not allowed", code);
       }
     } else if (agent.projectId !== parent.projectId) {
@@ -144,6 +184,7 @@ export function spawnAgentChatSubagent(
 
     const conversations = conversationsRepository(dependencies.db);
     let createdConversationId: string | undefined;
+    let createdTaskId: string | undefined;
     if (!conversationId) {
       const now = new Date().toISOString();
       createdConversationId = (dependencies.createId ?? randomUUID)();
@@ -166,7 +207,9 @@ export function spawnAgentChatSubagent(
         runner: dependencies.runner,
         ...(dependencies.env !== undefined ? { env: dependencies.env } : {}),
       };
-      return dispatchAgentTask(dispatchDependencies, {
+      const contextRefs = options.contextRefs ?? [];
+      const deferForContext = options.deferRun === true || contextRefs.length > 0;
+      const result = dispatchAgentTask(dispatchDependencies, {
         conversationId,
         parentTaskId: parent.id,
         content,
@@ -175,14 +218,31 @@ export function spawnAgentChatSubagent(
         model: agent.modelOverride ?? undefined,
         mode: "agent",
         ...(idempotencyKey ? { idempotencyKey } : {}),
-        ...(options.deferRun ? { deferRun: true } : {}),
+        ...(deferForContext ? { deferRun: true } : {}),
         ...(options.delegationId ? { delegationId: options.delegationId } : {}),
       });
+      if (!result.replayed) createdTaskId = result.task.id;
+      if (contextRefs.length > 0 && !result.replayed) {
+        conversationContextRefsRepository(dependencies.db).attach({
+          projectId: parent.projectId,
+          sourceTaskId: parent.id,
+          targetTaskId: result.task.id,
+          refs: contextRefs,
+          now: new Date().toISOString(),
+        });
+      }
+      // dispatchAgentTask already starts ordinary children. Context-bearing
+      // children are deliberately deferred above so their validated handles
+      // are attached before the first provider request.
+      if (contextRefs.length > 0 && !options.deferRun && !result.replayed) dependencies.runner.run(result.task.id);
+      return result;
     } catch (error) {
       // A dispatch transaction can fail after the fresh conversation exists.
       // Remove that empty shell, but never delete a previously durable child
       // being replayed by the idempotency path.
-      if (createdConversationId) {
+      if (createdConversationId && createdTaskId) {
+        cleanupUnstartedChild(dependencies.db, parent.projectId, createdTaskId, createdConversationId);
+      } else if (createdConversationId) {
         conversations.deleteConversation(createdConversationId, parent.projectId);
       }
       throw error;
