@@ -1,61 +1,65 @@
 # Project Progress
 
-## Active package: ALS-1 - agent loop simplification
+## Active package: TEAM-1 - AI Teammates parity and polish
 
-**State:** active on `codex/behavioral-loop-simplification`, using the approved
-current uncommitted working tree as the baseline.
+**State:** complete on `feat/agent-teammates`, preserving the clean handoff at
+`d846206` and existing user-owned local database state.
 
-**Goal:** Delete cognitive babysitting from the normal provider/tool loop while
-preserving objective security, durability, provider, context, cancellation,
-budget, and Mission Guardian invariants. Verify with the real UI and unchanged
-Qwen website task, then other configured real models.
+**Goal:** Finish Morrow AI Teammates as a secure, persistent, communication-like
+collaboration experience approaching Grok Bot while retaining Morrow identity
+and local-first boundaries.
 
-**Design:** [agent-loop-simplification-design.md](../docs/superpowers/specs/2026-08-15-agent-loop-simplification-design.md)
+## Verified baseline
 
-**Plan:** [agent-loop-simplification.md](../docs/superpowers/plans/2026-08-15-agent-loop-simplification.md)
+- Roster, on-demand evidence, user-started handoffs, teammate identity, and
+  routine recording/run are implemented against real local data.
+- Orchestrator: 2,314 passed, 5 skipped; web: 362 passed; contracts: 80 passed.
+- Orchestrator, web, and contracts typechecks pass.
+- Live database state is user-owned and must not be reset or reseeded.
 
 ## Acceptance criteria
 
-1. Normal execution reconstructs durable history, calls the exact adapter,
-   persists streamed responses and tool results, repeats only for requested
-   tools, and finalizes through Mission Guardian.
-2. Progress epochs, observation exhaustion, generic stagnation/convergence
-   interruption, forced strategy change, and behavioral mission pauses are
-   absent from the hot path.
-3. Exact repeated calls receive durable model-visible advice without mission
-   interruption.
-4. Successful tool results appear exactly once in the next canonical request,
-   including restart and segment rollover.
-5. Permission, containment, argument validation, replay safety, provider/context
-   limits, cancellation, bounded retry, persistence, explicit budgets, and
-   Guardian evidence remain hard.
-6. Existing provider capability/context/stream work and unrelated dirty edits
-   remain preserved.
-7. The exact Qwen website task and the same task on other configured real models
-   are run through the real UI with Activity evidence; threshold changes and
-   warning suppression do not count as fixes.
+1. A teammate can securely ask another standalone teammate for help through an
+   approved execution capability; child identity and durable policy remain
+   independently authoritative.
+2. Teammate memory scopes and learned durable facts are understandable without
+   fake transcript memory or weakened project isolation.
+3. Routine recording is timed, persistent, editable before and after save, and
+   honest that execution re-prompts from observed steps rather than replaying
+   tool calls.
+4. Completed handoffs persist and project a real completion timestamp.
+5. RecordRoutine, AskTeammate, and HandoffRow have deterministic component tests.
+6. The teammate UI is materially cleaner, tighter, more human, responsive at
+   desktop through 390px mobile, accessible, and retains the cleaned Morrow mark.
+7. Full deterministic suites, typechecks, security review, and real-browser
+   end-to-end verification pass after the last relevant change.
 
-## Ordered work packages
+## Work packages
 
-| ID | Role | Package | Dependency | Verification gate | Status |
-| --- | --- | --- | --- | --- | --- |
-| ALS-1.0 | explorer companion | Map Morrow/DeepSeek loop, history, repeat, cancellation, Guardian seams | approved request | read-only evidence brief | complete |
-| ALS-1.1 | Luna Max executor | Delete behavioral control and implement advisory repeats | design/plan | RED/GREEN focused tests | pending |
-| ALS-1.2 | Luna Max executor | Make durable tool-result reconstruction authoritative | ALS-1.1 | restart/rollover projection tests | pending |
-| ALS-1.3 | Luna Max tester/reviewer | Verify objective invariants and security-sensitive diff | ALS-1.2 | focused + integration verdict | pending |
-| ALS-1.4 | main + real UI | Serialized Qwen and cross-model trials; iterate on root cause | deterministic green + review | Activity/run evidence | pending |
-| ALS-1.5 | Luna Max doc-writer | Verified architecture/evidence documentation | live evidence | durable report/ADR/changelog | pending |
+| ID | Role | Package | Dependency | Status |
+| --- | --- | --- | --- | --- |
+| TEAM-REC | Luna Max recovery | Branch/runtime/test truth | request | complete |
+| TEAM-REF | Luna Max analyst | Live x.ai/bot comparison | recovery | complete |
+| TEAM-SEC | Luna Max architect | Secure delegation design | recovery | complete |
+| TEAM-A | Luna Max executor | Secure teammate-initiated delegation | TEAM-SEC | complete; independently approved |
+| TEAM-B | Luna Max executor | Memory visibility and scope UX | recovery | complete |
+| TEAM-E | Luna Max executor | Handoff completedAt repair | recovery | complete |
+| TEAM-C | Luna Max executor | Routine UX, persistence fixes, editing | TEAM-A/B/E | complete |
+| TEAM-D | Luna Max executor | Visual-system modernization | TEAM-C ownership settles | complete |
+| TEAM-F | Luna Max tester | Teammate component coverage | TEAM-C/D APIs settle | complete |
+| TEAM-V | independent verifier | Suites, security, browser E2E, responsive gate | implementation | complete |
+| TEAM-VIS | independent visual QA | Side-by-side parity audit | browser gate | complete; approved |
 
-## Constraints and parallel boundaries
+## Constraints and next action
 
-- Workers are sequential because `execution/agent.ts` and related tests overlap.
-- Workers do not mutate Git state or main-owned status/handoff documents.
-- Existing uncommitted provider/context/stream work is baseline, not worker-owned.
-- Unrelated UI/CLI edits and protected prototype surfaces remain untouched.
-- Live runs are serialized and append truthful evidence whether they pass or fail.
-- Security-sensitive changes require independent review before completion.
-
-## Blockers and next action
-
-Commit the approved design/plan/status files only, then dispatch ALS-1.1 to a
-fresh Luna Max executor with strict file ownership and TDD evidence requirements.
+- Preserve `evidenceRef`; never project stdout, provider text, arguments, or
+  private reasoning into conversation activity.
+- Preserve standalone handoffs through `tasks.parent_task_id` plus
+  `tasks.agent_id`; do not force them through `delegations`.
+- Worker edit surfaces must not overlap; routine and visual work are sequenced.
+- Security-sensitive changes require independent review.
+- Final evidence: orchestrator 2,329 passed/5 skipped; web 392 passed;
+  contracts 83 passed; all three TypeScript checks and web production build
+  pass. Real-browser identity, hiring, model-authored handoff/approval, evidence,
+  routine edit/run, memory truth, and responsive gates passed. ADR-0015 records
+  architecture, security/privacy impact, failure behavior, and rollback notes.
