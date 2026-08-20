@@ -783,10 +783,16 @@
     display: none;
   }
 
-  /* Send stays pinned at the end of the row instead of scrolling away. */
+  /*
+   * Send stays pinned at the end of the row instead of scrolling away. A
+   * sticky element with no ground of its own lets the scrolled chips pass
+   * *through* it, which read as overlapping controls; the composer's own
+   * surface, extended a little to the left, gives them somewhere to go behind.
+   */
   .morrow-chat-composer__send,
   .morrow-chat-composer__stop {
     position: sticky;
     right: 0;
+    box-shadow: -10px 0 0 6px var(--morrow-product-field);
   }
 }

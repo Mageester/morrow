@@ -172,6 +172,17 @@
   color: var(--morrow-product-copper);
 }
 
+/* The phone dock marks the current destination the same way the rail does, so
+   "where am I" does not change appearance with the width of the window. */
+.morrow-mobile-dock__link[aria-current="page"] {
+  background: var(--morrow-product-field-inset);
+  color: var(--morrow-product-copy);
+}
+
+.morrow-mobile-dock__link[aria-current="page"] svg {
+  color: var(--morrow-product-copper);
+}
+
 /* Runtime identity pinned to the rail floor, above the ambient arc. */
 .morrow-sidebar__footer {
   position: relative;
