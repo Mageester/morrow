@@ -151,6 +151,17 @@ export type CreateTeamFromPresetInput = z.infer<typeof CreateTeamFromPresetSchem
 
 // ── Delegation & handoff ────────────────────────────────────────────────────
 
+/**
+ * The only model-authored input for an in-process teammate request. Provider,
+ * model, policy, budgets, and approval posture are deliberately absent: the
+ * orchestrator resolves those from the target's durable agent profile.
+ */
+export const AskTeammateSchema = z.object({
+  agentId: z.string().trim().min(1).max(120),
+  objective: z.string().trim().min(1).max(2000),
+}).strict();
+export type AskTeammateInput = z.infer<typeof AskTeammateSchema>;
+
 export const DelegationStatusSchema = z.enum([
   "pending_approval", "approved", "rejected", "running", "completed", "failed", "cancelled",
 ]);

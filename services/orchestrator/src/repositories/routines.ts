@@ -5,6 +5,7 @@ import {
   type CreateRoutineInput,
   type Routine,
   type RoutineRecording,
+  type UpdateRoutineInput,
 } from "@morrow/contracts";
 
 function mapRoutine(row: Record<string, unknown>): Routine {
@@ -30,6 +31,7 @@ function mapRecording(row: Record<string, unknown>): RoutineRecording {
     id: row.id,
     conversationId: row.conversation_id,
     agentId: row.agent_id ?? null,
+    routineId: row.routine_id ?? null,
     startedAt: row.started_at,
     stoppedAt: row.stopped_at ?? null,
   });
@@ -47,6 +49,23 @@ export function routinesRepository(db: Database.Database) {
     get(id: string): Routine | undefined {
       const row = db.prepare("SELECT * FROM routines WHERE id=?").get(id) as Record<string, unknown> | undefined;
       return row ? mapRoutine(row) : undefined;
+    },
+
+    /**
+     * Update only the user-editable definition. Provenance, run counters and
+     * timestamps for prior executions stay untouched so editing a routine
+     * never rewrites its history.
+     */
+    update(id: string, projectId: string, input: UpdateRoutineInput, updatedAt: string): Routine | undefined {
+      const current = this.get(id);
+      if (!current || current.projectId !== projectId) return undefined;
+      const name = input.name ?? current.name;
+      const objective = input.objective ?? current.objective;
+      const steps = input.steps ?? current.steps;
+      db.prepare(
+        "UPDATE routines SET name=?, objective=?, steps_json=?, updated_at=? WHERE id=? AND project_id=?",
+      ).run(name, objective, JSON.stringify(steps), updatedAt, id, projectId);
+      return this.get(id);
     },
 
     create(input: { id: string; projectId: string; now: string } & CreateRoutineInput): Routine {

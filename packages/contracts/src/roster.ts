@@ -104,6 +104,8 @@ export const ThreadHandoffSchema = z.object({
   objective: z.string().max(2000),
   /** What came back. Null until they have said something. */
   result: z.string().max(4000).nullable(),
+  /** Model-authored handoffs expose only this durable evidence pointer. */
+  evidenceRef: z.string().max(200).nullable().default(null),
   /** The teammate's own thread, so their full working record stays one click away. */
   conversationId: z.string().min(1).nullable(),
   toolCount: z.number().int().nonnegative(),

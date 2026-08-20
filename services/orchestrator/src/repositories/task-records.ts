@@ -147,7 +147,7 @@ export function taskRecordsRepository(db: Database.Database) {
     const type = eventTypes[target as keyof typeof eventTypes];
     if (!type) throw new Error(`No task event for transition to ${target}`);
     const startedAt = target === "running" ? event.createdAt : null;
-    const completedAt = target === "verified" || target === "failed" ? event.createdAt : null;
+    const completedAt = ["verified", "completed", "failed", "cancelled"].includes(target) ? event.createdAt : null;
     db.prepare("UPDATE tasks SET status=?,updated_at=?,started_at=COALESCE(?,started_at),completed_at=COALESCE(?,completed_at) WHERE id=?").run(target, event.createdAt, startedAt, completedAt, id);
     appendEvent({ ...event, taskId: id, type });
     return mapTask(db.prepare("SELECT * FROM tasks WHERE id = ?").get(id));

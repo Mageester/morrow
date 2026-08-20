@@ -173,6 +173,24 @@ export const TOOL_CATALOG: ToolSpec[] = [
     constraints: ["Bounded to 20 steps", "Writes Morrow's plan record only, never a workspace file"],
   },
   {
+    name: "ask_teammate",
+    title: "Ask teammate",
+    description: "Ask another enabled standalone teammate to work on one bounded objective. The target's identity, provider, model, policy, memory, and budget are resolved by Morrow; this always requires a fresh one-shot approval.",
+    sideEffect: "execute",
+    enabled: true,
+    parameters: {
+      agentId: { type: "string", description: "The durable named-agent id of the teammate to ask" },
+      objective: { type: "string", description: "One bounded objective for the teammate, up to 2,000 characters" },
+    },
+    constraints: [
+      "Exposed only to tasks running as a named agent profile",
+      "Target must be enabled, standalone, in this project, and different from the caller",
+      "Always requires one-shot approval; auto-approval and project trust never apply",
+      "The target's provider, model, tools, memory scopes, and budgets are resolved server-side",
+      "Child execution is linked with parent_task_id and agent_id and receives no parent transcript",
+    ],
+  },
+  {
     name: "propose_patch",
     title: "Propose patch",
     description: "Propose a unified diff patch to modify workspace files.",
@@ -287,7 +305,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
 /** Tool names the agent runtime actually implements (must match the catalog). */
 export const IMPLEMENTED_TOOL_NAMES = [
   "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols",
-  "git_status", "git_diff", "git_log", "run_command", "read_process_output", "stop_process", "write_plan", "propose_patch", "create_file", "append_file", "create_directory",
+  "git_status", "git_diff", "git_log", "run_command", "read_process_output", "stop_process", "write_plan", "ask_teammate", "propose_patch", "create_file", "append_file", "create_directory",
   "read_artifact", "find_skill", "load_skill", "create_skill", "browser_open", "browser_snapshot", "browser_console", "browser_click",
   "browser_type", "browser_key", "browser_select", "browser_viewport", "browser_screenshot", "browser_download", "browser_close",
   "read_mcp_resource",

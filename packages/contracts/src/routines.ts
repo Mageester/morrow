@@ -33,7 +33,7 @@ export const RoutineSchema = z.object({
   id: z.string().min(1),
   projectId: z.string().min(1),
   /** The teammate this was learned from, and who runs it. Null is the default teammate. */
-  agentId: z.string().min(1).nullable(),
+  agentId: z.string().min(1).nullable().default(null),
   name: z.string().min(1).max(120),
   objective: z.string().min(1).max(4000),
   steps: z.array(RoutineStepSchema).max(200),
@@ -53,6 +53,8 @@ export const RoutineSchema = z.object({
 export const RoutineProposalSchema = z.object({
   version: SchemaVersionSchema,
   conversationId: z.string().min(1),
+  /** The teammate observed during the recording; null is Morrow's default. */
+  agentId: z.string().min(1).nullable().default(null),
   suggestedName: z.string().min(1).max(120),
   objective: z.string().max(4000),
   steps: z.array(RoutineStepSchema).max(200),
@@ -65,6 +67,8 @@ export const RoutineRecordingSchema = z.object({
   id: z.string().min(1),
   conversationId: z.string().min(1),
   agentId: z.string().min(1).nullable(),
+  /** Set once a user saves a proposal, so refresh does not resurrect a draft. */
+  routineId: z.string().min(1).nullable().default(null),
   startedAt: z.string().datetime(),
   stoppedAt: z.string().datetime().nullable(),
 }).strict();
@@ -84,9 +88,20 @@ export const CreateRoutineSchema = z.object({
   sourceConversationId: z.string().min(1).optional(),
 }).strict();
 
+/** User-editable routine fields. Provenance and execution history are immutable. */
+export const UpdateRoutineSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  objective: z.string().trim().min(1).max(4000).optional(),
+  steps: z.array(RoutineStepSchema).max(200).optional(),
+}).strict().refine(
+  (input) => input.name !== undefined || input.objective !== undefined || input.steps !== undefined,
+  { message: "At least one routine field must be changed" },
+);
+
 export type RoutineStep = z.infer<typeof RoutineStepSchema>;
 export type Routine = z.infer<typeof RoutineSchema>;
 export type RoutineProposal = z.infer<typeof RoutineProposalSchema>;
 export type RoutineRecording = z.infer<typeof RoutineRecordingSchema>;
 export type RoutineRecordingState = z.infer<typeof RoutineRecordingStateSchema>;
 export type CreateRoutineInput = z.infer<typeof CreateRoutineSchema>;
+export type UpdateRoutineInput = z.infer<typeof UpdateRoutineSchema>;

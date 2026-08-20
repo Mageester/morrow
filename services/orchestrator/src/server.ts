@@ -28,6 +28,7 @@ import {
   CreateTeamFromPresetSchema,
   CreateDelegationSchema,
   CreateRoutineSchema,
+  UpdateRoutineSchema,
   CreateThreadHandoffSchema,
   DelegationAccessContextSchema,
   ResolveDelegationSchema,
@@ -247,7 +248,8 @@ import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guar
 import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
 import { boundCompletedToolArguments, buildProviderProjection } from "./execution/provider-projection.js";
 import { resolveModelBudget } from "./routing/model-budget.js";
-import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
+import { AgentTaskDispatchError, dispatchAgentTask, spawnAgentChatSubagent as dispatchAgentChatSubagent } from "./mission/task-dispatcher.js";
+import { TeammateSpawnRegistry } from "./tools/teammate-delegation.js";
 import { createResearchAndVerifyTeam } from "./mission/research-and-verify-preset.js";
 import { runReadmeSummarySample, ReadmeSummarySampleError } from "./mission/readme-summary-sample.js";
 import { registerWebMissionRoutes } from "./web/mission-routes.js";
@@ -381,6 +383,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const approvals = approvalsRepository(deps.db);
   const changeSets = changeSetsRepository(deps.db);
   const checkpoints = checkpointsRepository(deps.db);
+  // Shared by the REST subagent path and model-authored ask_teammate calls so
+  // one parent/tool-call pair cannot race into two in-process children.
+  const teammateSpawnRegistry = new TeammateSpawnRegistry();
 
   /**
    * Delegation ids are opaque database identifiers, not authorization. The
@@ -1531,7 +1536,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return {
       version: 1 as const,
       recording: recording ?? null,
-      proposal: recording
+      proposal: recording && recording.routineId === null
         ? projectRoutineProposal({ db: deps.db, projectId, conversationId, recording })
         : null,
     };
@@ -1600,6 +1605,35 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     }
     reply.status(201);
     return routine;
+  });
+
+  const updateRoutine = (projectId: string, routineId: string, body: unknown) => {
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const updated = routines.update(
+      routineId,
+      projectId,
+      UpdateRoutineSchema.parse(body),
+      new Date().toISOString(),
+    );
+    if (!updated) throw new ApiError(404, "Routine not found", "NOT_FOUND");
+    return updated;
+  };
+
+  app.patch("/api/projects/:projectId/routines/:routineId", async (request) => {
+    const { projectId, routineId } = request.params as { projectId: string; routineId: string };
+    return updateRoutine(projectId, routineId, request.body);
+  });
+
+  // Keep the mutation shape aligned with the existing delete/run endpoints for
+  // clients that address a routine by id and carry project ownership in JSON.
+  app.patch("/api/routines/:routineId", async (request) => {
+    const { routineId } = request.params as { routineId: string };
+    const body = request.body as Record<string, unknown> | null;
+    if (!body || typeof body.projectId !== "string") {
+      throw new ApiError(400, "projectId is required", "VALIDATION_ERROR");
+    }
+    const { projectId, ...input } = body;
+    return updateRoutine(projectId, routineId, input);
   });
 
   app.delete("/api/routines/:routineId", async (request, reply) => {
@@ -1934,40 +1968,19 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   // conversation — never the parent's chat history — so it only receives
   // the approved input projection (the objective/label).
   function spawnAgentChatSubagent(
-    parent: { id: string; projectId: string },
+    parent: { id: string; projectId: string; agentId?: string | null | undefined },
     agentId: string,
     label: string | undefined,
-    options: { deferRun?: boolean; delegationId?: string } = {},
+    options: { deferRun?: boolean; delegationId?: string; toolCallId?: string; modelInitiated?: boolean } = {},
   ) {
-    const agent = agents.get(agentId);
-    if (!agent || agent.projectId !== parent.projectId) {
-      throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
-    }
-    if (!agent.enabled) throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
-    if (agent.teamId && !options.delegationId) {
-      throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
-    }
-    const now = new Date().toISOString();
-    const childConversation = convs.createConversation({
-      id: crypto.randomUUID(),
-      projectId: parent.projectId,
-      title: label ?? `Delegated: ${agent.name}`,
-      // Bound to the specialist that runs it, so the roster attributes the
-      // delegated work to that teammate rather than to the default one.
-      agentId: agent.id,
-      createdAt: now,
-      updatedAt: now,
-    });
     try {
-      return dispatchAgentTask({ db: deps.db, runner: deps.runner, env: process.env }, {
-        conversationId: childConversation.id,
-        parentTaskId: parent.id,
-        content: label ?? `Delegated task for ${agent.name}`,
-        agentId: agent.id,
-        mode: "agent",
-        ...(options.deferRun ? { deferRun: true } : {}),
-        ...(options.delegationId ? { delegationId: options.delegationId } : {}),
-      });
+      return dispatchAgentChatSubagent(
+        { db: deps.db, runner: deps.runner, env: process.env },
+        parent,
+        agentId,
+        label,
+        { ...options, registry: teammateSpawnRegistry },
+      );
     } catch (error) {
       if (error instanceof AgentTaskDispatchError) {
         throw new ApiError(error.statusCode, error.message, error.code);
@@ -1975,6 +1988,26 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       throw error;
     }
   }
+
+  // The task runner is constructed before the Fastify app, so install the
+  // server-owned target resolver once this closure has all repository access.
+  // Direct REST subagent calls and ask_teammate now share the exact same child
+  // dispatch boundary and process-local duplicate registry.
+  deps.runner.setTeammateSpawner?.(({ parentTaskId, toolCallId, agentId, objective, targetProfileHash }) => {
+    const parent = tasks.getTaskById(parentTaskId);
+    if (!parent) throw new Error("Parent task is no longer available");
+    const result = spawnAgentChatSubagent(parent, agentId, objective, {
+      toolCallId,
+      modelInitiated: true,
+      ...(targetProfileHash ? { targetProfileHash } : {}),
+    });
+    return {
+      taskId: result.task.id,
+      agentId,
+      providerId: result.routing?.providerId ?? null,
+      model: result.routing?.model ?? null,
+    };
+  });
 
   // Subagent delegation: a subagent is a child task with its own scope, linked
   // to its parent via parent_task_id. This builds the task graph.
@@ -3043,6 +3076,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const body = ResolveApprovalSchema.parse(request.body);
     const approval = approvals.get(approvalId);
     if (!approval || approval.projectId !== body.projectId) throw new ApiError(404, "Approval not found in project", "NOT_FOUND");
+
+    // ask_teammate is an individual model-authored delegation, never a
+    // project-wide capability. Reject trust_project before touching the row so
+    // an approval replay or a forged trust pattern cannot bypass the one-shot
+    // boundary.
+    if (approval.details.tool === "ask_teammate" && body.decision === "trust_project") {
+      throw new ApiError(400, "Teammate requests accept only a one-shot approval", "ASK_TEAMMATE_ONE_SHOT_ONLY");
+    }
 
     // Derive the trust binding server-side from the persisted approval — never
     // from a client-supplied pattern — and validate it BEFORE mutating state.

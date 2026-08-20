@@ -57,6 +57,7 @@ export function projectThreadHandoffs(input: HandoffProjectionInput): ThreadHand
             child.status                 AS status,
             child.created_at             AS created_at,
             child.completed_at           AS completed_at,
+            child.idempotency_key        AS idempotency_key,
             agent.name                   AS agent_name
        FROM conversation_messages parent_message
        JOIN tasks child ON child.parent_task_id = parent_message.task_id
@@ -73,6 +74,7 @@ export function projectThreadHandoffs(input: HandoffProjectionInput): ThreadHand
     created_at: string;
     completed_at: string | null;
     agent_name: string;
+    idempotency_key: string | null;
   }>;
 
   // The child's own thread: where its objective was posed and its answer
@@ -96,7 +98,10 @@ export function projectThreadHandoffs(input: HandoffProjectionInput): ThreadHand
   );
 
   const handoffs = rows.map((row): ThreadHandoff => {
-    const childConversationId = (childConversation.get(row.id) as { conversation_id: string } | undefined)?.conversation_id ?? null;
+    const modelInitiated = row.idempotency_key?.startsWith("ask_teammate:") === true;
+    const childConversationId = modelInitiated
+      ? null
+      : (childConversation.get(row.id) as { conversation_id: string } | undefined)?.conversation_id ?? null;
     const objective = childConversationId
       ? (firstUserMessage.get(childConversationId) as { content: string } | undefined)?.content ?? ""
       : "";
@@ -110,10 +115,11 @@ export function projectThreadHandoffs(input: HandoffProjectionInput): ThreadHand
       agentId: row.agent_id,
       agentName: row.agent_name,
       status: STATUS_MAP[row.status] ?? "running",
-      objective: clamp(redactSecrets(objective), OBJECTIVE_MAX),
-      result: result === null ? null : clamp(redactSecrets(result), RESULT_MAX) || null,
-      conversationId: childConversationId,
-      toolCount: Number((toolCount.get(row.id) as { count: number }).count),
+      objective: modelInitiated ? "" : clamp(redactSecrets(objective), OBJECTIVE_MAX),
+      result: modelInitiated ? null : (result === null ? null : clamp(redactSecrets(result), RESULT_MAX) || null),
+      conversationId: modelInitiated ? null : childConversationId,
+      evidenceRef: modelInitiated ? `task:${row.id}` : null,
+      toolCount: modelInitiated ? 0 : Number((toolCount.get(row.id) as { count: number }).count),
       startedAt: row.created_at,
       completedAt: row.completed_at,
     };

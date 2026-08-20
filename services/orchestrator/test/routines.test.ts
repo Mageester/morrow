@@ -94,6 +94,15 @@ describe("Record mode", () => {
     expect(state.proposal!.taskCount).toBe(1);
     expect(state.proposal!.steps.map((step) => step.toolName)).toEqual(["read_file", "git_log"]);
     expect(state.proposal!.suggestedName.length).toBeGreaterThan(0);
+
+    // A closed proposal is durable UI state, not only the response to DELETE.
+    const rehydrated = RoutineRecordingStateSchema.parse(
+      (await app.inject({ method: "GET", url: recordingUrl() })).json(),
+    );
+    expect(rehydrated.proposal).toMatchObject({
+      conversationId,
+      objective: "Summarise what changed this week.",
+    });
   });
 
   it("leaves a failed step out of the proposal, so a routine cannot learn a mistake", async () => {
@@ -242,5 +251,80 @@ describe("Routines", () => {
     });
     expect(right.statusCode).toBe(204);
     expect((await app.inject({ method: "GET", url: "/api/projects/p1/routines" })).json()).toEqual([]);
+  });
+
+  it("edits the definition without rewriting provenance or run history", async () => {
+    const sourceConversationId = (await app.inject({
+      method: "POST", url: "/api/projects/p1/conversations", payload: { agentId },
+    })).json().id;
+    const routine = await createRoutine({ sourceConversationId });
+
+    const firstRun = await app.inject({ method: "POST", url: `/api/routines/${routine.id}/run` });
+    expect(firstRun.statusCode, firstRun.body).toBe(202);
+
+    const update = await app.inject({
+      method: "PATCH",
+      url: `/api/projects/p1/routines/${routine.id}`,
+      payload: {
+        name: "Monthly report",
+        objective: "Summarise the month and call out risks.",
+        steps: [{ summary: "Read the monthly changelog", target: "CHANGELOG.md", toolName: "read_file" }],
+      },
+    });
+    expect(update.statusCode, update.body).toBe(200);
+    const edited = RoutineSchema.parse(update.json());
+    expect(edited).toMatchObject({
+      id: routine.id,
+      name: "Monthly report",
+      objective: "Summarise the month and call out risks.",
+      sourceConversationId,
+      runCount: 1,
+      lastRunAt: expect.any(String),
+    });
+    expect(edited.steps[0]).toEqual({
+      summary: "Read the monthly changelog",
+      target: "CHANGELOG.md",
+      toolName: "read_file",
+    });
+
+    const secondRun = await app.inject({ method: "POST", url: `/api/routines/${routine.id}/run` });
+    expect(secondRun.statusCode, secondRun.body).toBe(202);
+    const opening = conversationsRepository(db).listMessages(secondRun.json().conversationId)
+      .find((message) => message.role === "user");
+    expect(opening?.content).toContain("Monthly report");
+    expect(opening?.content).toContain("Summarise the month and call out risks.");
+    expect(opening?.content).toContain("Read the monthly changelog");
+  });
+
+  it("marks a recording as consumed after saving so the closed draft is not offered again", async () => {
+    const conversationId = (await app.inject({
+      method: "POST", url: "/api/projects/p1/conversations", payload: { agentId },
+    })).json().id;
+    const recordingUrl = `/api/projects/p1/conversations/${conversationId}/recording`;
+    await app.inject({ method: "POST", url: recordingUrl });
+    const send = await app.inject({
+      method: "POST", url: `/api/projects/p1/conversations/${conversationId}/messages`,
+      payload: { content: "Say hello." },
+    });
+    const records = taskRecordsRepository(db);
+    records.appendEvent({ id: "saved-e1", taskId: send.json().task.id, type: "tool.started", payload: { id: "saved-c1", toolName: "read_file", target: "README.md" }, createdAt: ts() });
+    records.appendEvent({ id: "saved-e2", taskId: send.json().task.id, type: "tool.completed", payload: { id: "saved-c1", toolName: "read_file", status: "completed", elapsedMs: 1 }, createdAt: ts() });
+    const stopped = RoutineRecordingStateSchema.parse((await app.inject({ method: "DELETE", url: recordingUrl })).json());
+    expect(stopped.proposal).not.toBeNull();
+
+    const saved = await app.inject({
+      method: "POST", url: "/api/projects/p1/routines",
+      payload: {
+        name: "Say hello",
+        objective: stopped.proposal!.objective,
+        steps: stopped.proposal!.steps,
+        agentId,
+        sourceConversationId: conversationId,
+      },
+    });
+    expect(saved.statusCode, saved.body).toBe(201);
+    const afterSave = RoutineRecordingStateSchema.parse((await app.inject({ method: "GET", url: recordingUrl })).json());
+    expect(afterSave.recording?.routineId).toBe(saved.json().id);
+    expect(afterSave.proposal).toBeNull();
   });
 });

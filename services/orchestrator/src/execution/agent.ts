@@ -88,6 +88,7 @@ import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type Cumu
 import { toolArtifactsRepository } from "../repositories/tool-artifacts.js";
 import { collectOfferedArtifactIds, externalizeToolResult, readArtifactRange, renderExternalizedForContext } from "./artifact-externalization.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, ReasoningConfiguration, LearnedSkill } from "@morrow/contracts";
+import { AskTeammateSchema } from "@morrow/contracts";
 import { browserAuditSink } from "../browser/audit.js";
 import { playwrightController, type PlaywrightControllerOptions } from "../browser/playwright.js";
 import type { BrowserController, BrowserViewport, PageSnapshot } from "../browser/types.js";
@@ -100,6 +101,13 @@ import { loadMcpConfig } from "../mcp/config.js";
 import { McpPool } from "../mcp/pool.js";
 import { isMcpTool, getReadMcpResourceToolDefinition, buildMcpToolDefinitions, executeMcpTool } from "../mcp/tool-bridge.js";
 import { isMcpToolAutoApproved, setMcpToolApprovalOverride } from "../security/mcp-policy.js";
+import {
+  ASK_TEAMMATE_TOOL_NAME,
+  resolveStandaloneTeammateTarget,
+  teammateProfileFingerprint,
+  TeammateTargetError,
+  type TeammateSpawner,
+} from "../tools/teammate-delegation.js";
 
 /**
  * Best-effort human-readable target for a tool call, included in the
@@ -617,6 +625,8 @@ type Dependencies = {
    * process routes so either side can observe/stop what the other started;
    * tests may omit it to get an isolated instance. */
   supervisor?: ProcessSupervisor;
+  /** Server-owned boundary for model-authored teammate requests. */
+  teammateSpawner?: TeammateSpawner;
 };
 
 /**
@@ -822,6 +832,7 @@ export async function executeAgentChatTask({
   onSegmentBoundary,
   browserFactory,
   supervisor,
+  teammateSpawner,
   executionPolicy: injectedExecutionPolicy,
 }: Dependencies): Promise<void> {
   const projects = projectRepository(db);
@@ -872,6 +883,84 @@ export async function executeAgentChatTask({
   const agentExecutionPolicy: AgentExecutionPolicy | null = assignedAgent
     ? buildAgentExecutionPolicy(assignedAgent, agentRepo.listToolPermissions(assignedAgent.id), assignedDelegation)
     : null;
+  const parseAskTeammateInput = (raw: Record<string, unknown>): { agentId: string; objective: string; profileHash: string; targetName: string } => {
+    // Continuations carry the internal profile binding alongside the strict
+    // model-authored fields; validate only the public contract here.
+    const parsed = AskTeammateSchema.safeParse({ agentId: raw.agentId, objective: raw.objective });
+    if (!parsed.success) {
+      throw new AgentToolFailure(
+        "ask_teammate accepts only a target agentId and objective",
+        {
+          error: "Invalid ask_teammate arguments",
+          kind: "invalid_tool_arguments",
+          toolName: ASK_TEAMMATE_TOOL_NAME,
+          expected: "{ agentId: string, objective: string }",
+        },
+        "invalid_tool_arguments",
+      );
+    }
+    if (!assignedAgent) {
+      throw new AgentToolFailure(
+        "ask_teammate is available only to a named agent profile",
+        { error: "ask_teammate is available only to a named agent profile", kind: "agent_profile_required" },
+        "tool_not_permitted_in_mode",
+      );
+    }
+    try {
+      // Resolve from the durable row immediately before the approval boundary.
+      // The same check runs again in the server spawner after approval, so a
+      // target disabled or moved while the prompt is waiting fails closed.
+      const target = resolveStandaloneTeammateTarget(task, agentRepo.get(parsed.data.agentId), parsed.data.agentId);
+      const profileHash = teammateProfileFingerprint(target, agentRepo.listToolPermissions(target.id));
+      const boundHash = typeof raw.profileHash === "string" ? raw.profileHash : undefined;
+      if (boundHash && boundHash !== profileHash) {
+        throw new TeammateTargetError("AGENT_PROFILE_CHANGED", "Teammate profile changed; request approval again.");
+      }
+      return { ...parsed.data, profileHash, targetName: target.name };
+    } catch (error) {
+      const code = error instanceof TeammateTargetError ? error.code : "AGENT_NOT_FOUND";
+      throw new AgentToolFailure(
+        error instanceof Error ? error.message : "Teammate target is not allowed",
+        { error: error instanceof Error ? error.message : "Teammate target is not allowed", kind: "teammate_target_refused", code },
+        "tool_failed",
+      );
+    }
+  };
+  const spawnAskedTeammate = (toolCallId: string, raw: Record<string, unknown>): string => {
+    const input = parseAskTeammateInput(raw);
+    if (!teammateSpawner) {
+      throw new AgentToolFailure(
+        "Teammate delegation is unavailable in this execution context",
+        { error: "Teammate delegation is unavailable in this execution context", kind: "delegation_unavailable" },
+        "tool_failed",
+      );
+    }
+    try {
+      const child = teammateSpawner({
+        parentTaskId: task.id,
+        toolCallId,
+        agentId: input.agentId,
+        objective: input.objective,
+        targetProfileHash: input.profileHash,
+      });
+      return JSON.stringify({
+        status: "spawned",
+        taskId: child.taskId,
+        agentId: child.agentId,
+        providerId: child.providerId,
+        model: child.model,
+      });
+    } catch (error) {
+      // Never copy provider stdout, raw errors, or reasoning into the parent
+      // transcript. The durable child task (when any) remains the inspectable
+      // source of its own outcome.
+      throw new AgentToolFailure(
+        "The teammate could not be started",
+        { error: "The teammate could not be started", kind: "delegation_spawn_failed" },
+        "tool_failed",
+      );
+    }
+  };
   const learnedById = new Map(learnedSkills.listByProject(projectId).map((skill) => [skill.id, skill]));
   const projectName = project.name;
   // A task assigned to a worktree executes entirely inside it: reads, writes,
@@ -1538,6 +1627,18 @@ export async function executeAgentChatTask({
       }
     },
     {
+      name: "ask_teammate",
+      description: "Ask another enabled standalone teammate to work on one bounded objective. Morrow resolves the target identity, provider, model, policy, memory, and budget from the target's durable profile; every request requires a fresh one-shot approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          agentId: { type: "string", description: "The durable named-agent id of the teammate to ask" },
+          objective: { type: "string", description: "One bounded objective for the teammate, up to 2,000 characters" },
+        },
+        required: ["agentId", "objective"],
+      },
+    },
+    {
       name: "propose_patch",
       description: "Propose a unified diff patch to modify EXISTING workspace files (or create new ones via a '--- /dev/null' hunk). To create a new file from scratch, prefer create_file. Rejects absolute paths, binary files, traversal, and unauthorized directories.",
       parameters: {
@@ -1753,15 +1854,22 @@ export async function executeAgentChatTask({
   // policy or approval boundary permits, and any ambiguous or unrecognized
   // capability need falls back to the complete catalog.
   const optimizationClassification = classifyOptimizationTask(taskIntentPrompt, agentMode);
+  const requiredOptimizationTools = [
+    ...(browserToolsRequested ? ["browser_open"] : []),
+  ];
   const optimizationToolSelection = new ToolProfileSelector().select({
     classification: optimizationClassification,
-    ...(browserToolsRequested ? { requiredTools: ["browser_open"] } : {}),
+    ...(requiredOptimizationTools.length > 0 ? { requiredTools: requiredOptimizationTools } : {}),
   });
   const exposedTools: ToolDefinition[] = activeToolProfile === "none"
     ? []
     : activeToolProfile === "agent"
       ? tools.filter((tool) => (!BROWSER_TOOL_NAMES.has(tool.name) || browserToolsRequested)
-        && optimizationToolSelection.tools.includes(tool.name)
+        && (tool.name !== ASK_TEAMMATE_TOOL_NAME || assignedAgent !== undefined)
+        // ask_teammate is the one named-profile capability that is not part of
+        // task-intent classification: expose it alongside the selected
+        // profile, never by falling back to the complete catalog.
+        && (tool.name === ASK_TEAMMATE_TOOL_NAME || optimizationToolSelection.tools.includes(tool.name))
         && (agentExecutionPolicy === null || agentExecutionPolicy.canUseTool(tool.name)))
       : tools.filter((tool) => READ_ONLY_TOOL_NAMES.has(tool.name)
         && optimizationToolSelection.tools.includes(tool.name)
@@ -2895,8 +3003,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       });
       if (artifact.kind === "artifact") offeredArtifactIds.add(artifact.id);
       return renderExternalizedForContext(artifact);
-    });
+      });
   };
+  const askObjectiveHash = (objective: string): string => createHash("sha256").update(objective).digest("hex");
   // Observe-only mission telemetry. Neither of the two records below is read by
   // any execution decision: the progress ledger is durable evidence for the
   // mission surfaces and Mission Guardian's evidence lookup, and the failure
@@ -2975,11 +3084,31 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         }
 
         const updatedApproval = approvals.get(approvalRecord.id)!;
-        if (updatedApproval.status === "approved") {
+        if (updatedApproval.status === "approved" && (continuation.toolName !== ASK_TEAMMATE_TOOL_NAME || updatedApproval.decision === "allow_once")) {
           isApproved = true;
         }
 
-        if (durableResume && isApproved && incompleteTc.status === "running") {
+        let approvalBindingError: string | undefined;
+        if (isApproved && continuation.toolName === ASK_TEAMMATE_TOOL_NAME) {
+          const canonical = continuation.args;
+          const publicArgs = AskTeammateSchema.safeParse({ agentId: canonical.agentId, objective: canonical.objective });
+          const target = publicArgs.success ? agentRepo.get(publicArgs.data.agentId) : undefined;
+          const currentProfileHash = target
+            ? teammateProfileFingerprint(target, agentRepo.listToolPermissions(target.id))
+            : null;
+          const details = updatedApproval.details;
+          const bound = publicArgs.success
+            && details.targetAgentId === publicArgs.data.agentId
+            && details.objectiveHash === askObjectiveHash(publicArgs.data.objective)
+            && details.targetProfileHash === currentProfileHash
+            && canonical.profileHash === currentProfileHash;
+          if (!bound) {
+            isApproved = false;
+            approvalBindingError = "Teammate profile or objective changed; request a fresh one-shot approval.";
+          }
+        }
+
+        if (durableResume && isApproved && incompleteTc.status === "running" && continuation.toolName !== ASK_TEAMMATE_TOOL_NAME) {
           // Approval proves authorization, not whether the side effect happened.
           // After a process crash the interval between applying a patch/command
           // and durably recording its observation is ambiguous. Re-executing it
@@ -3012,7 +3141,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               createdAt: incompleteTc.createdAt,
               startedAt: now(),
             });
-            resultStr = await executeApprovedTool(continuation.toolName, continuation.args, continuation.toolCallId);
+            resultStr = continuation.toolName === ASK_TEAMMATE_TOOL_NAME
+              ? spawnAskedTeammate(continuation.toolCallId, continuation.args)
+              : await executeApprovedTool(continuation.toolName, continuation.args, continuation.toolCallId);
           } catch (err: any) {
             isSuccess = false;
             errorType = err instanceof AgentToolFailure
@@ -3025,9 +3156,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         } else {
           isSuccess = false;
           errorType = "tool_failed";
-          errorMessage = continuation.toolName === "propose_patch" || continuation.toolName === "append_file"
+          errorMessage = approvalBindingError
+            ?? (continuation.toolName === "propose_patch" || continuation.toolName === "append_file"
             ? "Workspace change denied by user."
-            : "Command execution denied by user.";
+            : "Command execution denied by user.");
           resultStr = JSON.stringify({ error: errorMessage });
           event("tool.failed", { toolName: continuation.toolName, message: errorMessage });
         }
@@ -5433,7 +5565,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // verification) â€” it must not block an otherwise-complete read-only
           // or plan-only task from reporting `completed` (see
           // `tool_not_permitted_in_mode` handling in the completion gate).
-          if ((tc.name === "run_command" || tc.name === "propose_patch" || tc.name === "create_file" || tc.name === "append_file" || tc.name === "create_directory" || tc.name === "stop_process" || BROWSER_TOOL_NAMES.has(tc.name)) && activeToolProfile !== "agent") {
+          if ((tc.name === "run_command" || tc.name === "propose_patch" || tc.name === "create_file" || tc.name === "append_file" || tc.name === "create_directory" || tc.name === "stop_process" || tc.name === ASK_TEAMMATE_TOOL_NAME || BROWSER_TOOL_NAMES.has(tc.name)) && activeToolProfile !== "agent") {
             throw new AgentToolFailure(
               `Tool "${tc.name}" is not permitted in ${agentMode} mode`,
               { error: `Tool "${tc.name}" is not permitted in ${agentMode} mode`, kind: "tool_not_permitted_in_mode" },
@@ -5605,6 +5737,70 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               createdAt: now(),
             });
             event("workspace.inspected", { kind: "stop_process", processId, ok: outcome.ok });
+          } else if (tc.name === ASK_TEAMMATE_TOOL_NAME) {
+            // This is deliberately not part of the ordinary auto-approval
+            // branch: every model-authored delegation needs a fresh,
+            // one-shot human decision, even in trusted-workspace mode.
+            const ask = parseAskTeammateInput(args);
+            let approvalRecord = approvals.listByTask(taskId).find((approval) =>
+              approval.kind === "command"
+              && approval.details.tool === ASK_TEAMMATE_TOOL_NAME
+              && approval.details.toolCallId === tc.id,
+            );
+            let isApproved = false;
+            if (approvalRecord) {
+              const requestMatchesApproval = approvalRecord.details.targetAgentId === ask.agentId
+                && approvalRecord.details.objectiveHash === askObjectiveHash(ask.objective)
+                && approvalRecord.details.targetProfileHash === ask.profileHash;
+              if (!requestMatchesApproval) {
+                throw new Error("Teammate request changed after approval; request a fresh one-shot approval.");
+              }
+              if (approvalRecord.status === "approved" && approvalRecord.decision === "allow_once") {
+                isApproved = true;
+              } else if (approvalRecord.status === "approved" && approvalRecord.decision !== "allow_once") {
+                throw new Error("Teammate requests accept only a one-shot approval.");
+              } else if (approvalRecord.status === "denied") {
+                throw new Error("Teammate request denied by user.");
+              }
+            }
+            if (!isApproved) {
+              if (!approvalRecord) {
+                approvalRecord = approvals.create({
+                  id: randomUUID(),
+                  taskId,
+                  projectId: project.id,
+                  kind: "command",
+                  summary: `Ask teammate ${redactSecrets(ask.agentId)} to help`,
+                  createdAt: now(),
+                  details: {
+                    tool: ASK_TEAMMATE_TOOL_NAME,
+                    operation: "one_shot_delegation",
+                    toolCallId: tc.id,
+                    targetAgentId: ask.agentId,
+                    targetAgentName: ask.targetName,
+                    objective: redactSecrets(ask.objective).slice(0, 2_000),
+                    objectiveHash: askObjectiveHash(ask.objective),
+                    targetProfileHash: ask.profileHash,
+                    approvalMode: "allow_once_only",
+                  },
+                });
+              }
+              continuationsRepo.save({ taskId, toolCallId: tc.id, toolName: ASK_TEAMMATE_TOOL_NAME, args: ask });
+              transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
+              event("approval.requested", { approvalId: approvalRecord.id, kind: "command", tool: ASK_TEAMMATE_TOOL_NAME });
+              await persistExecutionCheckpoint("waiting_for_approval");
+              await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id, abortSignal);
+              continuationsRepo.delete(taskId);
+              const updatedApproval = approvals.get(approvalRecord.id);
+              if (updatedApproval?.status === "approved" && updatedApproval.decision === "allow_once") {
+                isApproved = true;
+              } else if (updatedApproval?.decision === "trust_project") {
+                throw new Error("Teammate requests accept only a one-shot approval.");
+              } else {
+                throw new Error("Teammate request denied by user.");
+              }
+            }
+            if (isApproved) resultStr = spawnAskedTeammate(tc.id, ask);
           } else if (tc.name === "browser_open") {
             const target = parseBrowserTarget(args.url);
             const existingApprovals = autoApprove ? [] : approvals.listByTask(taskId);

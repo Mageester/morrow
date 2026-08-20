@@ -6,6 +6,7 @@ import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { agentsRepository } from "../src/repositories/agents.js";
 import { teamsRepository } from "../src/repositories/teams.js";
+import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { buildAgentExecutionPolicy } from "../src/security/agent-execution-policy.js";
 import { ThreadHandoffsSchema } from "@morrow/contracts";
 
@@ -82,6 +83,29 @@ describe("Handoffs inside a thread", () => {
     // never a replacement for their working record.
     expect(listed.handoffs[0]!.conversationId).toBeTruthy();
     expect(listed.handoffs[0]!.conversationId).not.toBe(conversationId);
+  });
+
+  it("projects a completed handoff with its durable completion timestamp", async () => {
+    const research = await createAgent("Research");
+    const thread = await openThread();
+    conversationId = thread.conversationId;
+
+    const handoff = await app.inject({
+      method: "POST", url: `/api/projects/p1/conversations/${conversationId}/handoffs`,
+      payload: { parentTaskId: thread.parentTaskId, agentId: research.id, objective: "Check the release notes" },
+    });
+    expect(handoff.statusCode, handoff.body).toBe(202);
+
+    const completedAt = "2026-08-20T12:00:00.000Z";
+    const childId = handoff.json().handoffTaskId as string;
+    const records = taskRecordsRepository(db);
+    records.transitionTask(childId, "running", { id: "handoff-running", createdAt: "2026-08-20T11:59:00.000Z", payload: {} });
+    records.transitionTask(childId, "completed", { id: "handoff-completed", createdAt: completedAt, payload: {} });
+
+    const listed = ThreadHandoffsSchema.parse(
+      (await app.inject({ method: "GET", url: `/api/projects/p1/conversations/${conversationId}/handoffs` })).json(),
+    );
+    expect(listed.handoffs[0]).toMatchObject({ status: "completed", completedAt });
   });
 
   it("shows two teammates' handoffs in one thread, each attributed to its own agent", async () => {

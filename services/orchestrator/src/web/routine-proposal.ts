@@ -111,6 +111,7 @@ export function projectRoutineProposal(input: RoutineProposalInput): RoutineProp
   return RoutineProposalSchema.parse({
     version: 1,
     conversationId,
+    agentId: recording.agentId,
     suggestedName,
     objective,
     steps,

@@ -3,8 +3,10 @@ import type Database from "better-sqlite3";
 import {
   SendMessageSchema,
   type PresetId,
+  type ProviderId,
   type RoutingDecision,
   type SendMessageInput,
+  type Task,
 } from "@morrow/contracts";
 import type { ProviderRouteMetadata } from "../provider/base.js";
 import { createProvider } from "../provider/registry.js";
@@ -20,6 +22,12 @@ import { worktreesRepository } from "../repositories/worktrees.js";
 import { resolveReasoningCapability } from "../routing/models.js";
 import { DEFAULT_PRESET_ID, getPreset } from "../routing/presets.js";
 import { routePreset } from "../routing/router.js";
+import {
+  resolveStandaloneTeammateTarget,
+  teammateProfileFingerprint,
+  TeammateSpawnRegistry,
+  teammateSpawnKey,
+} from "../tools/teammate-delegation.js";
 
 export class AgentTaskDispatchError extends Error {
   constructor(
@@ -52,6 +60,140 @@ export interface AgentTaskDispatcherDependencies {
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
   createId?: () => string;
+}
+
+export interface SpawnAgentChatSubagentOptions {
+  deferRun?: boolean;
+  delegationId?: string;
+  /** Present only for model-authored ask_teammate calls. */
+  toolCallId?: string;
+  /** Model-authored calls must use the standalone-target refusal rules. */
+  modelInitiated?: boolean;
+  /** Approval-time binding for the target's durable authority profile. */
+  targetProfileHash?: string;
+  /** One process-local registry shared by the server and its task runner. */
+  registry?: TeammateSpawnRegistry;
+}
+
+/**
+ * Spawn a real agent_chat child from a durable parent task. The same helper is
+ * used by the REST subagent route, delegation approval, and ask_teammate so
+ * child conversation/provider routing and task links cannot drift. Model calls
+ * pass only `toolCallId` and the narrow objective; all target profile fields
+ * are resolved here from the server-side agent row.
+ */
+export function spawnAgentChatSubagent(
+  dependencies: AgentTaskDispatcherDependencies,
+  parent: Pick<Task, "id" | "projectId"> & { agentId?: string | null | undefined },
+  agentId: string,
+  label: string | undefined,
+  options: SpawnAgentChatSubagentOptions = {},
+) {
+  const create = () => {
+    const agents = agentsRepository(dependencies.db);
+    const agent = agents.get(agentId);
+    if (!agent) {
+      throw new AgentTaskDispatchError(404, "Agent not found in this project", "NOT_FOUND");
+    }
+    if (options.modelInitiated) {
+      try {
+        resolveStandaloneTeammateTarget(parent, agent, agentId);
+      } catch (error) {
+        const code = error instanceof Error && "code" in error ? String((error as { code: unknown }).code) : "AGENT_NOT_FOUND";
+        const status = code === "AGENT_DISABLED" ? 409 : code === "AGENT_SELF" || code === "AGENT_TEAM_TARGET" ? 409 : 404;
+        throw new AgentTaskDispatchError(status, error instanceof Error ? error.message : "Teammate target is not allowed", code);
+      }
+    } else if (agent.projectId !== parent.projectId) {
+      throw new AgentTaskDispatchError(404, "Agent not found in this project", "NOT_FOUND");
+    }
+    if (!agent.enabled) throw new AgentTaskDispatchError(409, "Agent is disabled", "AGENT_DISABLED");
+    if (agent.teamId && !options.delegationId) {
+      throw new AgentTaskDispatchError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+    }
+
+    const idempotencyKey = options.toolCallId
+      ? `ask_teammate:${parent.id}:${options.toolCallId}`
+      : undefined;
+    const content = label ?? `Delegated task for ${agent.name}`;
+    const tasks = taskRepository(dependencies.db);
+    let conversationId: string | undefined;
+    if (idempotencyKey) {
+      const existing = tasks.findByIdempotencyKey(parent.projectId, idempotencyKey);
+      if (existing) {
+        const row = dependencies.db.prepare(
+          "SELECT conversation_id FROM conversation_messages WHERE task_id=? ORDER BY rowid ASC LIMIT 1",
+        ).get(existing.id) as { conversation_id?: string } | undefined;
+        if (!row?.conversation_id) {
+          throw new AgentTaskDispatchError(409, "Idempotent teammate spawn is incomplete", "IDEMPOTENCY_INCOMPLETE");
+        }
+        conversationId = row.conversation_id;
+      }
+    }
+
+    if (!conversationId && options.modelInitiated && parent.agentId) {
+      const caller = agents.get(parent.agentId);
+      if (caller?.maxChildTasks !== null && caller?.maxChildTasks !== undefined
+        && tasks.listChildren(parent.id).length >= caller.maxChildTasks) {
+        throw new AgentTaskDispatchError(409, "Parent teammate child-task budget is exhausted", "PARENT_CHILD_TASK_LIMIT");
+      }
+    }
+    if (options.modelInitiated && options.targetProfileHash
+      && options.targetProfileHash !== teammateProfileFingerprint(agent, agents.listToolPermissions(agent.id))) {
+      throw new AgentTaskDispatchError(409, "Teammate profile changed; request approval again", "AGENT_PROFILE_CHANGED");
+    }
+
+    const conversations = conversationsRepository(dependencies.db);
+    let createdConversationId: string | undefined;
+    if (!conversationId) {
+      const now = new Date().toISOString();
+      createdConversationId = (dependencies.createId ?? randomUUID)();
+      conversations.createConversation({
+        id: createdConversationId,
+        projectId: parent.projectId,
+        // A model-authored objective is task input, not a safe conversation
+        // title: keep secrets or reasoning out of roster-visible metadata.
+        title: options.modelInitiated ? `Delegated: ${agent.name}` : (label ?? `Delegated: ${agent.name}`),
+        agentId: agent.id,
+        createdAt: now,
+        updatedAt: now,
+      });
+      conversationId = createdConversationId;
+    }
+
+    try {
+      const dispatchDependencies: AgentTaskDispatcherDependencies = {
+        db: dependencies.db,
+        runner: dependencies.runner,
+        ...(dependencies.env !== undefined ? { env: dependencies.env } : {}),
+      };
+      return dispatchAgentTask(dispatchDependencies, {
+        conversationId,
+        parentTaskId: parent.id,
+        content,
+        agentId: agent.id,
+        providerId: agent.providerOverride ? agent.providerOverride as ProviderId : undefined,
+        model: agent.modelOverride ?? undefined,
+        mode: "agent",
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+        ...(options.deferRun ? { deferRun: true } : {}),
+        ...(options.delegationId ? { delegationId: options.delegationId } : {}),
+      });
+    } catch (error) {
+      // A dispatch transaction can fail after the fresh conversation exists.
+      // Remove that empty shell, but never delete a previously durable child
+      // being replayed by the idempotency path.
+      if (createdConversationId) {
+        conversations.deleteConversation(createdConversationId, parent.projectId);
+      }
+      throw error;
+    }
+  };
+
+  if (options.toolCallId && options.registry) {
+    const key = teammateSpawnKey(parent.id, options.toolCallId);
+    return options.registry.run(key, create);
+  }
+  return create();
 }
 
 function replayResult(

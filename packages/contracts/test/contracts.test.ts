@@ -11,6 +11,7 @@ import {
   WebConversationRoutingSchema,
   WebConversationMessageSchema,
   WebTaskReasoningSchema,
+  UpdateRoutineSchema,
 } from "../src/index.js";
 
 function validNode(over: Record<string, unknown> = {}) {
@@ -123,6 +124,20 @@ describe("contracts", () => {
       ...reasoning,
       entries: [{ ...reasoning.entries[0], opaque: { continuation: "private" } }],
     })).toThrow();
+  });
+
+  it("accepts routine edits without accepting provenance or execution history", () => {
+    expect(UpdateRoutineSchema.parse({
+      name: "Monthly report",
+      objective: "Summarise the month.",
+      steps: [{ summary: "Read the changelog", target: "CHANGELOG.md", toolName: "read_file" }],
+    })).toEqual({
+      name: "Monthly report",
+      objective: "Summarise the month.",
+      steps: [{ summary: "Read the changelog", target: "CHANGELOG.md", toolName: "read_file" }],
+    });
+    expect(UpdateRoutineSchema.safeParse({ sourceConversationId: "conversation-1" }).success).toBe(false);
+    expect(UpdateRoutineSchema.safeParse({ runCount: 99 }).success).toBe(false);
   });
 
   it("accepts a complete provider-reported OpenRouter catalogue model", () => {
