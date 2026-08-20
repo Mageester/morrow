@@ -85,7 +85,7 @@ async function runOne(adapter: HarnessAdapter, task: EvalTask, repeat: number): 
       passed: false, claimedSuccess: false,
       failureDetail: null,
       durationMs: 0, timedOut: false,
-      inputTokens: null, cachedInputTokens: null, outputTokens: null, firstTurnInputTokens: null, measuredCostUsd: null,
+      inputTokens: null, cachedInputTokens: null, outputTokens: null, firstTurnInputTokens: null, requestTokens: null, measuredCostUsd: null,
       providerCalls: null, toolCalls: null,
       harnessError: error instanceof Error ? error.message : String(error),
     };

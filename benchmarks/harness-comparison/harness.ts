@@ -34,6 +34,16 @@ export interface HarnessRunResult {
    * overhead" a measurement rather than an adjective.
    */
   firstTurnInputTokens: number | null;
+  /**
+   * Per-request `[totalInput, cachedInput]` pairs, in order.
+   *
+   * Summed tokens cannot distinguish the two ways a harness gets expensive:
+   * re-sending a prompt whose prefix it keeps invalidating, versus genuinely
+   * appending more new content per turn. Uncached input costs 50x cached on
+   * this provider, so which one it is decides what is worth fixing. Only the
+   * per-request split separates them.
+   */
+  requestTokens: Array<[number, number | null]> | null;
   /** Provider-metered cost when the harness reports one; otherwise null. */
   measuredCostUsd: number | null;
 

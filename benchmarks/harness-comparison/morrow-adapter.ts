@@ -101,6 +101,7 @@ export function createMorrowAdapter(options: { providerId: ProviderId; presetId?
           cachedInputTokens: usage.cachedInputTokens,
           outputTokens: usage.outputTokens,
           firstTurnInputTokens: usage.firstTurnInputTokens,
+          requestTokens: usage.requestTokens.length > 0 ? usage.requestTokens : null,
           measuredCostUsd: usage.costUsd,
           providerCalls: usage.providerCalls,
           toolCalls: toolCalls.length,
@@ -129,6 +130,7 @@ interface MorrowUsage {
   costUsd: number | null;
   providerCalls: number;
   firstTurnInputTokens: number | null;
+  requestTokens: Array<[number, number | null]>;
 }
 
 /**
@@ -155,6 +157,7 @@ export function projectMorrowUsage(events: ReadonlyArray<{ type: string; payload
   let costUsd = 0;
   let sawCost = false;
   let firstTurnInputTokens: number | null = null;
+  const requestTokens: Array<[number, number | null]> = [];
 
   for (const event of usageEvents) {
     const requestInput = num(event.payload.totalInputTokens) ?? num(event.payload.inputTokens) ?? 0;
@@ -162,6 +165,7 @@ export function projectMorrowUsage(events: ReadonlyArray<{ type: string; payload
     inputTokens += requestInput;
     outputTokens += num(event.payload.outputTokens) ?? 0;
     const cached = num(event.payload.cachedInputTokens);
+    requestTokens.push([requestInput, cached]);
     if (cached !== null) {
       cachedInputTokens += cached;
       sawCacheBreakdown = true;
@@ -180,5 +184,6 @@ export function projectMorrowUsage(events: ReadonlyArray<{ type: string; payload
     costUsd: sawCost ? costUsd : null,
     providerCalls: attempts > 0 ? attempts : usageEvents.length,
     firstTurnInputTokens,
+    requestTokens,
   };
 }

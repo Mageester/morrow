@@ -85,6 +85,7 @@ export function createPiAdapter(options: { binary: string; apiKey: string }): Ha
         cachedInputTokens: measured.cachedInputTokens,
         outputTokens: measured.outputTokens,
         firstTurnInputTokens: measured.firstTurnInputTokens,
+        requestTokens: measured.requestTokens.length > 0 ? measured.requestTokens : null,
         measuredCostUsd: measured.costUsd,
         providerCalls: measured.providerCalls,
         toolCalls: measured.toolCalls,
@@ -103,6 +104,7 @@ interface PiUsage {
   providerCalls: number | null;
   toolCalls: number | null;
   firstTurnInputTokens: number | null;
+  requestTokens: Array<[number, number | null]>;
   reachedAgentEnd: boolean;
 }
 
@@ -126,6 +128,7 @@ export function projectPiUsage(stdout: string): PiUsage {
   let sawUsage = false;
   let reachedAgentEnd = false;
   let firstTurnInputTokens: number | null = null;
+  const requestTokens: Array<[number, number | null]> = [];
 
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
@@ -145,6 +148,7 @@ export function projectPiUsage(stdout: string): PiUsage {
     providerCalls++;
     const requestInput = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
     if (firstTurnInputTokens === null) firstTurnInputTokens = requestInput;
+    requestTokens.push([requestInput, usage.cacheRead ?? null]);
     inputTokens += requestInput;
     cachedInputTokens += usage.cacheRead ?? 0;
     outputTokens += usage.output ?? 0;
@@ -152,6 +156,6 @@ export function projectPiUsage(stdout: string): PiUsage {
   }
 
   return sawUsage
-    ? { inputTokens, cachedInputTokens, outputTokens, costUsd, providerCalls, toolCalls, firstTurnInputTokens, reachedAgentEnd }
-    : { inputTokens: null, cachedInputTokens: null, outputTokens: null, costUsd: null, providerCalls: null, toolCalls, firstTurnInputTokens: null, reachedAgentEnd };
+    ? { inputTokens, cachedInputTokens, outputTokens, costUsd, providerCalls, toolCalls, firstTurnInputTokens, requestTokens, reachedAgentEnd }
+    : { inputTokens: null, cachedInputTokens: null, outputTokens: null, costUsd: null, providerCalls: null, toolCalls, firstTurnInputTokens: null, requestTokens: [], reachedAgentEnd };
 }
