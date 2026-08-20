@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { MissionRuntimeState, MissionStatus, TaskStatus } from "@morrow/contracts";
 import { MAX_PLAN_REVISIONS } from "@morrow/contracts";
 import { openDatabase } from "../src/database.js";
@@ -73,14 +77,44 @@ type ObservableTaskRunner = {
   cancel?(taskId: string, reason?: "mission_terminal" | "user_cancelled" | "parent_cancelled"): void;
 };
 
+/**
+ * Every fixture gets its own empty, committed git repository.
+ *
+ * This suite used to point both the mission workspace and the backup directory
+ * at `process.cwd()` — the live Morrow checkout. Mission finalization inspects
+ * the workspace's git state, so the outcome depended on whether the developer
+ * happened to have uncommitted changes: with a dirty tree the guardian saw
+ * unexplained changed files, `normal_finalize` dispatched a worker instead of
+ * finalizing, and the scenario failed with an unrelated foreign-key error. It
+ * also meant the suite wrote backup files into the repository it was running
+ * from. An isolated workspace makes the conformance result depend only on the
+ * code under test.
+ */
+const workspaces: string[] = [];
+
+function createIsolatedWorkspace(): string {
+  const root = mkdtempSync(join(tmpdir(), "morrow-terminal-conformance-"));
+  const git = (args: string) => execFileSync("git", args.split(" "), { cwd: root, stdio: "ignore" });
+  git("init --quiet");
+  git("config user.email conformance@morrow.test");
+  git("config user.name Conformance");
+  git("config commit.gpgsign false");
+  writeFileSync(join(root, "README.md"), "conformance workspace\n");
+  git("add -A");
+  execFileSync("git", ["commit", "--quiet", "-m", "baseline"], { cwd: root, stdio: "ignore" });
+  workspaces.push(root);
+  return root;
+}
+
 function createFixture(): Fixture {
   const db = openDatabase(":memory:");
-  projectRepository(db).createProject({ id: "project-1", name: "Project", workspacePath: process.cwd(), createdAt: now });
+  const workspacePath = createIsolatedWorkspace();
+  projectRepository(db).createProject({ id: "project-1", name: "Project", workspacePath, createdAt: now });
   const repo = missionsRepository(db);
   const service = new MissionService({
     repo,
-    getWorkspacePath: () => process.cwd(),
-    backupDir: process.cwd(),
+    getWorkspacePath: () => workspacePath,
+    backupDir: join(workspacePath, ".morrow-backups"),
     now: () => now,
     completion: async (_messages, options) => options.purpose === "review"
       ? { text: JSON.stringify({ verdict: "approved", criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [], concerns: [], recommendedStatus: "completed", summary: "ok" }) }
@@ -364,6 +398,7 @@ describe("terminal mission outcome conformance", () => {
       await runner.waitFor("task-1");
     }
     for (const db of databases.splice(0)) db.close();
+    for (const workspace of workspaces.splice(0)) rmSync(workspace, { recursive: true, force: true });
   });
 
   it("declares every terminal entry path exactly once", () => {
