@@ -110,7 +110,7 @@ describe("Teammate roster", () => {
       id: "t1", projectId: "p1", kind: "agent_chat", status: "running", agentId: agent.id, createdAt: ts(),
     });
     approvalsRepository(db).create({
-      id: "a1", taskId: "t1", projectId: "p1", kind: "command", status: "pending",
+      id: "a1", taskId: "t1", projectId: "p1", kind: "command",
       summary: "Run the test suite", details: {}, createdAt: ts(),
     });
 

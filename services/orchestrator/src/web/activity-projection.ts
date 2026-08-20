@@ -88,6 +88,7 @@ function entry(
     durationMs?: number | null;
     exitCode?: number | null;
     resultCount?: number | null;
+    evidenceRef?: string | null;
     id?: string;
   },
 ): WebConversationActivityEntry {
@@ -106,6 +107,7 @@ function entry(
     durationMs: input.durationMs ?? null,
     exitCode: input.exitCode ?? null,
     resultCount: input.resultCount ?? null,
+    evidenceRef: input.evidenceRef ?? null,
     createdAt: event.createdAt,
     updatedAt: event.createdAt,
   };
@@ -145,12 +147,25 @@ function readableToolName(toolName: string): string {
   return toolName.replaceAll("_", " ");
 }
 
+/**
+ * "." is a legitimate target — the workspace root — but appended to a summary
+ * it reads as a stray full stop rather than a path. Now that steps are listed
+ * in the transcript by default rather than hidden behind a disclosure, that
+ * shows. The root is what the tool defaults to anyway, so say nothing.
+ */
+function displayTarget(target: string | null): string | null {
+  if (target === null) return null;
+  const trimmed = target.trim();
+  return trimmed === "." || trimmed === "./" || trimmed === "" ? null : target;
+}
+
 function toolSummary(
   kind: WebActivityKind,
   status: WebActivityStatus,
   toolName: string | null,
-  target: string | null,
+  rawTarget: string | null,
 ): string {
+  const target = displayTarget(rawTarget);
   const verb = toolName === "read_file" ? ["Reading", "Read"]
     : toolName === "create_file" ? ["Creating", "Created"]
     : toolName === "create_directory" ? ["Creating directory", "Created directory"]
@@ -277,7 +292,11 @@ function projectEvent(
       const toolName = identifier(payload.toolName);
       if (!isTranscriptTool(toolName)) return null;
       const kind = toolKind(toolName);
-      const toolCallId = identifier(payload.id) ?? event.id;
+      // Falling back to the event id keeps the row addressable, but only a
+      // real tool-call id can be exchanged for evidence — so the handle is
+      // null in that case rather than a reference that cannot resolve.
+      const durableToolCallId = identifier(payload.id, 200);
+      const toolCallId = durableToolCallId ?? event.id;
       const cwd = redactActivityTarget(payload.cwd);
       const target = redactActivityTarget(payload.target);
       return entry(taskId, event, {
@@ -288,6 +307,7 @@ function projectEvent(
         detail: cwd ? `Working directory: ${cwd}` : null,
         target,
         toolName,
+        evidenceRef: durableToolCallId,
       });
     }
     case "tool.arguments_rejected":

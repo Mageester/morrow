@@ -95,16 +95,10 @@
   }
 }
 
-.morrow-work__lines {
-  display: flex;
-  min-width: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: 1px;
-}
-
 .morrow-work__label {
   overflow: hidden;
+  min-width: 0;
+  flex: 1 1 auto;
   font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -112,15 +106,6 @@
 
 .morrow-work[data-status="running"] .morrow-work__label {
   color: var(--morrow-product-copy-soft);
-}
-
-/* The step in flight, replaced in place as the run moves on. */
-.morrow-work__current {
-  overflow: hidden;
-  color: var(--morrow-product-faint);
-  font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .morrow-work__chevron {
@@ -134,13 +119,45 @@
 }
 
 .morrow-work__body {
-  padding: 2px 0 6px 30px;
+  padding: 2px 0 6px 15px;
+}
+
+/* A single hairline ties the rows together and marks where the record of the
+   turn begins — cheaper than a bordered card, and it does not compete with the
+   answer below it. */
+.morrow-work__steps {
+  border-left: 1px solid var(--morrow-product-line-soft, var(--morrow-product-line));
+  padding-left: 9px;
 }
 
 .morrow-work__empty {
   margin: 0;
   color: var(--morrow-product-faint);
   font-size: 11.5px;
+}
+
+.morrow-work__step-chevron {
+  flex: none;
+  color: var(--morrow-product-line-strong);
+  transition: transform var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-work__step-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.morrow-conversation-message .morrow-work__more {
+  min-height: 0;
+  margin: 2px 0 0 15px;
+  padding: 3px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--morrow-product-copy-quiet);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11.5px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .morrow-work__steps {
@@ -244,18 +261,9 @@
 
 .morrow-work__group-list {
   margin: 2px 0 6px;
-  padding: 0 0 0 19px;
+  padding: 0 0 0 15px;
+  border-left: 1px solid var(--morrow-product-line-soft, var(--morrow-product-line));
   list-style: none;
-}
-
-.morrow-work__group-list li {
-  padding: 2px 0;
-}
-
-.morrow-work__group-list code {
-  color: var(--morrow-product-copy-quiet);
-  font-size: 11px;
-  overflow-wrap: anywhere;
 }
 
 .morrow-conversation-message .morrow-work__inspect {
@@ -722,4 +730,134 @@
 /* A ledger row does not need to move when the pointer passes over it. */
 .morrow-activity-panel .morrow-activity-timeline summary:hover {
   transform: none;
+}
+
+/* ── Step evidence ───────────────────────────────────────────────────────── */
+
+/*
+ * What one step recorded, opened from its row. A card rather than more rows:
+ * it is a different kind of thing from the list above it — a recording, not a
+ * summary — and it should be visibly quotable and visibly finite.
+ */
+.morrow-evidence {
+  display: grid;
+  margin: 3px 0 2px;
+  padding: 9px 11px;
+  border: 1px solid var(--morrow-product-line-soft, var(--morrow-product-line));
+  border-radius: 9px;
+  background: var(--morrow-product-field);
+  gap: 8px;
+}
+
+.morrow-evidence__target {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.morrow-evidence__target code {
+  color: var(--morrow-product-copy-soft);
+  font-size: 11.5px;
+}
+
+.morrow-evidence__detail {
+  margin: 0;
+  color: var(--morrow-product-copy-quiet);
+  font: 400 11.5px/1.45 var(--morrow-product-utility);
+}
+
+.morrow-evidence__facts {
+  display: flex;
+  margin: 0;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.morrow-evidence__facts > div {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.morrow-evidence__facts dt {
+  color: var(--morrow-product-faint);
+  font: 500 10px/1 var(--morrow-product-utility);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.morrow-evidence__facts dd {
+  margin: 0;
+  color: var(--morrow-product-copy-soft);
+  font: 400 11.5px/1 var(--morrow-product-utility);
+  font-variant-numeric: tabular-nums;
+}
+
+.morrow-evidence__note {
+  margin: 0;
+  color: var(--morrow-product-faint);
+  font: 400 11px/1.45 var(--morrow-product-utility);
+}
+
+.morrow-evidence__note button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--morrow-product-copper);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.morrow-evidence__output {
+  display: grid;
+  gap: 4px;
+}
+
+.morrow-evidence__output-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--morrow-product-faint);
+  font: 500 10px/1 var(--morrow-product-utility);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.morrow-conversation-message .morrow-evidence__copy {
+  display: inline-flex;
+  min-height: 0;
+  align-items: center;
+  padding: 2px 6px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--morrow-product-copy-quiet);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  gap: 4px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.morrow-conversation-message .morrow-evidence__copy:hover {
+  border-color: var(--morrow-product-copper-line);
+  color: var(--morrow-product-copper);
+}
+
+/* Output is monospaced, scrolls inside its own box, and is height-capped: a
+   step that printed ten thousand lines must not push the answer off screen. */
+.morrow-evidence__body {
+  max-height: 320px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 7px;
+  background: var(--morrow-product-canvas);
+  color: var(--morrow-product-copy-soft);
+  font: 400 11.5px/1.55 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  scrollbar-width: thin;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

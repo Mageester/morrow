@@ -210,6 +210,19 @@ export const WebConversationActivityEntrySchema = z.object({
   durationMs: z.number().int().nonnegative().nullable(),
   exitCode: z.number().int().nullable(),
   resultCount: z.number().int().nonnegative().nullable(),
+  /**
+   * Handle for this step's recorded output: the id of the durable tool call,
+   * which the conversation's evidence endpoint exchanges for the real thing.
+   *
+   * This is a handle and never the output itself. Command output, tool
+   * results and provider text stay out of this projection by design — it is
+   * polled, it is broad, and `conversations.test.ts` asserts that invariant
+   * directly. Reading a step's output is an explicit act with its own
+   * request, which is also what keeps a transcript scannable instead of a log
+   * dump. The id carries no information `id` did not already: this entry is
+   * keyed on it.
+   */
+  evidenceRef: z.string().max(200).nullable().default(null),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 }).strict();
@@ -220,6 +233,40 @@ export const WebConversationActivitySchema = z.object({
   conversationId: z.string().min(1),
   entries: z.array(WebConversationActivityEntrySchema),
 }).strict();
+
+/**
+ * One step's complete recorded output, fetched on demand.
+ *
+ * Deliberately narrower than the operator task aggregate: it carries the
+ * result the tool produced and nothing else. Tool *arguments* are excluded
+ * outright — they can carry prompt text and model-authored content, and a
+ * reader asking "what did this step actually do?" is asking about the outcome.
+ * The target, exit status and duration they can already see in the row are
+ * repeated here so the card stands alone.
+ *
+ * The body is bounded at the seam and passes through the same secret redaction
+ * as every other durable read. `truncated` says so honestly rather than
+ * quietly serving a fragment as if it were the whole.
+ */
+export const WebToolEvidenceSchema = z.object({
+  version: z.literal(1),
+  taskId: z.string().min(1),
+  toolCallId: z.string().min(1),
+  toolName: z.string().min(1).max(120),
+  status: z.enum(["requested", "running", "completed", "failed", "cancelled"]),
+  target: z.string().max(500).nullable(),
+  exitCode: z.number().int().nullable(),
+  durationMs: z.number().int().nonnegative().nullable(),
+  /** `text` for a plain body, `json` for a structured one, `none` when the
+   * step recorded no output at all. */
+  bodyKind: z.enum(["text", "json", "none"]),
+  body: z.string().max(64_000),
+  truncated: z.boolean(),
+  /** Size of the complete stored result, so a truncated card can say by how much. */
+  bytes: z.number().int().nonnegative(),
+}).strict();
+
+export type WebToolEvidence = z.infer<typeof WebToolEvidenceSchema>;
 
 export type WebMissionUiState = z.infer<typeof WebMissionUiStateSchema>;
 export type WebWorkspace = z.infer<typeof WebWorkspaceSchema>;

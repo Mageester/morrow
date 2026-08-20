@@ -253,6 +253,7 @@ import { registerWebMissionStreamRoutes } from "./web/mission-stream.js";
 import { projectConversationActivity } from "./web/activity-projection.js";
 import { DEFAULT_CONVERSATION_TITLE, deriveConversationTitle, isDefaultConversationTitle } from "./web/conversation-title.js";
 import { DEFAULT_TEAMMATE_NAME, projectRoster } from "./web/roster-projection.js";
+import { projectToolEvidence } from "./web/tool-evidence.js";
 import { registerWebAppRoutes } from "./web/static-app.js";
 
 export class ApiError extends Error {
@@ -1446,6 +1447,22 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         events: records.listEvents(row.taskId),
       })),
     });
+  });
+
+  /**
+   * One step's recorded output, behind the transcript row that ran it.
+   * Scoped to the conversation on purpose: an evidence id from another task is
+   * a scope violation, not an empty result, and 404s as one.
+   */
+  app.get("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/evidence/:toolCallId", async (request, reply) => {
+    const { projectId, conversationId, taskId, toolCallId } = request.params as {
+      projectId: string; conversationId: string; taskId: string; toolCallId: string;
+    };
+    ownedConversationTask(projectId, conversationId, taskId);
+    const evidence = projectToolEvidence({ db: deps.db, taskId, toolCallId });
+    if (!evidence) throw new ApiError(404, "Evidence not found for this step", "NOT_FOUND");
+    reply.header("cache-control", "no-store");
+    return evidence;
   });
 
   app.patch("/api/projects/:projectId/conversations/:conversationId", async (request) => {

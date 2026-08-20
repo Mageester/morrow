@@ -232,7 +232,14 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
         <span className="morrow-visually-hidden">{speaker}</span>
       </p>
       <div className="morrow-conversation-message__turn">
-        {message.taskId ? <WorkSummary onInspect={onOpenActivity} work={work} /> : null}
+        {message.taskId ? (
+          <WorkSummary
+            conversationId={conversationId}
+            onInspect={onOpenActivity}
+            projectId={projectId}
+            work={work}
+          />
+        ) : null}
 
         {work.notables.map((entry) => <NotableEvent entry={entry} key={entry.id} />)}
 

@@ -18,6 +18,7 @@ const base = {
   durationMs: null,
   exitCode: null,
   resultCount: null,
+  evidenceRef: null,
   createdAt: "2026-07-22T12:00:00.000Z",
   updatedAt: "2026-07-22T12:00:00.000Z",
 };
