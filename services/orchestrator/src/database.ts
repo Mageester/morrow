@@ -1428,6 +1428,39 @@ export const migrations:Migration[]=[
     -- this every roster render scans the whole task table once per teammate.
     CREATE INDEX IF NOT EXISTS tasks_agent_status_idx ON tasks(agent_id,status);
   `}
+  ,{id:53,name:"routines_and_recordings",sql:`
+    -- "Watch me do this once." A recording is an explicit, opt-in span of one
+    -- thread; a routine is what the user chose to keep from it.
+    CREATE TABLE routines (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+      name TEXT NOT NULL,
+      objective TEXT NOT NULL,
+      steps_json TEXT NOT NULL DEFAULT '[]',
+      source_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+      run_count INTEGER NOT NULL DEFAULT 0,
+      last_run_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX routines_project_idx ON routines(project_id,updated_at DESC);
+
+    CREATE TABLE routine_recordings (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+      started_at TEXT NOT NULL,
+      stopped_at TEXT,
+      routine_id TEXT REFERENCES routines(id) ON DELETE SET NULL
+    );
+    -- One open recording per thread, enforced durably rather than by whichever
+    -- client happened to ask last.
+    CREATE UNIQUE INDEX routine_recordings_one_open_per_conversation
+      ON routine_recordings(conversation_id) WHERE stopped_at IS NULL;
+    CREATE INDEX routine_recordings_conversation_idx ON routine_recordings(conversation_id,started_at DESC);
+  `}
 ];
 /**
  * Durability mode for committed writes.

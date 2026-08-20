@@ -244,10 +244,16 @@
   font-size: 8.5px;
 }
 
-/* The default teammate wears the product's own copper mark. */
+/* The default teammate wears the product's own mark, in the brand pack's
+   approved pairing: warm white on near-black, inverted on the light theme. */
 .morrow-teammate-avatar[data-default="true"] {
-  background: linear-gradient(135deg, var(--morrow-product-copper-bright), var(--morrow-product-copper-deep));
-  color: #24120b;
+  background: #0a0a0b;
+  color: #f4f1ec;
+}
+
+:root:not([data-theme="dark"]) .morrow-teammate-avatar[data-default="true"] {
+  background: #f4f1ec;
+  color: #0a0a0b;
 }
 
 /*

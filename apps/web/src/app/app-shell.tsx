@@ -7,12 +7,12 @@ import {
   Home,
   MoreHorizontal,
   Settings,
-  Sparkles,
   WandSparkles,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { AmbientMark } from "../components/product-frame.js";
+import { MorrowMark } from "../components/morrow-mark.js";
 import { NewChatButton } from "../features/chat/new-chat-button.js";
 import { OnboardingExperience } from "../features/onboarding/onboarding-experience.js";
 import { PairingBanner } from "../features/pairing/pairing-banner.js";
@@ -210,7 +210,7 @@ export function AppShell() {
         <AmbientMark variant="arc" />
         <div className="morrow-brand">
           <span aria-hidden="true" className="morrow-brand__mark">
-            <Sparkles size={18} strokeWidth={1.8} />
+            <MorrowMark size={16} />
           </span>
           <strong>Morrow</strong>
         </div>

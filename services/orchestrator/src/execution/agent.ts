@@ -94,6 +94,7 @@ import type { BrowserController, BrowserViewport, PageSnapshot } from "../browse
 import { isSafeSkillInstructionDirectory, verifySkillDirectory, SKILL_MATCH_STOPWORDS, SKILL_MATCH_MIN_SCORE } from "../skills/registry.js";
 import { createExecutionPolicy, type ExecutionPolicy } from "./execution-policy.js";
 import { buildAgentExecutionPolicy, type AgentExecutionPolicy } from "../security/agent-execution-policy.js";
+import { buildTeammateBrief, buildTeammateIdentity } from "./teammate-identity.js";
 import { ToolProfileSelector, type ToolTaskClassification } from "../optimization/tool-profile-selector.js";
 import { loadMcpConfig } from "../mcp/config.js";
 import { McpPool } from "../mcp/pool.js";
@@ -1805,9 +1806,11 @@ Ask mode: you can read this project but not change it. You have no write tools a
 Build mode: you may change this project. On a multi-file build, call create_file for the first file as soon as you've decided it — do not silently draft every file before your first tool call. Finish the job, then verify it with run_command rather than declaring success from reading your own diff.
 ${writeToolInstructions}`;
 
+  const teammateIdentity = buildTeammateIdentity(assignedAgent ?? null);
+
   chatMessages.push({
     role: "system",
-    content: `You are Morrow, a secure personal AI coding assistant.
+    content: `${teammateIdentity}
 You are running in an environment scoped to the project: ${projectName} located at ${workspacePath}.
 
 Act on the request. If it is clear enough to start, start — never open by asking which part to do first, or by listing back what you were already asked to do. Ask only when a wrong guess would waste real work; otherwise state your assumption and proceed. Do every part of a multi-part request.
@@ -1820,6 +1823,9 @@ ${allowedWriteFiles ? `The user explicitly constrained deliverable files to ONLY
 ${activeToolProfile === "agent" ? agentModeInstructions : readOnlyModeInstructions}
 Morrow ships installed skills (reusable expert workflows). They ARE available — never tell the user skills are unavailable. When a relevant active skill is listed below or found via find_skill, call load_skill for it and follow its workflow. Cortex observes evidence-backed repeated procedures automatically; do not call create_skill unless the user explicitly asked to create a skill.`
   });
+
+  const teammateBrief = buildTeammateBrief(assignedAgent ?? null);
+  if (teammateBrief) chatMessages.push({ role: "system", content: teammateBrief });
 
   if (activeToolProfile === "agent" && browserToolsRequested) {
     chatMessages.push({

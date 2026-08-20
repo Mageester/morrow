@@ -66,15 +66,21 @@
   letter-spacing: 0;
 }
 
+/*
+ * The brand pack's two approved presentations, reached with one asset: the
+ * mark paints in currentColor, warm white on the dark ground and near-black on
+ * the light one. No tile, gradient or shadow behind it — the guide forbids
+ * exactly those, and the copper gradient it used to sit on was one.
+ */
 .morrow-brand__mark {
   display: inline-grid;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   flex: none;
   place-items: center;
-  border-radius: 9px;
-  background: linear-gradient(135deg, var(--morrow-product-copper-bright), var(--morrow-product-copper-deep));
-  color: #24120b;
+  border-radius: 0;
+  background: none;
+  color: var(--morrow-product-copy);
   box-shadow: none;
 }
 

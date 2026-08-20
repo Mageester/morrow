@@ -1,3 +1,5 @@
+import { MorrowMark } from "../../components/morrow-mark.js";
+
 /**
  * A teammate's face in the rail and in the transcript.
  *
@@ -40,7 +42,9 @@ export function TeammateAvatar({ name, isDefault = false, size = "md" }: Teammat
       data-size={size}
       data-tint={isDefault ? undefined : hue(name)}
     >
-      {teammateInitials(name)}
+      {/* The built-in teammate wears the product's own mark; the named ones
+          wear initials, because they are people you hired and named. */}
+      {isDefault ? <MorrowMark size={size === "sm" ? 11 : 14} /> : teammateInitials(name)}
     </span>
   );
 }
