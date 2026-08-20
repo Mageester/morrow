@@ -78,7 +78,7 @@ export function approvalsRepository(db: Database.Database) {
       return row ? mapApproval(row) : undefined;
     },
     listByTask(taskId: string): Approval[] {
-      return db.prepare("SELECT * FROM approvals WHERE task_id=? ORDER BY created_at ASC, id ASC").all(taskId).map(mapApproval);
+      return db.prepare("SELECT * FROM approvals WHERE task_id=? ORDER BY created_at ASC, rowid ASC").all(taskId).map(mapApproval);
     },
     listByProject(projectId: string, status?: ApprovalStatus): Approval[] {
       const sql = status

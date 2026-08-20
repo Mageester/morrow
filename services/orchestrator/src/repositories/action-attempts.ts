@@ -151,7 +151,7 @@ export function actionAttemptsRepository(db: Database.Database) {
     const scopeValue = missionId ?? taskId;
     const rows = db.prepare(`SELECT * FROM action_attempts
       WHERE ${scope.sql}${signature ? " AND normalized_signature=?" : ""}
-      ORDER BY created_at ASC,id ASC`)
+      ORDER BY created_at ASC,rowid ASC`)
       .all(...(signature ? [scopeValue, signature] : [scopeValue]));
     return rows.map(map);
   };
