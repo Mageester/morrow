@@ -458,3 +458,275 @@
   letter-spacing: 0.02em;
   white-space: nowrap;
 }
+
+/* ── Workspace chrome ────────────────────────────────────────────────────── */
+
+/*
+ * A pairing notice is provenance, not an announcement. At banner weight it
+ * was the brightest thing above a thread with a teammate — which is the wrong
+ * ranking on every screen it appears on.
+ */
+.morrow-pairing-banner {
+  padding: 6px 12px;
+  border: 1px solid var(--morrow-product-line-soft);
+  border-radius: var(--morrow-product-radius-sm);
+  background: transparent;
+  color: var(--morrow-product-copy-quiet);
+  font: 400 12px/1.4 var(--morrow-product-utility);
+}
+
+.morrow-pairing-banner a {
+  color: var(--morrow-product-copy-soft);
+  text-underline-offset: 3px;
+}
+
+/* ── Handoffs ────────────────────────────────────────────────────────────── */
+
+/*
+ * A handoff row sits inside the turn that started it. Deliberately quieter
+ * than a message and louder than a tool step: work leaving this thread for
+ * another teammate is a change of hands, and a reader who misses one cannot
+ * account for the answer that follows.
+ */
+.morrow-handoff {
+  border: 1px solid var(--morrow-product-line-soft);
+  border-radius: var(--morrow-product-radius-sm);
+  background: var(--morrow-product-field-inset);
+}
+
+.morrow-conversation-message .morrow-handoff__head {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  align-items: center;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--morrow-product-copy-quiet);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  gap: 7px;
+  text-align: start;
+}
+
+.morrow-conversation-message .morrow-handoff__head:hover {
+  background: var(--morrow-product-field-inset);
+}
+
+.morrow-handoff__label {
+  flex: none;
+  color: var(--morrow-product-copy-soft);
+  font-weight: 550;
+}
+
+.morrow-handoff[data-status="running"] .morrow-handoff__label,
+.morrow-handoff[data-status="queued"] .morrow-handoff__label {
+  color: var(--morrow-product-copper);
+}
+
+.morrow-handoff[data-status="failed"] .morrow-handoff__label {
+  color: var(--morrow-product-danger);
+}
+
+.morrow-handoff__objective {
+  overflow: hidden;
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--morrow-product-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-handoff__meta {
+  flex: none;
+  color: var(--morrow-product-faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.morrow-handoff__body {
+  display: grid;
+  padding: 0 9px 9px;
+  gap: 7px;
+}
+
+.morrow-handoff__asked,
+.morrow-handoff__result {
+  display: grid;
+  margin: 0;
+  color: var(--morrow-product-copy-soft);
+  font: 400 12.5px/1.5 var(--morrow-product-utility);
+  gap: 2px;
+}
+
+.morrow-handoff__asked span,
+.morrow-handoff__result span {
+  color: var(--morrow-product-faint);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.morrow-handoff__result--empty {
+  color: var(--morrow-product-faint);
+}
+
+.morrow-handoff__open {
+  justify-self: start;
+  color: var(--morrow-product-copper);
+  font: 500 11.5px/1 var(--morrow-product-utility);
+  text-underline-offset: 3px;
+}
+
+/* ── Asking a teammate ───────────────────────────────────────────────────── */
+
+.morrow-ask-teammate {
+  position: relative;
+  margin: 0 0 7px;
+}
+
+.morrow-ask-teammate__trigger {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 9px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-pill);
+  background: transparent;
+  color: var(--morrow-product-copy-quiet);
+  cursor: pointer;
+  font: 500 11.5px/1 var(--morrow-product-utility);
+  gap: 5px;
+}
+
+.morrow-ask-teammate__trigger:hover {
+  border-color: var(--morrow-product-copper-line);
+  color: var(--morrow-product-copper);
+}
+
+.morrow-ask-teammate__panel {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 7px);
+  left: 0;
+  width: min(360px, 88vw);
+  padding: 9px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-md);
+  background: var(--morrow-product-field-strong);
+  box-shadow: var(--morrow-product-shadow-float);
+}
+
+.morrow-ask-teammate__list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 1px;
+  list-style: none;
+}
+
+.morrow-ask-teammate__option {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  padding: 6px 7px;
+  border: 0;
+  border-radius: var(--morrow-product-radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  gap: 8px;
+  text-align: start;
+}
+
+.morrow-ask-teammate__option:hover {
+  background: var(--morrow-product-field-inset);
+}
+
+.morrow-ask-teammate__option-name {
+  flex: 1 1 auto;
+  color: var(--morrow-product-copy);
+  font-size: 12.5px;
+  font-weight: 550;
+}
+
+.morrow-ask-teammate__option-role {
+  color: var(--morrow-product-faint);
+  font-size: 11px;
+}
+
+.morrow-ask-teammate__form {
+  display: grid;
+  gap: 7px;
+}
+
+.morrow-ask-teammate__chosen {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  color: var(--morrow-product-copy);
+  font: 550 12.5px/1 var(--morrow-product-utility);
+  gap: 7px;
+}
+
+.morrow-ask-teammate__chosen button {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--morrow-product-copy-quiet);
+  cursor: pointer;
+  font: 400 11px/1 var(--morrow-product-utility);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.morrow-ask-teammate__objective {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-sm);
+  background: var(--morrow-product-field);
+  color: var(--morrow-product-copy);
+  font: 400 12.5px/1.5 var(--morrow-product-utility);
+  resize: vertical;
+}
+
+.morrow-ask-teammate__hint,
+.morrow-ask-teammate__note {
+  margin: 0;
+  color: var(--morrow-product-faint);
+  font: 400 10.5px/1.45 var(--morrow-product-utility);
+}
+
+.morrow-ask-teammate__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.morrow-ask-teammate__actions button {
+  padding: 6px 11px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-sm);
+  background: transparent;
+  color: var(--morrow-product-copy-soft);
+  cursor: pointer;
+  font: 550 11.5px/1 var(--morrow-product-utility);
+}
+
+.morrow-ask-teammate__actions .morrow-ask-teammate__submit {
+  border-color: transparent;
+  background: var(--morrow-product-copper);
+  color: var(--morrow-on-accent);
+}
+
+.morrow-ask-teammate__actions .morrow-ask-teammate__submit:disabled {
+  background: var(--morrow-product-field);
+  color: var(--morrow-product-faint);
+  cursor: not-allowed;
+}

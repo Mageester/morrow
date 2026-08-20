@@ -170,7 +170,7 @@
   padding: 11px 13px;
   border: 1px solid var(--morrow-product-line-strong);
   border-radius: 11px;
-  background: #1d1e19;
+  background: var(--morrow-product-field);
   color: var(--morrow-product-copy);
   gap: 9px;
 }

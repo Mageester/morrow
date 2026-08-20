@@ -1,4 +1,4 @@
-import type { Conversation, ModelStatus, PresetStatus, WebConversationActivityEntry, WebConversationMessage, WebMissionSummary } from "@morrow/contracts";
+import type { Conversation, ModelStatus, PresetStatus, ThreadHandoff, WebConversationActivityEntry, WebConversationMessage, WebMissionSummary } from "@morrow/contracts";
 import { WebMissionSnapshotSchema } from "@morrow/contracts";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
@@ -32,6 +32,9 @@ import { NotableEvent, WorkSummary } from "./work-summary.js";
 import { parseTurnFailure } from "./turn-failure.js";
 import { TurnFailureNotice } from "./turn-failure-notice.js";
 import { LiveTurnStatus } from "./live-status.js";
+import { AskTeammate } from "./ask-teammate.js";
+import { HandoffRow } from "./handoff-row.js";
+import { handoffQueries } from "../../api/handoffs.js";
 import { TeammateAvatar } from "../roster/teammate-avatar.js";
 import { useThreadTeammate } from "../roster/use-thread-teammate.js";
 
@@ -159,6 +162,8 @@ export interface ConversationMessageItemProps {
   /** Who is speaking. Falls back to the product's own voice when the thread's
    * teammate cannot be resolved, rather than inventing a name. */
   teammate?: { name: string; isDefault: boolean } | undefined;
+  /** Work this turn handed to another teammate, shown where it happened. */
+  handoffs?: readonly ThreadHandoff[] | undefined;
 }
 
 /**
@@ -174,6 +179,20 @@ export interface ConversationMessageItemProps {
  * order did this happen?" — a different question from the one a conversation
  * answers. Rendering it inline is what turned this surface into an event feed.
  */
+/**
+ * "10:53 AM" — the clock time a message was written.
+ *
+ * A thread with a teammate is a conversation that happened at particular
+ * moments, and reading one back without them is like reading a chat log with
+ * the timestamps stripped: you can see what was said but not the shape of it.
+ * The date belongs to the day separator above, so this is time only.
+ */
+function messageTime(iso: string): string | null {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return null;
+  return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
 export const ConversationMessageItem = memo(function ConversationMessageItem({
   message,
   conversationId,
@@ -184,6 +203,7 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
   onRetry,
   onOpenActivity,
   teammate,
+  handoffs,
 }: ConversationMessageItemProps) {
   const streaming = ACTIVE_STATES.has(message.streamingState);
   const failed = FAILED_STATES.has(message.streamingState);
@@ -199,20 +219,25 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
   );
 
   if (message.role === "user") {
+    const sentAt = messageTime(message.createdAt);
     return (
       <article
         className="morrow-conversation-message morrow-conversation-message--user"
         data-testid="conversation-message-user"
       >
-        <div className="morrow-conversation-message__content">
-          <p>{message.content}</p>
+        <div className="morrow-conversation-message__bubble">
+          <div className="morrow-conversation-message__content">
+            <p>{message.content}</p>
+          </div>
         </div>
+        {sentAt ? <time className="morrow-conversation-message__time">{sentAt}</time> : null}
       </article>
     );
   }
 
   const label = routingLabel(message);
   const speaker = teammate?.name ?? "Morrow";
+  const sentAt = messageTime(message.createdAt);
   const body = failure ? failure.content : message.content;
   // Exactly one waiting signal per turn: the line below until work starts, the
   // work summary once it has, the answer once there is one.
@@ -223,15 +248,18 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
       className="morrow-conversation-message morrow-conversation-message--assistant"
       data-testid="conversation-message-assistant"
     >
-      {/* The gutter mark carries identity; the name is for screen readers,
-          which have no colour to read. A visible per-turn name would be noise
-          in a thread with one speaker — Step 3's handoff rows name the agent
-          at the point where it actually changes. */}
+      {/* Mark in the gutter, name and time on the byline — the shape a
+          message thread has. With a roster, "who said this and when" is a real
+          question in a way it never was with one assistant. */}
       <p className="morrow-conversation-message__author">
         <TeammateAvatar isDefault={teammate?.isDefault ?? true} name={speaker} />
         <span className="morrow-visually-hidden">{speaker}</span>
       </p>
       <div className="morrow-conversation-message__turn">
+        <p className="morrow-conversation-message__byline">
+          <span className="morrow-conversation-message__speaker">{speaker}</span>
+          {sentAt ? <time className="morrow-conversation-message__time">{sentAt}</time> : null}
+        </p>
         {message.taskId ? (
           <WorkSummary
             conversationId={conversationId}
@@ -242,6 +270,10 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
         ) : null}
 
         {work.notables.map((entry) => <NotableEvent entry={entry} key={entry.id} />)}
+
+        {(handoffs ?? []).map((handoff) => (
+          <HandoffRow handoff={handoff} key={handoff.id} projectId={projectId} />
+        ))}
 
         {showReasoning && message.taskId ? (
           <ReasoningDisclosure
@@ -311,6 +343,7 @@ export function ConversationPageContent({
   // Who this thread belongs to. Resolved from the roster the rail already
   // polls, so opening a thread costs no extra request.
   const rosterTeammate = useThreadTeammate(projectId, conversation.data?.agentId);
+  const handoffs = useQuery(handoffQueries.thread(projectId, conversationId));
   const teammate = rosterTeammate
     ? { name: rosterTeammate.name, isDefault: rosterTeammate.agentId === null }
     : undefined;
@@ -387,6 +420,16 @@ export function ConversationPageContent({
     }
     return grouped;
   }, [activity.data]);
+
+  // Handoffs hang off the turn that started them, so each appears at the point
+  // in the thread where the work was actually given away.
+  const handoffsByTask = useMemo(() => {
+    const grouped = new Map<string, ThreadHandoff[]>();
+    for (const handoff of handoffs.data?.handoffs ?? []) {
+      grouped.set(handoff.parentTaskId, [...(grouped.get(handoff.parentTaskId) ?? []), handoff]);
+    }
+    return grouped;
+  }, [handoffs.data]);
 
   // The live status line reports the turn in flight; it reads the same
   // projection the turn's own summary does, so the two can never disagree.
@@ -711,6 +754,7 @@ export function ConversationPageContent({
             onOpenActivity={openActivity}
             onRetry={handleRetry}
             projectId={projectId}
+            handoffs={message.taskId ? handoffsByTask.get(message.taskId) : undefined}
             showReasoning={showReasoning}
             teammate={teammate}
           />
@@ -783,6 +827,14 @@ export function ConversationPageContent({
       </div>
 
       <div className="morrow-conversation-composer">
+        {/* Beside the composer, not inside it: asking someone else is an act
+            on the thread, not a modifier on the message you are writing. */}
+        <AskTeammate
+          conversationId={conversationId}
+          currentAgentId={conversation.data?.agentId ?? null}
+          parentTaskId={latestTaskId ?? null}
+          projectId={projectId}
+        />
         <ChatComposer
           activeTaskId={activeTaskId}
           autoFocus

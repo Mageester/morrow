@@ -79,9 +79,11 @@
   flex: none;
   align-items: center;
   padding: 7px 10px;
-  border: 1px solid #34362f;
-  border-radius: 9px;
-  background: #1d1e19;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-sm);
+  /* Token-driven rather than the hard-coded warm pair it used to carry, which
+     rendered as a near-black chip on the light theme's near-white topbar. */
+  background: var(--morrow-product-field);
   /* --morrow-product-quiet (#74776e) measures 3.6:1 on this chip, below the
      4.5:1 AA threshold for its 13px label. The muted step clears it at 6.6:1
      and still reads as secondary against the breadcrumb. */

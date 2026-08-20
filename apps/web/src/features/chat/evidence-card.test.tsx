@@ -53,7 +53,7 @@ describe("Step evidence card", () => {
     expect(screen.getByText("2.4s")).toBeVisible();
     expect(screen.getByText("1")).toBeVisible();
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+    expect(String((fetchMock.mock.calls as unknown as unknown[][])[0]![0])).toBe(
       "/api/projects/project-1/conversations/conv-1/tasks/task-1/evidence/call-1",
     );
   });

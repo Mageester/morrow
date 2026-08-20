@@ -11,47 +11,42 @@
  * the reference while nothing becomes unreachable.
  */
 
+/*
+ * A message box, not a control panel. The hard-coded warm greens and the deep
+ * float shadow belonged to the editorial system; a workspace composer sits on
+ * the same cool ramp as everything else and announces itself with a border,
+ * not with elevation.
+ */
 .morrow-chat-composer {
   container-type: inline-size;
   display: grid;
-  padding: 13px 14px 11px;
-  border: 1px solid #3f4039;
-  border-radius: 20px;
-  background: rgb(29 30 25 / 0.94);
-  box-shadow:
-    0 24px 76px rgb(0 0 0 / 0.62),
-    0 0 0 1px rgb(255 255 255 / 0.03);
-  backdrop-filter: blur(18px);
+  padding: 9px 10px 8px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-lg);
+  background: var(--morrow-product-field);
+  box-shadow: none;
   gap: 0;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .morrow-chat-composer {
-    backdrop-filter: none;
-    background: #20211c;
-  }
-}
-
 .morrow-chat-composer:focus-within {
-  border-color: color-mix(in srgb, var(--morrow-product-copper) 31%, #3f4039);
-  box-shadow:
-    0 24px 76px rgb(0 0 0 / 0.62),
-    0 0 0 1px rgb(190 123 82 / 0.05);
+  border-color: var(--morrow-product-line-strong);
+  box-shadow: none;
 }
 
 .morrow-chat-composer__input {
   display: block;
   width: 100%;
-  /* Two comfortable lines at rest. The field grows with the message; it does
-     not reserve a paragraph of empty space before one exists. */
-  min-height: 46px;
+  /* One comfortable line at rest, growing with the message. Two lines of
+     reserved emptiness is a document editor's opening posture, not a
+     message box's. */
+  min-height: 24px;
   max-height: 40vh;
-  padding: 2px 2px 10px;
+  padding: 3px 3px 8px;
   border: 0;
   background: transparent;
-  color: #dedad2;
-  font-size: 15px;
-  line-height: 1.5;
+  color: var(--morrow-product-copy);
+  font-size: var(--morrow-product-text);
+  line-height: var(--morrow-product-leading);
   outline: 0;
   resize: none;
 }
@@ -66,7 +61,7 @@
 }
 
 .morrow-chat-composer__input::placeholder {
-  color: #85877e;
+  color: var(--morrow-product-faint);
 }
 
 /* ── The chip bar ────────────────────────────────────────────────────────── */
@@ -77,12 +72,12 @@
  * container than its neighbour. Copper is spent once, on send.
  */
 .morrow-chat-composer__toolbar {
-  --morrow-chip-height: 30px;
+  --morrow-chip-height: 26px;
 
   display: flex;
   align-items: center;
-  padding-top: 10px;
-  border-top: 1px solid rgb(255 255 255 / 0.065);
+  padding-top: 7px;
+  border-top: 1px solid var(--morrow-product-line-soft);
   flex-wrap: nowrap;
   gap: 6px;
 }
@@ -444,7 +439,7 @@
   padding: 14px;
   border: 1px solid #3f4039;
   border-radius: 14px;
-  background: #1d1e19;
+  background: var(--morrow-product-field);
   box-shadow: 0 24px 64px rgb(0 0 0 / 0.55), 0 0 0 1px rgb(255 255 255 / 0.03);
   color: var(--morrow-product-copy, #dedad2);
   font-size: 12px;

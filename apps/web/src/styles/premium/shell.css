@@ -19,9 +19,10 @@
   gap: 12px;
   padding: var(--morrow-premium-gutter);
   overflow: hidden;
-  background:
-    radial-gradient(circle at 78% 4%, var(--morrow-product-glow), transparent 29%),
-    var(--morrow-product-canvas);
+  /* Flat. The editorial system lit one corner with a copper wash, which read
+     as atmosphere; a workspace wants an even ground so status colour is the
+     only colour that means anything. */
+  background: var(--morrow-product-canvas);
 }
 
 /* Shared framed-surface treatment for both shell panes. */
@@ -45,7 +46,7 @@
   height: calc(100vh - (var(--morrow-premium-gutter) * 2));
   min-height: 0;
   flex-direction: column;
-  padding: 20px 15px;
+  padding: 16px 12px;
   border-right: 0;
   overflow: hidden;
   gap: 0;
@@ -54,10 +55,10 @@
 .morrow-brand {
   display: flex;
   align-items: center;
-  padding: 2px 7px 23px;
+  padding: 1px 6px 16px;
   gap: 9px;
-  font: 500 19px var(--morrow-product-display);
-  letter-spacing: 0;
+  font: 620 15px/1 var(--morrow-product-display);
+  letter-spacing: -0.01em;
 }
 
 .morrow-brand strong {
@@ -67,8 +68,8 @@
 
 .morrow-brand__mark {
   display: inline-grid;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   flex: none;
   place-items: center;
   border-radius: 9px;
@@ -90,9 +91,10 @@
   padding: 10px 12px;
   border: 0;
   border-radius: 10px;
-  background: #ede7dc;
-  color: #171713;
-  font-weight: 750;
+  background: var(--morrow-product-copy);
+  color: var(--morrow-product-canvas);
+  font-size: 13px;
+  font-weight: 600;
   text-align: left;
   box-shadow: none;
   transition:
@@ -101,7 +103,7 @@
 }
 
 .morrow-sidebar__new .morrow-new-chat__button:hover:not(:disabled) {
-  background: #fbf6ec;
+  background: #ffffff;
   box-shadow: none;
   transform: none;
 }
@@ -112,7 +114,7 @@
 
 .morrow-nav {
   display: grid;
-  margin-top: 19px;
+  margin-top: 12px;
   gap: 4px;
   color: #8c8e86;
   overflow: auto;
@@ -126,12 +128,13 @@
 
 .morrow-nav__link {
   display: flex;
-  min-height: 38px;
+  min-height: 32px;
   align-items: center;
-  padding: 9px 10px;
-  border-radius: 9px;
+  padding: 6px 9px;
+  border-radius: 8px;
   color: inherit;
   font-size: 13px;
+  font-weight: 480;
   text-decoration: none;
   transition:
     background-color var(--morrow-premium-control) var(--morrow-product-shift),
@@ -155,10 +158,14 @@
   transform: translateX(2px) translateY(1px);
 }
 
+/* The selected destination, marked by a flat surface and full-strength ink
+   rather than a warm gradient — which, being a fixed pair of dark values,
+   rendered as a brown block on the light theme. */
 .morrow-nav__link[aria-current="page"] {
-  background: linear-gradient(90deg, #362f27, #25251f);
-  color: #ffffff;
-  box-shadow: inset 2px 0 var(--morrow-product-copper);
+  border-color: transparent;
+  background: var(--morrow-product-field-inset);
+  color: var(--morrow-product-copy);
+  box-shadow: none;
 }
 
 .morrow-nav__link[aria-current="page"] svg {
@@ -218,8 +225,13 @@
   color: #73766d;
 }
 
-/* The rail's ambient arc — one drawn circle, matching reference `.rail::after`. */
+/*
+ * The rail's ambient arc is hidden rather than deleted: `AmbientMark` is used
+ * on other surfaces, and the rail now carries a roster where a drawn arc
+ * behind live status dots is noise competing with signal.
+ */
 .morrow-sidebar > .morrow-product-mark {
+  display: none;
   position: absolute;
   z-index: 0;
   right: auto;
