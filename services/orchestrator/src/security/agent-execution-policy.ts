@@ -54,8 +54,11 @@ export function buildAgentExecutionPolicy(
     [...effective.values()].filter((permission) => permission.effect === "allow").map((permission) => permission.toolName),
   );
   const hasAllowPermissions = allowedPermissionTools.size > 0;
+  // An empty delegation tool list means "no explicit allow rows were
+  // snapshotted", i.e. the target's standing unrestricted-minus-denies policy
+  // — not a strict allow-list of nothing. Denials still apply either way.
   const allowedTools = delegation
-    ? new Set(delegation.allowedTools)
+    ? (delegation.allowedTools.length > 0 ? new Set(delegation.allowedTools) : null)
     : hasAllowPermissions
       ? allowedPermissionTools
       : null;

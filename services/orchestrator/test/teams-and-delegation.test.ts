@@ -232,6 +232,26 @@ describe("buildAgentExecutionPolicy — delegation memory scopes", () => {
     expect(policy.canWriteMemory("team")).toBe(false);
     expect(policy.canWriteMemory("agent")).toBe(true);
   });
+
+  it("treats a delegation with no explicit allow rows as unrestricted-minus-denies, not zero tools", () => {
+    const agent = agentsRepository(db).create({ id: "agent-deny-only", projectId: "p1", name: "Legacy", role: "custom" });
+    // A legacy deny-only profile: no allow rows, so the standing policy is
+    // unrestricted except for the named denials.
+    const permissions = [
+      { version: 1 as const, id: "perm-1", agentId: agent.id, toolName: "run_command", effect: "deny" as const, priority: 10, createdAt: ts() },
+    ];
+    const delegation = {
+      allowedTools: [] as string[],
+      allowedMemoryScopes: [] as MemoryScope[],
+      allowedWriteMemoryScopes: [] as MemoryScope[],
+      approvalRequired: true,
+      budget: { maxProviderCalls: null, maxTokenBudget: null, maxWallClockMs: null },
+    };
+    const policy = buildAgentExecutionPolicy(agent, permissions, delegation);
+    expect(policy.canUseTool("search_text")).toBe(true);
+    expect(policy.canUseTool("read_file")).toBe(true);
+    expect(policy.canUseTool("run_command")).toBe(false);
+  });
 });
 
 describe("memoryRepository — scope filtering for the memory vault", () => {
