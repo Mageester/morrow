@@ -60,7 +60,8 @@ describe("database", () => {
   it("creates the durable recovery lease columns on a fresh database", () => {
     const db = openDatabase(":memory:");
     const columns = (db.prepare("PRAGMA table_info(schedule_runs)").all() as Array<{ name: string }>).map((column) => column.name);
-    expect(columns).toEqual(expect.arrayContaining(["recovery_owner", "recovery_lease_expires_at", "recovery_attempts"]));
+    expect(columns).toEqual(expect.arrayContaining(["recovery_owner", "recovery_lease_expires_at", "recovery_attempts", "notification_observed_event"]));
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schedule_notification_outbox'").get()).toEqual({ name: "schedule_notification_outbox" });
     db.close();
   });
 
@@ -84,7 +85,7 @@ describe("database", () => {
     const upgraded = openDatabase(file);
     const columns = (upgraded.prepare("PRAGMA table_info(schedule_runs)").all() as Array<{ name: string }>).map((column) => column.name);
     expect(columns).toEqual(expect.arrayContaining(["recovery_owner", "recovery_lease_expires_at", "recovery_attempts"]));
-    expect(upgraded.prepare("SELECT MAX(id) id FROM schema_migrations").get()).toEqual({ id: 59 });
+    expect(upgraded.prepare("SELECT MAX(id) id FROM schema_migrations").get()).toEqual({ id: migrations.at(-1)!.id });
     upgraded.close();
     rmSync(directory, { recursive: true, force: true });
   });

@@ -1460,6 +1460,46 @@
   font: 400 11px/1 var(--morrow-product-mono);
 }
 
+.morrow-routine-schedules__notifications {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 2px 0 0;
+  padding: 6px 8px;
+  border: 1px solid var(--morrow-product-line-soft);
+  border-radius: var(--morrow-product-radius-sm);
+  gap: 6px 10px;
+  color: var(--morrow-product-faint);
+  font: 400 11px/1.35 var(--morrow-product-utility);
+}
+
+.morrow-routine-schedules__notifications legend {
+  padding: 0 4px;
+  color: var(--morrow-product-copy-soft);
+  font-weight: 650;
+}
+
+.morrow-routine-schedules__notifications label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.morrow-routine-schedules__notifications select {
+  min-width: 150px;
+  padding: 4px 6px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: var(--morrow-product-radius-sm);
+  background: var(--morrow-product-field-inset);
+  color: var(--morrow-product-copy);
+  font: 400 11px/1 var(--morrow-product-utility);
+}
+
+.morrow-routine-schedules__notifications small {
+  color: var(--morrow-product-faint);
+}
+
 .morrow-routine-schedules__row > button {
   padding: 5px 8px;
   border: 1px solid var(--morrow-product-line);

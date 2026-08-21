@@ -813,6 +813,18 @@ export type NotifyResult=z.infer<typeof NotifyResultSchema>;
 // `inspect_workspace` is the original scheduler target. `routine` adds a
 // durable, teammate-bound target without creating a second scheduler.
 export const ScheduleTaskKindSchema=z.enum(["inspect_workspace","routine"]);
+export const ScheduleNotificationEventSchema=z.enum(["waiting_for_approval","completed","failed","blocked"]);
+export const ScheduleNotificationEventsSchema=z.array(ScheduleNotificationEventSchema).max(4).refine((events)=>new Set(events).size===events.length,{message:"Notification events must be unique"});
+export const ScheduleNotificationSchema=z.object({
+  events:ScheduleNotificationEventsSchema.default(["completed","failed","blocked"]),
+  adapterId:z.string().trim().min(1).nullable().default(null),
+}).strict();
+export const ScheduleNotificationInputSchema=z.object({
+  events:ScheduleNotificationEventsSchema.optional(),
+  adapterId:z.string().trim().min(1).nullable().optional(),
+}).strict();
+export const ScheduleNotificationAdapterSchema=z.object({id:z.string().min(1),channel:NotificationChannelSchema}).strict();
+export const ScheduleNotificationOptionsSchema=z.object({version:SchemaVersionSchema,projectId:z.string().min(1),adapters:z.array(ScheduleNotificationAdapterSchema)}).strict();
 export const ScheduleSchema=z.object({
   version:SchemaVersionSchema,
   id:z.string(),
@@ -826,6 +838,7 @@ export const ScheduleSchema=z.object({
   nextRunAt:z.string(),
   createdAt:z.string().datetime(),
   updatedAt:z.string().datetime(),
+  notification:ScheduleNotificationSchema.default({events:["completed","failed","blocked"],adapterId:null}),
 }).strict();
 export const CreateScheduleSchema=z.preprocess((value)=>{
   if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -838,13 +851,15 @@ export const CreateScheduleSchema=z.preprocess((value)=>{
   taskKind:ScheduleTaskKindSchema.default("inspect_workspace"),
   routineId:z.string().trim().min(1).optional(),
   enabled:z.boolean().optional(),
+  notification:ScheduleNotificationInputSchema.optional(),
 }).strict());
 export const UpdateScheduleSchema=z.object({
   cron:z.string().trim().min(1).max(120).optional(),
   taskKind:ScheduleTaskKindSchema.optional(),
   routineId:z.string().trim().min(1).nullable().optional(),
   enabled:z.boolean().optional(),
-}).strict().refine((value)=>value.cron!==undefined||value.taskKind!==undefined||value.routineId!==undefined||value.enabled!==undefined,{message:"Provide cron, target, or enabled"});
+  notification:ScheduleNotificationInputSchema.optional(),
+}).strict().refine((value)=>value.cron!==undefined||value.taskKind!==undefined||value.routineId!==undefined||value.enabled!==undefined||value.notification!==undefined,{message:"Provide cron, target, notification, or enabled"});
 export const ScheduleRunStatusSchema=z.enum(["claimed","queued","running","waiting_for_approval","completed","verified","failed","blocked","cancelled"]);
 export const ScheduleRunTriggerSchema=z.enum(["scheduled","manual"]);
 export const ScheduleRunSchema=z.object({
@@ -868,6 +883,11 @@ export const ScheduleRunSchema=z.object({
 }).strict();
 export type Schedule=z.infer<typeof ScheduleSchema>;
 export type ScheduleTaskKind=z.infer<typeof ScheduleTaskKindSchema>;
+export type ScheduleNotificationEvent=z.infer<typeof ScheduleNotificationEventSchema>;
+export type ScheduleNotification=z.infer<typeof ScheduleNotificationSchema>;
+export type ScheduleNotificationInput=z.infer<typeof ScheduleNotificationInputSchema>;
+export type ScheduleNotificationAdapter=z.infer<typeof ScheduleNotificationAdapterSchema>;
+export type ScheduleNotificationOptions=z.infer<typeof ScheduleNotificationOptionsSchema>;
 export type CreateScheduleInput=z.infer<typeof CreateScheduleSchema>;
 export type UpdateScheduleInput=z.infer<typeof UpdateScheduleSchema>;
 export type ScheduleRunStatus=z.infer<typeof ScheduleRunStatusSchema>;

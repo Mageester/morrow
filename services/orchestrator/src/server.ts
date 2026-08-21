@@ -43,12 +43,14 @@ import {
   CreateScheduleSchema,
   UpdateScheduleSchema,
   ScheduleRunSchema,
+  ScheduleNotificationOptionsSchema,
   type PresetId,
   type ProviderId,
   type ProviderAuthMode,
   type ChatStreamEventType,
   type RoutingDecision,
   type Conversation,
+  type ScheduleNotificationEvent,
 } from "@morrow/contracts";
 import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
@@ -3876,6 +3878,30 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return schedules.listByProject(projectId);
   });
 
+  app.get("/api/projects/:projectId/schedule-notification-options", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    // Adapter ids and channels are safe metadata only. URLs, bot tokens, and
+    // any other credentials remain server-side and never cross this boundary.
+    return ScheduleNotificationOptionsSchema.parse({
+      version: 1,
+      projectId,
+      adapters: messageAdapters.map((adapter) => ({ id: adapter.id, channel: adapter.channel })),
+    });
+  });
+
+  const validateScheduleNotification = (projectId: string, notification: { adapterId: string | null; events: readonly string[] }) => {
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    if (notification.adapterId !== null && !messageAdapters.some((adapter) => adapter.id === notification.adapterId)) {
+      throw new ApiError(400, "Notification adapter is not configured", "INVALID_NOTIFICATION_ADAPTER");
+    }
+  };
+
+  const defaultScheduleNotification = {
+    events: ["completed", "failed", "blocked"] as ScheduleNotificationEvent[],
+    adapterId: null,
+  };
+
   /** Resolve a routine schedule's durable target at create/edit time. */
   const scheduleTarget = (projectId: string, taskKind: "inspect_workspace" | "routine", routineId: string | null | undefined, enabled = true) => {
     if (taskKind !== "routine") {
@@ -3909,6 +3935,16 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     // A newly-created binding must be valid even if the user starts it
     // paused; resuming later should not hide a bad target behind that pause.
     const target = scheduleTarget(projectId, body.taskKind, body.routineId ?? null, true);
+    if (body.taskKind !== "routine" && body.notification !== undefined) {
+      throw new ApiError(400, "Notification preferences are only supported for routine schedules", "NOTIFICATION_UNSUPPORTED_FOR_TASK_KIND");
+    }
+    const notification = body.notification === undefined
+      ? defaultScheduleNotification
+      : {
+        events: body.notification.events ?? defaultScheduleNotification.events,
+        adapterId: body.notification.adapterId ?? null,
+      };
+    validateScheduleNotification(projectId, notification);
     const now = new Date().toISOString();
     return schedules.create({
       id: crypto.randomUUID(),
@@ -3917,6 +3953,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       taskKind: body.taskKind,
       ...target,
       ...(body.enabled === undefined ? {} : { enabled: body.enabled }),
+      notification,
       nextRunAt: nextRun(body.cron, new Date()).toISOString(),
       createdAt: now,
       updatedAt: now,
@@ -3935,9 +3972,22 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!current || current.projectId !== projectId) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
     const body = UpdateScheduleSchema.parse(bodyInput);
     const taskKind = body.taskKind ?? current.taskKind;
-    const routineId = body.routineId !== undefined ? body.routineId : current.routineId;
+    const routineId = body.routineId !== undefined ? body.routineId : taskKind === "routine" ? current.routineId : null;
     const enabled = body.enabled ?? current.enabled;
     const target = scheduleTarget(projectId, taskKind, routineId, enabled);
+    if (taskKind !== "routine" && body.notification !== undefined) {
+      throw new ApiError(400, "Notification preferences are only supported for routine schedules", "NOTIFICATION_UNSUPPORTED_FOR_TASK_KIND");
+    }
+    // A routine -> inspect transition cannot carry the routine-only policy.
+    // Clear an omitted policy as part of the effective update so a stale
+    // adapter selection can never fan out if this schedule later changes back.
+    const notification = taskKind !== "routine"
+      ? defaultScheduleNotification
+      : {
+        events: body.notification?.events ?? current.notification.events,
+        adapterId: body.notification?.adapterId !== undefined ? body.notification.adapterId : current.notification.adapterId,
+      };
+    validateScheduleNotification(projectId, notification);
     const cron = body.cron ?? current.cron;
     try {
       assertValidCron(cron);
@@ -3952,6 +4002,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       taskKind,
       ...target,
       enabled,
+      notification,
       // A changed cron starts from the next future boundary. Pause/resume
       // without changing cron preserves the pending occurrence so resume is
       // deterministic and does not silently drop work.

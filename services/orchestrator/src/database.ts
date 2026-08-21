@@ -1809,6 +1809,37 @@ export const migrations:Migration[]=[
     CREATE INDEX tool_artifact_task_refs_task_idx
       ON tool_artifact_task_refs(task_id,artifact_id);
   `}
+  ,{id:60,name:"schedule_notification_preferences",up:(db:Database.Database)=>{
+    const scheduleColumns=new Set((db.prepare("PRAGMA table_info(schedules)").all()as Array<{name:string}>).map(column=>column.name));
+    if(!scheduleColumns.has("notification_events_json"))db.exec("ALTER TABLE schedules ADD COLUMN notification_events_json TEXT NOT NULL DEFAULT '[\"completed\",\"failed\",\"blocked\"]'");
+    if(!scheduleColumns.has("notification_adapter_id"))db.exec("ALTER TABLE schedules ADD COLUMN notification_adapter_id TEXT");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS schedule_notification_outbox (
+        id TEXT PRIMARY KEY,
+        schedule_run_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        adapter_id TEXT NOT NULL,
+        event TEXT NOT NULL CHECK(event IN ('waiting_for_approval','completed','failed','blocked')),
+        subject TEXT NOT NULL,
+        text TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','sent')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(schedule_run_id,adapter_id,event)
+      );
+      CREATE INDEX IF NOT EXISTS schedule_notification_outbox_pending_idx
+        ON schedule_notification_outbox(status,lease_expires_at,updated_at,id);
+    `);
+  }}
+  ,{id:61,name:"schedule_notification_observed_state",up:(db:Database.Database)=>{
+    const runColumns=new Set((db.prepare("PRAGMA table_info(schedule_runs)").all()as Array<{name:string}>).map(column=>column.name));
+    if(!runColumns.has("notification_observed_event"))db.exec("ALTER TABLE schedule_runs ADD COLUMN notification_observed_event TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS schedule_runs_notification_observed_idx ON schedule_runs(notification_observed_event,updated_at,id)");
+  }}
 ];
 /**
  * Durability mode for committed writes.

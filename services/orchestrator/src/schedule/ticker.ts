@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import type { Schedule, ScheduleRun } from "@morrow/contracts";
+import type { Schedule, ScheduleNotificationEvent, ScheduleRun } from "@morrow/contracts";
 import type { TaskRunner } from "../runner.js";
 import { schedulesRepository } from "../repositories/schedules.js";
 import { taskRepository } from "../repositories/tasks.js";
 import { routinesRepository } from "../repositories/routines.js";
 import { nextRun } from "./cron.js";
-import { notifyAll, type MessageAdapter } from "../messaging/adapter.js";
+import type { OutgoingMessage, MessageAdapter } from "../messaging/adapter.js";
 import { AgentTaskDispatchError } from "../mission/task-dispatcher.js";
 import { assertRoutineTarget, dispatchRoutineTask } from "../routines/dispatch.js";
 
@@ -22,6 +22,27 @@ export interface FiredSchedule {
 
 type RunnerLike = Pick<TaskRunner, "run"> & Partial<Pick<TaskRunner, "onSettled" | "isActive">>;
 
+function notificationEventForRun(run: ScheduleRun): ScheduleNotificationEvent | null {
+  if (run.status === "waiting_for_approval") return "waiting_for_approval";
+  if (run.status === "completed" || run.status === "verified") return "completed";
+  if (run.status === "failed") return "failed";
+  if (run.status === "blocked") return "blocked";
+  return null;
+}
+
+function notificationMessage(event: ScheduleNotificationEvent): { subject: string; text: string } {
+  if (event === "waiting_for_approval") {
+    return { subject: "Scheduled routine", text: "Morrow scheduled routine run is waiting for approval." };
+  }
+  if (event === "completed") {
+    return { subject: "Scheduled routine", text: "Morrow scheduled routine run completed." };
+  }
+  if (event === "failed") {
+    return { subject: "Scheduled routine", text: "Morrow scheduled routine run failed; review its schedule history." };
+  }
+  return { subject: "Scheduled routine", text: "Morrow scheduled routine run is blocked; review its schedule history." };
+}
+
 /**
  * Drives the one Morrow cron scheduler. Legacy inspect-workspace rows keep
  * their original path; routine rows claim a durable occurrence first, then
@@ -31,6 +52,7 @@ export class SchedulerTicker {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => Date;
   private readonly recoveryOwner = `scheduler:${randomUUID()}`;
+  private readonly notificationOwner = `scheduler-notify:${randomUUID()}`;
   private readonly unsubscribeSettled?: () => void;
 
   constructor(private readonly deps: {
@@ -47,11 +69,70 @@ export class SchedulerTicker {
     }
   }
 
-  private notify(message: { subject: string; text: string }): void {
-    if (!this.deps.adapters?.length) return;
-    void notifyAll(this.deps.adapters, message).catch(() => {
-      // Notification is an optional side effect and never changes run truth.
+  private adaptersFor(schedule?: Schedule): MessageAdapter[] {
+    const adapters = schedule?.notification.adapterId
+      ? this.deps.adapters?.filter((adapter) => adapter.id === schedule.notification.adapterId)
+      : this.deps.adapters;
+    return adapters ?? [];
+  }
+
+  private adapterIdsFor(schedule: Schedule): string[] {
+    // Preserve an explicitly selected adapter id in the outbox even when the
+    // adapter is temporarily unavailable after a restart or configuration
+    // change. The delivery loop can then retry when that existing adapter
+    // returns; an empty "all adapters" selection has nothing to enqueue.
+    return schedule.notification.adapterId
+      ? [schedule.notification.adapterId]
+      : (this.deps.adapters ?? []).map((adapter) => adapter.id);
+  }
+
+  private notify(message: { subject: string; text: string }, schedule?: Schedule): void {
+    const adapters = this.adaptersFor(schedule);
+    if (!adapters.length) return;
+    for (const adapter of adapters) void adapter.send(message).catch(() => {
+      // Legacy notification is an optional side effect and never changes run truth.
     });
+  }
+
+  private notifyRun(schedule: Schedule, run: ScheduleRun, event: ScheduleNotificationEvent): void {
+    if (!schedule.notification.events.includes(event)) return;
+    const adapterIds = this.adapterIdsFor(schedule);
+    if (!adapterIds.length) return;
+    const schedules = schedulesRepository(this.deps.db);
+    const message = notificationMessage(event);
+    schedules.enqueueNotification({
+      runId: run.id,
+      projectId: run.projectId,
+      adapterIds,
+      event,
+      ...message,
+      now: this.now().toISOString(),
+    });
+  }
+
+  private async deliverNotifications(nowIso: string): Promise<void> {
+    const schedules = schedulesRepository(this.deps.db);
+    const leaseExpiresAt = new Date(new Date(nowIso).getTime() + 5 * 60_000).toISOString();
+    for (const pending of schedules.listPendingNotificationDeliveries(nowIso)) {
+      const adapter = this.deps.adapters?.find((candidate) => candidate.id === pending.adapterId);
+      // Keep an outbox row pending if its adapter is temporarily unavailable.
+      if (!adapter) continue;
+      const delivery = schedules.claimNotificationDelivery({
+        id: pending.id,
+        owner: this.notificationOwner,
+        now: nowIso,
+        leaseExpiresAt,
+      });
+      if (!delivery) continue;
+      const message: OutgoingMessage = { text: delivery.text, subject: delivery.subject };
+      try {
+        const result = await adapter.send(message);
+        if (result.ok) schedules.markNotificationDelivered(delivery.id, this.notificationOwner, nowIso);
+        else schedules.markNotificationRetry(delivery.id, this.notificationOwner, result.detail, nowIso);
+      } catch (error) {
+        schedules.markNotificationRetry(delivery.id, this.notificationOwner, error, nowIso);
+      }
+    }
   }
 
   private onTaskSettled(taskId: string): void {
@@ -60,10 +141,19 @@ export class SchedulerTicker {
     if (!run || run.trigger !== "scheduled" && run.trigger !== "manual") return;
     const task = taskRepository(this.deps.db).getTaskById(taskId);
     if (!task) return;
+    if (!(new Set(["completed", "verified", "failed", "cancelled"])).has(task.status)) return;
     const settled = schedules.markTaskSettled(taskId, task.status, this.now().toISOString());
     if (!settled || settled.routineId === null) return;
-    const status = settled.status === "verified" || settled.status === "completed" ? "completed" : settled.status;
-    this.notify({ subject: "Scheduled routine", text: `Morrow scheduled routine run ${status}.` });
+    const schedule = schedules.get(settled.scheduleId);
+    const event = notificationEventForRun(settled);
+    if (!schedule || !event) return;
+    this.notifyRun(schedule, settled, event);
+    // Settlement callbacks can arrive between ticker intervals. Enqueue first
+    // (durably) and then attempt delivery without making the task callback
+    // wait on an external adapter.
+    void this.deliverNotifications(this.now().toISOString()).catch(() => {
+      // Notification delivery never changes schedule/task truth.
+    });
   }
 
   private dispatchRoutineRun(input: {
@@ -103,8 +193,8 @@ export class SchedulerTicker {
       });
     } catch (error) {
       const code = error instanceof AgentTaskDispatchError ? error.code : "SCHEDULE_DISPATCH_FAILED";
-      schedulesRepository(this.deps.db).markBlocked(run.id, code, error, nowIso);
-      this.notify({ subject: "Scheduled routine", text: "Morrow could not start a scheduled routine run; review its schedule history." });
+      const blocked = schedulesRepository(this.deps.db).markBlocked(run.id, code, error, nowIso);
+      if (blocked) this.notifyRun(schedule, blocked, "blocked");
     }
   }
 
@@ -144,8 +234,11 @@ export class SchedulerTicker {
       try {
         this.deps.runner.run(run.taskId, { recovered: true });
       } catch (error) {
-        schedules.markFailed(run.id, "SCHEDULE_REPLAY_FAILED", error, nowIso);
-        this.notify({ subject: "Scheduled routine", text: "Morrow could not resume a scheduled routine run; review its schedule history." });
+        const failed = schedules.markFailed(run.id, "SCHEDULE_REPLAY_FAILED", error, nowIso);
+        if (failed) {
+          const schedule = schedules.get(failed.scheduleId);
+          if (schedule) this.notifyRun(schedule, failed, "failed");
+        }
       }
     }
 
@@ -195,6 +288,27 @@ export class SchedulerTicker {
         console.error("Scheduled task dispatch failed", error);
       }
     }
+
+    // Waiting-for-approval and terminal runs are intentionally observed from
+    // durable state: a parked runner emits no settlement callback, while a
+    // restart may leave the task terminal before its run projection hydrates.
+    // The outbox unique key makes this idempotent across ticker restarts.
+    for (const run of schedules.listNotifiableRuns()) {
+      const schedule = schedules.get(run.scheduleId);
+      const event = notificationEventForRun(run);
+      if (schedule && schedule.taskKind === "routine" && event) this.notifyRun(schedule, run, event);
+      // Mark every observed row, including legacy/removed schedules and
+      // unselected events, so a bounded page advances durably. State changes
+      // clear this marker and make the next event observable again.
+      schedules.markNotificationObserved(run.id, event);
+    }
+
+    // Deliver after enqueueing all observations. Failed adapter calls return
+    // to `pending` and are retried by the next tick; successful rows remain
+    // `sent` and cannot be duplicated.
+    void this.deliverNotifications(nowIso).catch(() => {
+      // Notification delivery never changes schedule/task truth.
+    });
 
     const legacyFired = fired.filter((item) => item.routineId === undefined);
     if (legacyFired.length > 0) {

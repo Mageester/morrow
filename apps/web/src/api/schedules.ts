@@ -2,6 +2,7 @@ import {
   CreateScheduleSchema,
   ScheduleRunSchema,
   ScheduleSchema,
+  ScheduleNotificationOptionsSchema,
   UpdateScheduleSchema,
   type Schedule,
   type ScheduleRun,
@@ -12,6 +13,7 @@ import { api } from "./client.js";
 
 const scheduleListSchema = ScheduleSchema.array();
 const scheduleRunListSchema = ScheduleRunSchema.array();
+const scheduleNotificationOptionsSchema = ScheduleNotificationOptionsSchema;
 const scheduleActionSchema = z.object({
   version: z.literal(1),
   scheduleId: z.string(),
@@ -27,6 +29,7 @@ const schedulesPath = (projectId: string) => `/api/projects/${encodeURIComponent
 export const scheduleKeys = {
   all: ["schedules"] as const,
   list(projectId: string) { return [...this.all, "list", projectId] as const; },
+  notificationOptions(projectId: string) { return [...this.all, "notification-options", projectId] as const; },
   runs(projectId: string, scheduleId: string) { return [...this.all, "runs", projectId, scheduleId] as const; },
 };
 
@@ -35,6 +38,13 @@ export const scheduleQueries = {
     return queryOptions<Schedule[]>({
       queryKey: scheduleKeys.list(projectId),
       queryFn: () => api.get(schedulesPath(projectId), scheduleListSchema),
+      enabled: Boolean(projectId),
+    });
+  },
+  notificationOptions(projectId: string) {
+    return queryOptions({
+      queryKey: scheduleKeys.notificationOptions(projectId),
+      queryFn: () => api.get(`/api/projects/${encodeURIComponent(projectId)}/schedule-notification-options`, scheduleNotificationOptionsSchema),
       enabled: Boolean(projectId),
     });
   },
@@ -48,7 +58,7 @@ export const scheduleQueries = {
 };
 
 export const scheduleApi = {
-  create(projectId: string, input: { cron: string; routineId: string }) {
+  create(projectId: string, input: z.input<typeof CreateScheduleSchema>) {
     return api.post(schedulesPath(projectId), CreateScheduleSchema.parse(input), ScheduleSchema);
   },
   update(projectId: string, scheduleId: string, input: z.input<typeof UpdateScheduleSchema>) {
