@@ -19,7 +19,7 @@ async function request<T>(
   schema: z.ZodType<T>,
 ): Promise<T> {
   const headers = new Headers(init.headers);
-  if (!headers.has("content-type")) {
+  if (!headers.has("content-type") && (init.body !== undefined || init.method === "GET")) {
     headers.set("content-type", "application/json");
   }
 

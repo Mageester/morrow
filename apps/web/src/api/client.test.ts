@@ -49,6 +49,21 @@ describe("typed API client", () => {
     );
   });
 
+  it("does not label a bodyless DELETE as JSON", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        Response.json({ value: "deleted" }, { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.delete("/api/example", resultSchema);
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    expect(init?.method).toBe("DELETE");
+    expect(init?.body).toBeUndefined();
+    expect(new Headers(init?.headers).get("content-type")).toBeNull();
+  });
+
   it("maps structured failures to an ApiClientError", async () => {
     vi.stubGlobal(
       "fetch",

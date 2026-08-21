@@ -155,7 +155,10 @@ describe("GroupParticipantStrip", () => {
 
     await user.click(within(strip).getByRole("button", { name: "Remove Research" }));
     await vi.waitFor(() => expect(within(strip).queryByText("Research")).not.toBeInTheDocument());
-    expect(calls.some(({ url, init }) => url.endsWith("/participants/agent-research") && init?.method === "DELETE")).toBe(true);
+    const removal = calls.find(({ url, init }) => url.endsWith("/participants/agent-research") && init?.method === "DELETE");
+    expect(removal).toBeDefined();
+    expect(removal?.init?.body).toBeUndefined();
+    expect(new Headers(removal?.init?.headers).get("content-type")).toBeNull();
   });
 
   it("exposes bounded ordering controls for participants on narrow screens", async () => {
