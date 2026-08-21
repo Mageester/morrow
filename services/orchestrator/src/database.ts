@@ -1843,6 +1843,9 @@ export const migrations:Migration[]=[
   ,{id:62,name:"task_expected_agent_profile_hash",sql:`
     ALTER TABLE tasks ADD COLUMN expected_agent_profile_hash TEXT;
   `}
+  ,{id:63,name:"delegation_write_memory_scopes",sql:`
+    ALTER TABLE delegations ADD COLUMN allowed_write_memory_scopes_json TEXT NOT NULL DEFAULT '[]';
+  `}
 ];
 /**
  * Durability mode for committed writes.

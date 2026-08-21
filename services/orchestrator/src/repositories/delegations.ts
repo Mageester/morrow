@@ -13,6 +13,7 @@ function mapDelegation(row: Record<string, unknown>): Delegation {
     contextSnapshotRef: row.context_snapshot_ref,
     allowedTools: JSON.parse(String(row.allowed_tools_json ?? "[]")),
     allowedMemoryScopes: JSON.parse(String(row.allowed_memory_scopes_json ?? "[]")),
+    allowedWriteMemoryScopes: JSON.parse(String(row.allowed_write_memory_scopes_json ?? "[]")),
     providerId: row.provider_id ?? null,
     model: row.model ?? null,
     budget: {
@@ -40,6 +41,8 @@ export interface CreateDelegationRow {
   contextSnapshotRef: string;
   allowedTools: string[];
   allowedMemoryScopes: MemoryScope[];
+  /** Server-computed write intersection; defaults to [] (no delegated writes). */
+  allowedWriteMemoryScopes?: MemoryScope[];
   providerId: string | null;
   model: string | null;
   budget: { maxProviderCalls: number | null; maxTokenBudget: number | null; maxWallClockMs: number | null };
@@ -65,10 +68,10 @@ export function delegationsRepository(db: Database.Database) {
       db.prepare(
         `INSERT INTO delegations(
            id,schema_version,parent_task_id,team_id,agent_id,objective,
-           acceptance_criteria_json,context_snapshot_ref,allowed_tools_json,allowed_memory_scopes_json,
+           acceptance_criteria_json,context_snapshot_ref,allowed_tools_json,allowed_memory_scopes_json,allowed_write_memory_scopes_json,
            provider_id,model,budget_max_provider_calls,budget_max_token_budget,budget_max_wall_clock_ms,
            approval_required,status,deadline_at,correlation_id,child_task_id,created_at,updated_at
-         ) VALUES(?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending_approval',?,?,NULL,?,?)`
+         ) VALUES(?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending_approval',?,?,NULL,?,?)`
       ).run(
         input.id,
         input.parentTaskId,
@@ -79,6 +82,7 @@ export function delegationsRepository(db: Database.Database) {
         input.contextSnapshotRef,
         JSON.stringify(input.allowedTools),
         JSON.stringify(input.allowedMemoryScopes),
+        JSON.stringify(input.allowedWriteMemoryScopes ?? []),
         input.providerId,
         input.model,
         input.budget.maxProviderCalls,

@@ -46,6 +46,28 @@ describe("Teams API — Research and verify preset", () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it("narrows delegation memory writes to the team policy intersection", async () => {
+    const created = await app.inject({ method: "POST", url: "/api/projects/p1/teams", payload: { preset: "research_and_verify" } });
+    const teamId = created.json().team.id;
+    const verifier = created.json().members.find((m: any) => m.name === "Verifier");
+    taskRepository(db).createTask({ id: "parent", projectId: "p1", kind: "agent_chat", status: "running", createdAt: ts() });
+
+    // A "read" team lets members read shared memory but never write it, no
+    // matter what their standing profile says.
+    teamsRepository(db).setStatus(teamId, "paused", ts());
+    db.prepare("UPDATE teams SET status='active', shared_memory_policy='read' WHERE id=?").run(teamId);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tasks/parent/delegations",
+      payload: { teamId, agentId: verifier.id, objective: "Verify the findings" },
+    });
+    expect(res.statusCode).toBe(201);
+    const delegation = res.json();
+    expect(delegation.allowedMemoryScopes).toContain("team");
+    expect(delegation.allowedWriteMemoryScopes).toEqual([]);
+  });
+
   it("lists and fetches teams scoped to their project", async () => {
     await app.inject({ method: "POST", url: "/api/projects/p1/teams", payload: { preset: "research_and_verify" } });
     const list = await app.inject({ method: "GET", url: "/api/projects/p1/teams" });

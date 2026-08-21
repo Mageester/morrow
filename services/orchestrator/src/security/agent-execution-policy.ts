@@ -44,7 +44,7 @@ function effectivePermissions(permissions: AgentToolPermission[]): Map<string, A
 export function buildAgentExecutionPolicy(
   agent: Agent,
   permissions: AgentToolPermission[],
-  delegation?: Pick<Delegation, "allowedTools" | "allowedMemoryScopes" | "approvalRequired" | "budget">,
+  delegation?: Pick<Delegation, "allowedTools" | "allowedMemoryScopes" | "allowedWriteMemoryScopes" | "approvalRequired" | "budget">,
 ): AgentExecutionPolicy {
   const effective = effectivePermissions(permissions);
   const deniedTools = new Set(
@@ -60,7 +60,10 @@ export function buildAgentExecutionPolicy(
       ? allowedPermissionTools
       : null;
   const readScopes = new Set(delegation?.allowedMemoryScopes ?? agent.memoryReadScopes);
-  const writeScopes = new Set(delegation?.allowedMemoryScopes ?? agent.memoryWriteScopes);
+  // Delegated writes come from the delegation's own write intersection, never
+  // from the read list: a "read" team policy must not promote readable team
+  // memory into writable memory on the child.
+  const writeScopes = new Set(delegation?.allowedWriteMemoryScopes ?? agent.memoryWriteScopes);
   const policyAgent = delegation
     ? { ...agent, memoryReadScopes: [...readScopes], memoryWriteScopes: [...writeScopes] }
     : agent;

@@ -24,11 +24,13 @@ const ReasoningConfigurationSchema: z.ZodType<ReasoningConfiguration> = z.lazy((
  *   is deliberately NOT a fourth privacy mode — it is a per-agent tool
  *   permission (see AgentToolPermission in ./index.ts), so it composes with
  *   any privacy mode instead of forking a second taxonomy.
- * - A Team/Agent's effective policy is always the intersection of parent task
- *   authority, team policy, and the agent's own policy. Nothing here lets a
- *   child agent widen that intersection — budgets, scopes, and approval
- *   requirements are server-computed at delegation-creation time, never
- *   accepted from client or model output.
+   * - A Team/Agent's effective policy is always the intersection of parent task
+   *   authority, team policy, and the agent's own policy. Nothing here lets a
+   *   child agent widen that intersection — budgets, scopes, and approval
+   *   requirements are server-computed at delegation-creation time, never
+   *   accepted from client or model output. Reads and writes are intersected
+   *   separately (`allowedMemoryScopes` vs `allowedWriteMemoryScopes`), so a
+   *   readable scope never becomes writable through delegation.
  * - `ephemeral` memory (request-only context) is intentionally NOT a
  *   MemoryScope value — it must never be persisted, so it has no row shape.
  */
@@ -185,6 +187,10 @@ export const DelegationSchema = z.object({
   contextSnapshotRef: z.string().min(1).max(1024),
   allowedTools: z.array(z.string().min(1).max(120)).default([]),
   allowedMemoryScopes: z.array(MemoryScopeSchema).default([]),
+  // Server-computed write intersection. Deliberately separate from the read
+  // list: a "read" team policy must never promote readable team memory into
+  // writable team memory on the child.
+  allowedWriteMemoryScopes: z.array(MemoryScopeSchema).default([]),
   providerId: z.string().nullable(),
   model: z.string().nullable(),
   budget: DelegationBudgetSchema,

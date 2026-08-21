@@ -963,9 +963,16 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     // side", not "unlimited" (the other side's bound still applies).
     const tighter = (a: number | null, b: number | null) =>
       a === null ? b : b === null ? a : Math.min(a, b);
+    // Reads and writes are intersected separately. "none" shares nothing;
+    // "read" shares read access only — team memory never becomes writable
+    // through delegation, whatever the member's standing write scopes say.
+    const withoutTeam = <T>(scopes: readonly T[]): T[] => scopes.filter((s) => s !== "team");
     const allowedMemoryScopes = team.sharedMemoryPolicy === "none"
-      ? agent.memoryReadScopes.filter((s) => s !== "team")
-      : agent.memoryReadScopes;
+      ? withoutTeam(agent.memoryReadScopes)
+      : [...agent.memoryReadScopes];
+    const allowedWriteMemoryScopes = team.sharedMemoryPolicy === "none" || team.sharedMemoryPolicy === "read"
+      ? withoutTeam(agent.memoryWriteScopes)
+      : [...agent.memoryWriteScopes];
     const allowedTools = agents.listToolPermissions(agent.id).filter((p) => p.effect === "allow").map((p) => p.toolName);
 
     const now = new Date().toISOString();
@@ -979,6 +986,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       contextSnapshotRef: `task:${parent.id}`,
       allowedTools,
       allowedMemoryScopes,
+      allowedWriteMemoryScopes,
       providerId: agent.providerOverride ?? null,
       model: agent.modelOverride ?? null,
       budget: {
