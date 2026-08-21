@@ -6,6 +6,53 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-21
+
+AI teammates become a usable local-first team: named specialists can share
+bounded work, remember their own durable context, run scheduled routines, and
+show their work as evidence in one conversation.
+
+### Added
+
+- Secure teammate collaboration through the explicit `ask_teammate` tool,
+  including legacy teammate compatibility, child identity, bounded policy, and
+  durable handoff state.
+- Shared teammate conversations with roster membership, participant controls,
+  handoff rows, evidence references, and live status updates.
+- Private teammate memory with explicit ownership and project isolation.
+- Routine recording by demonstration, editable routine definitions, schedules,
+  pause/resume/manual-run controls, run history, and configurable notification
+  policy.
+- A beginner walkthrough for creating a teammate, asking for help, and
+  recording a routine: `docs/guides/blank-state-teammates-walkthrough.md`.
+
+### Fixed
+
+- Teammate prompts now include the assigned specialist's identity and purpose,
+  instead of presenting every specialist as a generic assistant.
+- Teammate creation and participant removal work across the legacy and current
+  API shapes, including bodyless removal requests.
+- Durable teammate memory, handoffs, routine schedules, and notification
+  outbox state survive restart without exposing provider text or private
+  reasoning in conversation projections.
+
+### Changed
+
+- The web app is organized around a teammate roster and human-readable
+  conversation evidence, with responsive layouts through 390px mobile.
+- Routine execution re-prompts from recorded observations rather than replaying
+  historical tool calls; every run remains bounded by the saved teammate
+  policy.
+
+### Limitations
+
+- Teammates remain local-first and provider-neutral; external provider access is
+  still opt-in and uses the configured provider credentials.
+- Write and terminal tools remain gated by their existing approval and trusted
+  workspace boundaries; this release does not silently broaden permissions.
+- Public installation is not complete until the release workflow publishes
+  verified Windows artifacts and the separate website deployment is performed.
+
 ## [0.2.0] - 2026-08-19
 
 The rebuilt shell was fast and quiet. Too quiet: it went blank between
