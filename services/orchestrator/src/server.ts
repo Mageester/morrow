@@ -56,7 +56,7 @@ import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { projectRepository } from "./repositories/projects.js";
-import { agentsRepository } from "./repositories/agents.js";
+import { agentsRepository, SoleExplicitAllowRuleError } from "./repositories/agents.js";
 import { teamsRepository } from "./repositories/teams.js";
 import { delegationsRepository } from "./repositories/delegations.js";
 import { handoffsRepository } from "./repositories/handoffs.js";
@@ -864,13 +864,16 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.delete("/api/agents/:agentId/tool-permissions/:toolName", async (request, reply) => {
     const { agentId, toolName } = request.params as { agentId: string; toolName: string };
     const agent = scopedToolPermissionAgent(request);
-    const permissions = agents.listToolPermissions(agent.id);
-    const current = permissions.find((permission) => permission.toolName === toolName);
-    if (toolName === "ask_teammate" && current?.effect === "allow"
-      && permissions.filter((permission) => permission.effect === "allow").length === 1) {
-      throw new ApiError(409, "This is the only explicit allow rule; clearing it would restore unrestricted tools", "SOLE_EXPLICIT_ALLOW_RULE");
+    const { confirmDefault } = z.object({ confirmDefault: z.string().optional() }).parse(request.query);
+    try {
+      const deleted = agents.deleteToolPermission(agent.id, toolName, { permitDefaultRestore: confirmDefault === "true" });
+      if (!deleted) throw new ApiError(404, "Tool permission not found", "NOT_FOUND");
+    } catch (error) {
+      if (error instanceof SoleExplicitAllowRuleError) {
+        throw new ApiError(409, error.message, error.code);
+      }
+      throw error;
     }
-    if (!agents.deleteToolPermission(agent.id, toolName)) throw new ApiError(404, "Tool permission not found", "NOT_FOUND");
     reply.status(204).send();
   });
 

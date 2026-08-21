@@ -54,6 +54,11 @@ describe("REST API and Task Runner Vertical Slice", () => {
     expect(clear.statusCode).toBe(409);
     expect(clear.json().error?.code ?? clear.json().code).toBe("SOLE_EXPLICIT_ALLOW_RULE");
     expect((await app.inject({ method: "GET", url: "/api/agents/a-scope/tool-permissions?projectId=p1" })).json()).toHaveLength(1);
+    // The explicit escape hatch: a confirmed delete may restore the default
+    // unrestricted policy, so the guard is never a dead end.
+    const restore = await app.inject({ method: "DELETE", url: "/api/agents/a-scope/tool-permissions/ask_teammate?projectId=p1&confirmDefault=true" });
+    expect(restore.statusCode).toBe(204);
+    expect((await app.inject({ method: "GET", url: "/api/agents/a-scope/tool-permissions?projectId=p1" })).json()).toHaveLength(0);
   });
 
   it("scopes teammate skill access by project like tool permissions", async () => {
