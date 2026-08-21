@@ -13,6 +13,9 @@ import { processesRepository } from "./repositories/processes.js";
 import { EntitlementPoller } from "./hosted/entitlement-poller.js";
 import { resolveHostedApiUrl } from "./hosted/hosted-api-url.js";
 import { hydrateProviderEnvFromSecrets } from "./provider/secrets.js";
+import { EXACT_TOKENIZER_PROVIDER_IDS, warmExactTokenizer } from "./execution/context-budget.js";
+import { isProviderConfigured } from "./provider/registry.js";
+import type { ProviderId } from "@morrow/contracts";
 
 // In a packaged install the launcher sets MORROW_SKILLS_DIR to the bundled
 // skills directory. When running from source (pnpm dev) fall back to the repo's
@@ -81,6 +84,16 @@ const host = process.env.MORROW_BIND_HOST?.trim() || "127.0.0.1";
 
 app.listen({ host, port }).then((address) => {
   console.log(`Server listening at ${address}`);
+  // Pay the exact tokenizer's one-time build cost here, on an idle process,
+  // rather than inside the user's first turn. Gated on an OpenAI-family
+  // provider being configured because the encoder costs ~66MB of heap that a
+  // local-only or Anthropic-only install would never read.
+  if (process.env.MORROW_DISABLE_TOKENIZER_WARMUP !== "true"
+    && EXACT_TOKENIZER_PROVIDER_IDS.some((id) => isProviderConfigured(id as ProviderId, process.env))) {
+    setTimeout(() => {
+      try { warmExactTokenizer(); } catch { /* counting falls back to the estimator */ }
+    }, 0).unref();
+  }
 }).catch(err => {
   console.error(err);
   process.exit(1);

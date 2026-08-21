@@ -38,9 +38,11 @@ export interface MissionReconcileSummary extends ReconcileSummary {
 const TERMINAL_STATUSES = new Set(["completed", "verified", "failed", "cancelled"]);
 
 /**
- * Mark non-preserved `running` tasks as `interrupted` exactly once. The startup
- * reconciler excludes lease-claimed checkpointed agent work; direct callers and
- * legacy/unknown work retain the conservative manual-recovery behavior.
+ * Mark non-preserved `running` tasks as `interrupted` exactly once. Tasks with
+ * a pending approval remain parked and nonterminal so the approval resolver
+ * can safely wake them after restart. The startup reconciler excludes
+ * lease-claimed checkpointed agent work; direct callers and legacy/unknown
+ * work retain the conservative manual-recovery behavior.
  *
  * Idempotent: a second call finds no `running` rows and is a no-op. Returns the
  * number of tasks interrupted.
@@ -52,7 +54,14 @@ export function recoverRunningTasks(
   options: { preserveTaskIds?: ReadonlySet<string> } = {},
 ): number {
   const continuity = executionContinuityRepository(db);
-  const rows = (db.prepare("SELECT id, type FROM tasks WHERE status='running' ORDER BY id ASC").all() as { id: string; type: string }[])
+  const rows = (db.prepare(
+    `SELECT t.id, t.type FROM tasks t
+     WHERE t.status='running'
+       AND NOT EXISTS (
+         SELECT 1 FROM approvals a WHERE a.task_id=t.id AND a.status='pending'
+       )
+     ORDER BY t.id ASC`,
+  ).all() as { id: string; type: string }[])
     .filter((row) => !options.preserveTaskIds?.has(row.id));
   const taskIds: string[] = [];
   for (const row of rows) db.transaction(() => {
@@ -162,8 +171,12 @@ export function reconcileTasksOnStartup(
 
   const tasks = taskRepository(db);
   const queued = db
-    .prepare("SELECT id, parent_task_id AS parentTaskId FROM tasks WHERE status='queued' ORDER BY created_at ASC, id ASC")
-    .all() as { id: string; parentTaskId: string | null }[];
+    .prepare(
+      `SELECT t.id, t.parent_task_id AS parentTaskId,
+         EXISTS (SELECT 1 FROM approvals a WHERE a.task_id=t.id AND a.status='pending') AS pendingApproval
+       FROM tasks t WHERE t.status='queued' ORDER BY t.created_at ASC, t.id ASC`,
+    )
+    .all() as { id: string; parentTaskId: string | null; pendingApproval: number }[];
 
   let requeued = 0;
   let cancelledOrphans = 0;
@@ -175,6 +188,9 @@ export function reconcileTasksOnStartup(
 
   for (const row of queued) {
     if (runner.isActive(row.id)) continue; // idempotency / belt-and-suspenders
+    // Approval-gated work is parked, not orphaned. The approval resolver wakes
+    // it after the user decides rather than running it during startup.
+    if (row.pendingApproval) continue;
 
     if (row.parentTaskId) {
       const parent = tasks.getTaskById(row.parentTaskId);

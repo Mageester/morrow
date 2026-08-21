@@ -1,4 +1,4 @@
-import type { Conversation, ModelStatus, PresetStatus, WebConversationActivityEntry, WebConversationMessage, WebMissionSummary } from "@morrow/contracts";
+import type { Conversation, ModelStatus, PresetStatus, ThreadHandoff, WebConversationActivityEntry, WebConversationMessage, WebMissionSummary } from "@morrow/contracts";
 import { WebMissionSnapshotSchema } from "@morrow/contracts";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
@@ -32,6 +32,12 @@ import { NotableEvent, WorkSummary } from "./work-summary.js";
 import { parseTurnFailure } from "./turn-failure.js";
 import { TurnFailureNotice } from "./turn-failure-notice.js";
 import { LiveTurnStatus } from "./live-status.js";
+import { AskTeammate } from "./ask-teammate.js";
+import { HandoffRow } from "./handoff-row.js";
+import { RecordRoutine } from "./record-routine.js";
+import { handoffQueries } from "../../api/handoffs.js";
+import { TeammateAvatar } from "../roster/teammate-avatar.js";
+import { useThreadTeammate } from "../roster/use-thread-teammate.js";
 
 const ACTIVE_STATES = new Set(["queued", "streaming"]);
 const FAILED_STATES = new Set(["failed", "interrupted"]);
@@ -154,6 +160,11 @@ export interface ConversationMessageItemProps {
   actionBusy: boolean;
   onRetry: (taskId: string) => void;
   onOpenActivity: () => void;
+  /** Who is speaking. Falls back to the product's own voice when the thread's
+   * teammate cannot be resolved, rather than inventing a name. */
+  teammate?: { name: string; isDefault: boolean } | undefined;
+  /** Work this turn handed to another teammate, shown where it happened. */
+  handoffs?: readonly ThreadHandoff[] | undefined;
 }
 
 /**
@@ -169,6 +180,20 @@ export interface ConversationMessageItemProps {
  * order did this happen?" — a different question from the one a conversation
  * answers. Rendering it inline is what turned this surface into an event feed.
  */
+/**
+ * "10:53 AM" — the clock time a message was written.
+ *
+ * A thread with a teammate is a conversation that happened at particular
+ * moments, and reading one back without them is like reading a chat log with
+ * the timestamps stripped: you can see what was said but not the shape of it.
+ * The date belongs to the day separator above, so this is time only.
+ */
+function messageTime(iso: string): string | null {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return null;
+  return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
 export const ConversationMessageItem = memo(function ConversationMessageItem({
   message,
   conversationId,
@@ -178,6 +203,8 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
   actionBusy,
   onRetry,
   onOpenActivity,
+  teammate,
+  handoffs,
 }: ConversationMessageItemProps) {
   const streaming = ACTIVE_STATES.has(message.streamingState);
   const failed = FAILED_STATES.has(message.streamingState);
@@ -193,19 +220,25 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
   );
 
   if (message.role === "user") {
+    const sentAt = messageTime(message.createdAt);
     return (
       <article
         className="morrow-conversation-message morrow-conversation-message--user"
         data-testid="conversation-message-user"
       >
-        <div className="morrow-conversation-message__content">
-          <p>{message.content}</p>
+        <div className="morrow-conversation-message__bubble">
+          <div className="morrow-conversation-message__content">
+            <p>{message.content}</p>
+          </div>
         </div>
+        {sentAt ? <time className="morrow-conversation-message__time">{sentAt}</time> : null}
       </article>
     );
   }
 
   const label = routingLabel(message);
+  const speaker = teammate?.name ?? "Morrow";
+  const sentAt = messageTime(message.createdAt);
   const body = failure ? failure.content : message.content;
   // Exactly one waiting signal per turn: the line below until work starts, the
   // work summary once it has, the answer once there is one.
@@ -216,11 +249,32 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
       className="morrow-conversation-message morrow-conversation-message--assistant"
       data-testid="conversation-message-assistant"
     >
-      <p className="morrow-conversation-message__author">Morrow</p>
+      {/* Mark in the gutter, name and time on the byline — the shape a
+          message thread has. With a roster, "who said this and when" is a real
+          question in a way it never was with one assistant. */}
+      <p className="morrow-conversation-message__author">
+        <TeammateAvatar isDefault={teammate?.isDefault ?? true} name={speaker} />
+        <span className="morrow-visually-hidden">{speaker}</span>
+      </p>
       <div className="morrow-conversation-message__turn">
-        {message.taskId ? <WorkSummary onInspect={onOpenActivity} work={work} /> : null}
+        <p className="morrow-conversation-message__byline">
+          <span className="morrow-conversation-message__speaker">{speaker}</span>
+          {sentAt ? <time className="morrow-conversation-message__time">{sentAt}</time> : null}
+        </p>
+        {message.taskId ? (
+          <WorkSummary
+            conversationId={conversationId}
+            onInspect={onOpenActivity}
+            projectId={projectId}
+            work={work}
+          />
+        ) : null}
 
         {work.notables.map((entry) => <NotableEvent entry={entry} key={entry.id} />)}
+
+        {(handoffs ?? []).map((handoff) => (
+          <HandoffRow handoff={handoff} key={handoff.id} projectId={projectId} />
+        ))}
 
         {showReasoning && message.taskId ? (
           <ReasoningDisclosure
@@ -236,7 +290,7 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
             announcements on every token. */}
         {waiting ? (
           <p className="morrow-typing-indicator">
-            Morrow is responding…
+            {speaker} is responding…
             <span aria-hidden="true" className="morrow-typing-indicator__dots">
               <span />
               <span />
@@ -287,6 +341,13 @@ export function ConversationPageContent({
   const queryClient = useQueryClient();
   const conversation = useQuery(conversationQueries.detail(projectId, conversationId));
   const messages = useQuery(conversationQueries.messages(projectId, conversationId));
+  // Who this thread belongs to. Resolved from the roster the rail already
+  // polls, so opening a thread costs no extra request.
+  const rosterTeammate = useThreadTeammate(projectId, conversation.data?.agentId);
+  const handoffs = useQuery(handoffQueries.thread(projectId, conversationId));
+  const teammate = rosterTeammate
+    ? { name: rosterTeammate.name, isDefault: rosterTeammate.agentId === null }
+    : undefined;
   const activity = useQuery(conversationQueries.activity(projectId, conversationId));
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -360,6 +421,16 @@ export function ConversationPageContent({
     }
     return grouped;
   }, [activity.data]);
+
+  // Handoffs hang off the turn that started them, so each appears at the point
+  // in the thread where the work was actually given away.
+  const handoffsByTask = useMemo(() => {
+    const grouped = new Map<string, ThreadHandoff[]>();
+    for (const handoff of handoffs.data?.handoffs ?? []) {
+      grouped.set(handoff.parentTaskId, [...(grouped.get(handoff.parentTaskId) ?? []), handoff]);
+    }
+    return grouped;
+  }, [handoffs.data]);
 
   // The live status line reports the turn in flight; it reads the same
   // projection the turn's own summary does, so the two can never disagree.
@@ -623,6 +694,38 @@ export function ConversationPageContent({
 
       <div aria-live="polite" className="morrow-conversation-history" ref={historyRef}>
         <div className="morrow-conversation-history__inner">
+        {/* Whose thread this is, stated once at the top. Without it a thread
+            with a specialist is indistinguishable from a thread with the
+            default assistant, which is the whole distinction the roster
+            introduces. */}
+        {rosterTeammate ? (
+          <div className="morrow-thread-teammate" data-testid="thread-teammate">
+            <TeammateAvatar isDefault={rosterTeammate.agentId === null} name={rosterTeammate.name} />
+            <span className="morrow-thread-teammate__text">
+              <span className="morrow-thread-teammate__name">{rosterTeammate.name}</span>
+              <span className="morrow-thread-teammate__job">
+                {rosterTeammate.instructions
+                  ?? (rosterTeammate.agentId === null
+                    ? "Your general assistant"
+                    : `${rosterTeammate.role.replace(/-/g, " ")} · no standing instructions`)}
+              </span>
+            </span>
+            {/* Live status, from the same projection the rail reads. In a
+                thread you are looking at, "working" is usually obvious; it is
+                the teammate that is waiting on YOU, or switched off, that this
+                has to say out loud. */}
+            <span className="morrow-thread-teammate__status" data-status={rosterTeammate.status}>
+              <span aria-hidden="true" className="morrow-roster__dot" />
+              {rosterTeammate.status === "working" ? "Working"
+                : rosterTeammate.status === "waiting" ? "Waiting on you"
+                : rosterTeammate.status === "disabled" ? "Off"
+                : "Idle"}
+            </span>
+            {rosterTeammate.modelLabel ? (
+              <span className="morrow-thread-teammate__model">{rosterTeammate.modelLabel}</span>
+            ) : null}
+          </div>
+        ) : null}
         <WorkspaceStatusLine projectId={projectId} />
 
         {(conversation.isRefetchError && conversation.data) || (messages.isRefetchError && messages.data) ? (
@@ -663,7 +766,9 @@ export function ConversationPageContent({
             onOpenActivity={openActivity}
             onRetry={handleRetry}
             projectId={projectId}
+            handoffs={message.taskId ? handoffsByTask.get(message.taskId) : undefined}
             showReasoning={showReasoning}
+            teammate={teammate}
           />
         ))}
 
@@ -734,6 +839,21 @@ export function ConversationPageContent({
       </div>
 
       <div className="morrow-conversation-composer">
+        {/* Beside the composer, not inside it: asking someone else is an act
+            on the thread, not a modifier on the message you are writing. */}
+        <div className="morrow-thread-actions">
+          <AskTeammate
+            conversationId={conversationId}
+            currentAgentId={conversation.data?.agentId ?? null}
+            parentTaskId={latestTaskId ?? null}
+            projectId={projectId}
+          />
+          <RecordRoutine
+            agentId={conversation.data?.agentId ?? null}
+            conversationId={conversationId}
+            projectId={projectId}
+          />
+        </div>
         <ChatComposer
           activeTaskId={activeTaskId}
           autoFocus
@@ -745,7 +865,7 @@ export function ConversationPageContent({
           onShowReasoningChange={setShowReasoning}
           onStop={stop}
           onSubmit={submit}
-          placeholder={activeTaskId ? "Type a follow-up or steering message to queue…" : "Reply to Morrow…"}
+          placeholder={activeTaskId ? "Type a follow-up or steering message to queue…" : `Reply to ${teammate?.name ?? "Morrow"}…`}
           queuedMessage={queuedMessage}
           reasoningConfig={reasoningConfig}
           showReasoning={showReasoning}

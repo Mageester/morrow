@@ -4,6 +4,7 @@ import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
 import { ExecutionLeaseFenceError } from "./repositories/execution-continuity.js";
 import type { ProcessSupervisor } from "./processes/supervisor.js";
+import type { TeammateSpawner } from "./tools/teammate-delegation.js";
 
 export interface ExecutionLeaseClaim {
   segmentId: string;
@@ -26,6 +27,7 @@ export class TaskRunner {
   private abortControllers = new Map<string, AbortController>();
   private settledListeners = new Set<(taskId: string) => void>();
   private executor: TaskExecutor;
+  private teammateSpawner: TeammateSpawner | undefined;
 
   constructor(private db: Database.Database, executor?: TaskExecutor, supervisor?: ProcessSupervisor) {
     this.executor = executor || (async (deps) => {
@@ -37,11 +39,23 @@ export class TaskRunner {
         await executeInspectWorkspaceTask({ db, taskId: deps.taskId });
       } else if (task.kind === "agent_chat") {
         const { executeAgentChatTask } = await import("./execution/agent.js");
-        await executeAgentChatTask({ db, taskId: deps.taskId, ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}), ...(deps.recovery ? { recovery: deps.recovery } : {}), ...(supervisor ? { supervisor } : {}) });
+        await executeAgentChatTask({
+          db,
+          taskId: deps.taskId,
+          ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}),
+          ...(deps.recovery ? { recovery: deps.recovery } : {}),
+          ...(supervisor ? { supervisor } : {}),
+          ...(this.teammateSpawner ? { teammateSpawner: this.teammateSpawner } : {}),
+        });
       } else {
         throw new Error(`Unsupported task kind: ${task.kind}`);
       }
     });
+  }
+
+  /** Install the server-owned model delegation boundary after construction. */
+  setTeammateSpawner(spawner: TeammateSpawner): void {
+    this.teammateSpawner = spawner;
   }
 
   /** True while a task is executing (or queued to execute) in this process. */

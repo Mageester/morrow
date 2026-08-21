@@ -99,6 +99,7 @@ describe("ConversationPage", () => {
           durationMs: null,
           exitCode: null,
           resultCount: null,
+          evidenceRef: null,
           createdAt: "2026-07-22T12:00:01.000Z",
           updatedAt: "2026-07-22T12:00:01.000Z",
         },
@@ -116,6 +117,7 @@ describe("ConversationPage", () => {
           durationMs: 812,
           exitCode: 0,
           resultCount: null,
+          evidenceRef: null,
           createdAt: "2026-07-22T12:00:02.000Z",
           updatedAt: "2026-07-22T12:00:04.000Z",
         },
@@ -133,6 +135,7 @@ describe("ConversationPage", () => {
           durationMs: null,
           exitCode: null,
           resultCount: null,
+          evidenceRef: null,
           createdAt: "2026-07-22T12:00:05.000Z",
           updatedAt: "2026-07-22T12:00:05.000Z",
         },
@@ -160,6 +163,9 @@ describe("ConversationPage", () => {
     await user.click(screen.getByRole("button", { name: "Show activity" }));
 
     const panel = await screen.findByRole("complementary", { name: "Activity / Inspect" });
+    // Every category remains an individually addressable tab; the responsive
+    // sheet can reflow them without hiding the filter behind a scrollbar.
+    expect(within(panel).getAllByRole("tab")).toHaveLength(7);
     const items = within(panel).getAllByRole("listitem");
     expect(items.map((item) => item.querySelector("summary")?.textContent)).toEqual([
       expect.stringContaining("Thinking"),
@@ -408,7 +414,7 @@ describe("ConversationPage interleaved transcript", () => {
   function entry(over: Record<string, unknown>) {
     return {
       version: 1, taskId: "task-1", status: "completed", detail: null, target: null,
-      toolName: null, durationMs: null, exitCode: null, resultCount: null, text: null,
+      toolName: null, durationMs: null, exitCode: null, resultCount: null, evidenceRef: null, text: null,
       createdAt: "2026-07-22T12:00:00.000Z", updatedAt: "2026-07-22T12:00:00.000Z",
       ...over,
     };
@@ -447,11 +453,21 @@ describe("ConversationPage interleaved transcript", () => {
     expect(summary).toHaveTextContent(/2 tools/);
     expect(summary).toHaveTextContent(/1 file changed/);
 
-    // Steps are behind the summary until asked for.
-    expect(screen.queryByText("Read package.json")).not.toBeInTheDocument();
-    await user.click(within(summary).getByRole("button", { expanded: false }));
+    // Every step is legible without opening anything: a completed turn should
+    // read as a record of what happened, not a claim that something did.
     expect(within(summary).getByText("Read package.json")).toBeVisible();
     expect(within(summary).getByText("Edited src/a.ts")).toBeVisible();
+
+    // What a step recorded is one click from its own line, and costs a request
+    // only when asked for.
+    expect(screen.queryByTestId("evidence-card")).not.toBeInTheDocument();
+    await user.click(within(summary).getAllByTestId("work-step")[0]!);
+    expect(await screen.findByTestId("evidence-card")).toBeVisible();
+
+    // The header still collapses the whole record for a reader who wants the
+    // answer and nothing else.
+    await user.click(within(summary).getByRole("button", { expanded: true, name: /Completed/ }));
+    expect(within(summary).queryByText("Read package.json")).not.toBeInTheDocument();
   });
 
   it("presents a failed turn as a compact notice with the exact reason behind Details", async () => {
@@ -563,6 +579,7 @@ describe("ConversationPage interleaved transcript", () => {
               durationMs: null,
               exitCode: null,
               resultCount: null,
+              evidenceRef: null,
               createdAt: now,
               updatedAt: now,
             },

@@ -214,8 +214,9 @@ describe("memoryRepository — scope filtering for the memory vault", () => {
 
   it("listByScope filters strictly within one project for the project scope", () => {
     const memory = memoryRepository(db);
+    const agent = agentsRepository(db).create({ id: "agent-memory-owner", projectId: "p1", name: "Memory owner", role: "assistant" });
     memory.create({ id: "m1", projectId: "p1", scope: "project", content: "P1 fact", source: "user", createdAt: ts() });
-    memory.create({ id: "m2", projectId: "p1", scope: "agent", content: "Agent fact", source: "user", createdAt: ts() });
+    memory.create({ id: "m2", projectId: "p1", scope: "agent", content: "Agent fact", source: "user", actor: { kind: "agent", agentId: agent.id, teamId: null }, createdAt: ts() });
     memory.create({ id: "m3", projectId: "p2", scope: "project", content: "P2 fact", source: "user", createdAt: ts() });
 
     expect(memory.listByScope("p1", "project").map((m) => m.id)).toEqual(["m1"]);

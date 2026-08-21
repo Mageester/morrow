@@ -1,0 +1,19 @@
+{
+  "brand": "Morrow",
+  "source_dimensions": [
+    400,
+    400
+  ],
+  "source_mark_bbox": [
+    116,
+    108,
+    284,
+    269
+  ],
+  "colors": {
+    "black": "#000000",
+    "warm_white": "#F4F1EC",
+    "white": "#FFFFFF"
+  },
+  "notes": "Assets derived from the user-supplied Morrow mark; no new logo geometry was invented."
+}

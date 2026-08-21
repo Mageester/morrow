@@ -172,8 +172,45 @@ function redactCookiePayload(payload: string): string {
   );
 }
 
+/**
+ * Cheap superset test for "this string could contain something the redaction
+ * passes would rewrite".
+ *
+ * Redaction runs on every durable event payload, every tool result, and every
+ * message that crosses a persistence or log boundary — including whole files
+ * and command output measured in hundreds of kilobytes. The full chain is seven
+ * regex passes, two of which invoke a JS callback per match, and on ordinary
+ * source code or prose all seven find nothing. CPU profiling of a real task put
+ * these patterns among the hottest frames in the process.
+ *
+ * Every alternative below is a substring that MUST be present for any pass to
+ * change the input, so a string that fails this test is returned untouched with
+ * a single scan instead of seven:
+ *   - cookie / authorization / bearer  -> the header passes
+ *   - key|token|secret|auth|jwt|pass|session -> every explicit sensitive
+ *     assignment name and every `_key`/`_token`/`_secret`/`_password`/
+ *     `_passwd`/`_passphrase` suffix contains one of these, as do all of the
+ *     explicit credential header names
+ *   - "://"                            -> the URL userinfo pass
+ *   - the literal vendor key prefixes  -> the known-prefix pass
+ * `redactionCandidate` is exported so a test can assert the guard never
+ * disagrees with the unguarded chain.
+ */
+const REDACTION_CANDIDATE = /key|token|secret|auth|cookie|jwt|pass|session|bearer|:\/\/|sk-|gh[pousr]_|xox[baprs]-|aiza|akia/i;
+
+/** @internal Exposed for the guard-equivalence test only. */
+export function redactionCandidate(input: string): boolean {
+  return REDACTION_CANDIDATE.test(input);
+}
+
 /** Defensive redaction for any string that might be logged. */
 export function redactSecrets(input: string): string {
+  if (!REDACTION_CANDIDATE.test(input)) return input;
+  return redactSecretsExhaustive(input);
+}
+
+/** @internal The unguarded pass chain. Exposed for the guard-equivalence test. */
+export function redactSecretsExhaustive(input: string): string {
   return input
     // Cookie and Set-Cookie values include multiple attributes; parse the
     // structured payload so sensitive cookie values are replaced while safe

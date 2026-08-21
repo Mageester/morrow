@@ -1,17 +1,26 @@
 import type { WebConversationActivityEntry } from "@morrow/contracts";
 import { ChevronRight, Loader2 } from "lucide-react";
 import { memo, useEffect, useState } from "react";
-import { ActivityDetails, activityIcon } from "./activity-panel.js";
+import { activityIcon } from "./activity-panel.js";
 import { formatElapsed, workSummaryLabel, type TurnWork, type WorkStep } from "./chat-projection.js";
+import { EvidenceCard } from "./evidence-card.js";
 
 /**
  * The work surface for one assistant turn.
  *
- * One row while Morrow is working, updated in place; one row once it has
- * finished. Opening it reveals the meaningful steps — never the full event
- * feed, which is what Activity / Inspect is for. The distinction matters: this
- * component exists to let a reader confirm the shape of the work without
- * leaving the conversation, not to reproduce the ledger inside it.
+ * Every step the turn ran, one line each, shown by default: what tool, what it
+ * acted on, what came back. A reader should be able to answer "what did it
+ * actually do?" by looking, not by opening something first — which is what the
+ * previous single collapsed row asked of them, and why a completed turn read
+ * as a claim rather than a record.
+ *
+ * Opening a line reveals what that step recorded. That is a request of its own
+ * (see EvidenceCard): the transcript carries handles, not output, so the list
+ * stays a list however much the run produced.
+ *
+ * This is still not the ledger. Routine bookkeeping is classified out in
+ * chat-projection.ts and remains in Activity / Inspect, where the question is
+ * "in what order did everything happen?" rather than "what was done?".
  */
 
 function statusMark(status: TurnWork["status"]) {
@@ -41,14 +50,29 @@ function useRunningElapsed(startedAt: number | null, running: boolean): number |
   return Math.max(0, now - startedAt);
 }
 
+/**
+ * Beyond this many steps the list stops being scannable and starts being a log.
+ * The rest stay one click away rather than being dropped — a turn that ran
+ * forty tools should say so, and let the reader ask for the rest.
+ */
+const VISIBLE_STEPS = 12;
+
 export interface WorkSummaryProps {
   work: TurnWork;
+  projectId: string;
+  conversationId: string;
   /** Opens the Activity / Inspect drawer for the full record. */
   onInspect?: (() => void) | undefined;
 }
 
-export const WorkSummary = memo(function WorkSummary({ work, onInspect }: WorkSummaryProps) {
-  const [open, setOpen] = useState(false);
+export const WorkSummary = memo(function WorkSummary({
+  work,
+  projectId,
+  conversationId,
+  onInspect,
+}: WorkSummaryProps) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const running = work.status === "running";
   const elapsedMs = useRunningElapsed(work.startedAt, running);
   // A turn with no recorded work has nothing to summarise. Before the first
@@ -56,9 +80,8 @@ export const WorkSummary = memo(function WorkSummary({ work, onInspect }: WorkSu
   // third "Working" on the same screen is noise, not reassurance.
   if (work.steps.length === 0) return null;
 
-  // While running, the header carries what is happening right now on its own
-  // line, updated in place, instead of a new status row every few seconds.
-  const currentLabel = running ? work.runningEntry?.summary ?? "Thinking…" : null;
+  const hidden = Math.max(0, work.steps.length - VISIBLE_STEPS);
+  const visible = showAll ? work.steps : work.steps.slice(0, VISIBLE_STEPS);
 
   return (
     <div
@@ -67,45 +90,61 @@ export const WorkSummary = memo(function WorkSummary({ work, onInspect }: WorkSu
       data-testid="turn-work-summary"
     >
       <button
-        aria-expanded={open}
+        aria-expanded={!collapsed}
         className="morrow-work__header"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setCollapsed((value) => !value)}
         type="button"
       >
         <span className="morrow-work__status">{statusMark(work.status)}</span>
-        <span className="morrow-work__lines">
-          <span className="morrow-work__label">{workSummaryLabel(work, elapsedMs)}</span>
-          {currentLabel ? <span className="morrow-work__current">{currentLabel}</span> : null}
-        </span>
+        <span className="morrow-work__label">{workSummaryLabel(work, elapsedMs)}</span>
         <ChevronRight
           aria-hidden="true"
-          className={`morrow-work__chevron${open ? " is-open" : ""}`}
+          className={`morrow-work__chevron${collapsed ? "" : " is-open"}`}
           size={13}
         />
       </button>
-      {open ? (
+
+      {collapsed ? null : (
         <div className="morrow-work__body">
-          {work.steps.length === 0 ? (
-            <p className="morrow-work__empty">No tool work has been recorded for this turn yet.</p>
-          ) : (
-            <ol className="morrow-work__steps">
-              {work.steps.map((step) => <WorkStepRow key={step.key} step={step} />)}
-            </ol>
-          )}
+          <ol className="morrow-work__steps">
+            {visible.map((step) => (
+              <WorkStepRow
+                conversationId={conversationId}
+                key={step.key}
+                projectId={projectId}
+                step={step}
+              />
+            ))}
+          </ol>
+          {hidden > 0 && !showAll ? (
+            <button className="morrow-work__more" onClick={() => setShowAll(true)} type="button">
+              {hidden} more {hidden === 1 ? "step" : "steps"}
+            </button>
+          ) : null}
           {onInspect ? (
             <button className="morrow-work__inspect" onClick={onInspect} type="button">
               Open full activity
             </button>
           ) : null}
         </div>
-      ) : null}
+      )}
     </div>
   );
 });
 
-const WorkStepRow = memo(function WorkStepRow({ step }: { step: WorkStep }) {
-  if (step.type === "group") return <GroupedStepRow entries={step.entries} label={step.label} />;
-  return <SingleStepRow entry={step.entry} />;
+const WorkStepRow = memo(function WorkStepRow({
+  step,
+  projectId,
+  conversationId,
+}: {
+  step: WorkStep;
+  projectId: string;
+  conversationId: string;
+}) {
+  if (step.type === "group") {
+    return <GroupedStepRow conversationId={conversationId} entries={step.entries} label={step.label} projectId={projectId} />;
+  }
+  return <SingleStepRow conversationId={conversationId} entry={step.entry} projectId={projectId} />;
 });
 
 /**
@@ -113,31 +152,47 @@ const WorkStepRow = memo(function WorkStepRow({ step }: { step: WorkStep }) {
  * — the entry keeps its id across the transition, so React updates this row
  * rather than appending a second one.
  */
-const SingleStepRow = memo(function SingleStepRow({ entry }: { entry: WebConversationActivityEntry }) {
+const SingleStepRow = memo(function SingleStepRow({
+  entry,
+  projectId,
+  conversationId,
+}: {
+  entry: WebConversationActivityEntry;
+  projectId: string;
+  conversationId: string;
+}) {
   const [open, setOpen] = useState(false);
   const duration = formatElapsed(entry.durationMs);
-  const hasDetails = Boolean(entry.detail || entry.target || entry.toolName || entry.exitCode !== null);
+  const failed = entry.exitCode !== null && entry.exitCode !== 0;
 
   return (
     <li className="morrow-work__step" data-kind={entry.kind} data-status={entry.status}>
       <button
-        aria-expanded={hasDetails ? open : undefined}
+        aria-expanded={open}
         className="morrow-work__step-header"
-        disabled={!hasDetails}
+        data-testid="work-step"
         onClick={() => setOpen((value) => !value)}
         type="button"
       >
         <span aria-hidden="true" className="morrow-work__step-state" />
         <span aria-hidden="true" className="morrow-work__step-icon">{activityIcon(entry.kind)}</span>
         <span className="morrow-work__step-summary">{entry.summary}</span>
-        {duration ? <span className="morrow-work__step-meta">{duration}</span> : null}
-        {entry.exitCode !== null && entry.exitCode !== 0 ? (
-          <span className="morrow-work__step-exit">exit {entry.exitCode}</span>
+        {/* The right edge is where the result lives, always in the same place,
+            so a column of steps can be read down rather than across. */}
+        {entry.resultCount !== null ? (
+          <span className="morrow-work__step-meta">{entry.resultCount.toLocaleString("en-US")}</span>
         ) : null}
+        {failed ? <span className="morrow-work__step-exit">exit {entry.exitCode}</span> : null}
+        {duration ? <span className="morrow-work__step-meta">{duration}</span> : null}
+        <ChevronRight
+          aria-hidden="true"
+          className={`morrow-work__step-chevron${open ? " is-open" : ""}`}
+          size={12}
+        />
       </button>
-      {open && hasDetails ? (
+      {open ? (
         <div className="morrow-work__step-body">
-          <ActivityDetails item={entry} />
+          <EvidenceCard conversationId={conversationId} entry={entry} projectId={projectId} />
         </div>
       ) : null}
     </li>
@@ -146,15 +201,20 @@ const SingleStepRow = memo(function SingleStepRow({ entry }: { entry: WebConvers
 
 /**
  * Repetitive read-only operations, collapsed to one row. Expanding lists the
- * individual targets: the count answers "did it look around?", the list answers
- * "at what?", and neither needs eight full-height rows to do it.
+ * individual targets, each openable in turn: the count answers "did it look
+ * around?", the list answers "at what?", and the rows answer "and what came
+ * back?" without eight full-height entries to get there.
  */
 const GroupedStepRow = memo(function GroupedStepRow({
   entries,
   label,
+  projectId,
+  conversationId,
 }: {
   entries: readonly WebConversationActivityEntry[];
   label: string;
+  projectId: string;
+  conversationId: string;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -162,6 +222,7 @@ const GroupedStepRow = memo(function GroupedStepRow({
       <button
         aria-expanded={open}
         className="morrow-work__step-header"
+        data-testid="work-step"
         onClick={() => setOpen((value) => !value)}
         type="button"
       >
@@ -169,15 +230,18 @@ const GroupedStepRow = memo(function GroupedStepRow({
         <span aria-hidden="true" className="morrow-work__step-icon">{activityIcon(entries[0]!.kind)}</span>
         <span className="morrow-work__step-summary">{label}</span>
         <span className="morrow-work__step-count">{entries.length}</span>
+        <ChevronRight
+          aria-hidden="true"
+          className={`morrow-work__step-chevron${open ? " is-open" : ""}`}
+          size={12}
+        />
       </button>
       {open ? (
-        <ul className="morrow-work__group-list">
+        <ol className="morrow-work__group-list">
           {entries.map((entry) => (
-            <li key={entry.id}>
-              <code>{entry.target ?? entry.summary}</code>
-            </li>
+            <SingleStepRow conversationId={conversationId} entry={entry} key={entry.id} projectId={projectId} />
           ))}
-        </ul>
+        </ol>
       ) : null}
     </li>
   );

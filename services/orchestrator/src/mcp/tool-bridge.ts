@@ -76,9 +76,13 @@ export async function executeMcpTool(
   name: string,
   args: unknown,
   pool: McpPool,
-  configs: Record<string, McpServerConfig>
+  configs: Record<string, McpServerConfig>,
+  signal?: AbortSignal,
 ): Promise<{ content: string; isError?: boolean }> {
   try {
+    if (signal?.aborted) throw new Error("AbortError");
+    const abort = new Promise<never>((_, reject) => signal?.addEventListener("abort", () => reject(new Error("AbortError")), { once: true }));
+    const run = async () => {
     if (name === "read_mcp_resource") {
       const parsed = (args && typeof args === "object" ? args : {}) as { server?: string; uri?: string };
       if (!parsed.server || !parsed.uri) {
@@ -87,7 +91,7 @@ export async function executeMcpTool(
           isError: true,
         };
       }
-      const res = await pool.readResource(parsed.server, parsed.uri, configs);
+      const res = await pool.readResource(parsed.server, parsed.uri, configs, signal);
       if (!res.contents || res.contents.length === 0) {
         return { content: `Resource "${parsed.uri}" is empty or not found.` };
       }
@@ -97,8 +101,10 @@ export async function executeMcpTool(
       return { content: formatted, isError: false };
     }
 
-    const rawResult = await pool.callNamespacedTool(name, args, configs);
+    const rawResult = await pool.callNamespacedTool(name, args, configs, signal);
     return { content: formatMcpResult(rawResult), isError: false };
+    };
+    return await Promise.race([run(), abort]);
   } catch (err: any) {
     return {
       content: `MCP tool error: ${err?.message ?? String(err)}`,

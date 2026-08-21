@@ -27,17 +27,30 @@ import {
   PatchConventionSchema,
   CreateTeamFromPresetSchema,
   CreateDelegationSchema,
+  CreateRoutineSchema,
+  UpdateRoutineSchema,
+  CreateThreadHandoffSchema,
+  InviteConversationParticipantSchema,
+  ReorderConversationParticipantSchema,
+  ConversationParticipantsSchema,
+  ConversationParticipantSchema,
   DelegationAccessContextSchema,
   ResolveDelegationSchema,
   CreateHandoffSchema,
   UpdateAssistantProfileSchema,
   CreateAssistantGoalSchema,
   GlobalSearchResponseSchema,
+  CreateScheduleSchema,
+  UpdateScheduleSchema,
+  ScheduleRunSchema,
+  ScheduleNotificationOptionsSchema,
   type PresetId,
   type ProviderId,
   type ProviderAuthMode,
   type ChatStreamEventType,
   type RoutingDecision,
+  type Conversation,
+  type ScheduleNotificationEvent,
 } from "@morrow/contracts";
 import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
@@ -51,8 +64,10 @@ import { assistantProfileRepository } from "./repositories/assistant-profile.js"
 import { taskRepository } from "./repositories/tasks.js";
 import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
+import { conversationsParticipantsRepository } from "./repositories/conversation-participants.js";
+import { conversationContextRefsRepository, ConversationContextRefError } from "./repositories/conversation-context-refs.js";
 import { taskRoutingRepository } from "./repositories/task-routing.js";
-import { memoryRepository } from "./repositories/memory.js";
+import { memoryRepository, MemoryOwnershipError } from "./repositories/memory.js";
 import { searchRepository } from "./repositories/search.js";
 import { skillUsageRepository } from "./repositories/skill-usage.js";
 import { learnedSkillsRepository } from "./repositories/learned-skills.js";
@@ -65,7 +80,7 @@ import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } fro
 import { runProcessSafe } from "./tools/command-executor.js";
 import { gitStatus } from "./tools/git.js";
 import { loadAdaptersFromEnv, notifyAll, type MessageAdapter } from "./messaging/adapter.js";
-import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema, StartProcessSchema, CreateWorktreeSchema } from "@morrow/contracts";
+import { SearchKindSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema, StartProcessSchema, CreateWorktreeSchema } from "@morrow/contracts";
 import { redactJsonText } from "./provider/credentials.js";
 import { loadMcpConfig, parseMcpServerConfig, type McpServerConfig } from "./mcp/config.js";
 import { McpPool } from "./mcp/pool.js";
@@ -211,7 +226,7 @@ import { worktreesRepository } from "./repositories/worktrees.js";
 import { WorktreeManager, WorktreeError } from "./workspace/worktrees.js";
 import { integrationsRepository } from "./repositories/integrations.js";
 import { contextSummariesRepository } from "./repositories/context-summaries.js";
-import { executionContinuityRepository } from "./repositories/execution-continuity.js";
+import { createExecutionLeaseOwnerId, executionContinuityRepository, executionLeaseOwnerStatus } from "./repositories/execution-continuity.js";
 import { symbolIndexRepository } from "./repositories/symbols.js";
 import { IntegrationManager, IntegrationError } from "./workspace/integrations.js";
 import { SymbolIndex } from "./workspace/symbol-index.js";
@@ -245,13 +260,20 @@ import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guar
 import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
 import { boundCompletedToolArguments, buildProviderProjection } from "./execution/provider-projection.js";
 import { resolveModelBudget } from "./routing/model-budget.js";
-import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
+import { AgentTaskDispatchError, dispatchAgentTask, spawnAgentChatSubagent as dispatchAgentChatSubagent } from "./mission/task-dispatcher.js";
+import { TeammateSpawnRegistry } from "./tools/teammate-delegation.js";
 import { createResearchAndVerifyTeam } from "./mission/research-and-verify-preset.js";
 import { runReadmeSummarySample, ReadmeSummarySampleError } from "./mission/readme-summary-sample.js";
 import { registerWebMissionRoutes } from "./web/mission-routes.js";
 import { registerWebMissionStreamRoutes } from "./web/mission-stream.js";
 import { projectConversationActivity } from "./web/activity-projection.js";
 import { DEFAULT_CONVERSATION_TITLE, deriveConversationTitle, isDefaultConversationTitle } from "./web/conversation-title.js";
+import { DEFAULT_TEAMMATE_NAME, projectRoster } from "./web/roster-projection.js";
+import { projectToolEvidence } from "./web/tool-evidence.js";
+import { projectThreadHandoffs } from "./web/handoff-projection.js";
+import { projectRoutineProposal } from "./web/routine-proposal.js";
+import { routinesRepository } from "./repositories/routines.js";
+import { assertRoutineTarget, dispatchRoutineTask } from "./routines/dispatch.js";
 import { registerWebAppRoutes } from "./web/static-app.js";
 
 export class ApiError extends Error {
@@ -361,6 +383,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const delegations = delegationsRepository(deps.db);
   const handoffs = handoffsRepository(deps.db);
   const assistantProfile = assistantProfileRepository(deps.db);
+  const routines = routinesRepository(deps.db);
   const tasks = taskRepository(deps.db);
   const records = taskRecordsRepository(deps.db);
   const convs = conversationsRepository(deps.db);
@@ -373,6 +396,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const approvals = approvalsRepository(deps.db);
   const changeSets = changeSetsRepository(deps.db);
   const checkpoints = checkpointsRepository(deps.db);
+  // Shared by the REST subagent path and model-authored ask_teammate calls so
+  // one parent/tool-call pair cannot race into two in-process children.
+  const teammateSpawnRegistry = new TeammateSpawnRegistry();
 
   /**
    * Delegation ids are opaque database identifiers, not authorization. The
@@ -743,6 +769,19 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return agents.listByProject(projectId);
   });
 
+  // The teammate roster the left rail renders: every named agent plus the
+  // built-in default teammate, each with live status derived from task and
+  // approval state. Read-only and safe to poll.
+  app.get("/api/projects/:projectId/roster", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return projectRoster({
+      db: deps.db,
+      projectId,
+      defaultTeammateName: assistantProfile.get().assistantName?.trim() || DEFAULT_TEAMMATE_NAME,
+    });
+  });
+
   app.post("/api/projects/:projectId/agents", async (request, reply) => {
     const { projectId } = request.params as { projectId: string };
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
@@ -785,30 +824,53 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.delete("/api/agents/:agentId", async (request, reply) => {
     const { agentId } = request.params as { agentId: string };
     const body = z.object({ projectId: z.string().min(1) }).parse(request.body);
+    const agent = agents.get(agentId);
+    if (!agent || agent.projectId !== body.projectId) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    // A group conversation's agent_id is the immutable conductor binding.
+    // Deleting the agent would leave a dangling task owner (or force an active
+    // tombstone row that falsely looks runnable), so preserve the truthful
+    // binding by refusing deletion until its conversations are retired.
+    const conductorBinding = deps.db.prepare(
+      "SELECT id FROM conversations WHERE project_id=? AND agent_id=? AND mode='group' LIMIT 1",
+    ).get(body.projectId, agentId) as { id?: string } | undefined;
+    if (conductorBinding) {
+      throw new ApiError(409, "This teammate is the immutable conductor of a conversation and cannot be deleted", "AGENT_CONVERSATION_CONDUCTOR");
+    }
     if (!agents.delete(agentId, body.projectId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
     reply.status(204).send();
   });
 
   // ── Agent Tool Permissions ─────────────────────────────────────────────────
 
-  app.get("/api/agents/:agentId/tool-permissions", async (request) => {
+  const scopedToolPermissionAgent = (request: { params: unknown; query: unknown }) => {
     const { agentId } = request.params as { agentId: string };
-    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
-    return agents.listToolPermissions(agentId);
+    const { projectId } = z.object({ projectId: z.string().min(1) }).parse(request.query);
+    const agent = agents.get(agentId);
+    if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    return agent;
+  };
+
+  app.get("/api/agents/:agentId/tool-permissions", async (request) => {
+    return agents.listToolPermissions(scopedToolPermissionAgent(request).id);
   });
 
   app.put("/api/agents/:agentId/tool-permissions", async (request, reply) => {
-    const { agentId } = request.params as { agentId: string };
-    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    const agent = scopedToolPermissionAgent(request);
     const body = UpsertToolPermissionSchema.parse(request.body);
     reply.status(200);
-    return agents.upsertToolPermission(agentId, body);
+    return agents.upsertToolPermission(agent.id, body);
   });
 
   app.delete("/api/agents/:agentId/tool-permissions/:toolName", async (request, reply) => {
     const { agentId, toolName } = request.params as { agentId: string; toolName: string };
-    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
-    if (!agents.deleteToolPermission(agentId, toolName)) throw new ApiError(404, "Tool permission not found", "NOT_FOUND");
+    const agent = scopedToolPermissionAgent(request);
+    const permissions = agents.listToolPermissions(agent.id);
+    const current = permissions.find((permission) => permission.toolName === toolName);
+    if (toolName === "ask_teammate" && current?.effect === "allow"
+      && permissions.filter((permission) => permission.effect === "allow").length === 1) {
+      throw new ApiError(409, "This is the only explicit allow rule; clearing it would restore unrestricted tools", "SOLE_EXPLICIT_ALLOW_RULE");
+    }
+    if (!agents.deleteToolPermission(agent.id, toolName)) throw new ApiError(404, "Tool permission not found", "NOT_FOUND");
     reply.status(204).send();
   });
 
@@ -1308,6 +1370,16 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     let updated = conversation;
     if (body.title !== undefined) updated = convs.renameConversation(conversationId, body.title.trim(), now) ?? updated;
     if (body.archived !== undefined) updated = convs.setArchived(conversationId, body.archived, now) ?? updated;
+    if (body.mode !== undefined) {
+      if (body.mode === "group" && conversation.agentId) {
+        const conductor = agents.get(conversation.agentId);
+        if (conductor?.teamId) {
+          throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+        }
+        if (conductor) conversationParticipants.ensureConductor(conversationId, conversation.projectId, conductor, now);
+      }
+      updated = convs.setMode(conversationId, body.mode, now) ?? updated;
+    }
     return updated;
   });
 
@@ -1318,11 +1390,24 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     
     const body = CreateConversationSchema.parse(request.body ?? {});
     const title = body?.title?.trim() || DEFAULT_CONVERSATION_TITLE;
-    
+    // A thread belongs to one teammate for its whole life. Validate the
+    // binding here, once, so no later dispatch has to re-establish that the
+    // agent is real, enabled, and owned by this project.
+    if (body.agentId) {
+      const agent = agents.get(body.agentId);
+      if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
+      if (!agent.enabled) throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
+      if (body.mode === "group" && agent.teamId) {
+        throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+      }
+    }
+
     const conversation = convs.createConversation({
       id: crypto.randomUUID(),
       projectId,
       title,
+      agentId: body.agentId ?? null,
+      mode: body.mode ?? "single",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
@@ -1348,6 +1433,40 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       throw new ApiError(404, "Conversation task not found in project", "NOT_FOUND");
     }
     return task;
+  };
+
+  const conversationParticipants = conversationsParticipantsRepository(deps.db);
+  const conversationContextRefs = conversationContextRefsRepository(deps.db);
+  const projectConversationParticipants = (projectId: string, conversationId: string, includeRemoved = true) => {
+    const conversation = ownedConversation(projectId, conversationId);
+    if (conversation.mode !== "group") {
+      throw new ApiError(409, "Participants are available only for group conversations", "GROUP_MODE_REQUIRED");
+    }
+    const participants = conversationParticipants.list(conversationId, includeRemoved);
+    if (conversation.agentId && !participants.some((participant) => participant.agentId === conversation.agentId && participant.role === "conductor")) {
+      const conductor = agents.get(conversation.agentId);
+      if (conductor) participants.unshift(conversationParticipants.ensureConductor(conversationId, projectId, conductor, conversation.createdAt));
+    } else if (!conversation.agentId && !participants.some((participant) => participant.role === "conductor")) {
+      participants.unshift(conversationParticipants.defaultConductor(conversationId));
+    }
+    participants.sort((left, right) => left.position - right.position || left.joinedAt.localeCompare(right.joinedAt) || left.id.localeCompare(right.id));
+    return ConversationParticipantsSchema.parse({
+      version: 1,
+      projectId,
+      conversationId,
+      conductorAgentId: conversation.agentId,
+      participants,
+    });
+  };
+
+  const ensureGroupConductor = (conversation: Conversation, now: string) => {
+    if (conversation.agentId) {
+      const conductor = agents.get(conversation.agentId);
+      if (conductor?.teamId) {
+        throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+      }
+      if (conductor) conversationParticipants.ensureConductor(conversation.id, conversation.projectId, conductor, now);
+    }
   };
 
   const webRouting = (decision: RoutingDecision | null | undefined) => decision
@@ -1394,6 +1513,62 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return webMessages(conversationId);
   });
 
+  // Group participant management is a projection/mutation over the same
+  // conversation row that owns the conductor. Participant rows retain the
+  // identity snapshot and policy fingerprint from invitation time; dispatch
+  // still resolves current agent policy from agents/tasks and never trusts a
+  // browser-provided snapshot.
+  app.get("/api/projects/:projectId/conversations/:conversationId/participants", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    const { includeRemoved } = request.query as { includeRemoved?: string };
+    return projectConversationParticipants(projectId, conversationId, includeRemoved === "true" || includeRemoved === "1");
+  });
+
+  app.post("/api/projects/:projectId/conversations/:conversationId/participants", async (request, reply) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    const conversation = ownedConversation(projectId, conversationId);
+    if (conversation.mode !== "group") throw new ApiError(409, "Participants are available only for group conversations", "GROUP_MODE_REQUIRED");
+    const body = InviteConversationParticipantSchema.parse(request.body);
+    if (body.agentId === conversation.agentId) throw new ApiError(409, "The conductor is already part of this conversation", "CONDUCTOR_ALREADY_PARTICIPANT");
+    const agent = agents.get(body.agentId);
+    if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
+    if (!agent.enabled) throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
+    if (agent.teamId) {
+      throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+    }
+    const now = new Date().toISOString();
+    const outcome = conversationParticipants.invite({ conversationId, projectId, agent, now });
+    if (outcome.outcome === "already_active") throw new ApiError(409, "This teammate is already a participant", "PARTICIPANT_ALREADY_ACTIVE");
+    if (outcome.outcome === "conductor") throw new ApiError(409, "The conductor cannot be invited as a participant", "CONDUCTOR_ALREADY_PARTICIPANT");
+    if (outcome.outcome === "team_agent") throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+    if (outcome.outcome === "not_found") throw new ApiError(404, "Participant could not be created", "NOT_FOUND");
+    reply.status(outcome.outcome === "reactivated" ? 200 : 201);
+    return outcome.participant;
+  });
+
+  app.patch("/api/projects/:projectId/conversations/:conversationId/participants/:agentId", async (request) => {
+    const { projectId, conversationId, agentId } = request.params as { projectId: string; conversationId: string; agentId: string };
+    const conversation = ownedConversation(projectId, conversationId);
+    if (conversation.mode !== "group") throw new ApiError(409, "Participants are available only for group conversations", "GROUP_MODE_REQUIRED");
+    const body = ReorderConversationParticipantSchema.parse(request.body);
+    if (agentId === conversation.agentId) throw new ApiError(409, "The conductor stays first", "CONDUCTOR_CANNOT_MOVE");
+    const updated = conversationParticipants.reorder(conversationId, agentId, body.position, new Date().toISOString());
+    if (!updated) throw new ApiError(404, "Participant not found in this conversation", "NOT_FOUND");
+    return updated;
+  });
+
+  app.delete("/api/projects/:projectId/conversations/:conversationId/participants/:agentId", async (request) => {
+    const { projectId, conversationId, agentId } = request.params as { projectId: string; conversationId: string; agentId: string };
+    const conversation = ownedConversation(projectId, conversationId);
+    if (conversation.mode !== "group") throw new ApiError(409, "Participants are available only for group conversations", "GROUP_MODE_REQUIRED");
+    if (agentId === conversation.agentId) throw new ApiError(409, "The conductor cannot be removed from its conversation", "CONDUCTOR_CANNOT_BE_REMOVED");
+    const outcome = conversationParticipants.remove(conversationId, agentId, new Date().toISOString());
+    if (outcome.outcome === "not_found") throw new ApiError(404, "Participant not found in this conversation", "NOT_FOUND");
+    if (outcome.outcome === "conductor") throw new ApiError(409, "The conductor cannot be removed from its conversation", "CONDUCTOR_CANNOT_BE_REMOVED");
+    if (outcome.outcome === "team_agent") throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+    return outcome.participant;
+  });
+
   app.get("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/reasoning", async (request, reply) => {
     const { projectId, conversationId, taskId } = request.params as { projectId: string; conversationId: string; taskId: string };
     ownedConversationTask(projectId, conversationId, taskId);
@@ -1425,6 +1600,238 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     });
   });
 
+  /**
+   * One step's recorded output, behind the transcript row that ran it.
+   * Scoped to the conversation on purpose: an evidence id from another task is
+   * a scope violation, not an empty result, and 404s as one.
+   */
+  app.get("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/evidence/:toolCallId", async (request, reply) => {
+    const { projectId, conversationId, taskId, toolCallId } = request.params as {
+      projectId: string; conversationId: string; taskId: string; toolCallId: string;
+    };
+    ownedConversationTask(projectId, conversationId, taskId);
+    const evidence = projectToolEvidence({ db: deps.db, taskId, toolCallId });
+    if (!evidence) throw new ApiError(404, "Evidence not found for this step", "NOT_FOUND");
+    reply.header("cache-control", "no-store");
+    return evidence;
+  });
+
+  /**
+   * The handoffs visible in this thread: work started here and given to
+   * another teammate. Read-only projection over the child tasks themselves,
+   * safe to poll while a handoff is in flight.
+   */
+  app.get("/api/projects/:projectId/conversations/:conversationId/handoffs", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    return projectThreadHandoffs({ db: deps.db, projectId, conversationId });
+  });
+
+  /**
+   * Hand a piece of this thread's work to another teammate.
+   *
+   * The child runs as a real delegated task through the same path the
+   * subagent API uses, so it gets provider routing, agent-state events, and —
+   * critically — its OWN policy: `buildAgentExecutionPolicy` computes its
+   * tools, memory scopes and budget from that agent's durable row, not from
+   * this thread's. Nothing in the request can widen that; the only thing the
+   * caller supplies is the objective.
+   *
+   * An agent on a team is deliberately refused here. Team members carry a
+   * team-level policy that only the delegation API intersects correctly, and
+   * routing them through this simpler path would run them under a policy that
+   * skipped their team's ceiling.
+   */
+  app.post("/api/projects/:projectId/conversations/:conversationId/handoffs", async (request, reply) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    const conversation = ownedConversation(projectId, conversationId);
+    const body = CreateThreadHandoffSchema.parse(request.body);
+    const parent = ownedConversationTask(projectId, conversationId, body.parentTaskId);
+
+    try {
+      conversationContextRefs.validateSourceRefs(projectId, parent.id, body.contextRefs);
+    } catch (error) {
+      if (error instanceof ConversationContextRefError) throw new ApiError(404, error.message, error.code);
+      throw error;
+    }
+
+    const agent = agents.get(body.agentId);
+    if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
+    if (!agent.enabled) throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
+    if (conversation.mode === "group" && agent.id !== conversation.agentId) {
+      const participant = conversationParticipants.get(conversation.id, agent.id);
+      if (!participant || participant.status !== "active" || participant.role !== "participant") {
+        throw new ApiError(409, "Invite this teammate to the shared thread before handing off work", "AGENT_NOT_PARTICIPANT");
+      }
+    }
+    if (agent.teamId) {
+      throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+    }
+
+    const result = spawnAgentChatSubagent(parent, agent.id, body.objective, {
+      ...(body.contextRefs.length > 0 ? { contextRefs: body.contextRefs } : {}),
+    });
+    reply.status(202);
+    return {
+      version: 1,
+      handoffTaskId: result.task.id,
+      agentId: agent.id,
+      agentName: agent.name,
+    };
+  });
+
+  // ── Record mode & routines ───────────────────────────────────────────────
+  // "Watch me do this once." A recording is an explicit, opt-in span of one
+  // thread; nothing about how the teammate works changes while it is open. The
+  // proposal at the end is read back from what actually happened, and creating
+  // a routine from it is a separate, explicit act.
+
+  const recordingState = (projectId: string, conversationId: string) => {
+    const recording = routines.latestForConversation(conversationId);
+    return {
+      version: 1 as const,
+      recording: recording ?? null,
+      proposal: recording && recording.routineId === null
+        ? projectRoutineProposal({ db: deps.db, projectId, conversationId, recording })
+        : null,
+    };
+  };
+
+  app.get("/api/projects/:projectId/conversations/:conversationId/recording", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    return recordingState(projectId, conversationId);
+  });
+
+  app.post("/api/projects/:projectId/conversations/:conversationId/recording", async (request, reply) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    const conversation = ownedConversation(projectId, conversationId);
+    if (routines.openForConversation(conversationId)) {
+      throw new ApiError(409, "This thread is already being recorded", "ALREADY_RECORDING");
+    }
+    routines.startRecording({
+      id: crypto.randomUUID(),
+      projectId,
+      conversationId,
+      agentId: conversation.agentId,
+      startedAt: new Date().toISOString(),
+    });
+    reply.status(201);
+    return recordingState(projectId, conversationId);
+  });
+
+  app.delete("/api/projects/:projectId/conversations/:conversationId/recording", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    const open = routines.openForConversation(conversationId);
+    if (!open) throw new ApiError(409, "This thread is not being recorded", "NOT_RECORDING");
+    routines.stopRecording(open.id, new Date().toISOString());
+    return recordingState(projectId, conversationId);
+  });
+
+  app.get("/api/projects/:projectId/routines", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return routines.listByProject(projectId);
+  });
+
+  app.post("/api/projects/:projectId/routines", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = CreateRoutineSchema.parse(request.body);
+    if (body.agentId) {
+      const agent = agents.get(body.agentId);
+      if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
+    }
+    if (body.sourceConversationId) ownedConversation(projectId, body.sourceConversationId);
+
+    const routine = routines.create({
+      id: crypto.randomUUID(),
+      projectId,
+      now: new Date().toISOString(),
+      ...body,
+      agentId: body.agentId ?? null,
+    });
+    // Link the recording this came from, so a routine's provenance stays
+    // inspectable rather than becoming a free-floating saved prompt.
+    if (body.sourceConversationId) {
+      const recording = routines.latestForConversation(body.sourceConversationId);
+      if (recording) routines.attachRoutine(recording.id, routine.id);
+    }
+    reply.status(201);
+    return routine;
+  });
+
+  const updateRoutine = (projectId: string, routineId: string, body: unknown) => {
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const updated = routines.update(
+      routineId,
+      projectId,
+      UpdateRoutineSchema.parse(body),
+      new Date().toISOString(),
+    );
+    if (!updated) throw new ApiError(404, "Routine not found", "NOT_FOUND");
+    return updated;
+  };
+
+  app.patch("/api/projects/:projectId/routines/:routineId", async (request) => {
+    const { projectId, routineId } = request.params as { projectId: string; routineId: string };
+    return updateRoutine(projectId, routineId, request.body);
+  });
+
+  // Keep the mutation shape aligned with the existing delete/run endpoints for
+  // clients that address a routine by id and carry project ownership in JSON.
+  app.patch("/api/routines/:routineId", async (request) => {
+    const { routineId } = request.params as { routineId: string };
+    const body = request.body as Record<string, unknown> | null;
+    if (!body || typeof body.projectId !== "string") {
+      throw new ApiError(400, "projectId is required", "VALIDATION_ERROR");
+    }
+    const { projectId, ...input } = body;
+    return updateRoutine(projectId, routineId, input);
+  });
+
+  app.delete("/api/routines/:routineId", async (request, reply) => {
+    const { routineId } = request.params as { routineId: string };
+    const body = z.object({ projectId: z.string().min(1) }).parse(request.body);
+    if (!routines.delete(routineId, body.projectId)) throw new ApiError(404, "Routine not found", "NOT_FOUND");
+    reply.status(204).send();
+  });
+
+  /**
+   * Run a routine: a fresh thread for the teammate that learned it, opened
+   * with the routine written out as an ordinary instruction.
+   *
+   * Deliberately NOT a replay of the recorded tool calls. The steps are given
+   * as context for how this was done before, and the teammate re-decides each
+   * one against the workspace as it is now — replaying captured writes and
+   * commands against a workspace that has moved on is a different feature with
+   * a different risk profile, and Morrow does not claim to do it.
+   */
+  app.post("/api/routines/:routineId/run", async (request, reply) => {
+    const { routineId } = request.params as { routineId: string };
+    const routine = routines.get(routineId);
+    if (!routine) throw new ApiError(404, "Routine not found", "NOT_FOUND");
+    try {
+      const result = dispatchRoutineTask(
+        { db: deps.db, runner: deps.runner, env: process.env },
+        routine,
+      );
+      routines.recordRun(routineId, new Date().toISOString());
+      reply.status(202);
+      return {
+        version: 1,
+        routineId,
+        conversationId: result.conversationId,
+        taskId: result.task.id,
+        projectId: routine.projectId,
+      };
+    } catch (error) {
+      if (error instanceof AgentTaskDispatchError) throw new ApiError(error.statusCode, error.message, error.code);
+      throw error;
+    }
+  });
+
   app.patch("/api/projects/:projectId/conversations/:conversationId", async (request) => {
     const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
     let updated = ownedConversation(projectId, conversationId);
@@ -1432,6 +1839,10 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const updatedAt = new Date().toISOString();
     if (body.title !== undefined) updated = convs.renameConversation(conversationId, body.title, updatedAt) ?? updated;
     if (body.archived !== undefined) updated = convs.setArchived(conversationId, body.archived, updatedAt) ?? updated;
+    if (body.mode !== undefined) {
+      if (body.mode === "group") ensureGroupConductor(updated, updatedAt);
+      updated = convs.setMode(conversationId, body.mode, updatedAt) ?? updated;
+    }
     return updated;
   });
 
@@ -1698,37 +2109,19 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   // conversation — never the parent's chat history — so it only receives
   // the approved input projection (the objective/label).
   function spawnAgentChatSubagent(
-    parent: { id: string; projectId: string },
+    parent: { id: string; projectId: string; agentId?: string | null | undefined },
     agentId: string,
     label: string | undefined,
-    options: { deferRun?: boolean; delegationId?: string } = {},
+    options: { deferRun?: boolean; delegationId?: string; toolCallId?: string; modelInitiated?: boolean; contextRefs?: Array<{ kind: "artifact" | "evidence"; id: string }> } = {},
   ) {
-    const agent = agents.get(agentId);
-    if (!agent || agent.projectId !== parent.projectId) {
-      throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
-    }
-    if (!agent.enabled) throw new ApiError(409, "Agent is disabled", "AGENT_DISABLED");
-    if (agent.teamId && !options.delegationId) {
-      throw new ApiError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
-    }
-    const now = new Date().toISOString();
-    const childConversation = convs.createConversation({
-      id: crypto.randomUUID(),
-      projectId: parent.projectId,
-      title: label ?? `Delegated: ${agent.name}`,
-      createdAt: now,
-      updatedAt: now,
-    });
     try {
-      return dispatchAgentTask({ db: deps.db, runner: deps.runner, env: process.env }, {
-        conversationId: childConversation.id,
-        parentTaskId: parent.id,
-        content: label ?? `Delegated task for ${agent.name}`,
-        agentId: agent.id,
-        mode: "agent",
-        ...(options.deferRun ? { deferRun: true } : {}),
-        ...(options.delegationId ? { delegationId: options.delegationId } : {}),
-      });
+      return dispatchAgentChatSubagent(
+        { db: deps.db, runner: deps.runner, env: process.env },
+        parent,
+        agentId,
+        label,
+        { ...options, registry: teammateSpawnRegistry },
+      );
     } catch (error) {
       if (error instanceof AgentTaskDispatchError) {
         throw new ApiError(error.statusCode, error.message, error.code);
@@ -1736,6 +2129,26 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       throw error;
     }
   }
+
+  // The task runner is constructed before the Fastify app, so install the
+  // server-owned target resolver once this closure has all repository access.
+  // Direct REST subagent calls and ask_teammate now share the exact same child
+  // dispatch boundary and process-local duplicate registry.
+  deps.runner.setTeammateSpawner?.(({ parentTaskId, toolCallId, agentId, objective, targetProfileHash }) => {
+    const parent = tasks.getTaskById(parentTaskId);
+    if (!parent) throw new Error("Parent task is no longer available");
+    const result = spawnAgentChatSubagent(parent, agentId, objective, {
+      toolCallId,
+      modelInitiated: true,
+      ...(targetProfileHash ? { targetProfileHash } : {}),
+    });
+    return {
+      taskId: result.task.id,
+      agentId,
+      providerId: result.routing?.providerId ?? null,
+      model: result.routing?.model ?? null,
+    };
+  });
 
   // Subagent delegation: a subagent is a child task with its own scope, linked
   // to its parent via parent_task_id. This builds the task graph.
@@ -2805,6 +3218,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const approval = approvals.get(approvalId);
     if (!approval || approval.projectId !== body.projectId) throw new ApiError(404, "Approval not found in project", "NOT_FOUND");
 
+    // ask_teammate is an individual model-authored delegation, never a
+    // project-wide capability. Reject trust_project before touching the row so
+    // an approval replay or a forged trust pattern cannot bypass the one-shot
+    // boundary.
+    if (approval.details.tool === "ask_teammate" && body.decision === "trust_project") {
+      throw new ApiError(400, "Teammate requests accept only a one-shot approval", "ASK_TEAMMATE_ONE_SHOT_ONLY");
+    }
+
     // Derive the trust binding server-side from the persisted approval — never
     // from a client-supplied pattern — and validate it BEFORE mutating state.
     let trustKey: string | undefined;
@@ -2830,10 +3251,41 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     });
 
     const t = tasks.getTaskById(approval.taskId);
-    if (t && t.status === "interrupted") {
-      // Resume a task that a restart interrupted while it awaited this approval.
+    const runnerIsActive = deps.runner.isActive(approval.taskId);
+    // Direct executor callers (including recovery tests and embedding hosts)
+    // may not be registered with TaskRunner, but a live execution lease still
+    // proves that an in-process waiter can consume the approval wake-up.
+    const runningSegment = executionContinuityRepo.getRunningSegment(approval.taskId);
+    const executorLeaseLive = runningSegment ? executionLeaseOwnerStatus(runningSegment.ownerId) === "alive" : false;
+    if (t && (t.status === "interrupted" || ((t.status === "running" || t.status === "queued") && !runnerIsActive && !executorLeaseLive))) {
+      // Resume work left without an in-process waiter by a restart. Queue it
+      // before re-dispatch so the executor's normal durable continuation path
+      // can consume the resolved approval safely.
       deps.db.prepare("UPDATE tasks SET status='queued', updated_at=? WHERE id=?").run(new Date().toISOString(), approval.taskId);
-      deps.runner.run(approval.taskId);
+      const runningSegment = executionContinuityRepo.getRunningSegment(approval.taskId);
+      const checkpoint = executionContinuityRepo.latestCheckpoint(approval.taskId);
+      const leaseStatus = executionLeaseOwnerStatus(runningSegment?.ownerId ?? null);
+      const resume = runningSegment && checkpoint && leaseStatus === "dead"
+        ? (() => {
+          const ownerId = createExecutionLeaseOwnerId();
+          const leaseExpiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+          const claim = executionContinuityRepo.claimResumableSegment({
+            taskId: approval.taskId,
+            ownerId,
+            expectedOwnerId: runningSegment.ownerId,
+            expectedGeneration: runningSegment.generation,
+            takeoverReason: "owner_dead",
+            now: new Date().toISOString(),
+            leaseExpiresAt,
+          });
+          return claim ? {
+            resumeCheckpoint: true as const,
+            checkpointCursor: claim.checkpointCursor,
+            executionLease: { segmentId: claim.segment.id, ownerId, generation: claim.segment.generation },
+          } : undefined;
+        })()
+        : undefined;
+      deps.runner.run(approval.taskId, { recovered: true, ...(resume ?? {}) });
     } else if (t && (t.status === "running" || t.status === "queued")) {
       // Wake the live, in-process task.
       ApprovalContinuationRegistry.resolveApproval(approvalId, body.decision);
@@ -3437,38 +3889,245 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return schedules.listByProject(projectId);
   });
 
-  app.post("/api/projects/:projectId/schedules", async (request, reply) => {
+  app.get("/api/projects/:projectId/schedule-notification-options", async (request) => {
     const { projectId } = request.params as { projectId: string };
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
-    const body = CreateScheduleSchema.parse(request.body);
+    // Adapter ids and channels are safe metadata only. URLs, bot tokens, and
+    // any other credentials remain server-side and never cross this boundary.
+    return ScheduleNotificationOptionsSchema.parse({
+      version: 1,
+      projectId,
+      adapters: messageAdapters.map((adapter) => ({ id: adapter.id, channel: adapter.channel })),
+    });
+  });
+
+  const validateScheduleNotification = (projectId: string, notification: { adapterId: string | null; events: readonly string[] }) => {
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    if (notification.adapterId !== null && !messageAdapters.some((adapter) => adapter.id === notification.adapterId)) {
+      throw new ApiError(400, "Notification adapter is not configured", "INVALID_NOTIFICATION_ADAPTER");
+    }
+  };
+
+  const defaultScheduleNotification = {
+    events: ["completed", "failed", "blocked"] as ScheduleNotificationEvent[],
+    adapterId: null,
+  };
+
+  /** Resolve a routine schedule's durable target at create/edit time. */
+  const scheduleTarget = (projectId: string, taskKind: "inspect_workspace" | "routine", routineId: string | null | undefined, enabled = true) => {
+    if (taskKind !== "routine") {
+      if (routineId) throw new ApiError(400, "routineId is only valid for routine schedules", "INVALID_SCHEDULE_TARGET");
+      return { routineId: null, agentId: null };
+    }
+    if (!routineId) throw new ApiError(400, "routineId is required for routine schedules", "ROUTINE_REQUIRED");
+    const routine = routines.get(routineId);
+    if (!routine || routine.projectId !== projectId) throw new ApiError(404, "Routine not found in this project", "NOT_FOUND");
+    // Pausing a schedule must remain possible even when its teammate was
+    // disabled; re-enabling and firing still re-evaluate the target.
+    if (enabled) {
+      try {
+        assertRoutineTarget(deps.db, routine, { requireAgent: true });
+      } catch (error) {
+        if (error instanceof AgentTaskDispatchError) throw new ApiError(error.statusCode, error.message, error.code);
+        throw error;
+      }
+    }
+    return { routineId: routine.id, agentId: routine.agentId };
+  };
+
+  const createSchedule = (projectId: string, bodyInput: unknown) => {
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = CreateScheduleSchema.parse(bodyInput);
     try {
       assertValidCron(body.cron);
     } catch (error) {
       throw new ApiError(400, `Invalid cron expression: ${(error as Error).message}`, "VALIDATION_ERROR");
     }
-    const created = schedules.create({
+    // A newly-created binding must be valid even if the user starts it
+    // paused; resuming later should not hide a bad target behind that pause.
+    const target = scheduleTarget(projectId, body.taskKind, body.routineId ?? null, true);
+    if (body.taskKind !== "routine" && body.notification !== undefined) {
+      throw new ApiError(400, "Notification preferences are only supported for routine schedules", "NOTIFICATION_UNSUPPORTED_FOR_TASK_KIND");
+    }
+    const notification = body.notification === undefined
+      ? defaultScheduleNotification
+      : {
+        events: body.notification.events ?? defaultScheduleNotification.events,
+        adapterId: body.notification.adapterId ?? null,
+      };
+    validateScheduleNotification(projectId, notification);
+    const now = new Date().toISOString();
+    return schedules.create({
       id: crypto.randomUUID(),
       projectId,
       cron: body.cron,
       taskKind: body.taskKind,
+      ...target,
+      ...(body.enabled === undefined ? {} : { enabled: body.enabled }),
+      notification,
       nextRunAt: nextRun(body.cron, new Date()).toISOString(),
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
     });
+  };
+
+  app.post("/api/projects/:projectId/schedules", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const created = createSchedule(projectId, request.body);
     reply.status(201);
     return created;
   });
 
+  const updateSchedule = (projectId: string, scheduleId: string, bodyInput: unknown) => {
+    const current = schedules.get(scheduleId);
+    if (!current || current.projectId !== projectId) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    const body = UpdateScheduleSchema.parse(bodyInput);
+    const taskKind = body.taskKind ?? current.taskKind;
+    const routineId = body.routineId !== undefined ? body.routineId : taskKind === "routine" ? current.routineId : null;
+    const enabled = body.enabled ?? current.enabled;
+    const target = scheduleTarget(projectId, taskKind, routineId, enabled);
+    if (taskKind !== "routine" && body.notification !== undefined) {
+      throw new ApiError(400, "Notification preferences are only supported for routine schedules", "NOTIFICATION_UNSUPPORTED_FOR_TASK_KIND");
+    }
+    // A routine -> inspect transition cannot carry the routine-only policy.
+    // Clear an omitted policy as part of the effective update so a stale
+    // adapter selection can never fan out if this schedule later changes back.
+    const notification = taskKind !== "routine"
+      ? defaultScheduleNotification
+      : {
+        events: body.notification?.events ?? current.notification.events,
+        adapterId: body.notification?.adapterId !== undefined ? body.notification.adapterId : current.notification.adapterId,
+      };
+    validateScheduleNotification(projectId, notification);
+    const cron = body.cron ?? current.cron;
+    try {
+      assertValidCron(cron);
+    } catch (error) {
+      throw new ApiError(400, `Invalid cron expression: ${(error as Error).message}`, "VALIDATION_ERROR");
+    }
+    const now = new Date().toISOString();
+    return schedules.update({
+      id: scheduleId,
+      projectId,
+      cron,
+      taskKind,
+      ...target,
+      enabled,
+      notification,
+      // A changed cron starts from the next future boundary. Pause/resume
+      // without changing cron preserves the pending occurrence so resume is
+      // deterministic and does not silently drop work.
+      nextRunAt: body.cron !== undefined ? nextRun(cron, new Date()).toISOString() : current.nextRunAt,
+      updatedAt: now,
+    })!;
+  };
+
+  app.patch("/api/projects/:projectId/schedules/:scheduleId", async (request) => {
+    const { projectId, scheduleId } = request.params as { projectId: string; scheduleId: string };
+    return updateSchedule(projectId, scheduleId, request.body);
+  });
+
+  // A body-carried project id keeps this alias compatible with the existing
+  // id-addressed schedule routes while retaining project ownership checks.
+  app.patch("/api/schedules/:scheduleId", async (request) => {
+    const { scheduleId } = request.params as { scheduleId: string };
+    const body = z.object({ projectId: z.string().min(1) }).passthrough().parse(request.body);
+    const schedule = schedules.get(scheduleId);
+    if (!schedule) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    const input = Object.fromEntries(Object.entries(body).filter(([key]) => key !== "projectId"));
+    return updateSchedule(body.projectId, scheduleId, input);
+  });
+
+  const setSchedulePaused = (scheduleId: string, enabled: boolean, projectId: string) => {
+    const schedule = schedules.get(scheduleId);
+    if (!schedule || schedule.projectId !== projectId) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    return schedules.setEnabled(scheduleId, enabled)!;
+  };
+
+  app.post("/api/schedules/:scheduleId/pause", async (request) => {
+    const { scheduleId } = request.params as { scheduleId: string };
+    const body = z.object({ projectId: z.string().min(1) }).strict().parse(request.body);
+    return setSchedulePaused(scheduleId, false, body.projectId);
+  });
+  app.post("/api/schedules/:scheduleId/resume", async (request) => {
+    const { scheduleId } = request.params as { scheduleId: string };
+    const body = z.object({ projectId: z.string().min(1) }).strict().parse(request.body);
+    const schedule = schedules.get(scheduleId);
+    if (!schedule || schedule.projectId !== body.projectId) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    // Revalidate routine targets when a paused schedule becomes active.
+    if (schedule.taskKind === "routine") scheduleTarget(schedule.projectId, schedule.taskKind, schedule.routineId, true);
+    return setSchedulePaused(scheduleId, true, body.projectId);
+  });
+
   app.delete("/api/schedules/:scheduleId", async (request, reply) => {
     const { scheduleId } = request.params as { scheduleId: string };
-    if (!schedules.get(scheduleId)) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    const schedule = schedules.get(scheduleId);
+    if (!schedule) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    const body = z.object({ projectId: z.string().min(1) }).strict().parse(request.body);
+    if (body.projectId !== schedule.projectId) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
     schedules.delete(scheduleId);
     reply.status(204).send();
+  });
+
+  const listScheduleRuns = (scheduleId: string, projectId?: string) => {
+    const schedule = schedules.get(scheduleId);
+    if (schedule && projectId && schedule.projectId !== projectId) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    const runs = schedules.listRuns(scheduleId);
+    if (projectId && runs.some((run) => run.projectId !== projectId)) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    return runs.map((run) => ScheduleRunSchema.parse(run));
+  };
+
+  app.get("/api/schedules/:scheduleId/runs", async (request) => {
+    const { scheduleId } = request.params as { scheduleId: string };
+    const { projectId } = z.object({ projectId: z.string().min(1) }).strict().parse(request.query);
+    return listScheduleRuns(scheduleId, projectId);
+  });
+  app.get("/api/projects/:projectId/schedules/:scheduleId/runs", async (request) => {
+    const { projectId, scheduleId } = request.params as { projectId: string; scheduleId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return listScheduleRuns(scheduleId, projectId);
+  });
+  app.get("/api/projects/:projectId/schedule-runs", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const query = z.object({ limit: z.coerce.number().int().positive().max(500).optional() }).parse(request.query);
+    return schedules.listRunsByProject(projectId, query.limit);
   });
 
   app.post("/api/schedules/:scheduleId/run", async (request, reply) => {
     const { scheduleId } = request.params as { scheduleId: string };
     const schedule = schedules.get(scheduleId);
     if (!schedule) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    const requestBody = z.object({ projectId: z.string().min(1) }).strict().parse(request.body);
+    if (requestBody.projectId !== schedule.projectId) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    if (schedule.taskKind === "routine") {
+      const routine = schedule.routineId ? routines.get(schedule.routineId) : undefined;
+      if (!routine || routine.projectId !== schedule.projectId) throw new ApiError(409, "Scheduled routine no longer exists in this project", "ROUTINE_MISSING");
+      if (routine.agentId !== schedule.agentId) throw new ApiError(409, "Scheduled routine teammate binding changed", "AGENT_BINDING_CHANGED");
+      try {
+        assertRoutineTarget(deps.db, routine, { requireAgent: true });
+      } catch (error) {
+        if (error instanceof AgentTaskDispatchError) throw new ApiError(error.statusCode, error.message, error.code);
+        throw error;
+      }
+      const now = new Date().toISOString();
+      const run = schedules.createManualRun({ schedule, occurrenceAt: now, now });
+      try {
+        const result = dispatchRoutineTask(
+          { db: deps.db, runner: deps.runner, env: process.env },
+          routine,
+          { requireAgent: true, idempotencyKey: `schedule:${schedule.id}:manual:${run.id}` },
+        );
+        schedules.markDispatched(run.id, result.task.id, now);
+        reply.status(202);
+        return { version: 1, scheduleId, runId: run.id, taskId: result.task.id, conversationId: result.conversationId, projectId: schedule.projectId, aggregateUrl: `/api/tasks/${result.task.id}` };
+      } catch (error) {
+        const code = error instanceof AgentTaskDispatchError ? error.code : "SCHEDULE_DISPATCH_FAILED";
+        schedules.markBlocked(run.id, code, error, now);
+        if (error instanceof AgentTaskDispatchError) throw new ApiError(error.statusCode, error.message, error.code);
+        throw error;
+      }
+    }
     const taskId = crypto.randomUUID();
     tasks.createTask({ id: taskId, projectId: schedule.projectId, kind: schedule.taskKind, status: "queued", createdAt: new Date().toISOString() });
     deps.runner.run(taskId);
@@ -3618,6 +4277,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
     const body = CreateMemoryEntrySchema.parse(request.body);
+    if (body.scope === "agent" || body.scope === "team") {
+      throw new ApiError(400, "Private teammate memory must be created by its assigned execution actor", "MEMORY_OWNER_REQUIRED");
+    }
     if (body.scope === "conversation") {
       if (!body.conversationId) throw new ApiError(400, "conversationId is required for conversation-scoped memory", "VALIDATION_ERROR");
       const conv = convs.getConversation(body.conversationId);
@@ -3630,6 +4292,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       scope: body.scope,
       content: body.content,
       source: "user",
+      actor: { kind: "user" },
       ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
       createdAt: new Date().toISOString(),
     });
@@ -3651,11 +4314,33 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const body = UpdateMemoryEntrySchema.parse(request.body);
     if (existing.projectId !== body.projectId) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
     const now = new Date().toISOString();
-    let updated = existing;
-    if (body.content !== undefined) updated = memory.updateContent(id, body.content, now)!;
-    if (body.enabled !== undefined) updated = memory.setEnabled(id, body.enabled, now)!;
-    if (body.pinned !== undefined) updated = memory.setPinned(id, body.pinned, now)!;
-    return updated;
+    try {
+      let updated = existing;
+      if (body.content !== undefined) updated = memory.updateContent(id, body.content, now)!;
+      if (body.enabled !== undefined) updated = memory.setEnabled(id, body.enabled, now)!;
+      if (body.pinned !== undefined) updated = memory.setPinned(id, body.pinned, now)!;
+      return updated;
+    } catch (error) {
+      if (error instanceof MemoryOwnershipError) throw new ApiError(409, error.message, error.code);
+      throw error;
+    }
+  });
+
+  app.post("/api/memory/:id/reassign", async (request) => {
+    const { id } = request.params as { id: string };
+    const body = z.object({ projectId: z.string().min(1), ownerAgentId: z.string().min(1) }).parse(request.body);
+    const existing = memory.get(id);
+    if (!existing || existing.projectId !== body.projectId) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
+    const owner = agents.get(body.ownerAgentId);
+    if (!owner || owner.projectId !== body.projectId) throw new ApiError(404, "Owner teammate not found in project", "NOT_FOUND");
+    try {
+      const updated = memory.reassignOwner(id, { kind: "agent", agentId: owner.id, teamId: owner.teamId }, new Date().toISOString());
+      if (!updated) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
+      return updated;
+    } catch (error) {
+      if (error instanceof MemoryOwnershipError) throw new ApiError(409, error.message, error.code);
+      throw error;
+    }
   });
 
   app.delete("/api/memory/:id", async (request, reply) => {

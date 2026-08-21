@@ -44,7 +44,7 @@
   display: flex;
   align-items: end;
   justify-content: space-between;
-  margin-bottom: 31px;
+  margin-bottom: 18px;
   padding: 0;
   border: 0;
   gap: 28px;
@@ -78,11 +78,11 @@
 
 .morrow-product-eyebrow {
   margin: 0;
-  color: var(--morrow-product-copper);
+  color: var(--morrow-product-faint);
   font-family: var(--morrow-product-utility);
   font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.16em;
+  font-weight: 600;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
@@ -92,18 +92,24 @@
   gap: 14px;
 }
 
+/*
+ * A page title, not a masthead. At 58px every page opened on its own name
+ * before showing any of its content, which is the ranking a publication has
+ * and a workspace does not.
+ */
 .morrow-product-header h1 {
-  margin: 7px 0;
-  font: 500 clamp(44px, 4vw, 58px) / 0.98 var(--morrow-product-display);
-  letter-spacing: -0.045em;
+  margin: 3px 0 4px;
+  font: 620 clamp(20px, 1.9vw, 24px) / 1.2 var(--morrow-product-display);
+  letter-spacing: -0.02em;
   text-transform: none;
 }
 
 .morrow-product-header__description {
-  max-width: 68ch;
+  max-width: 72ch;
   margin: 0;
   color: var(--morrow-product-muted);
-  font-size: 15px;
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
 .morrow-product-header__action {
@@ -170,7 +176,7 @@
   padding: 11px 13px;
   border: 1px solid var(--morrow-product-line-strong);
   border-radius: 11px;
-  background: #1d1e19;
+  background: var(--morrow-product-field);
   color: var(--morrow-product-copy);
   gap: 9px;
 }

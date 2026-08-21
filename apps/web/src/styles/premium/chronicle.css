@@ -51,7 +51,7 @@
   left: -27px;
   width: 1px;
   content: "";
-  background: #34362f;
+  background: var(--morrow-product-line-strong);
 }
 
 .morrow-chronicle__day:last-child::before {

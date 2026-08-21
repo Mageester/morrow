@@ -51,11 +51,45 @@ export const ExecutionDisclosureSchema=z.object({version:SchemaVersionSchema,tas
 export const VerificationResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:z.literal("verified"),summary:z.string(),details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const StructuredApiErrorSchema=z.object({version:SchemaVersionSchema,error:z.object({code:z.string(),message:z.string()}).strict()}).strict();
 
-export const ConversationSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),title:z.string(),archived:z.boolean().default(false),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
-export const CreateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional()}).strict();
-export const UpdateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional(),archived:z.boolean().optional()}).strict().refine((v)=>v.title!==undefined||v.archived!==undefined,{message:"Provide title or archived"});
+// `agentId` binds a conversation to one named teammate: every task dispatched
+// in it runs as that agent, under that agent's own policy. Null is the
+// built-in default teammate, which is what every conversation predating the
+// roster is — so the column is additive and never rewrites existing history.
+// Group mode adds participants around this immutable conductor; it never
+// changes who owns the conversation's durable tasks.
+export const ConversationModeSchema=z.enum(["single","group"]);
+export const ConversationSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),title:z.string(),archived:z.boolean().default(false),agentId:z.string().nullable().default(null),mode:ConversationModeSchema.default("single"),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+export const CreateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional(),agentId:z.string().trim().min(1).optional(),mode:ConversationModeSchema.optional()}).strict();
+export const UpdateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional(),archived:z.boolean().optional(),mode:ConversationModeSchema.optional()}).strict().refine((v)=>v.title!==undefined||v.archived!==undefined||v.mode!==undefined,{message:"Provide title, archived, or mode"});
 export const DeleteConversationSchema=z.object({confirmation:z.literal("delete")}).strict();
 export const DeleteConversationResultSchema=z.object({version:SchemaVersionSchema,conversationId:z.string(),deleted:z.boolean()}).strict();
+export const ConversationParticipantStatusSchema=z.enum(["active","removed"]);
+export const ConversationParticipantRoleSchema=z.enum(["conductor","participant"]);
+export const ConversationParticipantSchema=z.object({
+  version:SchemaVersionSchema,
+  id:z.string().min(1),
+  conversationId:z.string().min(1),
+  agentId:z.string().nullable(),
+  role:ConversationParticipantRoleSchema,
+  nameSnapshot:z.string().min(1).max(100),
+  roleSnapshot:z.string().min(1).max(60),
+  instructionsSnapshot:z.string().max(8000).nullable(),
+  providerOverrideSnapshot:z.string().max(200).nullable(),
+  modelOverrideSnapshot:z.string().max(200).nullable(),
+  profileFingerprint:z.string().regex(/^[a-f0-9]{64}$/),
+  position:z.number().int().nonnegative(),
+  status:ConversationParticipantStatusSchema,
+  joinedAt:z.string().datetime(),
+  updatedAt:z.string().datetime(),
+  removedAt:z.string().datetime().nullable(),
+  isConductor:z.boolean().default(false),
+}).strict();
+export const ConversationParticipantsSchema=z.object({version:SchemaVersionSchema,projectId:z.string().min(1),conversationId:z.string().min(1),conductorAgentId:z.string().nullable(),participants:z.array(ConversationParticipantSchema)}).strict();
+export const InviteConversationParticipantSchema=z.object({agentId:z.string().trim().min(1).max(120)}).strict();
+export const ReorderConversationParticipantSchema=z.object({position:z.number().int().nonnegative()}).strict();
+export const ConversationContextRefKindSchema=z.enum(["artifact","evidence"]);
+export const ConversationContextRefSchema=z.object({kind:ConversationContextRefKindSchema,id:z.string().trim().min(1).max(200)}).strict();
+export const ConversationContextRefsSchema=z.array(ConversationContextRefSchema).max(16);
 export const ConversationMessageSchema=z.object({version:SchemaVersionSchema,id:z.string(),conversationId:z.string(),role:z.enum(["user","assistant"]),content:z.string(),taskId:z.string().nullable().optional(),streamingState:z.enum(["queued","streaming","completed","failed","cancelled","interrupted"]),provider:z.string().nullable().optional(),model:z.string().nullable().optional(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const ConversationToolActivitySchema=z.object({id:z.string(),toolName:z.string(),status:z.enum(["requested","running","completed","failed","cancelled"]),startedAt:z.string().datetime().nullable(),completedAt:z.string().datetime().nullable()}).strict();
 export const ChatStreamEventTypeSchema=z.enum(["message.updated","tool.updated","task.updated","task.terminal"]);
@@ -550,6 +584,12 @@ export const MemoryEntrySchema=z.object({
   projectId:z.string(),
   conversationId:z.string().nullable(),
   scope:MemoryScopeSchema,
+  // Private teammate/team memory is attributed by the orchestrator from the
+  // trusted execution actor. Project/global (and every other shared scope)
+  // deliberately remain unowned. These are nullable for legacy rows that
+  // were quarantined because ownership could not be proven during migration.
+  ownerAgentId:z.string().nullable().default(null),
+  ownerTeamId:z.string().nullable().default(null),
   type:MemoryTypeSchema.default("project_architecture"),
   content:z.string().min(1),
   normalizedContent:z.string().min(1),
@@ -770,24 +810,89 @@ export type NotifyResult=z.infer<typeof NotifyResultSchema>;
 // A schedule fires isolated task runs on a UTC cron expression. Scheduled work
 // is project-scoped and uses the same task runner + containment as interactive
 // work — nothing runs with elevated privileges because it is unattended.
-export const ScheduleTaskKindSchema=z.enum(["inspect_workspace"]);
+// `inspect_workspace` is the original scheduler target. `routine` adds a
+// durable, teammate-bound target without creating a second scheduler.
+export const ScheduleTaskKindSchema=z.enum(["inspect_workspace","routine"]);
+export const ScheduleNotificationEventSchema=z.enum(["waiting_for_approval","completed","failed","blocked"]);
+export const ScheduleNotificationEventsSchema=z.array(ScheduleNotificationEventSchema).max(4).refine((events)=>new Set(events).size===events.length,{message:"Notification events must be unique"});
+export const ScheduleNotificationSchema=z.object({
+  events:ScheduleNotificationEventsSchema.default(["completed","failed","blocked"]),
+  adapterId:z.string().trim().min(1).nullable().default(null),
+}).strict();
+export const ScheduleNotificationInputSchema=z.object({
+  events:ScheduleNotificationEventsSchema.optional(),
+  adapterId:z.string().trim().min(1).nullable().optional(),
+}).strict();
+export const ScheduleNotificationAdapterSchema=z.object({id:z.string().min(1),channel:NotificationChannelSchema}).strict();
+export const ScheduleNotificationOptionsSchema=z.object({version:SchemaVersionSchema,projectId:z.string().min(1),adapters:z.array(ScheduleNotificationAdapterSchema)}).strict();
 export const ScheduleSchema=z.object({
   version:SchemaVersionSchema,
   id:z.string(),
   projectId:z.string(),
   cron:z.string(),
   taskKind:ScheduleTaskKindSchema,
+  routineId:z.string().min(1).nullable().default(null),
+  agentId:z.string().min(1).nullable().default(null),
   enabled:z.boolean(),
   lastRunAt:z.string().nullable(),
   nextRunAt:z.string(),
   createdAt:z.string().datetime(),
+  updatedAt:z.string().datetime(),
+  notification:ScheduleNotificationSchema.default({events:["completed","failed","blocked"],adapterId:null}),
 }).strict();
-export const CreateScheduleSchema=z.object({
+export const CreateScheduleSchema=z.preprocess((value)=>{
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const input=value as Record<string,unknown>;
+    if (input.routineId !== undefined && input.taskKind === undefined) return { ...input, taskKind: "routine" };
+  }
+  return value;
+},z.object({
   cron:z.string().trim().min(1).max(120),
   taskKind:ScheduleTaskKindSchema.default("inspect_workspace"),
+  routineId:z.string().trim().min(1).optional(),
+  enabled:z.boolean().optional(),
+  notification:ScheduleNotificationInputSchema.optional(),
+}).strict());
+export const UpdateScheduleSchema=z.object({
+  cron:z.string().trim().min(1).max(120).optional(),
+  taskKind:ScheduleTaskKindSchema.optional(),
+  routineId:z.string().trim().min(1).nullable().optional(),
+  enabled:z.boolean().optional(),
+  notification:ScheduleNotificationInputSchema.optional(),
+}).strict().refine((value)=>value.cron!==undefined||value.taskKind!==undefined||value.routineId!==undefined||value.enabled!==undefined||value.notification!==undefined,{message:"Provide cron, target, notification, or enabled"});
+export const ScheduleRunStatusSchema=z.enum(["claimed","queued","running","waiting_for_approval","completed","verified","failed","blocked","cancelled"]);
+export const ScheduleRunTriggerSchema=z.enum(["scheduled","manual"]);
+export const ScheduleRunSchema=z.object({
+  version:SchemaVersionSchema,
+  id:z.string(),
+  scheduleId:z.string(),
+  projectId:z.string(),
+  routineId:z.string().min(1).nullable(),
+  occurrenceAt:z.string().datetime(),
+  occurrenceKey:z.string().min(1),
+  trigger:ScheduleRunTriggerSchema,
+  status:ScheduleRunStatusSchema,
+  taskId:z.string().min(1).nullable(),
+  errorCode:z.string().min(1).nullable(),
+  errorMessage:z.string().max(500).nullable(),
+  coalesced:z.boolean(),
+  createdAt:z.string().datetime(),
+  updatedAt:z.string().datetime(),
+  startedAt:z.string().datetime().nullable(),
+  completedAt:z.string().datetime().nullable(),
 }).strict();
 export type Schedule=z.infer<typeof ScheduleSchema>;
 export type ScheduleTaskKind=z.infer<typeof ScheduleTaskKindSchema>;
+export type ScheduleNotificationEvent=z.infer<typeof ScheduleNotificationEventSchema>;
+export type ScheduleNotification=z.infer<typeof ScheduleNotificationSchema>;
+export type ScheduleNotificationInput=z.infer<typeof ScheduleNotificationInputSchema>;
+export type ScheduleNotificationAdapter=z.infer<typeof ScheduleNotificationAdapterSchema>;
+export type ScheduleNotificationOptions=z.infer<typeof ScheduleNotificationOptionsSchema>;
+export type CreateScheduleInput=z.infer<typeof CreateScheduleSchema>;
+export type UpdateScheduleInput=z.infer<typeof UpdateScheduleSchema>;
+export type ScheduleRunStatus=z.infer<typeof ScheduleRunStatusSchema>;
+export type ScheduleRunTrigger=z.infer<typeof ScheduleRunTriggerSchema>;
+export type ScheduleRun=z.infer<typeof ScheduleRunSchema>;
 
 // ── Code diagnostics (LSP-style) ─────────────────────────────────────────────
 // Normalized diagnostics from the project's own tools (tsc, eslint), plus a
@@ -847,6 +952,15 @@ export type WebSendMessageResult=z.infer<typeof WebSendMessageResultSchema>;
 export type WebConversationMessage=z.infer<typeof WebConversationMessageSchema>;
 export type WebTaskReasoningEntry=z.infer<typeof WebTaskReasoningEntrySchema>;
 export type WebTaskReasoning=z.infer<typeof WebTaskReasoningSchema>;
+export type ConversationMode=z.infer<typeof ConversationModeSchema>;
+export type ConversationParticipantStatus=z.infer<typeof ConversationParticipantStatusSchema>;
+export type ConversationParticipantRole=z.infer<typeof ConversationParticipantRoleSchema>;
+export type ConversationParticipant=z.infer<typeof ConversationParticipantSchema>;
+export type ConversationParticipants=z.infer<typeof ConversationParticipantsSchema>;
+export type InviteConversationParticipantInput=z.infer<typeof InviteConversationParticipantSchema>;
+export type ReorderConversationParticipantInput=z.infer<typeof ReorderConversationParticipantSchema>;
+export type ConversationContextRefKind=z.infer<typeof ConversationContextRefKindSchema>;
+export type ConversationContextRef=z.infer<typeof ConversationContextRefSchema>;
 export type MemoryEntry=z.infer<typeof MemoryEntrySchema>;
 export type MemoryScope=z.infer<typeof MemoryScopeSchema>;
 export type MemoryType=z.infer<typeof MemoryTypeSchema>;
@@ -1489,3 +1603,5 @@ export { isReasoningCompatible, normalizeReasoningForRoute, reasoningModesForRou
 
 export * from "./web.js";
 export * from "./teams.js";
+export * from "./roster.js";
+export * from "./routines.js";

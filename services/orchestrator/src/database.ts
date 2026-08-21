@@ -1407,8 +1407,503 @@ export const migrations:Migration[]=[
     -- unbounded raw result or manufacture a different synthetic outcome.
     ALTER TABLE message_tool_calls ADD COLUMN context_result_json TEXT;
   `}
+  ,{id:51,name:"task_evidence_task_id_index",sql:`
+    -- Evidence is appended on every workspace read and listed per task, but
+    -- task_evidence had no index on task_id: both the per-task listing and the
+    -- per-task COUNT(*) in the task list endpoint fell back to a full scan of
+    -- every evidence row the install has ever recorded. Index entries are
+    -- ordered by (task_id, created_at, rowid), which is exactly the listing's
+    -- ORDER BY, so the sort is served by the index too.
+    CREATE INDEX IF NOT EXISTS task_evidence_task_id_created_at_idx ON task_evidence(task_id,created_at);
+  `}
+  ,{id:52,name:"conversation_agent_binding",sql:`
+    -- A conversation is a thread with one teammate. Binding the agent here
+    -- rather than re-deriving it from the tasks inside means the thread keeps
+    -- its owner before the first message is ever sent, and an agent that is
+    -- later deleted leaves its history readable under the default teammate
+    -- instead of taking the conversation with it.
+    ALTER TABLE conversations ADD COLUMN agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS conversations_agent_idx ON conversations(agent_id,updated_at DESC);
+    -- The roster's per-teammate status reads live task state by agent. Without
+    -- this every roster render scans the whole task table once per teammate.
+    CREATE INDEX IF NOT EXISTS tasks_agent_status_idx ON tasks(agent_id,status);
+  `}
+  ,{id:53,name:"routines_and_recordings",sql:`
+    -- "Watch me do this once." A recording is an explicit, opt-in span of one
+    -- thread; a routine is what the user chose to keep from it.
+    CREATE TABLE routines (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+      name TEXT NOT NULL,
+      objective TEXT NOT NULL,
+      steps_json TEXT NOT NULL DEFAULT '[]',
+      source_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+      run_count INTEGER NOT NULL DEFAULT 0,
+      last_run_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX routines_project_idx ON routines(project_id,updated_at DESC);
+
+    CREATE TABLE routine_recordings (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+      started_at TEXT NOT NULL,
+      stopped_at TEXT,
+      routine_id TEXT REFERENCES routines(id) ON DELETE SET NULL
+    );
+    -- One open recording per thread, enforced durably rather than by whichever
+    -- client happened to ask last.
+    CREATE UNIQUE INDEX routine_recordings_one_open_per_conversation
+      ON routine_recordings(conversation_id) WHERE stopped_at IS NULL;
+    CREATE INDEX routine_recordings_conversation_idx ON routine_recordings(conversation_id,started_at DESC);
+  `}
+  ,{id:54,name:"durable_routine_schedules_and_runs",sql:`
+    -- Schedules predating routine automation remain inspect_workspace rows.
+    -- The target columns are additive so an older install is never rebuilt or
+    -- downgraded; routine schedules bind a routine and the teammate observed
+    -- when it was created, while dispatch still re-checks today's policy.
+    ALTER TABLE schedules ADD COLUMN routine_id TEXT;
+    ALTER TABLE schedules ADD COLUMN agent_id TEXT;
+    ALTER TABLE schedules ADD COLUMN updated_at TEXT;
+    UPDATE schedules SET updated_at=created_at WHERE updated_at IS NULL;
+    CREATE INDEX schedules_routine_idx ON schedules(routine_id);
+
+    -- One row records one claimed occurrence. schedule_id intentionally has no
+    -- foreign key: deleting a schedule must not erase its audit history.
+    -- project_id is retained for scoped history even if the target routine is
+    -- later removed. occurrence_key is the durable idempotency boundary.
+    CREATE TABLE schedule_runs (
+      id TEXT PRIMARY KEY,
+      schedule_id TEXT NOT NULL,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      routine_id TEXT,
+      occurrence_at TEXT NOT NULL,
+      occurrence_key TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      status TEXT NOT NULL,
+      task_id TEXT,
+      error_code TEXT,
+      error_message TEXT,
+      coalesced INTEGER NOT NULL DEFAULT 0,
+      routine_run_recorded INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT
+    );
+    CREATE UNIQUE INDEX schedule_runs_occurrence_idx ON schedule_runs(schedule_id,occurrence_key);
+    CREATE INDEX schedule_runs_schedule_idx ON schedule_runs(schedule_id,created_at DESC,id DESC);
+    CREATE INDEX schedule_runs_project_idx ON schedule_runs(project_id,created_at DESC,id DESC);
+    CREATE INDEX schedule_runs_task_idx ON schedule_runs(task_id) WHERE task_id IS NOT NULL;
+  `}
+  ,{id:55,name:"memory_teammate_ownership",sql:`
+    -- Private memory is owned by the durable teammate identity (or its team),
+    -- never by a client-supplied label. Nullable columns preserve the
+    -- project/global rows that intentionally have no private owner.
+    ALTER TABLE memory_entries ADD COLUMN owner_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL;
+    ALTER TABLE memory_entries ADD COLUMN owner_team_id TEXT REFERENCES teams(id) ON DELETE SET NULL;
+    CREATE INDEX memory_entries_owner_agent_idx ON memory_entries(project_id,owner_agent_id,scope);
+    CREATE INDEX memory_entries_owner_team_idx ON memory_entries(project_id,owner_team_id,scope);
+
+    -- A legacy private row is safe to retain only when its origin task and
+    -- conversation agree on the same enabled teammate. Team ownership is
+    -- derived from that teammate's durable team membership. Rows without an
+    -- exact proof are quarantined (disabled) but remain user-visible for
+    -- inspection/deletion; no transcript content is copied or synthesized.
+    UPDATE memory_entries
+       SET owner_agent_id=(
+         SELECT t.agent_id
+           FROM tasks t
+           JOIN conversations c ON c.id=memory_entries.conversation_id
+           JOIN agents a ON a.id=t.agent_id
+          WHERE t.id=memory_entries.origin_task_id
+            AND t.project_id=memory_entries.project_id
+            AND c.project_id=memory_entries.project_id
+            AND t.agent_id IS NOT NULL
+           AND c.agent_id=t.agent_id
+           AND (a.team_id IS NULL OR EXISTS (
+             SELECT 1 FROM team_members tm JOIN teams active_team ON active_team.id=tm.team_id
+              WHERE tm.team_id=a.team_id AND tm.agent_id=a.id AND active_team.status='active'
+           ))
+       )
+     WHERE scope='agent'
+       AND origin_task_id IS NOT NULL
+       AND conversation_id IS NOT NULL;
+    UPDATE memory_entries
+       SET owner_team_id=(
+         SELECT a.team_id
+           FROM tasks t
+           JOIN conversations c ON c.id=memory_entries.conversation_id
+           JOIN agents a ON a.id=t.agent_id
+           JOIN teams tm ON tm.id=a.team_id
+          WHERE t.id=memory_entries.origin_task_id
+            AND t.project_id=memory_entries.project_id
+            AND c.project_id=memory_entries.project_id
+            AND t.agent_id IS NOT NULL
+            AND c.agent_id=t.agent_id
+            AND a.enabled<>0
+            AND EXISTS (SELECT 1 FROM team_members tmbr WHERE tmbr.team_id=a.team_id AND tmbr.agent_id=a.id)
+            AND tm.status='active'
+            AND a.team_id IS NOT NULL
+       )
+     WHERE scope='team'
+       AND origin_task_id IS NOT NULL
+       AND conversation_id IS NOT NULL;
+    UPDATE memory_entries
+       SET enabled=0
+     WHERE (scope='agent' AND owner_agent_id IS NULL)
+        OR (scope='team' AND owner_team_id IS NULL);
+    UPDATE memory_entries SET enabled=0
+      WHERE scope='agent' AND owner_agent_id IN (SELECT id FROM agents WHERE enabled=0);
+
+    -- Enforce the shape at the database boundary too. Disabled ownerless
+    -- private rows are the deliberate quarantine state for ambiguous legacy
+    -- data and for deleted/disabled owners.
+    CREATE TRIGGER memory_entries_ownership_insert
+      BEFORE INSERT ON memory_entries
+      WHEN (NEW.scope='agent' AND NEW.owner_agent_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='team' AND NEW.owner_team_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='agent' AND NEW.owner_team_id IS NOT NULL)
+        OR (NEW.scope='team' AND NEW.owner_agent_id IS NOT NULL)
+        OR (NEW.scope NOT IN ('agent','team') AND (NEW.owner_agent_id IS NOT NULL OR NEW.owner_team_id IS NOT NULL))
+      BEGIN
+        SELECT RAISE(ABORT,'memory ownership does not match scope');
+      END;
+    CREATE TRIGGER memory_entries_ownership_update
+      BEFORE UPDATE OF scope,owner_agent_id,owner_team_id,enabled ON memory_entries
+      WHEN (NEW.scope='agent' AND NEW.owner_agent_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='team' AND NEW.owner_team_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='agent' AND NEW.owner_team_id IS NOT NULL)
+        OR (NEW.scope='team' AND NEW.owner_agent_id IS NOT NULL)
+        OR (NEW.scope NOT IN ('agent','team') AND (NEW.owner_agent_id IS NOT NULL OR NEW.owner_team_id IS NOT NULL))
+      BEGIN
+        SELECT RAISE(ABORT,'memory ownership does not match scope');
+      END;
+
+    -- Deleting an owner never silently reactivates private knowledge. The
+    -- owner id is then nulled by the FK action, leaving a truthful disabled
+    -- orphan row in the user's vault.
+    CREATE TRIGGER memory_entries_quarantine_deleted_agent
+      BEFORE DELETE ON agents
+      BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='agent' AND owner_agent_id=OLD.id;
+      END;
+    CREATE TRIGGER memory_entries_quarantine_disabled_agent
+      AFTER UPDATE OF enabled ON agents
+      WHEN NEW.enabled=0 AND OLD.enabled<>0
+      BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='agent' AND owner_agent_id=NEW.id;
+      END;
+    CREATE TRIGGER memory_entries_quarantine_deleted_team
+      BEFORE DELETE ON teams
+      BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='team' AND owner_team_id=OLD.id;
+      END;
+    CREATE TRIGGER memory_entries_quarantine_inactive_team
+      AFTER UPDATE OF status ON teams
+      WHEN NEW.status<>'active' AND OLD.status='active'
+      BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='team' AND owner_team_id=NEW.id;
+      END;
+  `}
+  ,{id:56,name:"schedule_recovery_leases",up:(db:Database.Database)=>{
+    const columns=new Set((db.prepare("PRAGMA table_info(schedule_runs)").all()as Array<{name:string}>).map(column=>column.name));
+    if(!columns.has("recovery_owner"))db.exec("ALTER TABLE schedule_runs ADD COLUMN recovery_owner TEXT");
+    if(!columns.has("recovery_lease_expires_at"))db.exec("ALTER TABLE schedule_runs ADD COLUMN recovery_lease_expires_at TEXT");
+    if(!columns.has("recovery_attempts"))db.exec("ALTER TABLE schedule_runs ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0");
+    db.exec("CREATE INDEX IF NOT EXISTS schedule_runs_recovery_idx ON schedule_runs(status,recovery_lease_expires_at,created_at,id)");
+  }}
+  ,{id:57,name:"memory_global_survives_project_deletion",up:(db:Database.Database)=>{
+    // 55/56 are immutable. Rebuild only the memory table to remove the
+    // project cascade: user_global rows retain their provenance project id,
+    // while a project-delete trigger removes every other memory row.
+    db.exec(`
+      DROP TRIGGER IF EXISTS memory_entries_ownership_insert;
+      DROP TRIGGER IF EXISTS memory_entries_ownership_update;
+      DROP TRIGGER IF EXISTS memory_entries_quarantine_deleted_agent;
+      DROP TRIGGER IF EXISTS memory_entries_quarantine_disabled_agent;
+      DROP TRIGGER IF EXISTS memory_entries_quarantine_deleted_team;
+      DROP TRIGGER IF EXISTS memory_entries_quarantine_inactive_team;
+      DROP TRIGGER IF EXISTS search_mem_ai;
+      DROP TRIGGER IF EXISTS search_mem_au;
+      DROP TRIGGER IF EXISTS search_mem_ad;
+      DROP INDEX IF EXISTS memory_entries_project_idx;
+      DROP INDEX IF EXISTS memory_entries_conversation_idx;
+      DROP INDEX IF EXISTS memory_entries_origin_idx;
+      DROP INDEX IF EXISTS memory_entries_lifecycle_idx;
+      DROP INDEX IF EXISTS memory_entries_owner_agent_idx;
+      DROP INDEX IF EXISTS memory_entries_owner_team_idx;
+      ALTER TABLE memory_entries RENAME TO memory_entries_55;
+      CREATE TABLE memory_entries (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        conversation_id TEXT,
+        scope TEXT NOT NULL,
+        content TEXT NOT NULL,
+        source TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        origin_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+        normalized_content TEXT NOT NULL DEFAULT '',
+        type TEXT NOT NULL DEFAULT 'project_architecture',
+        evidence_references_json TEXT NOT NULL DEFAULT '[]',
+        lifecycle TEXT NOT NULL DEFAULT 'active',
+        last_verified_at TEXT,
+        confidence REAL NOT NULL DEFAULT 0.5,
+        usage_count INTEGER NOT NULL DEFAULT 0,
+        success_contribution INTEGER NOT NULL DEFAULT 0,
+        failure_contribution INTEGER NOT NULL DEFAULT 0,
+        staleness TEXT NOT NULL DEFAULT 'current',
+        supersedes_id TEXT,
+        conflicts_with_ids_json TEXT NOT NULL DEFAULT '[]',
+        sensitivity TEXT NOT NULL DEFAULT 'internal',
+        expiration_policy TEXT NOT NULL DEFAULT 'never',
+        expires_at TEXT,
+        owner_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+        owner_team_id TEXT REFERENCES teams(id) ON DELETE SET NULL
+      );
+      INSERT INTO memory_entries
+        SELECT id,project_id,
+          CASE WHEN scope='user_global' THEN NULL ELSE conversation_id END,
+          scope,content,source,enabled,created_at,updated_at,pinned,origin_task_id,
+          normalized_content,type,evidence_references_json,lifecycle,last_verified_at,
+          confidence,usage_count,success_contribution,failure_contribution,staleness,
+          supersedes_id,conflicts_with_ids_json,sensitivity,expiration_policy,expires_at,
+          owner_agent_id,owner_team_id
+        FROM memory_entries_55;
+      DROP TABLE memory_entries_55;
+      CREATE INDEX memory_entries_project_idx ON memory_entries(project_id);
+      CREATE INDEX memory_entries_conversation_idx ON memory_entries(conversation_id);
+      CREATE INDEX memory_entries_origin_idx ON memory_entries(origin_task_id);
+      CREATE INDEX memory_entries_lifecycle_idx ON memory_entries(project_id,lifecycle,staleness,enabled);
+      CREATE INDEX memory_entries_owner_agent_idx ON memory_entries(project_id,owner_agent_id,scope);
+      CREATE INDEX memory_entries_owner_team_idx ON memory_entries(project_id,owner_team_id,scope);
+
+      CREATE TRIGGER memory_entries_ownership_insert BEFORE INSERT ON memory_entries
+      WHEN (NEW.scope='agent' AND NEW.owner_agent_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='team' AND NEW.owner_team_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='agent' AND NEW.owner_team_id IS NOT NULL)
+        OR (NEW.scope='team' AND NEW.owner_agent_id IS NOT NULL)
+        OR (NEW.scope NOT IN ('agent','team') AND (NEW.owner_agent_id IS NOT NULL OR NEW.owner_team_id IS NOT NULL))
+      BEGIN SELECT RAISE(ABORT,'memory ownership does not match scope'); END;
+      CREATE TRIGGER memory_entries_ownership_update BEFORE UPDATE OF scope,owner_agent_id,owner_team_id,enabled ON memory_entries
+      WHEN (NEW.scope='agent' AND NEW.owner_agent_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='team' AND NEW.owner_team_id IS NULL AND NEW.enabled<>0)
+        OR (NEW.scope='agent' AND NEW.owner_team_id IS NOT NULL)
+        OR (NEW.scope='team' AND NEW.owner_agent_id IS NOT NULL)
+        OR (NEW.scope NOT IN ('agent','team') AND (NEW.owner_agent_id IS NOT NULL OR NEW.owner_team_id IS NOT NULL))
+      BEGIN SELECT RAISE(ABORT,'memory ownership does not match scope'); END;
+      CREATE TRIGGER memory_entries_quarantine_deleted_agent BEFORE DELETE ON agents BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='agent' AND owner_agent_id=OLD.id;
+      END;
+      CREATE TRIGGER memory_entries_quarantine_disabled_agent AFTER UPDATE OF enabled ON agents
+      WHEN NEW.enabled=0 AND OLD.enabled<>0 BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='agent' AND owner_agent_id=NEW.id;
+      END;
+      CREATE TRIGGER memory_entries_quarantine_deleted_team BEFORE DELETE ON teams BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='team' AND owner_team_id=OLD.id;
+      END;
+      CREATE TRIGGER memory_entries_quarantine_inactive_team AFTER UPDATE OF status ON teams
+      WHEN NEW.status<>'active' AND OLD.status='active' BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='team' AND owner_team_id=NEW.id;
+        UPDATE delegations SET status='rejected',updated_at=NEW.updated_at
+          WHERE team_id=NEW.id AND status IN ('pending_approval','approved','running');
+      END;
+      CREATE TRIGGER memory_entries_quarantine_removed_member AFTER DELETE ON team_members BEGIN
+        UPDATE memory_entries SET enabled=0 WHERE scope='team' AND owner_team_id=OLD.team_id;
+        UPDATE delegations SET status='rejected',updated_at=datetime('now')
+          WHERE team_id=OLD.team_id AND agent_id=OLD.agent_id
+            AND status IN ('pending_approval','approved','running');
+      END;
+      CREATE TRIGGER memory_entries_project_delete BEFORE DELETE ON projects BEGIN
+        DELETE FROM memory_entries WHERE project_id=OLD.id AND scope<>'user_global';
+        UPDATE search_index SET project_id=NULL WHERE kind='memory' AND project_id=OLD.id AND title='user_global';
+      END;
+      CREATE TRIGGER memory_entries_conversation_delete BEFORE DELETE ON conversations BEGIN
+        DELETE FROM memory_entries WHERE conversation_id=OLD.id AND scope<>'user_global';
+        UPDATE memory_entries SET conversation_id=NULL WHERE conversation_id=OLD.id AND scope='user_global';
+        UPDATE search_index SET conversation_id=NULL WHERE kind='memory' AND conversation_id=OLD.id AND title='user_global';
+      END;
+      CREATE TRIGGER search_mem_ai AFTER INSERT ON memory_entries BEGIN
+        INSERT INTO search_index(kind,ref_id,project_id,conversation_id,title,body,created_at)
+        VALUES('memory',new.id,new.project_id,new.conversation_id,new.scope,new.content,new.created_at);
+      END;
+      CREATE TRIGGER search_mem_au AFTER UPDATE OF content ON memory_entries BEGIN
+        UPDATE search_index SET body=new.content WHERE kind='memory' AND ref_id=new.id;
+      END;
+      CREATE TRIGGER search_mem_ad AFTER DELETE ON memory_entries BEGIN
+        DELETE FROM search_index WHERE kind='memory' AND ref_id=old.id;
+      END;
+    `);
+  }},
+  {id:58,name:"group_conversations_and_context_refs",sql:`
+    -- A group thread keeps one immutable conductor in conversations.agent_id.
+    -- The mode flag and participant snapshots are additive so every existing
+    -- single-conductor conversation remains readable and dispatch-compatible.
+    ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'single'
+      CHECK(mode IN ('single','group'));
+
+    CREATE TABLE conversation_participants (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('conductor','participant')),
+      name_snapshot TEXT NOT NULL,
+      role_snapshot TEXT NOT NULL,
+      instructions_snapshot TEXT,
+      provider_override_snapshot TEXT,
+      model_override_snapshot TEXT,
+      profile_fingerprint TEXT NOT NULL,
+      position INTEGER NOT NULL CHECK(position >= 0),
+      status TEXT NOT NULL CHECK(status IN ('active','removed')),
+      joined_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      removed_at TEXT,
+      UNIQUE(conversation_id, agent_id)
+    );
+    CREATE INDEX conversation_participants_order_idx
+      ON conversation_participants(conversation_id,status,position,joined_at,id);
+    CREATE INDEX conversation_participants_agent_idx
+      ON conversation_participants(project_id,agent_id,status);
+
+    -- Context references are handles, not copied transcript. They authorize a
+    -- child to see bounded artifact/evidence records from its parent task while
+    -- retaining independent child conversation/provider policy.
+    CREATE TABLE conversation_context_refs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      source_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      target_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('artifact','evidence')),
+      ref_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(target_task_id,kind,ref_id)
+    );
+    CREATE INDEX conversation_context_refs_source_idx
+      ON conversation_context_refs(source_task_id,kind,ref_id);
+    CREATE INDEX conversation_context_refs_target_idx
+      ON conversation_context_refs(target_task_id,kind,ref_id);
+  `},
+  {id:59,name:"task_artifact_ownership_refs",sql:`
+    -- A deduplicated artifact keeps one canonical blob row, but every task
+    -- that produced/referenced it needs an explicit ownership edge. The
+    -- canonical tool_artifacts.task_id remains a truthful first-owner
+    -- compatibility field; this mapping is authoritative for later producers.
+    CREATE TABLE tool_artifact_task_refs (
+      artifact_id TEXT NOT NULL REFERENCES tool_artifacts(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(artifact_id, task_id)
+    );
+    INSERT INTO tool_artifact_task_refs(artifact_id,task_id,created_at)
+      SELECT id,task_id,created_at FROM tool_artifacts
+       WHERE task_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM tasks WHERE tasks.id=tool_artifacts.task_id);
+    CREATE INDEX tool_artifact_task_refs_task_idx
+      ON tool_artifact_task_refs(task_id,artifact_id);
+  `}
+  ,{id:60,name:"schedule_notification_preferences",up:(db:Database.Database)=>{
+    const scheduleColumns=new Set((db.prepare("PRAGMA table_info(schedules)").all()as Array<{name:string}>).map(column=>column.name));
+    if(!scheduleColumns.has("notification_events_json"))db.exec("ALTER TABLE schedules ADD COLUMN notification_events_json TEXT NOT NULL DEFAULT '[\"completed\",\"failed\",\"blocked\"]'");
+    if(!scheduleColumns.has("notification_adapter_id"))db.exec("ALTER TABLE schedules ADD COLUMN notification_adapter_id TEXT");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS schedule_notification_outbox (
+        id TEXT PRIMARY KEY,
+        schedule_run_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        adapter_id TEXT NOT NULL,
+        event TEXT NOT NULL CHECK(event IN ('waiting_for_approval','completed','failed','blocked')),
+        subject TEXT NOT NULL,
+        text TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','sent')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(schedule_run_id,adapter_id,event)
+      );
+      CREATE INDEX IF NOT EXISTS schedule_notification_outbox_pending_idx
+        ON schedule_notification_outbox(status,lease_expires_at,updated_at,id);
+    `);
+  }}
+  ,{id:61,name:"schedule_notification_observed_state",up:(db:Database.Database)=>{
+    const runColumns=new Set((db.prepare("PRAGMA table_info(schedule_runs)").all()as Array<{name:string}>).map(column=>column.name));
+    if(!runColumns.has("notification_observed_event"))db.exec("ALTER TABLE schedule_runs ADD COLUMN notification_observed_event TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS schedule_runs_notification_observed_idx ON schedule_runs(notification_observed_event,updated_at,id)");
+  }}
+  ,{id:62,name:"task_expected_agent_profile_hash",sql:`
+    ALTER TABLE tasks ADD COLUMN expected_agent_profile_hash TEXT;
+  `}
 ];
-export function openDatabase(file:string){
+/**
+ * Durability mode for committed writes.
+ *
+ * Under WAL, `synchronous = NORMAL` fsyncs at checkpoints rather than at every
+ * commit. A crashed Morrow process — the failure this database exists to
+ * survive — loses nothing, because the WAL is already on the OS's side of the
+ * boundary; only an OS crash or power loss can drop the most recent commits,
+ * and the database is never corrupted either way. `NORMAL` measures 7x faster
+ * than `FULL` on the durable write path (0.71ms -> 0.10ms per event on SSD),
+ * and a task emits thousands of events.
+ *
+ * This is stated explicitly rather than inherited, because what was inherited
+ * depended on the open. better-sqlite3's SQLite is built with
+ * SQLITE_DEFAULT_WAL_SYNCHRONOUS=1, so opening an already-WAL database quietly
+ * yielded `NORMAL`; only the first open of a fresh database ran `FULL`, because
+ * `journal_mode = WAL` is applied after the connection has already defaulted.
+ * A durability mode should not depend on whether the file existed yet.
+ * Set MORROW_SQLITE_SYNCHRONOUS=FULL to opt back in.
+ */
+function synchronousMode(env:NodeJS.ProcessEnv):"OFF"|"NORMAL"|"FULL"|"EXTRA"{
+  const requested=(env.MORROW_SQLITE_SYNCHRONOUS??"").trim().toUpperCase();
+  return requested==="OFF"||requested==="NORMAL"||requested==="FULL"||requested==="EXTRA"?requested:"NORMAL";
+}
+
+/**
+ * Compiling SQL is not free (~5us per call) and this codebase issues the same
+ * few hundred statements over and over — twice per durable event, and many
+ * times per projection rebuild. better-sqlite3 statements are reusable on their
+ * connection, so `prepare` is memoized by SQL text.
+ *
+ * Two deliberate exclusions keep this transparent: PRAGMA statements are never
+ * cached (they are one-shot, and the single caller that uses one reconfigures
+ * the statement with `.pluck()`), and the cache is bounded so the handful of
+ * call sites that build SQL from a variable column or placeholder list cannot
+ * grow it without limit.
+ */
+const MAX_CACHED_STATEMENTS=512;
+
+function installStatementCache(db:Database.Database):void{
+  const compile=db.prepare.bind(db);
+  const cache=new Map<string,Database.Statement>();
+  Object.defineProperty(db,"prepare",{
+    configurable:true,
+    writable:true,
+    value:(sql:string)=>{
+      if(typeof sql!=="string"||/^\s*pragma\b/i.test(sql))return compile(sql);
+      const cached=cache.get(sql);
+      if(cached!==undefined)return cached;
+      const statement=compile(sql);
+      if(cache.size>=MAX_CACHED_STATEMENTS){
+        const oldest=cache.keys().next();
+        if(!oldest.done)cache.delete(oldest.value);
+      }
+      cache.set(sql,statement);
+      return statement;
+    },
+  });
+}
+
+export function openDatabase(file:string,env:NodeJS.ProcessEnv=process.env){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});
   const db=new Database(file);
   try{
@@ -1416,7 +1911,16 @@ export function openDatabase(file:string){
     db.pragma("busy_timeout = 5000");
     if (file !== ":memory:") {
       db.pragma("journal_mode = WAL");
+      db.pragma(`synchronous = ${synchronousMode(env)}`);
+      // Checkpoint on a larger WAL so a long task is not interrupted by a
+      // synchronous checkpoint every few hundred events.
+      db.pragma("wal_autocheckpoint = 2000");
     }
+    // 64 MB page cache and memory-backed temp objects: the read-heavy
+    // projections rebuild whole conversations, and paging those from disk on
+    // every rebuild is the difference between a warm and a cold projection.
+    db.pragma("cache_size = -65536");
+    db.pragma("temp_store = MEMORY");
     db.function("morrow_redact", { deterministic: true }, (value: unknown) => typeof value === "string" ? redactSecrets(value) : "");
     db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");
     const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));
@@ -1430,6 +1934,9 @@ export function openDatabase(file:string){
     }
     const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;
     if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");
+    // Installed only after migrations: statements compiled against a schema
+    // that a later migration rewrites must never be reused.
+    installStatementCache(db);
     return db;
   }catch(error){
     db.close();

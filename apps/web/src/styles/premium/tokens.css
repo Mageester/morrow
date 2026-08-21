@@ -1,136 +1,178 @@
 /*
- * Premium visual system — tokens.
+ * Morrow visual system — tokens.
  *
- * Source of truth: docs/redesign/premium-reference/reference.css. Every value
- * below is taken from that file rather than re-derived, so the production app
- * and the approved reference stay measurably identical.
+ * Morrow is a roster of AI teammates you message like colleagues, so the
+ * product reads as a workspace: a cool near-black ground, sans throughout,
+ * dense rows, and one accent spent only on status. The previous system was a
+ * warm editorial one — paper ground, Georgia display, generous leading — which
+ * read as a publication and made a thread with a teammate feel like an article
+ * about one.
  *
- * This layer retunes the `--morrow-product-*` namespace introduced by
- * product-refresh.css instead of replacing it: every page already consumes
- * those names, so retargeting them moves the whole product at once. Geometry
- * and motion tokens are theme-independent and declared once.
+ * Two things are deliberately Morrow's own rather than borrowed:
  *
- * The reference is charcoal-only. Light remains supported (it is an existing
- * user capability and a Settings control) as a warm-paper counterpart sharing
- * the identical geometry, hierarchy, and copper accent.
+ *   Type. System stacks only — nothing is fetched over the network. That is a
+ *   privacy property of a local-first product, not a stylistic choice, so a
+ *   proprietary webfont is not an option however much it would flatter the
+ *   layout.
+ *
+ *   Accent. Copper, kept saturated and spent sparingly. The structure below is
+ *   a workspace's; the identity inside it stays Morrow's.
+ *
+ * Light remains a first-class mode (an existing user capability with a
+ * Settings control) sharing identical geometry, hierarchy and accent.
  */
 
 :root {
   /* Geometry — identical in both themes. */
   --morrow-premium-gutter: 14px;
-  /* Narrower than before: the sidebar is a way back to things, not a surface
-     that needs to hold prose. The width it gives up goes to the conversation. */
-  --morrow-premium-rail: 194px;
-  --morrow-premium-rail-compact: 178px;
-  --morrow-premium-topbar: 56px;
+  /* The rail carries a roster: an avatar, a name, what that teammate last did,
+     when, and a live status. */
+  --morrow-premium-rail: 258px;
+  --morrow-premium-rail-compact: 232px;
+  --morrow-premium-topbar: 52px;
   --morrow-premium-activity: 286px;
   --morrow-premium-content: 1120px;
-  --morrow-premium-reading: 800px;
-  --morrow-premium-composer: 800px;
+  /*
+   * Message column. The reference caps a bubble at min(420px, 92%), which is
+   * right for a marketing mock at half scale and wrong for a teammate that
+   * returns a diff. Morrow keeps the shape — a capped column, not a full-width
+   * page — at a width real answers survive.
+   */
+  --morrow-premium-reading: 760px;
+  --morrow-premium-bubble: min(560px, 82%);
+  --morrow-premium-composer: 760px;
 
-  --morrow-product-radius-sm: 9px;
-  --morrow-product-radius-md: 16px;
-  --morrow-product-radius-lg: 19px;
+  /* Pills are the reference's dominant shape; cards stay softly rounded. */
+  --morrow-product-radius-pill: 9999px;
+  --morrow-product-radius-sm: 8px;
+  --morrow-product-radius-md: 14px;
+  --morrow-product-radius-lg: 18px;
   --morrow-product-radius-xl: 22px;
   --morrow-product-radius: var(--morrow-product-radius-md);
   --morrow-product-radius-large: var(--morrow-product-radius-xl);
 
-  /* Type. System stacks only — nothing is fetched over the network. */
-  --morrow-product-display: Georgia, "Times New Roman", serif;
-  --morrow-product-utility: Inter, "Segoe UI", system-ui, sans-serif;
+  /*
+   * Type. System stacks only — nothing is fetched over the network.
+   * Display is the same family at a heavier weight and tighter tracking, not a
+   * second face: a workspace has one voice.
+   */
+  --morrow-product-utility: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter,
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --morrow-product-display: var(--morrow-product-utility);
+  --morrow-product-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* The reference's working scale: 14/20 body, 13 and 12 for meta. */
+  --morrow-product-text: 14px;
+  --morrow-product-leading: 20px;
+  --morrow-product-meta: 12px;
 
   --morrow-product-content: var(--morrow-premium-content);
   --morrow-product-reading: var(--morrow-premium-reading);
-  --morrow-product-gutter: clamp(28px, 6vw, 88px);
+  --morrow-product-gutter: clamp(20px, 4vw, 56px);
 
   /* Motion — MOTION_AND_RESPONSIVE.md. */
   --morrow-product-shift: cubic-bezier(0.22, 1, 0.36, 1);
-  --morrow-premium-enter: 260ms;
-  --morrow-premium-panel: 320ms;
-  --morrow-premium-control: 180ms;
+  --morrow-premium-enter: 240ms;
+  --morrow-premium-panel: 300ms;
+  --morrow-premium-control: 160ms;
   --morrow-premium-press: 90ms;
-  --morrow-premium-status: 220ms;
+  --morrow-premium-status: 200ms;
   --morrow-product-arrive: var(--morrow-premium-enter);
 
-  /* Warm-paper counterpart of the charcoal system. Same roles, inverted
-     ground, copper darkened to hold 4.5:1 against paper. */
-  --morrow-product-canvas: #f4f1ea;
-  --morrow-product-rail: #ebe6dc;
-  --morrow-product-field: rgb(255 253 249 / 0.82);
-  --morrow-product-field-strong: #fffdf8;
-  --morrow-product-field-inset: rgb(84 66 55 / 0.05);
-  --morrow-product-line: rgb(60 44 34 / 0.16);
-  --morrow-product-line-strong: rgb(60 44 34 / 0.26);
-  --morrow-product-copy: #1d1a16;
-  --morrow-product-copy-soft: #5f564e;
-  --morrow-product-copy-quiet: #857b72;
+  /*
+   * Light — the cool counterpart. Same roles, same geometry, ground inverted,
+   * copper darkened to hold 4.5:1 on near-white.
+   */
+  --morrow-product-canvas: #f5f6f8;
+  --morrow-product-rail: #eceef2;
+  --morrow-product-shell: #eceef2;
+  --morrow-product-field: #ffffff;
+  --morrow-product-field-strong: #f8f9fb;
+  --morrow-product-field-warm: #f1f3f6;
+  --morrow-product-field-inset: rgb(18 23 32 / 0.055);
+  --morrow-product-bubble-them: #ffffff;
+  --morrow-product-bubble-you: #252a33;
+  --morrow-product-bubble-you-ink: #f7f8fb;
+  --morrow-product-line: rgb(18 23 32 / 0.14);
+  --morrow-product-line-strong: rgb(18 23 32 / 0.25);
+  --morrow-product-line-soft: rgb(18 23 32 / 0.08);
+  --morrow-product-copy: #151922;
+  --morrow-product-copy-soft: #4a5260;
+  --morrow-product-copy-quiet: #6f7785;
+  --morrow-product-quiet: #858d9b;
+  --morrow-product-faint: #959daa;
   --morrow-product-copper: #9d4a2c;
   --morrow-product-copper-bright: #b45a38;
   --morrow-product-copper-deep: #7d3820;
   --morrow-product-copper-soft: rgb(157 74 44 / 0.12);
-  --morrow-product-copper-line: rgb(157 74 44 / 0.34);
-  --morrow-product-glow: rgb(157 74 44 / 0.14);
-  --morrow-product-success: #2f6349;
+  --morrow-product-copper-line: rgb(157 74 44 / 0.32);
+  --morrow-product-copper-glow: rgb(157 74 44 / 0.1);
+  --morrow-product-glow: rgb(157 74 44 / 0.1);
+  --morrow-product-success: #2c6b48;
+  --morrow-product-success-soft: rgb(44 107 72 / 0.12);
   --morrow-product-warning: #8a5c22;
-  --morrow-product-danger: #9d3f3b;
-  --morrow-product-panel: var(--morrow-product-field-strong);
+  --morrow-product-danger: #a63a3a;
+  --morrow-product-panel: var(--morrow-product-field);
   --morrow-product-ink: var(--morrow-product-copy);
   --morrow-product-muted: var(--morrow-product-copy-soft);
-  --morrow-product-faint: var(--morrow-product-copy-quiet);
-  --morrow-product-shadow-soft: 0 1px 0 rgb(255 255 255 / 0.5) inset,
-    0 22px 70px rgb(54 35 25 / 0.08);
-  --morrow-product-shadow-float: 0 1px 0 rgb(255 255 255 / 0.58) inset,
-    0 28px 80px rgb(54 35 25 / 0.13);
+  --morrow-product-shadow-soft: 0 1px 2px rgb(17 18 24 / 0.05), 0 12px 32px rgb(17 18 24 / 0.06);
+  --morrow-product-shadow-float: 0 1px 2px rgb(17 18 24 / 0.06), 0 20px 48px rgb(17 18 24 / 0.1);
   --morrow-product-shadow: var(--morrow-product-shadow-float);
 }
 
 /*
- * Charcoal — the approved reference. Values map 1:1 onto reference.css:
- *   canvas #0b0c0a · shell #151612 · surface #181915 · raised #20211c
- *   warm #2a211b · line #30312b · line-soft #292a24
- *   text #f2eee6 · soft #c4c0b7 · muted #a39f96 · quiet #74776e · faint #5f625a
- *   copper #d48562 · copper-soft #3a2921 · green #82aa88 · green-soft #19251b
- *   danger #dc7972
+ * Dark — the primary mode. A cool neutral ramp: near-black ground, surfaces
+ * built from near-white at low alpha so a card sitting on any ground picks up
+ * the right value without a second palette.
  */
 [data-theme="dark"] {
-  --morrow-product-canvas: #0b0c0a;
-  --morrow-product-rail: #151612;
-  --morrow-product-shell: #151612;
-  --morrow-product-field: #181915;
-  --morrow-product-field-strong: #20211c;
-  --morrow-product-field-warm: #2a211b;
-  --morrow-product-field-inset: rgb(242 238 230 / 0.035);
-  --morrow-product-line: #30312b;
-  --morrow-product-line-strong: #3a3c34;
-  --morrow-product-line-soft: #292a24;
-  --morrow-product-copy: #f2eee6;
-  --morrow-product-copy-soft: #c4c0b7;
-  --morrow-product-copy-quiet: #a39f96;
-  --morrow-product-copper: #d48562;
-  --morrow-product-copper-bright: #e2a07f;
-  --morrow-product-copper-deep: #a85b3d;
-  --morrow-product-copper-soft: #3a2921;
-  --morrow-product-copper-line: rgb(212 133 98 / 0.34);
-  --morrow-product-glow: rgb(164 93 49 / 0.12);
-  --morrow-product-success: #82aa88;
-  --morrow-product-success-soft: #19251b;
-  --morrow-product-warning: #c8a06a;
-  --morrow-product-danger: #dc7972;
+  --morrow-product-canvas: #090b0f;
+  --morrow-product-rail: #101318;
+  --morrow-product-shell: #11151b;
+  --morrow-product-field: #171b22;
+  --morrow-product-field-strong: #1d222b;
+  --morrow-product-field-warm: #252b35;
+  --morrow-product-field-inset: rgb(255 255 255 / 0.052);
+  /* A message from a teammate, and one from you. */
+  --morrow-product-bubble-them: rgb(255 255 255 / 0.075);
+  --morrow-product-bubble-you: #2a303a;
+  --morrow-product-bubble-you-ink: #f4f6fa;
+  --morrow-product-line: #272d37;
+  --morrow-product-line-strong: #414955;
+  --morrow-product-line-soft: #1f242c;
+  --morrow-product-copy: #f3f5f8;
+  --morrow-product-copy-soft: #c8cdd6;
+  --morrow-product-copy-quiet: #989faa;
+  --morrow-product-quiet: #7b8491;
+  --morrow-product-faint: #68717e;
+  --morrow-product-copper: #e08a5e;
+  --morrow-product-copper-bright: #efa47c;
+  --morrow-product-copper-deep: #b0603a;
+  --morrow-product-copper-soft: rgb(224 138 94 / 0.14);
+  --morrow-product-copper-line: rgb(224 138 94 / 0.34);
+  --morrow-product-copper-glow: rgb(224 138 94 / 0.12);
+  --morrow-product-glow: rgb(224 138 94 / 0.07);
+  --morrow-product-success: #6fc38a;
+  --morrow-product-success-soft: rgb(111 195 138 / 0.14);
+  --morrow-product-warning: #d8a76a;
+  --morrow-product-danger: #e5786f;
   --morrow-product-panel: var(--morrow-product-field);
   --morrow-product-ink: var(--morrow-product-copy);
   --morrow-product-muted: var(--morrow-product-copy-quiet);
-  --morrow-product-faint: #5f625a;
-  --morrow-product-quiet: #74776e;
-  --morrow-product-shadow-soft: 0 18px 50px rgb(0 0 0 / 0.34);
-  --morrow-product-shadow-float: 0 28px 80px rgb(0 0 0 / 0.45);
+  --morrow-product-shadow-soft: 0 12px 32px rgb(0 0 0 / 0.4);
+  --morrow-product-shadow-float: 0 24px 64px rgb(0 0 0 / 0.5);
   --morrow-product-shadow: var(--morrow-product-shadow-float);
 }
 
 /*
  * The shared @morrow/ui primitives (Button, Surface, StatusPill) read the
- * `--morrow-*` namespace. Re-point those at the premium values so a Button
- * inside a premium surface cannot drift from its container.
+ * `--morrow-*` namespace. Re-point those at the product values so a Button
+ * inside a surface cannot drift from its container. Declared for both themes:
+ * pointing them only at dark left every light-mode primitive on the package's
+ * own defaults.
  */
+:root,
 [data-theme="dark"] {
   --morrow-bg: var(--morrow-product-canvas);
   --morrow-surface: var(--morrow-product-field);
@@ -145,8 +187,6 @@
   --morrow-accent: var(--morrow-product-copper);
   --morrow-accent-hover: var(--morrow-product-copper-bright);
   --morrow-accent-soft: var(--morrow-product-copper-soft);
-  /* Copper carries dark ink, as in the reference's primary button. */
-  --morrow-on-accent: #21110b;
   --morrow-focus: var(--morrow-product-copper);
   --morrow-success: var(--morrow-product-success);
   --morrow-warning: var(--morrow-product-warning);
@@ -154,6 +194,10 @@
   --morrow-shadow-sm: var(--morrow-product-shadow-soft);
   --morrow-shadow-lg: var(--morrow-product-shadow-float);
 }
+
+/* Copper carries dark ink in both themes; on paper it carries light. */
+[data-theme="dark"] { --morrow-on-accent: #1c0e07; }
+:root:not([data-theme="dark"]) { --morrow-on-accent: #fdf7f3; }
 
 :root {
   --morrow-ease-out: var(--morrow-product-shift);

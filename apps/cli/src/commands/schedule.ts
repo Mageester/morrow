@@ -35,7 +35,7 @@ export async function scheduleCommand(ctx: Context, sub: string | undefined, arg
   if (verb === "remove") {
     const id = args[0];
     if (!id) throw usageError("Usage: morrow schedule remove <id>");
-    await api.deleteSchedule(id);
+    await api.deleteSchedule(project.id, id);
     if (ctx.out.json) ctx.out.data({ removed: id }); else ctx.out.success(`Removed schedule ${shortId(id)}.`);
     return EXIT.OK;
   }
@@ -43,7 +43,7 @@ export async function scheduleCommand(ctx: Context, sub: string | undefined, arg
   if (verb === "run") {
     const id = args[0];
     if (!id) throw usageError("Usage: morrow schedule run <id>");
-    const result = await api.runSchedule(id);
+    const result = await api.runSchedule(project.id, id);
     if (ctx.out.json) ctx.out.data(result); else ctx.out.success(`Started run ${shortId(result.taskId)} for schedule ${shortId(id)}.`);
     return EXIT.OK;
   }

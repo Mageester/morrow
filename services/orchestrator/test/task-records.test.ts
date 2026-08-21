@@ -181,6 +181,29 @@ describe("task records repository", () => {
     db.close();
   });
 
+  it("persists completed_at for completed and cancelled terminal transitions", () => {
+    const { db, tasks, records } = setup();
+    tasks.createTask({ id: "t3", projectId: "p", kind: "inspect_workspace", status: "queued", createdAt });
+    const completedAt = "2026-01-01T00:02:00.000Z";
+    const cancelledAt = "2026-01-01T00:03:00.000Z";
+
+    records.transitionTask("t1", "running", { id: "t1-running", createdAt: updatedAt, payload: {} });
+    records.transitionTask("t1", "completed", { id: "t1-completed", createdAt: completedAt, payload: {} });
+    records.transitionTask("t2", "running", { id: "t2-running", createdAt: updatedAt, payload: {} });
+    records.transitionTask("t2", "cancelled", { id: "t2-cancelled", createdAt: cancelledAt, payload: {} });
+    records.transitionTask("t3", "running", { id: "t3-running", createdAt: updatedAt, payload: {} });
+    records.transitionTask("t3", "interrupted", { id: "t3-interrupted", createdAt: cancelledAt, payload: {} });
+
+    expect(db.prepare("SELECT id,status,completed_at FROM tasks WHERE id IN ('t1','t2','t3') ORDER BY id").all()).toEqual([
+      { id: "t1", status: "completed", completed_at: completedAt },
+      { id: "t2", status: "cancelled", completed_at: cancelledAt },
+      { id: "t3", status: "interrupted", completed_at: null },
+    ]);
+    expect(records.listEvents("t1").map((event) => event.type)).toEqual(["task.running", "task.completed"]);
+    expect(records.listEvents("t2").map((event) => event.type)).toEqual(["task.running", "task.cancelled"]);
+    db.close();
+  });
+
   it("rejects every forbidden transition including same state", () => {
     const { db, tasks, records } = setup();
     expect(() => records.transitionTask("t1", "queued", { id: "same", createdAt, payload: {} })).toThrow();

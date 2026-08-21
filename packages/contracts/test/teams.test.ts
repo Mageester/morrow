@@ -15,6 +15,7 @@ import {
   AgentSchema,
   CreateAgentSchema,
   SpawnSubagentSchema,
+  AskTeammateSchema,
   ExecutionDisclosureSchema,
 } from "../src/index.js";
 
@@ -303,6 +304,23 @@ describe("SpawnSubagentSchema — agent_chat delegation kind", () => {
 
   it("accepts the new agent_chat kind for real delegated subagents", () => {
     expect(SpawnSubagentSchema.safeParse({ kind: "agent_chat" }).success).toBe(true);
+  });
+});
+
+describe("AskTeammateSchema — model delegation input", () => {
+  it("accepts only the target agent id and bounded objective", () => {
+    expect(AskTeammateSchema.safeParse({ agentId: "agent-2", objective: "Check the release notes" }).success).toBe(true);
+  });
+
+  it("rejects provider/model, team, budget, and unknown fields", () => {
+    expect(AskTeammateSchema.safeParse({
+      agentId: "agent-2",
+      objective: "Check the release notes",
+      providerId: "openai",
+      model: "unsafe-model",
+      teamId: "team-1",
+      budget: { maxProviderCalls: 999 },
+    }).success).toBe(false);
   });
 });
 

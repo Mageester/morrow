@@ -11,6 +11,7 @@ import {
   type WebSendMessageResult,
   type WebConversationMessage,
   type WebTaskReasoning,
+  type ConversationMode,
 } from "@morrow/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "./client.js";
@@ -96,8 +97,17 @@ export function pendingWebMessage(
 }
 
 export const conversationApi = {
-  create(projectId: string, title?: string) {
-    return api.post(projectPath(projectId), title ? { title } : {}, ConversationSchema);
+  /**
+   * `agentId` binds the new thread to one named teammate for its whole life;
+   * omitting it leaves the thread with the built-in default teammate, which is
+   * what every conversation created before the roster is.
+   */
+  create(projectId: string, title?: string, agentId?: string, mode?: ConversationMode) {
+    return api.post(
+      projectPath(projectId),
+      { ...(title ? { title } : {}), ...(agentId ? { agentId } : {}), ...(mode ? { mode } : {}) },
+      ConversationSchema,
+    );
   },
 
   list(projectId: string, includeArchived = false) {
@@ -130,7 +140,7 @@ export const conversationApi = {
     );
   },
 
-  update(projectId: string, conversationId: string, patch: { title?: string; archived?: boolean }) {
+  update(projectId: string, conversationId: string, patch: { title?: string; archived?: boolean; mode?: ConversationMode }) {
     return api.patch(conversationPath(projectId, conversationId), patch, ConversationSchema);
   },
 

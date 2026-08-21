@@ -48,7 +48,8 @@
  * silently falls back to content size. `:has()` scopes a column flex context to
  * the conversation route alone, leaving every other page's canvas untouched.
  */
-.morrow-route-canvas:has(> .morrow-conversation-page) {
+.morrow-route-canvas:has(> .morrow-conversation-page),
+.morrow-route-canvas:has(> .morrow-group-participants + .morrow-conversation-page) {
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -109,5 +110,43 @@
   .morrow-conversation-page[data-rail="open"] .morrow-conversation-action-shelf,
   .morrow-conversation-page[data-rail="open"] .morrow-conversation-composer {
     padding-inline: clamp(18px, 2.2vw, 40px);
+  }
+}
+
+/* A conversation is the product surface, not a card placed inside one. Give
+   the transcript and composer a broad, continuous reading field while the
+   teammate rail carries the identity work on the left. */
+@media (min-width: 701px) {
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-shell-context {
+    height: 48px;
+    padding-inline: 28px;
+    background: var(--morrow-product-canvas);
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-conversation-history {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding-inline: clamp(28px, 5vw, 84px);
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-conversation-history__inner,
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-conversation-workspace {
+    width: 100%;
+    max-width: 900px;
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-conversation-message__turn {
+    max-width: 820px;
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-conversation-composer {
+    padding-inline: clamp(28px, 5vw, 84px);
+    border-top-color: var(--morrow-product-line-soft);
+    background: var(--morrow-product-canvas);
+  }
+
+  .morrow-app-shell:has(.morrow-conversation-page) .morrow-conversation-composer .morrow-chat-composer {
+    max-width: 900px;
   }
 }

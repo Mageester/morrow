@@ -183,7 +183,7 @@ describe("resolveProject: cwd-first precedence (P1-2)", () => {
 
 describe("resolveConversation: /resume must not cross project boundaries (P1-2)", () => {
   function fakeConversation(id: string, projectId: string): Conversation {
-    return { version: 1, id, projectId, title: "t", archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    return { version: 1, id, projectId, title: "t", archived: false, agentId: null, mode: "single", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   }
 
   function fakeCtx(flags: Record<string, string | boolean>) {

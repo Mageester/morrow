@@ -3,6 +3,7 @@ import { ConversationSchema, ConversationMessageSchema, type Conversation, type 
 import { redactJsonText, redactSecrets } from "../provider/credentials.js";
 import { externalizeToolResult, renderExternalizedForContext } from "../execution/artifact-externalization.js";
 import { toolArtifactsRepository } from "./tool-artifacts.js";
+import { conversationsParticipantsRepository } from "./conversation-participants.js";
 
 function safeErrorText(value: string | null | undefined): string | null {
   return value === null || value === undefined ? null : redactSecrets(value).slice(0, 2_000);
@@ -51,6 +52,8 @@ export function conversationsRepository(db: Database.Database) {
       projectId: row.project_id,
       title: row.title,
       archived: Number(row.archived ?? 0) !== 0,
+      agentId: row.agent_id ?? null,
+      mode: row.mode ?? "single",
       createdAt: row.created_at,
       updatedAt: row.updated_at
     });
@@ -91,10 +94,35 @@ export function conversationsRepository(db: Database.Database) {
   };
 
   return {
-    createConversation(input: Omit<Conversation, "version" | "archived"> & { archived?: boolean }): Conversation {
+    createConversation(
+      input: Omit<Conversation, "version" | "archived" | "agentId" | "mode"> & { archived?: boolean; agentId?: string | null; mode?: Conversation["mode"] },
+    ): Conversation {
+      if (input.mode === "group" && input.agentId) {
+        const conductor = db.prepare("SELECT team_id FROM agents WHERE id=? AND project_id=?").get(input.agentId, input.projectId) as { team_id: string | null } | undefined;
+        if (conductor?.team_id) {
+          const error = new Error("Team agents must be started through the delegation API");
+          Object.assign(error, { code: "TEAM_AGENT_REQUIRES_DELEGATION" });
+          throw error;
+        }
+      }
       db.prepare(
-        "INSERT INTO conversations (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
-      ).run(input.id, input.projectId, input.title, input.createdAt, input.updatedAt);
+        "INSERT INTO conversations (id, project_id, title, agent_id, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run(input.id, input.projectId, input.title, input.agentId ?? null, input.mode ?? "single", input.createdAt, input.updatedAt);
+      if (input.mode === "group" && input.agentId) {
+        const agent = db.prepare("SELECT * FROM agents WHERE id=? AND project_id=?").get(input.agentId, input.projectId) as any;
+        if (agent) conversationsParticipantsRepository(db).ensureConductor(input.id, input.projectId, {
+          version: 1,
+          id: String(agent.id), projectId: String(agent.project_id), name: String(agent.name), role: agent.role,
+          instructions: agent.instructions ?? null, providerOverride: agent.provider_override ?? null,
+          modelOverride: agent.model_override ?? null, enabled: Boolean(agent.enabled), teamId: agent.team_id ?? null,
+          memoryReadScopes: JSON.parse(String(agent.memory_read_scopes_json ?? "[]")),
+          memoryWriteScopes: JSON.parse(String(agent.memory_write_scopes_json ?? "[]")),
+          maxProviderCalls: agent.max_provider_calls ?? null, maxTokenBudget: agent.max_token_budget ?? null,
+          maxWallClockMs: agent.max_wall_clock_ms ?? null, maxChildTasks: agent.max_child_tasks ?? null,
+          approvalRequired: Boolean(agent.approval_required), createdBy: agent.created_by ?? "user",
+          createdAt: String(agent.created_at), updatedAt: String(agent.updated_at),
+        }, input.createdAt);
+      }
       return this.getConversation(input.id)!;
     },
 
@@ -110,6 +138,17 @@ export function conversationsRepository(db: Database.Database) {
       return db.prepare(sql).all(projectId).map(mapConversation);
     },
 
+    listConversationsByAgent(projectId: string, agentId: string | null, includeArchived = false): Conversation[] {
+      const archivedClause = includeArchived ? "" : " AND archived = 0";
+      const sql = agentId === null
+        ? `SELECT * FROM conversations WHERE project_id = ? AND agent_id IS NULL${archivedClause} ORDER BY updated_at DESC`
+        : `SELECT * FROM conversations WHERE project_id = ? AND agent_id = ?${archivedClause} ORDER BY updated_at DESC`;
+      const rows = agentId === null
+        ? db.prepare(sql).all(projectId)
+        : db.prepare(sql).all(projectId, agentId);
+      return rows.map(mapConversation);
+    },
+
     renameConversation(id: string, title: string, updatedAt: string): Conversation | undefined {
       db.prepare("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?").run(title, updatedAt, id);
       return this.getConversation(id);
@@ -117,6 +156,11 @@ export function conversationsRepository(db: Database.Database) {
 
     setArchived(id: string, archived: boolean, updatedAt: string): Conversation | undefined {
       db.prepare("UPDATE conversations SET archived = ?, updated_at = ? WHERE id = ?").run(archived ? 1 : 0, updatedAt, id);
+      return this.getConversation(id);
+    },
+
+    setMode(id: string, mode: Conversation["mode"], updatedAt: string): Conversation | undefined {
+      db.prepare("UPDATE conversations SET mode = ?, updated_at = ? WHERE id = ?").run(mode, updatedAt, id);
       return this.getConversation(id);
     },
 
@@ -189,22 +233,25 @@ export function conversationsRepository(db: Database.Database) {
 
     listMessages(conversationId: string): ConversationMessage[] {
       return db
-        .prepare("SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC")
+        .prepare("SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC")
         .all(conversationId)
         .map(mapMessage);
     },
 
     updateMessageContentAndState(id: string, content: string, streamingState: string, updatedAt: string): ConversationMessage {
-      const current = db.prepare("SELECT role FROM conversation_messages WHERE id = ?").get(id) as { role: string } | undefined;
+      // One scalar read for both decisions. `conversation_id` is immutable for
+      // a message, so reading it before the update is equivalent to the row
+      // re-read this used to do afterwards — and it avoids parsing the whole
+      // message (including the content just written) on a path that runs for
+      // every flush of a streaming response.
+      const current = db.prepare("SELECT role, conversation_id FROM conversation_messages WHERE id = ?").get(id) as { role: string; conversation_id: string } | undefined;
       const safeContent = current?.role === "assistant" ? redactSecrets(content) : content;
       db.transaction(() => {
         db.prepare(
           "UPDATE conversation_messages SET content = ?, streaming_state = ?, updated_at = ? WHERE id = ?"
         ).run(safeContent, streamingState, updatedAt, id);
-        
-        const msg = this.getMessage(id);
-        if (msg) {
-          db.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?").run(updatedAt, msg.conversationId);
+        if (current) {
+          db.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?").run(updatedAt, current.conversation_id);
         }
       })();
       return this.getMessage(id)!;

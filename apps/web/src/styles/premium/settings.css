@@ -45,7 +45,7 @@
 }
 
 .morrow-settings-chapter[aria-current="true"] {
-  background: linear-gradient(90deg, #2b231d, #20211c);
+  background: var(--morrow-product-field-strong);
   color: #eee9df;
 }
 

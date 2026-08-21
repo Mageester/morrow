@@ -39,6 +39,23 @@ describe("REST API and Task Runner Vertical Slice", () => {
     });
   });
 
+  it("scopes teammate tool permissions and refuses sole allow-list clearing", async () => {
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p1", 1, "P1", tempDir, now, now);
+    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p2", 1, "P2", tempDir, now, now);
+    // Seed a minimal custom agent directly so this route regression does not
+    // depend on preset defaults.
+    db.prepare("INSERT INTO agents(id,schema_version,project_id,name,role,instructions,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run("a-scope", 1, "p1", "Scoped", "custom", "", 1, now, now);
+    db.prepare("INSERT INTO agent_tool_permissions(id,schema_version,agent_id,tool_name,effect,priority,created_at) VALUES(?,?,?,?,?,?,?)")
+      .run("perm-ask", 1, "a-scope", "ask_teammate", "allow", 10, now);
+    expect((await app.inject({ method: "GET", url: "/api/agents/a-scope/tool-permissions?projectId=p2" })).statusCode).toBe(404);
+    const clear = await app.inject({ method: "DELETE", url: "/api/agents/a-scope/tool-permissions/ask_teammate?projectId=p1" });
+    expect(clear.statusCode).toBe(409);
+    expect(clear.json().error?.code ?? clear.json().code).toBe("SOLE_EXPLICIT_ALLOW_RULE");
+    expect((await app.inject({ method: "GET", url: "/api/agents/a-scope/tool-permissions?projectId=p1" })).json()).toHaveLength(1);
+  });
+
   it("includes context usage metadata in task aggregates without message content", async () => {
     const now = "2026-07-02T03:00:00.000Z";
     db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p1", 1, "Project", tempDir, now, now);
@@ -282,7 +299,7 @@ describe("REST API and Task Runner Vertical Slice", () => {
     const implementer = agents.find((a: any) => a.name === "Cortex Implementer");
     expect(implementer.instructions).toContain("Allowed tools");
 
-    const permsRes = await app.inject({ method: "GET", url: `/api/agents/${implementer.id}/tool-permissions` });
+    const permsRes = await app.inject({ method: "GET", url: `/api/agents/${implementer.id}/tool-permissions?projectId=${projectId}` });
     expect(permsRes.statusCode).toBe(200);
     expect(permsRes.json().map((p: any) => p.toolName)).toContain("propose_patch");
   });

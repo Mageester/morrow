@@ -147,7 +147,7 @@ export function taskRecordsRepository(db: Database.Database) {
     const type = eventTypes[target as keyof typeof eventTypes];
     if (!type) throw new Error(`No task event for transition to ${target}`);
     const startedAt = target === "running" ? event.createdAt : null;
-    const completedAt = target === "verified" || target === "failed" ? event.createdAt : null;
+    const completedAt = ["verified", "completed", "failed", "cancelled"].includes(target) ? event.createdAt : null;
     db.prepare("UPDATE tasks SET status=?,updated_at=?,started_at=COALESCE(?,started_at),completed_at=COALESCE(?,completed_at) WHERE id=?").run(target, event.createdAt, startedAt, completedAt, id);
     appendEvent({ ...event, taskId: id, type });
     return mapTask(db.prepare("SELECT * FROM tasks WHERE id = ?").get(id));
@@ -300,7 +300,7 @@ export function taskRecordsRepository(db: Database.Database) {
       db.prepare("INSERT INTO task_evidence(id,schema_version,task_id,type,path,metadata_json,created_at) VALUES(?,1,?,?,?,?,?)").run(value.id, value.taskId, value.type, value.path, JSON.stringify(value.metadata), value.createdAt);
       return value;
     },
-    listEvidence(taskId: string) { return db.prepare("SELECT * FROM task_evidence WHERE task_id=? ORDER BY created_at ASC,id ASC").all(taskId).map(mapEvidence); },
+    listEvidence(taskId: string) { return db.prepare("SELECT * FROM task_evidence WHERE task_id=? ORDER BY created_at ASC,rowid ASC").all(taskId).map(mapEvidence); },
     upsertVerification(input: VerificationInput) {
       const value = VerificationResultSchema.parse({ ...input, version: 1, summary: safeText(input.summary), details: redactSecretsDeep(input.details) });
       db.prepare("INSERT INTO verification_results(task_id,schema_version,status,summary,details_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET status=excluded.status,summary=excluded.summary,details_json=excluded.details_json,updated_at=excluded.updated_at").run(value.taskId, 1, value.status, value.summary, JSON.stringify(value.details), value.createdAt, value.updatedAt);

@@ -93,8 +93,9 @@ export class McpClient {
     }
   }
 
-  private request<T = unknown>(method: string, params?: unknown): Promise<T> {
+  private request<T = unknown>(method: string, params?: unknown, signal?: AbortSignal): Promise<T> {
     if (this.closed) return Promise.reject(new Error("MCP client is closed"));
+    if (signal?.aborted) return Promise.reject(new Error("AbortError"));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer =
@@ -104,44 +105,53 @@ export class McpClient {
             }, this.requestTimeoutMs)
           : null;
       if (timer && typeof timer.unref === "function") timer.unref();
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
+      const onAbort = () => {
+        if (this.pending.delete(id)) {
+          if (timer) clearTimeout(timer);
+          reject(new Error("AbortError"));
+        }
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const resolveOnce = (value: unknown) => { signal?.removeEventListener("abort", onAbort); resolve(value as T); };
+      const rejectOnce = (error: Error) => { signal?.removeEventListener("abort", onAbort); reject(error); };
+      this.pending.set(id, { resolve: resolveOnce, reject: rejectOnce, timer });
       this.transport.write(encodeMessage({ jsonrpc: "2.0", id, method, ...(params !== undefined ? { params } : {}) }));
     });
   }
 
-  initialize(): Promise<unknown> {
+  initialize(signal?: AbortSignal): Promise<unknown> {
     return this.request("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
       clientInfo: { name: "morrow", version: "0.1.0" },
-    });
+    }, signal);
   }
 
-  ping(): Promise<unknown> {
-    return this.request("ping");
+  ping(signal?: AbortSignal): Promise<unknown> {
+    return this.request("ping", undefined, signal);
   }
 
-  async listTools(): Promise<McpTool[]> {
-    const result = await this.request<{ tools?: McpTool[] }>("tools/list");
+  async listTools(signal?: AbortSignal): Promise<McpTool[]> {
+    const result = await this.request<{ tools?: McpTool[] }>("tools/list", undefined, signal);
     const tools = result?.tools ?? [];
     return this.allowed ? tools.filter((tool) => this.allowed!.has(tool.name)) : tools;
   }
 
-  async listResources(): Promise<McpResource[]> {
-    const result = await this.request<{ resources?: McpResource[] }>("resources/list");
+  async listResources(signal?: AbortSignal): Promise<McpResource[]> {
+    const result = await this.request<{ resources?: McpResource[] }>("resources/list", undefined, signal);
     return result?.resources ?? [];
   }
 
-  async readResource(uri: string): Promise<{ contents: McpResourceContent[] }> {
-    const result = await this.request<{ contents?: McpResourceContent[] }>("resources/read", { uri });
+  async readResource(uri: string, signal?: AbortSignal): Promise<{ contents: McpResourceContent[] }> {
+    const result = await this.request<{ contents?: McpResourceContent[] }>("resources/read", { uri }, signal);
     return { contents: result?.contents ?? [] };
   }
 
-  callTool(name: string, args: unknown): Promise<unknown> {
+  callTool(name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
     if (this.allowed && !this.allowed.has(name)) {
       return Promise.reject(new Error(`Tool not allowed: ${name}`));
     }
-    return this.request("tools/call", { name, arguments: args });
+    return this.request("tools/call", { name, arguments: args }, signal);
   }
 
   close(): void {

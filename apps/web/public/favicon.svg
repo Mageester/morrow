@@ -1,5 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#151613"/>
-  <path d="M14 35c0-11 8-20 18-20 7 0 13 4 16 10 4 1 7 5 7 10 0 6-5 11-11 11H24c-6 0-10-5-10-11Z" fill="#e8e6df"/>
-  <path d="M23 31h18M32 22v18" stroke="#151613" stroke-width="5" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" role="img" aria-label="Morrow">
+  <rect width="400" height="400" rx="88" fill="#0A0A0B"/>
+  <g fill="#F4F1EC" transform="translate(200 187.5) scale(1.28) translate(-200 -187.5)">
+    <path d="M118 108 L118 228 L191 267 L191 176 Z"/>
+    <path d="M282 108 L282 228 L209 267 L209 176 Z"/>
+  </g>
 </svg>

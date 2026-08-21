@@ -63,12 +63,15 @@
 
 .morrow-conversation-history__inner {
   display: flex;
+  min-width: 0;
   max-width: var(--morrow-premium-reading);
   flex-direction: column;
   margin-inline: auto;
   /* One rhythm for the whole column: turns are separated by this and nothing
-     else, so no turn can open a hole the next one has to close. */
-  gap: 26px;
+     else, so no turn can open a hole the next one has to close. Tight, because
+     a message thread is a sequence of exchanges rather than a set of sections
+     — the reference runs 4px between entries and reads as one conversation. */
+  gap: 14px;
 }
 
 /* ── Conversation actions ────────────────────────────────────────────────── */
@@ -148,14 +151,17 @@
 }
 
 /* Workspace path: quiet provenance, not a banner. */
+/* Provenance for the thread, folded up against the teammate banner above it
+   rather than given a band of its own. Which workspace a teammate is working
+   in matters; it does not matter more than the first message. */
 .morrow-conversation-workspace {
   display: flex;
   max-width: var(--morrow-premium-reading);
-  margin: 0 auto 26px;
+  margin: 0 auto 8px;
   color: var(--morrow-product-faint);
-  font-size: 10px;
-  gap: 10px;
-  letter-spacing: 0.06em;
+  font-size: 10.5px;
+  gap: 9px;
+  letter-spacing: 0.02em;
 }
 
 .morrow-conversation-workspace--blocked {
@@ -171,95 +177,160 @@
 
 /* ── Messages ────────────────────────────────────────────────────────────── */
 
+/*
+ * A thread with a teammate reads as a message thread: capped bubbles, a byline
+ * with a clock time, your words on the right and theirs on the left. The
+ * previous layout set replies as full-width editorial prose, which made a
+ * conversation with a colleague look like an article about one.
+ */
+
 .morrow-conversation-date {
-  margin: 0 0 39px;
+  margin: 0 0 24px;
   color: var(--morrow-product-faint);
-  font-size: 10px;
-  letter-spacing: 0.13em;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
   text-align: center;
   text-transform: uppercase;
 }
 
 .morrow-conversation-message {
+  min-width: 0;
   padding: 0;
   border: 0;
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
+/* ── Your messages ───────────────────────────────────────────────────────── */
+
 /*
- * The reader's own words: a considered block, not a pill floating in space.
- * Wide enough for a pasted stack trace to stay readable, padded enough to look
- * deliberate, and selectable as ordinary text.
+ * The user message element is now a lane, not the bubble — the bubble is a
+ * child. Earlier layers (app.css, product-refresh.css) style this same class
+ * as the bubble itself, so the padding, border, radius and ground they set are
+ * cleared explicitly rather than left to paint a second surface behind this
+ * one.
  */
 .morrow-conversation-message--user {
+  display: flex;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  margin-block: 0;
+  border-radius: 0;
+  background: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.morrow-conversation-message--user .morrow-conversation-message__bubble {
   width: fit-content;
-  max-width: min(88%, 62ch);
-  margin-inline-start: auto;
-  padding: 11px 16px;
-  border: 1px solid var(--morrow-product-line-soft);
-  border-radius: 16px 16px 5px 16px;
-  background: var(--morrow-product-field-strong);
-  color: var(--morrow-product-copy);
-  box-shadow: none;
+  max-width: min(640px, 84%);
+  padding: 10px 14px;
+  border: 1px solid rgb(255 255 255 / 0.06);
+  border-radius: 16px 16px 5px;
+  background: var(--morrow-product-bubble-you);
+  color: var(--morrow-product-bubble-you-ink);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.12);
+}
+
+/* Colour is set on the text, not inherited: earlier layers set an ink colour
+   on the lane element for when it WAS the bubble, and in light mode that put
+   near-black text on the near-black bubble. */
+.morrow-conversation-message--user .morrow-conversation-message__content,
+.morrow-conversation-message--user .morrow-conversation-message__content p {
+  color: var(--morrow-product-bubble-you-ink);
 }
 
 .morrow-conversation-message--user .morrow-conversation-message__content p {
   margin: 0;
-  font-size: 14.5px;
-  line-height: 1.6;
+  font-size: var(--morrow-product-text);
+  line-height: var(--morrow-product-leading);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   -webkit-user-select: text;
   user-select: text;
 }
 
+/* ── Their messages ──────────────────────────────────────────────────────── */
+
 .morrow-conversation-message--assistant {
   display: grid;
   margin: 0;
-  grid-template-columns: 30px minmax(0, 1fr);
-  gap: 14px;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 10px;
 }
 
-/* The copper mark replaces the "MORROW" label as the speaker signal. */
+/* The speaker signal is the teammate's own mark, not a fixed product glyph. */
 .morrow-conversation-message--assistant .morrow-conversation-message__author {
   display: grid;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   place-items: center;
-  margin: 0;
-  border: 1px solid #4b3b31;
-  border-radius: 10px;
-  background: #221914;
-  color: var(--morrow-product-copper);
-  font-size: 0;
+  margin: 3px 0 0;
   grid-row: span 4;
 }
 
-.morrow-conversation-message--assistant .morrow-conversation-message__author::before {
-  content: "✦";
-  font-size: 13px;
+.morrow-conversation-message--assistant .morrow-conversation-message__author .morrow-teammate-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  font-size: 10.5px;
 }
 
 .morrow-conversation-message--assistant > *:not(.morrow-conversation-message__author) {
   grid-column: 2;
 }
 
+.morrow-conversation-message__turn {
+  display: grid;
+  min-width: 0;
+  max-width: min(680px, 100%);
+  gap: 6px;
+}
+
+.morrow-conversation-message__byline {
+  display: flex;
+  align-items: baseline;
+  margin: 0;
+  gap: 7px;
+}
+
+.morrow-conversation-message__speaker {
+  color: var(--morrow-product-copy);
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+}
+
+.morrow-conversation-message__time {
+  color: var(--morrow-product-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 /*
- * Assistant prose is the point of the screen once it exists: brighter than the
- * work line above it, set at a comfortable measure, with no container drawn
- * around it at all.
+ * Their words sit in a bubble too, so the thread has two visible voices rather
+ * than one voice and one page. Markdown inside keeps working — a teammate that
+ * returns a list or a diff must still be readable.
  */
 .morrow-conversation-message__content--markdown {
+  padding: 11px 14px;
+  border: 1px solid var(--morrow-product-line-soft);
+  border-radius: 16px 16px 16px 5px;
+  background: var(--morrow-product-bubble-them);
   color: var(--morrow-product-copy);
-  font-size: 15.5px;
-  line-height: 1.7;
+  font-size: var(--morrow-product-text);
+  line-height: 1.52;
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.08);
 }
 
 .morrow-conversation-message__content--markdown p {
-  margin: 0 0 15px;
+  margin: 0 0 10px;
   color: var(--morrow-product-copy);
-  font-size: 15.5px;
-  line-height: 1.7;
+  font-size: var(--morrow-product-text);
+  line-height: var(--morrow-product-leading);
 }
 
 .morrow-conversation-message__content--markdown > :last-child {
@@ -269,39 +340,53 @@
 .morrow-conversation-message__content--markdown h1,
 .morrow-conversation-message__content--markdown h2,
 .morrow-conversation-message__content--markdown h3 {
-  margin: 0 0 13px;
+  margin: 14px 0 7px;
   font-family: var(--morrow-product-display);
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 650;
   letter-spacing: -0.01em;
+  line-height: 1.35;
 }
 
-.morrow-conversation-message__content--markdown h1,
-.morrow-conversation-message__content--markdown h2 {
-  font-size: 26px;
-  line-height: 1.18;
+.morrow-conversation-message__content--markdown h1:first-child,
+.morrow-conversation-message__content--markdown h2:first-child,
+.morrow-conversation-message__content--markdown h3:first-child {
+  margin-top: 0;
 }
 
-.morrow-conversation-message__content--markdown ul {
-  margin: 20px 0;
+.morrow-conversation-message__content--markdown ul,
+.morrow-conversation-message__content--markdown ol {
+  margin: 8px 0;
+  padding-left: 18px;
+}
+
+.morrow-conversation-message__content--markdown li {
+  margin: 3px 0;
+  color: var(--morrow-product-copy-soft);
+}
+
+.morrow-conversation-message__content--markdown code {
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: var(--morrow-product-field-inset);
+  font-family: var(--morrow-product-mono);
+  font-size: 12.5px;
+}
+
+.morrow-conversation-message__content--markdown pre {
+  margin: 8px 0;
+  padding: 9px 11px;
+  overflow: auto;
+  border-radius: var(--morrow-product-radius-sm);
+  background: var(--morrow-product-canvas);
+  scrollbar-width: thin;
+}
+
+.morrow-conversation-message__content--markdown pre code {
   padding: 0;
-  list-style: none;
-}
-
-.morrow-conversation-message__content--markdown ul li {
-  display: flex;
-  padding: 10px 0;
-  border-top: 1px solid var(--morrow-product-line-soft);
-  color: #b6b3aa;
-  gap: 11px;
-}
-
-.morrow-conversation-message__content--markdown ul li:last-child {
-  border-bottom: 1px solid var(--morrow-product-line-soft);
-}
-
-.morrow-conversation-message__content--markdown ul li::before {
-  content: "✓";
-  color: var(--morrow-product-success);
+  background: none;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 /* Provenance, not a headline: readable when looked for, invisible otherwise. */
@@ -340,9 +425,9 @@
   flex: none;
   width: auto;
   max-width: none;
-  padding: 18px clamp(28px, 6vw, 88px) 22px;
-  border: 0;
-  background: var(--morrow-product-shell, #151612);
+  padding: 14px clamp(28px, 6vw, 88px) 18px;
+  border-top: 1px solid var(--morrow-product-line-soft);
+  background: color-mix(in srgb, var(--morrow-product-shell, #151612) 96%, transparent);
 }
 
 .morrow-conversation-composer .morrow-chat-composer {
@@ -385,7 +470,7 @@
   }
 
   .morrow-conversation-message--user {
-    max-width: 92%;
+    max-width: 94%;
   }
 
   .morrow-conversation-header {
@@ -592,16 +677,17 @@
 }
 
 .morrow-activity-panel__tabs {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
-  overflow-x: auto;
-  padding-bottom: 2px;
+  overflow: visible;
 }
 
 .morrow-activity-panel__tab {
   display: inline-flex;
+  min-width: 0;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 4px 9px;
   border: 1px solid transparent;
@@ -673,4 +759,65 @@
 
 .morrow-activity-panel__footer p {
   margin: 0;
+}
+
+@media (max-width: 700px) {
+  .morrow-activity-panel {
+    width: 100%;
+    border-left: 0;
+    border-radius: 16px 0 0 16px;
+    box-shadow: -10px 0 32px rgb(0 0 0 / 0.42);
+  }
+
+  .morrow-activity-panel__header {
+    padding: 16px 16px 11px;
+  }
+
+  .morrow-activity-panel__header h2 {
+    font-size: 16px;
+  }
+
+  .morrow-activity-panel__header .morrow-eyebrow,
+  .morrow-activity-panel__footer {
+    display: none;
+  }
+
+  .morrow-activity-panel__controls {
+    padding: 10px 16px 11px;
+    gap: 8px;
+  }
+
+  .morrow-activity-panel__tabs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+    overflow: visible;
+    padding: 0;
+  }
+
+  .morrow-activity-panel__tab {
+    min-width: 0;
+    justify-content: center;
+    padding: 6px 3px;
+    gap: 4px;
+    font-size: 10px;
+  }
+
+  .morrow-activity-panel__tab > span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .morrow-activity-panel__count {
+    flex: none;
+    padding-inline: 4px;
+  }
+
+  .morrow-activity-panel__content {
+    padding: 12px 16px;
+  }
+
+  .morrow-activity-panel__footer {
+    padding: 10px 16px;
+  }
 }
