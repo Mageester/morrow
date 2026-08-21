@@ -1026,7 +1026,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.post("/api/delegations/:delegationId/resolve", async (request, reply) => {
     const { delegationId } = request.params as { delegationId: string };
     const body = ResolveDelegationSchema.parse(request.body);
-    const { delegation, parent } = requireDelegationContext(delegationId, body.parentTaskId);
+    const { delegation, parent, team } = requireDelegationContext(delegationId, body.parentTaskId);
     // Idempotency guard: a replayed/duplicate resolve (e.g. after a crash and
     // restart retrying the same request) must never spawn a second child or
     // silently re-resolve an already-decided delegation.
@@ -1037,6 +1037,16 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
     if (body.decision === "reject") {
       return delegations.reject(delegationId, now);
+    }
+    // The team's defaultConcurrencyLimit is a real invariant: starts beyond
+    // the limit are refused with a named rule rather than silently
+    // interleaving members whose ownership was never proven concurrent-safe.
+    const concurrencyLimit = Math.max(1, team.defaultConcurrencyLimit ?? 1);
+    const runningRow = deps.db.prepare(
+      "SELECT COUNT(*) AS n FROM delegations WHERE team_id=? AND status='running'",
+    ).get(delegation.teamId) as { n: number };
+    if (runningRow.n >= concurrencyLimit) {
+      throw new ApiError(409, `Team already has ${runningRow.n} running delegation${runningRow.n === 1 ? "" : "s"}; cancel one before starting another`, "TEAM_CONCURRENCY_LIMIT");
     }
     // Persist the running delegation before starting the child. This closes the
     // race where execution could observe an unscoped team agent between spawn

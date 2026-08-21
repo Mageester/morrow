@@ -72,6 +72,52 @@ describe("Teams API — Research and verify preset", () => {
     expect(deleted.statusCode).toBe(204);
   });
 
+  it("enforces the team's sequential concurrency limit on delegation starts", async () => {
+    const previousMockProvider = process.env.MOCK_PROVIDER;
+    process.env.MOCK_PROVIDER = "true";
+    try {
+      const created = await app.inject({ method: "POST", url: "/api/projects/p1/teams", payload: { preset: "research_and_verify" } });
+      const body = created.json();
+      const verifier = body.members.find((m: any) => m.name === "Verifier");
+      const researcher = body.members.find((m: any) => m.name === "Researcher");
+      taskRepository(db).createTask({ id: "parent", projectId: "p1", kind: "agent_chat", status: "running", createdAt: ts() });
+      const first = await app.inject({
+        method: "POST", url: "/api/tasks/parent/delegations",
+        payload: { teamId: body.team.id, agentId: verifier.id, objective: "Verify" },
+      });
+      const second = await app.inject({
+        method: "POST", url: "/api/tasks/parent/delegations",
+        payload: { teamId: body.team.id, agentId: researcher.id, objective: "Research more" },
+      });
+
+      const startedFirst = await app.inject({
+        method: "POST", url: `/api/delegations/${first.json().id}/resolve`,
+        payload: { parentTaskId: "parent", decision: "approve" },
+      });
+      expect(startedFirst.statusCode).toBe(200);
+
+      // defaultConcurrencyLimit is 1 this slice: a second concurrent start is
+      // refused with a named rule instead of silently interleaving members.
+      const startedSecond = await app.inject({
+        method: "POST", url: `/api/delegations/${second.json().id}/resolve`,
+        payload: { parentTaskId: "parent", decision: "approve" },
+      });
+      expect(startedSecond.statusCode).toBe(409);
+      expect(startedSecond.json().error?.code ?? startedSecond.json().code).toBe("TEAM_CONCURRENCY_LIMIT");
+
+      // Cancelling the running delegation frees the slot.
+      await app.inject({ method: "POST", url: `/api/delegations/${first.json().id}/cancel`, payload: { parentTaskId: "parent" } });
+      const retried = await app.inject({
+        method: "POST", url: `/api/delegations/${second.json().id}/resolve`,
+        payload: { parentTaskId: "parent", decision: "approve" },
+      });
+      expect(retried.statusCode).toBe(200);
+    } finally {
+      if (previousMockProvider === undefined) delete process.env.MOCK_PROVIDER;
+      else process.env.MOCK_PROVIDER = previousMockProvider;
+    }
+  });
+
   it("narrows delegation memory writes to the team policy intersection", async () => {
     const created = await app.inject({ method: "POST", url: "/api/projects/p1/teams", payload: { preset: "research_and_verify" } });
     const teamId = created.json().team.id;
