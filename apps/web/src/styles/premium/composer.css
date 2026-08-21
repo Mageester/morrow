@@ -85,6 +85,7 @@
   flex-wrap: nowrap;
   gap: 7px;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   scrollbar-width: none;
 }
 
