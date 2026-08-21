@@ -7,6 +7,7 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { agentsRepository } from "../src/repositories/agents.js";
 import { teamsRepository } from "../src/repositories/teams.js";
+import { delegationsRepository } from "../src/repositories/delegations.js";
 import { teammateProfileFingerprint } from "../src/tools/teammate-delegation.js";
 
 function ts() { return new Date().toISOString(); }
@@ -45,6 +46,30 @@ describe("Teams API — Research and verify preset", () => {
   it("rejects an unknown preset", async () => {
     const res = await app.inject({ method: "POST", url: "/api/projects/p1/teams", payload: { preset: "build_and_test" } });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("refuses to delete a teammate with a live delegation or unfinished task", async () => {
+    const created = await app.inject({ method: "POST", url: "/api/projects/p1/teams", payload: { preset: "research_and_verify" } });
+    const teamId = created.json().team.id;
+    const researcher = created.json().members.find((m: any) => m.name === "Researcher");
+    taskRepository(db).createTask({ id: "parent", projectId: "p1", kind: "agent_chat", status: "running", createdAt: ts() });
+    const delegated = await app.inject({
+      method: "POST",
+      url: "/api/tasks/parent/delegations",
+      payload: { teamId, agentId: researcher.id, objective: "Summarize sources" },
+    });
+    expect(delegated.statusCode).toBe(201);
+
+    // Pending delegation: deletion must be refused, leaving the durable
+    // record inspectable instead of dangling.
+    const refused = await app.inject({ method: "DELETE", url: `/api/agents/${researcher.id}`, payload: { projectId: "p1" } });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error?.code ?? refused.json().code).toBe("AGENT_IN_FLIGHT");
+
+    // Terminal delegation and no unfinished tasks: deletion succeeds again.
+    delegationsRepository(db).reject(delegated.json().id, ts());
+    const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${researcher.id}`, payload: { projectId: "p1" } });
+    expect(deleted.statusCode).toBe(204);
   });
 
   it("narrows delegation memory writes to the team policy intersection", async () => {

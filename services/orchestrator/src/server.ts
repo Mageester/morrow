@@ -56,7 +56,7 @@ import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { projectRepository } from "./repositories/projects.js";
-import { agentsRepository, SoleExplicitAllowRuleError } from "./repositories/agents.js";
+import { agentsRepository, AgentInFlightError, SoleExplicitAllowRuleError } from "./repositories/agents.js";
 import { teamsRepository } from "./repositories/teams.js";
 import { delegationsRepository } from "./repositories/delegations.js";
 import { handoffsRepository } from "./repositories/handoffs.js";
@@ -836,10 +836,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (conductorBinding) {
       throw new ApiError(409, "This teammate is the immutable conductor of a conversation and cannot be deleted", "AGENT_CONVERSATION_CONDUCTOR");
     }
-    if (!agents.delete(agentId, body.projectId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    try {
+      if (!agents.delete(agentId, body.projectId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    } catch (error) {
+      if (error instanceof AgentInFlightError) throw new ApiError(409, error.message, error.code);
+      throw error;
+    }
     reply.status(204).send();
   });
-
   // ── Agent Tool Permissions ─────────────────────────────────────────────────
 
   const scopedToolPermissionAgent = (request: { params: unknown; query: unknown }) => {

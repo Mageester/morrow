@@ -23,6 +23,17 @@ export class SoleExplicitAllowRuleError extends Error {
   }
 }
 
+/** Deleting a teammate that owns a live delegation or unfinished task would
+ * strand both: the child fails with a confusing missing-agent error and the
+ * delegation row stays running forever. Refused at the write boundary. */
+export class AgentInFlightError extends Error {
+  readonly code = "AGENT_IN_FLIGHT";
+  constructor() {
+    super("This teammate has a live delegation or unfinished task; cancel those first");
+    this.name = "AgentInFlightError";
+  }
+}
+
 function mapAgent(row: Record<string, unknown>): Agent {
   return AgentSchema.parse({
     version: row.schema_version,
@@ -143,6 +154,10 @@ export function agentsRepository(db: Database.Database) {
       return db.transaction(() => {
         const binding = db.prepare("SELECT 1 FROM conversations WHERE project_id=? AND agent_id=? AND mode='group' LIMIT 1").get(projectId, id);
         if (binding) return false;
+        const inFlight =
+          db.prepare("SELECT 1 FROM delegations WHERE agent_id=? AND status IN ('pending_approval','running') LIMIT 1").get(id)
+          || db.prepare("SELECT 1 FROM tasks WHERE agent_id=? AND status IN ('queued','running') LIMIT 1").get(id);
+        if (inFlight) throw new AgentInFlightError();
         // CASCADE handles permissions and skill access rows.
         return db.prepare("DELETE FROM agents WHERE id=? AND project_id=?").run(id, projectId).changes > 0;
       })();
