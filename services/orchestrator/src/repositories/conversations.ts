@@ -238,6 +238,29 @@ export function conversationsRepository(db: Database.Database) {
         .map(mapMessage);
     },
 
+    /** The one group-conversation lookup for a task. Every caller (ask_teammate
+     * parsing, roster projection, dispatch) must agree on the same row, so the
+     * join lives here with deterministic ordering instead of being re-typed
+     * per site. Returns undefined for non-group or conversationless tasks. */
+    groupContextForTask(taskId: string): { conversationId: string; mode: string } | undefined {
+      const row = db.prepare(
+        `SELECT c.id AS conversation_id, c.mode
+         FROM conversations c
+         INNER JOIN conversation_messages m ON m.conversation_id = c.id
+         WHERE m.task_id = ?
+         ORDER BY m.rowid ASC
+         LIMIT 1`,
+      ).get(taskId) as { conversation_id?: string; mode?: string } | undefined;
+      if (!row?.conversation_id || !row.mode) return undefined;
+      return { conversationId: row.conversation_id, mode: row.mode };
+    },
+
+    isActiveGroupParticipant(conversationId: string, agentId: string): boolean {
+      return Boolean(db.prepare(
+        "SELECT 1 FROM conversation_participants WHERE conversation_id=? AND agent_id=? AND role='participant' AND status='active' LIMIT 1",
+      ).get(conversationId, agentId));
+    },
+
     updateMessageContentAndState(id: string, content: string, streamingState: string, updatedAt: string): ConversationMessage {
       // One scalar read for both decisions. `conversation_id` is immutable for
       // a message, so reading it before the update is equivalent to the row

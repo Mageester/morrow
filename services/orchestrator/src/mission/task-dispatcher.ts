@@ -132,17 +132,12 @@ export function spawnAgentChatSubagent(
       }
       try {
         resolveStandaloneTeammateTarget(parent, agent, agentId);
-        const groupConversation = dependencies.db.prepare(
-          `SELECT c.mode, c.id AS conversation_id
-           FROM conversations c
-           INNER JOIN conversation_messages m ON m.conversation_id = c.id
-           WHERE m.task_id = ? LIMIT 1`,
-        ).get(parent.id) as { mode?: string; conversation_id?: string } | undefined;
-        if (groupConversation?.mode === "group" && groupConversation.conversation_id) {
+        const groupContext = conversationsRepository(dependencies.db).groupContextForTask(parent.id);
+        if (groupContext?.mode === "group") {
           const participant = dependencies.db.prepare(
             `SELECT 1 FROM conversation_participants
              WHERE conversation_id=? AND agent_id=? AND role='participant' AND status='active'`,
-          ).get(groupConversation.conversation_id, agent.id);
+          ).get(groupContext.conversationId, agent.id);
           if (!participant) throw new AgentTaskDispatchError(409, "Invite this teammate to the shared thread before asking them.", "AGENT_NOT_PARTICIPANT");
         }
       } catch (error) {
