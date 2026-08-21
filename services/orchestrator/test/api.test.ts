@@ -56,6 +56,22 @@ describe("REST API and Task Runner Vertical Slice", () => {
     expect((await app.inject({ method: "GET", url: "/api/agents/a-scope/tool-permissions?projectId=p1" })).json()).toHaveLength(1);
   });
 
+  it("scopes teammate skill access by project like tool permissions", async () => {
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p1", 1, "P1", tempDir, now, now);
+    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p2", 1, "P2", tempDir, now, now);
+    db.prepare("INSERT INTO agents(id,schema_version,project_id,name,role,instructions,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run("a-skill", 1, "p1", "Skilled", "custom", "", 1, now, now);
+    expect((await app.inject({ method: "GET", url: "/api/agents/a-skill/skill-access?projectId=p2" })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: "PUT",
+      url: "/api/agents/a-skill/skill-access?projectId=p2",
+      payload: { skillId: "s1", effect: "allow" },
+    })).statusCode).toBe(404);
+    expect((await app.inject({ method: "DELETE", url: "/api/agents/a-skill/skill-access/s1?projectId=p2" })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: "/api/agents/a-skill/skill-access?projectId=p1" })).statusCode).toBe(200);
+  });
+
   it("includes context usage metadata in task aggregates without message content", async () => {
     const now = "2026-07-02T03:00:00.000Z";
     db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p1", 1, "Project", tempDir, now, now);

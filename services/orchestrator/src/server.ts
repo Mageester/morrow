@@ -877,23 +877,20 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   // ── Agent Skill Access ─────────────────────────────────────────────────────
 
   app.get("/api/agents/:agentId/skill-access", async (request) => {
-    const { agentId } = request.params as { agentId: string };
-    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
-    return agents.listSkillAccess(agentId);
+    return agents.listSkillAccess(scopedToolPermissionAgent(request).id);
   });
 
   app.put("/api/agents/:agentId/skill-access", async (request, reply) => {
-    const { agentId } = request.params as { agentId: string };
-    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    const agent = scopedToolPermissionAgent(request);
     const body = UpsertSkillAccessSchema.parse(request.body);
     reply.status(200);
-    return agents.upsertSkillAccess(agentId, body);
+    return agents.upsertSkillAccess(agent.id, body);
   });
 
   app.delete("/api/agents/:agentId/skill-access/:skillId", async (request, reply) => {
-    const { agentId, skillId } = request.params as { agentId: string; skillId: string };
-    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
-    if (!agents.deleteSkillAccess(agentId, skillId)) throw new ApiError(404, "Skill access not found", "NOT_FOUND");
+    const { skillId } = request.params as { skillId: string };
+    const agent = scopedToolPermissionAgent(request);
+    if (!agents.deleteSkillAccess(agent.id, skillId)) throw new ApiError(404, "Skill access not found", "NOT_FOUND");
     reply.status(204).send();
   });
 
