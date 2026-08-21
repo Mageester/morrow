@@ -19,7 +19,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "pnpm.cmd exec vite --host 127.0.0.1 --port 4381 --strictPort",
+    command: "pnpm exec vite --host 127.0.0.1 --port 4381 --strictPort",
     cwd: webRoot,
     reuseExistingServer: false,
     url: "http://127.0.0.1:4381/app/e2e/composer-harness.html",

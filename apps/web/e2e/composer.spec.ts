@@ -209,3 +209,77 @@ test("production composer remains touch-reachable with a reduced mobile visual v
     });
   })).toBe(true);
 });
+
+test("model picker opens unclipped above the chip bar", async ({ page }) => {
+  await page.goto(HARNESS);
+  const trigger = page.getByRole("button", { name: /Auto — recommended/ });
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  const panel = page.getByRole("menu");
+  await expect(panel).toBeVisible();
+
+  // Clipping does not change layout boxes, so the reliable detector is a
+  // hit test: the panel's own center must resolve to an element inside the
+  // panel, not to the chip bar that historically clipped it.
+  await expect.poll(async () => {
+    const box = await panel.boundingBox();
+    if (!box) return false;
+    return page.evaluate(([x, y]) => {
+      const el = document.elementFromPoint(x, y);
+      return Boolean(el?.closest("[role='menu']"));
+    }, [box.x + box.width / 2, box.y + box.height / 2]);
+  }).toBe(true);
+
+  const box = await panel.boundingBox();
+  expect(box!.y).toBeGreaterThanOrEqual(0);
+  await page.keyboard.press("Escape");
+  await expect(panel).not.toBeVisible();
+});
+
+test("thinking popover and settings popover open unclipped above the chip bar", async ({ page }) => {
+  await page.goto(HARNESS);
+  for (const name of [/^Thinking ·/, /Workspace and message settings/]) {
+    const trigger = page.getByRole("button", { name }).first();
+    await expect(trigger).toBeVisible();
+    await trigger.click();
+    const dialog = page.getByRole("dialog").first();
+    await expect(dialog).toBeVisible();
+    await expect.poll(async () => {
+      const box = await dialog.boundingBox();
+      if (!box) return false;
+      return page.evaluate(([x, y]) => {
+        const el = document.elementFromPoint(x, y);
+        return Boolean(el?.closest("[role='dialog']"));
+      }, [box.x + box.width / 2, box.y + box.height / 2]);
+    }).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(dialog).not.toBeVisible();
+  }
+});
+
+test("zz-probe geometry", async ({ page }) => {
+  await page.goto(HARNESS);
+  const info = await page.evaluate(() => {
+    const toolbar = document.querySelector(".morrow-chat-composer__toolbar");
+    const ts = toolbar ? getComputedStyle(toolbar) : null;
+    return {
+      ox: ts?.overflowX, oy: ts?.overflowY,
+      buttons: Array.from(document.querySelectorAll("button")).map((b) => b.getAttribute("aria-label") ?? b.title ?? b.textContent?.trim().slice(0, 30)).slice(0, 14),
+    };
+  });
+  console.log("PROBE_STYLE", JSON.stringify(info));
+  await page.getByRole("button", { name: /Auto — recommended/ }).click();
+  const geo = await page.evaluate(() => {
+    const menu = document.querySelector("[role='menu']");
+    const toolbar = document.querySelector(".morrow-chat-composer__toolbar");
+    if (!menu || !toolbar) return { missing: true };
+    const mb = menu.getBoundingClientRect();
+    const tb = toolbar.getBoundingClientRect();
+    const hit = document.elementFromPoint(mb.x + mb.width / 2, mb.y + mb.height / 2);
+    return {
+      menuTop: Math.round(mb.y), toolbarTop: Math.round(tb.y), toolbarH: Math.round(tb.height),
+      hitClass: (hit?.getAttribute("class") ?? "").slice(0, 60), hitInMenu: Boolean(hit?.closest("[role='menu']")),
+    };
+  });
+  console.log("PROBE_GEO", JSON.stringify(geo));
+});
