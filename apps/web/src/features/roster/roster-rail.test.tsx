@@ -277,7 +277,7 @@ describe("Teammate roster rail", () => {
       createdAt: "2026-08-20T09:00:00.000Z", updatedAt: "2026-08-20T09:00:00.000Z",
     };
     let current = {
-      version: 1, id: "mem-agent-1", projectId: "project-1", conversationId: null, scope: "agent", type: "project_architecture",
+      version: 1, id: "mem-agent-1", projectId: "project-1", conversationId: null, scope: "agent", ownerAgentId: "agent-1", ownerTeamId: null, type: "project_architecture",
       content: "Research citations stay in the project.", normalizedContent: "research citations stay in the project", source: "user", evidenceReferences: [],
       lifecycle: "active", originTaskId: null, pinned: false, enabled: true, lastVerifiedAt: null, confidence: 1,
       usageCount: 1, successContribution: 0, failureContribution: 0, staleness: "current", supersedesId: null,
@@ -303,8 +303,8 @@ describe("Teammate roster rail", () => {
     const dialog = await screen.findByRole("dialog", { name: "Edit teammate Research" });
     await user.click(within(dialog).getByRole("button", { name: "Inspect scoped memory" }));
     expect(await within(dialog).findByText("Agent scope records")).toBeVisible();
-    expect(within(dialog).getByText(/not records owned by/i)).toBeVisible();
-    expect(within(dialog).getByText(/does not store a per-teammate owner/i)).toBeVisible();
+    expect(within(dialog).getByText(/durable project-local records owned by Research or its team/i)).toBeVisible();
+    expect(within(dialog).getByText(/agent records are private to this teammate/i)).toBeVisible();
     expect(within(dialog).getByText("Research citations stay in the project.")).toBeVisible();
 
     await user.click(within(dialog).getByRole("button", { name: "Edit record" }));

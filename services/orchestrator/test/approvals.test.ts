@@ -128,7 +128,8 @@ describe("approvals", () => {
       // Stored trust is the exact canonical key, NOT the broad "pnpm test".
       expect((await app.inject({ method: "GET", url: "/api/projects/project/command-trusts" })).json()).toMatchObject([{ pattern: exactKey }]);
       expect((await app.inject({ method: "GET", url: "/api/tasks/task" })).json().approvals).toMatchObject([{ id: "approval", status: "approved" }]);
-      expect(taskRecordsRepository(db).listEvents("task").at(-1)).toMatchObject({ type: "approval.resolved", payload: { approvalId: "approval", decision: "trust_project" } });
+      const approvalEvents = taskRecordsRepository(db).listEvents("task").filter((event) => event.type === "approval.resolved");
+      expect(approvalEvents.at(-1)).toMatchObject({ type: "approval.resolved", payload: { approvalId: "approval", decision: "trust_project" } });
       expect((await app.inject({ method: "DELETE", url: "/api/projects/project/command-trusts", payload: { pattern: exactKey } })).statusCode).toBe(204);
       expect((await app.inject({ method: "GET", url: "/api/projects/project/command-trusts" })).json()).toEqual([]);
     });

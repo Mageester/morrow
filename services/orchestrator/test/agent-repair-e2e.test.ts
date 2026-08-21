@@ -85,6 +85,7 @@ function runnerFor(db: any, provider: MockProvider): TaskRunner {
       provider,
       maxTurns: 12,
       ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}),
+      ...(deps.recovery ? { recovery: deps.recovery } : {}),
     });
   });
 }
@@ -315,9 +316,10 @@ describe("Agent Repair E2E Vertical Slice", () => {
     expect(approvalsRepository(db2).get(approvalId)?.status).toBe("pending");
     expect(continuations2.get(task.id)?.toolName).toBe("run_command");
 
-    // Recovery marks the in-flight task interrupted; the continuation is preserved.
+    // Pending-approval work remains parked and nonterminal across restart; the
+    // continuation is preserved and the resolver will re-dispatch it safely.
     recoverRunningTasks(db2);
-    expect(tasks2.getTaskById(task.id)!.status).toBe("interrupted");
+    expect(tasks2.getTaskById(task.id)!.status).toBe("running");
     expect(continuations2.get(task.id)).toBeDefined();
 
     // (20) A fresh server resumes the task when the persisted approval is resolved.

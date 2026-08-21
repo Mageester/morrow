@@ -213,9 +213,16 @@ describe("migration 55 legacy ownership backfill", () => {
     agentsRepository(legacy).create({ id: "agent-b", projectId: "p1", name: "B", role: "assistant" });
     const disabledAgent = agentsRepository(legacy).create({ id: "agent-disabled", projectId: "p1", name: "Disabled", role: "assistant" });
     agentsRepository(legacy).update(disabledAgent.id, "p1", { enabled: false });
-    conversationsRepository(legacy).createConversation({ id: "c-a", projectId: "p1", title: "A", agentId: "agent-a", createdAt: at, updatedAt: at });
-    conversationsRepository(legacy).createConversation({ id: "c-b", projectId: "p1", title: "B", agentId: "agent-b", createdAt: at, updatedAt: at });
-    conversationsRepository(legacy).createConversation({ id: "c-disabled", projectId: "p1", title: "Disabled", agentId: "agent-disabled", createdAt: at, updatedAt: at });
+    // Keep this database at the exact pre-migration-55 schema. The current
+    // conversation repository also writes the later migration-58 `mode`
+    // column, so legacy rows are seeded directly with the columns that
+    // existed when migration 55 ran.
+    legacy.prepare("INSERT INTO conversations (id,project_id,title,agent_id,created_at,updated_at) VALUES (?,?,?,?,?,?)")
+      .run("c-a", "p1", "A", "agent-a", at, at);
+    legacy.prepare("INSERT INTO conversations (id,project_id,title,agent_id,created_at,updated_at) VALUES (?,?,?,?,?,?)")
+      .run("c-b", "p1", "B", "agent-b", at, at);
+    legacy.prepare("INSERT INTO conversations (id,project_id,title,agent_id,created_at,updated_at) VALUES (?,?,?,?,?,?)")
+      .run("c-disabled", "p1", "Disabled", "agent-disabled", at, at);
     taskRepository(legacy).createTask({ id: "task-a", projectId: "p1", kind: "agent_chat", status: "completed", agentId: "agent-a", createdAt: at });
     taskRepository(legacy).createTask({ id: "task-b", projectId: "p1", kind: "agent_chat", status: "completed", agentId: "agent-b", createdAt: at });
     taskRepository(legacy).createTask({ id: "task-disabled", projectId: "p1", kind: "agent_chat", status: "completed", agentId: "agent-disabled", createdAt: at });
