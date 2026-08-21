@@ -889,12 +889,33 @@ export async function executeAgentChatTask({
   const expectedAgentProfileHash = tasks.getExpectedAgentProfileHash(taskId);
   if (expectedAgentProfileHash && assignedAgent
     && expectedAgentProfileHash !== teammateProfileFingerprint(assignedAgent, agentRepo.listToolPermissions(assignedAgent.id))) {
+    // One coherent terminal story: the task is cancelled, the agent state is
+    // interrupted with the reason, and the thread message says why. Throwing
+    // here made the runner stamp a contradictory "failed" state over a
+    // deliberate cancellation.
+    const timestamp = now();
     records.transitionTask(taskId, "cancelled", {
       id: randomUUID(),
-      createdAt: now(),
+      createdAt: timestamp,
       payload: { reason: "agent_profile_changed" },
     });
-    throw new Error("Teammate profile changed before execution; request approval again");
+    if (!records.getAgentState(taskId)) {
+      records.transitionAgentState(taskId, { id: randomUUID(), state: "idle", details: {}, createdAt: timestamp });
+    }
+    records.transitionAgentState(taskId, { id: randomUUID(), state: "interrupted", details: { reason: "agent_profile_changed" }, createdAt: timestamp });
+    const firstMessage = db.prepare(
+      "SELECT id FROM conversation_messages WHERE task_id=? ORDER BY rowid ASC LIMIT 1",
+    ).get(taskId) as { id?: string } | undefined;
+    if (firstMessage?.id) {
+      db.prepare("UPDATE conversation_messages SET content=?, streaming_state=?, updated_at=? WHERE id=?").run(
+        "[Paused: The teammate's profile changed after approval. Review the change and approve again.]",
+        "interrupted",
+        timestamp,
+        firstMessage.id,
+      );
+      db.prepare("UPDATE conversations SET updated_at=? WHERE id IN (SELECT DISTINCT conversation_id FROM conversation_messages WHERE task_id=?)").run(timestamp, taskId);
+    }
+    return;
   }
   // Memory ownership is derived from the durable task assignment. The
   // built-in/default teammate has no private owner and therefore cannot recall
