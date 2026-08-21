@@ -87,7 +87,7 @@ export interface SpawnAgentChatSubagentOptions {
  * transaction; leaving a queued task or empty child thread would make a failed
  * handoff appear durable and could later run without its promised context.
  */
-function cleanupUnstartedChild(
+export function cleanupUnstartedChild(
   db: Database.Database,
   projectId: string,
   taskId: string,
@@ -161,7 +161,9 @@ export function spawnAgentChatSubagent(
 
     const idempotencyKey = options.toolCallId
       ? `ask_teammate:${parent.id}:${options.toolCallId}`
-      : undefined;
+      : options.delegationId
+        ? `delegation:${parent.id}:${options.delegationId}`
+        : undefined;
     const content = label ?? `Delegated task for ${agent.name}`;
     const tasks = taskRepository(dependencies.db);
     let conversationId: string | undefined;

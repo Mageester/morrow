@@ -260,7 +260,7 @@ import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guar
 import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
 import { boundCompletedToolArguments, buildProviderProjection } from "./execution/provider-projection.js";
 import { resolveModelBudget } from "./routing/model-budget.js";
-import { AgentTaskDispatchError, dispatchAgentTask, spawnAgentChatSubagent as dispatchAgentChatSubagent } from "./mission/task-dispatcher.js";
+import { AgentTaskDispatchError, cleanupUnstartedChild, dispatchAgentTask, spawnAgentChatSubagent as dispatchAgentChatSubagent } from "./mission/task-dispatcher.js";
 import { TeammateSpawnRegistry, teammateProfileFingerprint } from "./tools/teammate-delegation.js";
 import { createResearchAndVerifyTeam } from "./mission/research-and-verify-preset.js";
 import { runReadmeSummarySample, ReadmeSummarySampleError } from "./mission/readme-summary-sample.js";
@@ -1041,17 +1041,35 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const targetProfileHash = approvedFor
       ? teammateProfileFingerprint(approvedFor, agents.listToolPermissions(approvedFor.id))
       : undefined;
-    const result = spawnAgentChatSubagent(parent, delegation.agentId, delegation.objective, {
-      deferRun: true,
-      delegationId,
-      ...(targetProfileHash ? { targetProfileHash } : {}),
-    });
-    const started = delegations.approveAndStart(delegationId, result.task.id, now);
-    if (!started || started.status !== "running" || started.childTaskId !== result.task.id) {
-      throw new ApiError(409, "Delegation could not be started", "START_CONFLICT");
+    // A failure between "child spawned (deferred)" and "delegation marked
+    // running" must not strand an orphaned bundle: remove the unstarted child
+    // and its shell conversation before surfacing the error. The delegation
+    // idempotency key makes a crash-retry land on the same child instead of
+    // forking a second one.
+    let spawned: ReturnType<typeof spawnAgentChatSubagent> | undefined;
+    try {
+      spawned = spawnAgentChatSubagent(parent, delegation.agentId, delegation.objective, {
+        deferRun: true,
+        delegationId,
+        ...(targetProfileHash ? { targetProfileHash } : {}),
+      });
+      const started = delegations.approveAndStart(delegationId, spawned.task.id, now);
+      if (!started || started.status !== "running" || started.childTaskId !== spawned.task.id) {
+        throw new ApiError(409, "Delegation could not be started", "START_CONFLICT");
+      }
+    } catch (error) {
+      if (spawned && !spawned.replayed) {
+        const shell = deps.db.prepare(
+          "SELECT conversation_id FROM conversation_messages WHERE task_id=? ORDER BY rowid ASC LIMIT 1",
+        ).get(spawned.task.id) as { conversation_id?: string } | undefined;
+        if (shell?.conversation_id) {
+          cleanupUnstartedChild(deps.db, parent.projectId, spawned.task.id, shell.conversation_id);
+        }
+      }
+      throw error;
     }
-    deps.runner.run(result.task.id);
-    return started;
+    deps.runner.run(spawned.task.id);
+    return delegations.get(delegationId);
   });
 
   // Parent cancellation propagates to the actual child task, not just the

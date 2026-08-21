@@ -128,6 +128,31 @@ describe("model-authored teammate dispatch boundary", () => {
     expect(run).not.toHaveBeenCalled(); // deferRun
   });
 
+  it("reuses the durable child when a delegation spawn replays instead of forking a second", () => {
+    seedParent();
+    teamsRepository(db).create({ id: "team-1", projectId: "p1", name: "Team", createdAt: now() });
+    const target = agentsRepository(db).create({ id: "team-target-2", projectId: "p1", name: "Verifier", role: "tester", teamId: "team-1" });
+    delegationsRepository(db).create({
+      id: "del-9", parentTaskId: "parent", teamId: "team-1", agentId: target.id,
+      objective: "Verify the findings", acceptanceCriteria: [], contextSnapshotRef: "task:parent",
+      allowedTools: [], allowedMemoryScopes: [], allowedWriteMemoryScopes: [],
+      providerId: null, model: null,
+      budget: { maxProviderCalls: null, maxTokenBudget: null, maxWallClockMs: null },
+      approvalRequired: true, deadlineAt: null, correlationId: "corr-del-9", createdAt: now(),
+    });
+
+    const deps = { db, runner: { run }, env: process.env };
+    const parent = { id: "parent", projectId: "p1" };
+    const options = { deferRun: true as const, delegationId: "del-9" };
+    // Simulates a crash (or client retry) between the first spawn and the
+    // durable approveAndStart: the retry must land on the same deferred
+    // child, not fork a second orphaned bundle.
+    const first = spawnAgentChatSubagent(deps, parent, target.id, "Verify the findings", options);
+    const second = spawnAgentChatSubagent(deps, parent, target.id, "Verify the findings", options);
+    expect(second.task.id).toBe(first.task.id);
+    expect(taskRepository(db).listChildren("parent")).toHaveLength(1);
+  });
+
   it("suppresses duplicate in-process and post-restart spawns, while binding the child to its own profile", () => {
     const caller = seedParent();
     const target = agentsRepository(db).create({
