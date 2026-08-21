@@ -2,8 +2,10 @@ import type { ProviderId, ReasoningConfiguration, RouteReasoningCapability } fro
 import { useQuery } from "@tanstack/react-query";
 import { Info } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { taskCapabilityQueries, type ContextSnapshot, type ReasoningApplication, type RoutingSnapshot } from "../../api/task-capability.js";
 import type { ChatComposerModelRoute } from "./chat-composer.js";
+import { useAnchoredPanel } from "./use-anchored-panel.js";
 import { formatTokens, UsageRing, usageTone } from "./context-meter.js";
 import { providerName } from "./model-picker.js";
 
@@ -93,33 +95,13 @@ export interface CapabilityStatusProps {
 export function CapabilityStatus({ taskId, route, reasoningConfig, disabled = false }: CapabilityStatusProps) {
   const id = useId();
   const panelId = `morrow-capability-status-${id}`;
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
+  const panel = useAnchoredPanel<HTMLButtonElement>();
+  const open = panel.open;
 
   const capability = useQuery({ ...taskCapabilityQueries.forTask(taskId ?? ""), enabled: Boolean(taskId) });
   const context: ContextSnapshot | null = capability.data?.context ?? null;
   const routing: RoutingSnapshot | null = capability.data?.routing ?? null;
   const reasoningApplication: ReasoningApplication | null = capability.data?.reasoningApplication ?? null;
-
-  useEffect(() => {
-    if (!open) return;
-    function onPointerDown(event: PointerEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    }
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
 
   // The route actually served last turn, when known; otherwise the route the
   // composer currently has selected. These can differ — shown as two
@@ -173,15 +155,15 @@ export function CapabilityStatus({ taskId, route, reasoningConfig, disabled = fa
     : route?.label ?? "Auto";
 
   return (
-    <div className="morrow-capability-status" ref={rootRef}>
+    <div className="morrow-capability-status">
       <button
         aria-controls={open ? panelId : undefined}
         aria-expanded={open}
         aria-haspopup="dialog"
         className="morrow-capability-status__trigger"
         disabled={disabled}
-        onClick={() => setOpen((next) => !next)}
-        ref={triggerRef}
+        onClick={panel.toggle}
+        ref={panel.anchorRef}
         title="Capability & context status"
         type="button"
       >
@@ -200,8 +182,9 @@ export function CapabilityStatus({ taskId, route, reasoningConfig, disabled = fa
         {fallbackUsed ? <span className="morrow-capability-status__flag" data-tone="warning">Fallback</span> : null}
       </button>
 
-      {open ? (
-        <div aria-label="Capability and context status" className="morrow-capability-status__panel" id={panelId} role="dialog">
+      {open && typeof document !== "undefined"
+        ? createPortal(
+            <div aria-label="Capability and context status" className="morrow-capability-status__panel" id={panelId} ref={panel.panelRef} role="dialog" style={panel.style}>
           <header className="morrow-capability-status__header">
             <p>What Morrow is doing</p>
             {confidence ? (
@@ -326,7 +309,8 @@ export function CapabilityStatus({ taskId, route, reasoningConfig, disabled = fa
               <StatRow label="Token count" value={context?.countingMethod ? humanize(context.countingMethod) : null} />
             </dl>
           </section>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
