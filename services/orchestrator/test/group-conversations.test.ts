@@ -126,6 +126,25 @@ describe("group conversation coordination", () => {
     expect((db.prepare("SELECT agent_id,role,status FROM conversation_participants WHERE conversation_id=?").get(group.id))).toMatchObject({ agent_id: conductor.id, role: "conductor", status: "active" });
   });
 
+  it("allows deleting an agent whose only conversation binding is a single thread", async () => {
+    const conversation = await app.inject({
+      method: "POST",
+      url: "/api/projects/project-1/conversations",
+      payload: { title: "Standalone thread", mode: "single", agentId: conductor.id },
+    });
+    expect(conversation.statusCode, conversation.body).toBe(201);
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/api/agents/${conductor.id}`,
+      payload: { projectId: "project-1" },
+    });
+
+    expect(deleted.statusCode).toBe(204);
+    expect(agentsRepository(db).get(conductor.id)).toBeUndefined();
+    expect((db.prepare("SELECT agent_id FROM conversations WHERE id=?").get(conversation.json().id))).toEqual({ agent_id: null });
+  });
+
   it("rejects team agents from shared-thread invites", async () => {
     const group = await createGroup();
     const team = teamsRepository(db).create({ id: "team-1", projectId: "project-1", name: "Team", createdAt: NOW });

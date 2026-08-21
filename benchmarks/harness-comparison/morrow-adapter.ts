@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderId } from "@morrow/contracts";
@@ -117,6 +117,8 @@ export function createMorrowAdapter(options: { providerId: ProviderId; presetId?
         db.close();
         if (previousHome === undefined) delete process.env.MORROW_HOME;
         else process.env.MORROW_HOME = previousHome;
+        rmSync(root, { recursive: true, force: true });
+        rmSync(home, { recursive: true, force: true });
       }
       return measured;
     },

@@ -826,12 +826,12 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const body = z.object({ projectId: z.string().min(1) }).parse(request.body);
     const agent = agents.get(agentId);
     if (!agent || agent.projectId !== body.projectId) throw new ApiError(404, "Agent not found", "NOT_FOUND");
-    // conversations.agent_id is the immutable conductor binding. Deleting
-    // the agent would leave a dangling task owner (or force an active
+    // A group conversation's agent_id is the immutable conductor binding.
+    // Deleting the agent would leave a dangling task owner (or force an active
     // tombstone row that falsely looks runnable), so preserve the truthful
     // binding by refusing deletion until its conversations are retired.
     const conductorBinding = deps.db.prepare(
-      "SELECT id FROM conversations WHERE project_id=? AND agent_id=? LIMIT 1",
+      "SELECT id FROM conversations WHERE project_id=? AND agent_id=? AND mode='group' LIMIT 1",
     ).get(body.projectId, agentId) as { id?: string } | undefined;
     if (conductorBinding) {
       throw new ApiError(409, "This teammate is the immutable conductor of a conversation and cannot be deleted", "AGENT_CONVERSATION_CONDUCTOR");

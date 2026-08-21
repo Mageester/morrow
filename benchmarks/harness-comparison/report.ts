@@ -219,7 +219,7 @@ function main(): void {
   const out = flag("out");
   if (out) {
     writeFileSync(resolve(out), `${markdown}\n`);
-    console.log(`wrote ${out} from ${runs.length} run(s)`);
+    console.log(`wrote ${out} from ${balanced.length} run(s)`);
   } else {
     console.log(markdown);
   }

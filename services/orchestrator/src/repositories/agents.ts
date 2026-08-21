@@ -125,12 +125,12 @@ export function agentsRepository(db: Database.Database) {
     },
 
     delete(id: string, projectId: string): boolean {
-      // conversations.agent_id is an immutable conductor binding. Keep the
-      // invariant at the repository boundary as well as the HTTP route so an
-      // internal caller cannot delete an owner and leave an active snapshot
-      // pointing at a non-existent agent.
+      // A group conversation's agent_id is an immutable conductor binding.
+      // Keep the invariant at the repository boundary as well as the HTTP
+      // route so an internal caller cannot delete an owner and leave an active
+      // snapshot pointing at a non-existent agent.
       return db.transaction(() => {
-        const binding = db.prepare("SELECT 1 FROM conversations WHERE project_id=? AND agent_id=? LIMIT 1").get(projectId, id);
+        const binding = db.prepare("SELECT 1 FROM conversations WHERE project_id=? AND agent_id=? AND mode='group' LIMIT 1").get(projectId, id);
         if (binding) return false;
         // CASCADE handles permissions and skill access rows.
         return db.prepare("DELETE FROM agents WHERE id=? AND project_id=?").run(id, projectId).changes > 0;

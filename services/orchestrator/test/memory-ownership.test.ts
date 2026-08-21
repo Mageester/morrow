@@ -223,9 +223,17 @@ describe("migration 55 legacy ownership backfill", () => {
       .run("c-b", "p1", "B", "agent-b", at, at);
     legacy.prepare("INSERT INTO conversations (id,project_id,title,agent_id,created_at,updated_at) VALUES (?,?,?,?,?,?)")
       .run("c-disabled", "p1", "Disabled", "agent-disabled", at, at);
-    taskRepository(legacy).createTask({ id: "task-a", projectId: "p1", kind: "agent_chat", status: "completed", agentId: "agent-a", createdAt: at });
-    taskRepository(legacy).createTask({ id: "task-b", projectId: "p1", kind: "agent_chat", status: "completed", agentId: "agent-b", createdAt: at });
-    taskRepository(legacy).createTask({ id: "task-disabled", projectId: "p1", kind: "agent_chat", status: "completed", agentId: "agent-disabled", createdAt: at });
+    // Keep task rows at the exact pre-migration-55 schema too. The current
+    // task repository includes the migration-62 profile-hash column, so using
+    // it here would accidentally upgrade the legacy fixture's write shape.
+    const addTask = legacy.prepare(
+      `INSERT INTO tasks
+       (id,schema_version,project_id,type,status,idempotency_key,idempotency_fingerprint,parent_task_id,agent_id,worktree_id,mission_id,created_at,updated_at,started_at,completed_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    );
+    addTask.run("task-a", 1, "p1", "agent_chat", "completed", null, null, null, "agent-a", null, null, at, at, null, null);
+    addTask.run("task-b", 1, "p1", "agent_chat", "completed", null, null, null, "agent-b", null, null, at, at, null, null);
+    addTask.run("task-disabled", 1, "p1", "agent_chat", "completed", null, null, null, "agent-disabled", null, null, at, at, null, null);
     const add = legacy.prepare("INSERT INTO memory_entries (id,project_id,conversation_id,scope,content,source,enabled,origin_task_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)");
     add.run("matching-agent", "p1", "c-a", "agent", "agent A", "cortex", 1, "task-a", at, at);
     add.run("matching-standalone", "p1", "c-b", "agent", "agent B", "cortex", 1, "task-b", at, at);
