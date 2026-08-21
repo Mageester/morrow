@@ -1,13 +1,13 @@
 # Project Progress
 
-## Active package: TEAM-1 - AI Teammates parity and polish
+## Completed package: TEAM-2 - Agentic teammate core parity
 
 **State:** complete on `feat/agent-teammates`, preserving the clean handoff at
 `d846206` and existing user-owned local database state.
 
-**Goal:** Finish Morrow AI Teammates as a secure, persistent, communication-like
-collaboration experience approaching Grok Bot while retaining Morrow identity
-and local-first boundaries.
+**Goal:** Deliver the Grok Bot-class core interaction model through Morrow's
+local-first boundaries: proactive scheduled routines, private teammate memory,
+shared multi-teammate conversations, and configurable status notifications.
 
 ## Verified baseline
 
@@ -49,6 +49,11 @@ and local-first boundaries.
 | TEAM-F | Luna Max tester | Teammate component coverage | TEAM-C/D APIs settle | complete |
 | TEAM-V | independent verifier | Suites, security, browser E2E, responsive gate | implementation | complete |
 | TEAM-VIS | independent visual QA | Side-by-side parity audit | browser gate | complete; approved |
+| PARITY-SCHED | Luna Max executor + reviewer | Scheduled routines, recovery, run history | TEAM-1 | complete; independently approved |
+| PARITY-MEM | Luna Max executor + reviewer | Owned memory and live revocation | PARITY-SCHED | complete; independently approved |
+| PARITY-GROUP | Luna Max executor + reviewer | Shared teammate conversations/context refs | PARITY-MEM | complete; independently approved |
+| PARITY-NOTIFY | Luna Max executor + reviewer | Per-schedule notification policy/outbox | PARITY-GROUP | complete; independently approved |
+| PARITY-V | independent verifier | Combined suites, migrations, browser E2E | implementation | complete |
 
 ## Constraints and next action
 
@@ -58,8 +63,11 @@ and local-first boundaries.
   `tasks.agent_id`; do not force them through `delegations`.
 - Worker edit surfaces must not overlap; routine and visual work are sequenced.
 - Security-sensitive changes require independent review.
-- Final evidence: orchestrator 2,329 passed/5 skipped; web 392 passed;
-  contracts 83 passed; all three TypeScript checks and web production build
-  pass. Real-browser identity, hiring, model-authored handoff/approval, evidence,
-  routine edit/run, memory truth, and responsive gates passed. ADR-0015 records
-  architecture, security/privacy impact, failure behavior, and rollback notes.
+- Final evidence: orchestrator 2,380 passed/5 skipped; web 402 passed;
+  contracts 85 passed; CLI and all TypeScript checks and web production build
+  pass. Fresh and upgraded databases converge at migration 61. Real-browser
+  group creation/invite/reorder/remove, routine schedule/edit/pause/resume/run
+  history, notification controls, memory ownership UI, evidence privacy, and
+  1440/1024/390 responsive gates passed without console errors or overflow.
+  ADR-0015 records architecture, security/privacy impact, failure behavior,
+  rollback notes, and intentional local-first differences from hosted products.

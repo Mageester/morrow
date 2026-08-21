@@ -2,7 +2,9 @@
 
 **Status:** Accepted (2026-08-20)
 
-**Scope:** Local-first teammate vertical slice. This extends
+**Scope:** Local-first teammate vertical slice, including durable routine
+scheduling, ownership-aware memory, group conversations, bounded context
+references, and notification delivery. This extends
 [ADR-0012](0012-assistant-memory-and-teams.md); it does not replace the
 existing team/delegation policy model.
 
@@ -96,21 +98,93 @@ editing are available from chat/Skills. Geometry is preserved across narrow
 and wide layouts while the visual system remains Morrow's own and uses local
 system fonts.
 
+### Scheduled routines are durable occurrences, not timers
+
+Migrations 54 and 56 extend the existing schedule table without changing the
+legacy `inspect_workspace` path. A routine schedule records its routine and
+teammate binding, while dispatch re-checks the current routine, project,
+teammate, team membership, enabled state, and policy. Each occurrence gets a
+`schedule_runs` row with a unique `(schedule_id, occurrence_key)` idempotency
+boundary. The run ledger retains scoped history even when a schedule is
+deleted, records coalescing and task linkage, and uses recovery-owner,
+expiry, and attempt fields to fence restart replay. Routine dispatch always
+creates a fresh task with current approvals; it never replays captured tool
+calls.
+
+Migrations 60 and 61 add per-schedule notification preferences, adapter
+selection, a durable `schedule_notification_outbox`, and an observed-event
+marker. Enqueueing is deduplicated by `(schedule_run_id, adapter_id, event)`;
+delivery is leased, retried, and redacted. Adapter delivery is an optional
+side effect: run truth is preserved when an adapter is unavailable or rejects
+the message, and an external adapter may receive a retry rather than a
+cloud-level exactly-once guarantee.
+
+### Ownership, live revocation, and MCP cancellation
+
+Migration 55 derives private memory ownership from the durable execution actor:
+`agent` rows carry `owner_agent_id`, `team` rows carry `owner_team_id`, and
+database triggers reject forged/mismatched ownership. Ambiguous legacy private
+rows are disabled but remain visible for inspection/deletion. Disabling or
+deleting an agent, deactivating a team, or removing a member quarantines its
+private memory and rejects affected in-flight delegations; it never silently
+reassigns knowledge. Migration 57 preserves `user_global` memory when its
+source project is deleted while deleting other project-local rows. The
+provenance project id remains a fact about origin, not a retrieval boundary.
+
+During execution, the orchestrator re-checks the assigned agent, project,
+team, membership, and delegation. A revocation aborts the combined execution
+signal and settles the task as cancelled; it cannot wake a pending approval or
+fall through to a different provider. Browser, command, provider, and MCP
+calls receive that signal. MCP request cancellation removes the pending JSON-
+RPC request; task teardown closes pooled clients and transports. MCP
+trust/config checks gate discovery and new connections, while an already
+pooled client is not retroactively invalidated by a trust-row change. Those
+trust changes are not treated as permission to continue an already revoked
+task.
+
+### Group threads use snapshots and bounded handles
+
+Migration 58 adds `conversation.mode`, an immutable conductor, ordered
+participant snapshots with profile fingerprints, and removed-participant
+tombstones. Team agents remain delegation-only and cannot become a group
+conductor or ordinary participant. A context reference is a handle to one
+source-task artifact or evidence row, not copied transcript, provider output,
+or private reasoning; the child keeps an independent conversation, provider,
+memory, tool, approval, and budget policy. Migration 59 adds the explicit
+per-task ownership edge for deduplicated artifacts so later producers can
+authorize their own handles without changing the canonical blob's first-owner
+compatibility field.
+
+### Intentional local-first equivalence boundary
+
+This work targets equivalent user-observable contracts—persistent teammates,
+bounded collaboration, scheduled recovery, scoped memory, and inspectable
+notifications—inside Morrow's local SQLite/orchestrator authority. It does not
+copy or infer a proprietary hosted product's internal implementation. A
+configured cloud model or message adapter may be used only by explicit user
+choice; control state, approvals, history, and policy remain local. A hosted
+cloud computer, cloud team synchronization, and a remote shared control plane
+are intentionally out of scope.
+
 ## Security and privacy impact
 
 The local orchestrator remains the authority for project ownership, identity,
-policy, approvals, and task linkage. Cross-project and policy-mismatch checks
-fail closed. Children receive only their objective and execute with an
-independent durable policy. One-shot approval, profile binding, child limits,
-idempotency, secret redaction, scoped 404s, and on-demand evidence reduce
-authority widening, replay, leakage, and duplicate execution risk. The
-residual local-process authentication boundary remains: remote or multi-user
-exposure needs a separate authentication design.
+policy, approvals, task linkage, schedule claims, and notification history.
+Cross-project and policy-mismatch checks fail closed. Children and scheduled
+runs receive only bounded objectives/handles and execute with independent
+durable policy. One-shot approval, profile binding, child limits, occurrence
+idempotency, recovery leases, secret redaction, scoped 404s, ownership
+triggers, and on-demand evidence reduce authority widening, replay, leakage,
+and duplicate execution risk. Notification text is generic and redacted; the
+outbox contains no provider transcript, raw tool arguments, or private
+reasoning. The residual local-process authentication boundary remains: remote
+or multi-user exposure needs a separate authentication design.
 
-This slice makes no claim of cloud team synchronization, always-on teammates,
-or scheduled/recurring routine execution. A routine run is an explicit fresh
-task. Provider data leaves the machine only when the user has configured and
-used an external provider, consistent with [the privacy model](../privacy-model.md).
+Scheduled/recurring routine execution is now supported locally, but this slice
+makes no claim of cloud team synchronization or always-on hosted teammates. A
+routine run is still an explicit fresh task with current policy. Provider or
+adapter data leaves the machine only when the user has configured and used that
+external service, consistent with [the privacy model](../privacy-model.md).
 
 ## Failure behavior
 
@@ -120,33 +194,61 @@ conflicts return explicit 4xx errors without starting another child. A failed
 spawn records a generic redacted tool failure rather than provider output. An
 open recording cannot be opened twice and a stopped recording cannot be stopped
 again. Evidence outside its task/conversation is a 404. A missing or disabled
-routine teammate refuses to run; routine edits reject empty changes and
-cross-project ownership.
+routine teammate, team target, or changed routine binding blocks a scheduled
+run without starting a task. A claimed occurrence with no task is reconciled
+through its idempotency key; an interrupted task is replayed only after a
+recovery lease is acquired, while pending approvals remain parked. Failed or
+unavailable notification adapters leave a pending outbox row for retry and do
+not change run status. Revoked agent/team authority cancels active work and
+cannot revive it through approval resolution; MCP calls receive the same abort.
+Routine edits reject empty changes and cross-project ownership. Group invites,
+conductor removal, cross-project handles, unowned artifacts, and duplicate
+context refs fail closed; failed deferred children clean up their task,
+ledger, and empty conversation shell. Ambiguous legacy private memory remains
+disabled and inspectable rather than being guessed.
 
 ## Rollback
 
-The implementation is additive: migration 52 binds conversation identity and
-migration 53 adds routines/recordings; existing unassigned conversations keep
-the default teammate path. Roll back by reverting the feature code/UI and
-disabling the new tool/routes, while retaining the additive columns/tables and
-their data. Do not downgrade or rebuild the SQLite schema; unused routine and
-child records remain inspectable and existing agent/task data is preserved.
+The implementation is forward-only and migration-safe: migrations 52–61 bind
+conversation identity, routines, scheduled occurrences/recovery, memory
+ownership/global retention, group/context handles, artifact ownership, and
+notifications. Migration 57 performs a data-preserving memory-table rebuild;
+it does not discard rows. Roll back behavior by stopping the scheduler,
+disabling notification adapters, and reverting feature code/routes while
+retaining the new columns/tables and their data. Do not downgrade or rebuild
+the SQLite schema, and do not run an older binary against a database newer
+than its migration set. Existing unassigned conversations, legacy schedules,
+project/global memory, and task history remain inspectable; pending runs and
+outbox rows can be resumed by a compatible release.
 
 ## Verification evidence
 
-Focused checks run on this working tree:
+On the 2026-08-20 working tree:
 
-- `cd services/orchestrator && npx vitest run test/roster.test.ts test/tool-evidence.test.ts test/thread-handoffs.test.ts test/teammate-delegation.test.ts test/agent-ask-teammate.test.ts test/routines.test.ts --maxWorkers=4` — **6 files, 56 tests passed**.
-- `cd apps/web && npx vitest run src/features/chat/ask-teammate.test.tsx src/features/chat/handoff-row.test.tsx src/features/chat/pending-approvals.test.tsx src/features/chat/record-routine.test.tsx src/features/roster/teammate-avatar.test.tsx src/features/roster/roster-rail.test.tsx src/features/skills/routines-panel.test.tsx src/app/app-shell.test.tsx src/features/chat/chat-composer.test.tsx src/features/chat/conversation-page.test.tsx --maxWorkers=4` — **10 files, 96 tests passed**.
-- `cd packages/contracts && npx vitest run test/contracts.test.ts test/teams.test.ts --maxWorkers=4` — **2 files, 48 tests passed**.
+- `cd services/orchestrator && npx vitest run --maxWorkers=4` — **232 files, 2,380 passed, 5 skipped**.
+- `cd apps/web && npx vitest run` — **59 files, 402 passed**.
+- `cd packages/contracts && npx vitest run` — **7 files, 85 passed**.
+- Focused parity suites (`scheduled-routines`, `schedules`, `recovery`,
+  `memory-ownership`, `group-conversations`, `group-security-regressions`,
+  `thread-handoffs`, and MCP/cancellation coverage) — **13 files, 111 passed**;
+  the focused web teammate/schedule/memory set — **7 files, 47 passed**.
 
-Browser gates were demonstrated against the real local database and real
-provider calls (not fixtures) at `http://127.0.0.1:4318/app/`: two teammates
-were created and both showed progress in one window; completed work rendered as
-compact evidence rows whose details opened on demand; a Research → Comms
-handoff row and answer were visible in one thread; and a recorded span was
-named, saved, listed in Skills, and run. The session's evidence and reproduce
-instructions are in
+Browser acceptance used the local stack (`pnpm dev:app`) at
+`http://127.0.0.1:4318/app/`: `/app/` covered roster identity and live status;
+`/app/chats/<conversationId>?projectId=<projectId>` covered group participants,
+bounded handoff/evidence, and cancellation states; `/app/skills` covered routine
+edit/run, schedule history, and notification preferences; `/app/memory`
+covered scope/ownership and quarantine truth. Responsive checks used desktop,
+tablet, and 390px mobile geometry. MCP server/permission and cancellation
+checks were deterministic local/API suites; no external login or hosted cloud
+computer was used. The session's reproduce notes remain in
 [the AI-teammates continuation](../tasks/agent-teammates-continuation.md).
-Screenshots were intentionally not committed; reproduce with Playwright after
-`pnpm dev:app`.
+
+### Explicit limitations
+
+This ADR makes no claim to reproduce exact proprietary internals or private
+Grok behavior; it records Morrow's tested, local-first equivalents. Model-authored
+browser/authentication flows are deterministic-only acceptance paths. Morrow
+does not read browser cookies, claim that an external model can complete a
+provider login, or treat credential/payment entry as an autonomous browser
+capability.

@@ -25,6 +25,19 @@ Morrow provides native, first-class integration with the open [Model Context Pro
 6. **Lazy Connection Pooling & Auto-Healing**:
    - Connections open on-demand when tools are listed or invoked, stay warm across session turns, and auto-reconnect if severed.
 
+## Safety and lifecycle
+
+- Trust is bound to the exact stdio command/arguments or SSE URL. Editing or
+  revoking that trust prevents discovery and new connections; an already
+  pooled client is not retroactively invalidated by a trust-row change.
+- Revoking the assigned agent or team while a task is running aborts its
+  active MCP request through the task cancellation signal. Task teardown closes
+  pooled clients and transports. Cancel the task itself when an existing MCP
+  connection must stop immediately.
+- MCP results are external, untrusted data. Tool approval, allow-lists, and
+  the agent's task policy still apply; Morrow does not treat server output as
+  permission or instructions.
+
 ---
 
 ## Configuration Format
