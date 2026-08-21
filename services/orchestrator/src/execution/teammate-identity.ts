@@ -22,6 +22,15 @@ export interface TeammateBriefInput {
   instructions?: string | null;
 }
 
+export interface TeammateRosterEntryInput {
+  id: string;
+  projectId: string;
+  name: string;
+  role: string;
+  enabled: boolean;
+  teamId?: string | null;
+}
+
 export const DEFAULT_IDENTITY = "You are Morrow, a secure personal AI coding assistant.";
 
 /** The opening line of the system prompt. */
@@ -50,4 +59,33 @@ export function buildTeammateBrief(agent: TeammateBriefInput | null | undefined)
   if (!instructions) return null;
   return "This is the job you were hired for. Hold to it on every turn, and say so plainly when a request "
     + `falls outside it rather than quietly doing something else:\n\n${instructions}`;
+}
+
+/**
+ * The model-facing target roster for ask_teammate. It is intentionally a
+ * presentation-only projection: the execution and approval paths still
+ * resolve the target from the current durable row immediately before any
+ * child is started. IDs are opaque handles, while names/roles are only there
+ * to help the model choose among the already-filtered candidates.
+ */
+export function buildTeammateRoster(
+  caller: Pick<TeammateRosterEntryInput, "id" | "projectId">,
+  teammates: readonly TeammateRosterEntryInput[],
+  participantIds?: ReadonlySet<string>,
+): string {
+  const entries = teammates
+    .filter((teammate) => teammate.projectId === caller.projectId)
+    .filter((teammate) => teammate.enabled && !teammate.teamId)
+    .filter((teammate) => teammate.id !== caller.id)
+    .filter((teammate) => !participantIds || participantIds.has(teammate.id))
+    .map(({ id, name, role }) => ({ agentId: id, name, role }))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.agentId.localeCompare(b.agentId));
+
+  return [
+    "Teammate coordination is available through ask_teammate.",
+    "The current tool definitions and this roster are authoritative if an older standing brief names a narrower allowed-tool list.",
+    "Use only one of these exact agentId values; never invent an ID or pass a name instead.",
+    `Eligible standalone teammates (JSON): ${JSON.stringify(entries)}`,
+    "The target receives only the bounded objective and runs under its own current tools, memory, provider, model, and budget. Every request pauses for one-shot user approval.",
+  ].join("\n");
 }

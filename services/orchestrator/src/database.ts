@@ -1840,6 +1840,9 @@ export const migrations:Migration[]=[
     if(!runColumns.has("notification_observed_event"))db.exec("ALTER TABLE schedule_runs ADD COLUMN notification_observed_event TEXT");
     db.exec("CREATE INDEX IF NOT EXISTS schedule_runs_notification_observed_idx ON schedule_runs(notification_observed_event,updated_at,id)");
   }}
+  ,{id:62,name:"task_expected_agent_profile_hash",sql:`
+    ALTER TABLE tasks ADD COLUMN expected_agent_profile_hash TEXT;
+  `}
 ];
 /**
  * Durability mode for committed writes.

@@ -54,6 +54,8 @@ export interface AgentTaskRequest extends SendMessageInput {
   deferRun?: boolean;
   /** Internal only: binds a team-agent dispatch to one durable delegation. */
   delegationId?: string;
+  /** Approval-time binding for the target's durable authority profile. */
+  expectedAgentProfileHash?: string;
 }
 
 export interface AgentTaskDispatcherDependencies {
@@ -122,6 +124,12 @@ export function spawnAgentChatSubagent(
       throw new AgentTaskDispatchError(404, "Agent not found in this project", "NOT_FOUND");
     }
     if (options.modelInitiated) {
+      if (parent.agentId) {
+        const caller = agents.get(parent.agentId);
+        if (caller?.teamId) {
+          throw new AgentTaskDispatchError(409, "Team agents must use the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
+        }
+      }
       try {
         resolveStandaloneTeammateTarget(parent, agent, agentId);
         const groupConversation = dependencies.db.prepare(
@@ -220,6 +228,7 @@ export function spawnAgentChatSubagent(
         ...(idempotencyKey ? { idempotencyKey } : {}),
         ...(deferForContext ? { deferRun: true } : {}),
         ...(options.delegationId ? { delegationId: options.delegationId } : {}),
+        ...(options.targetProfileHash ? { expectedAgentProfileHash: options.targetProfileHash } : {}),
       });
       if (!result.replayed) createdTaskId = result.task.id;
       if (contextRefs.length > 0 && !result.replayed) {
@@ -412,7 +421,7 @@ export function dispatchAgentTask(
   dependencies: AgentTaskDispatcherDependencies,
   request: AgentTaskRequest,
 ) {
-  const { conversationId, parentTaskId, deferRun, delegationId, ...rawBody } = request;
+  const { conversationId, parentTaskId, deferRun, delegationId, expectedAgentProfileHash, ...rawBody } = request;
   const requested = SendMessageSchema.parse(rawBody);
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date());
@@ -506,6 +515,7 @@ export function dispatchAgentTask(
         ...(body.worktreeId ? { worktreeId: body.worktreeId } : {}),
         ...(body.missionId ? { missionId: body.missionId } : {}),
         ...(parentTaskId ? { parentTaskId } : {}),
+        ...(expectedAgentProfileHash ? { expectedAgentProfileHash } : {}),
         createdAt: timestampIso,
       });
       const userMessage = conversations.appendMessage({

@@ -842,24 +842,35 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   // ── Agent Tool Permissions ─────────────────────────────────────────────────
 
-  app.get("/api/agents/:agentId/tool-permissions", async (request) => {
+  const scopedToolPermissionAgent = (request: { params: unknown; query: unknown }) => {
     const { agentId } = request.params as { agentId: string };
-    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
-    return agents.listToolPermissions(agentId);
+    const { projectId } = z.object({ projectId: z.string().min(1) }).parse(request.query);
+    const agent = agents.get(agentId);
+    if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    return agent;
+  };
+
+  app.get("/api/agents/:agentId/tool-permissions", async (request) => {
+    return agents.listToolPermissions(scopedToolPermissionAgent(request).id);
   });
 
   app.put("/api/agents/:agentId/tool-permissions", async (request, reply) => {
-    const { agentId } = request.params as { agentId: string };
-    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    const agent = scopedToolPermissionAgent(request);
     const body = UpsertToolPermissionSchema.parse(request.body);
     reply.status(200);
-    return agents.upsertToolPermission(agentId, body);
+    return agents.upsertToolPermission(agent.id, body);
   });
 
   app.delete("/api/agents/:agentId/tool-permissions/:toolName", async (request, reply) => {
     const { agentId, toolName } = request.params as { agentId: string; toolName: string };
-    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
-    if (!agents.deleteToolPermission(agentId, toolName)) throw new ApiError(404, "Tool permission not found", "NOT_FOUND");
+    const agent = scopedToolPermissionAgent(request);
+    const permissions = agents.listToolPermissions(agent.id);
+    const current = permissions.find((permission) => permission.toolName === toolName);
+    if (toolName === "ask_teammate" && current?.effect === "allow"
+      && permissions.filter((permission) => permission.effect === "allow").length === 1) {
+      throw new ApiError(409, "This is the only explicit allow rule; clearing it would restore unrestricted tools", "SOLE_EXPLICIT_ALLOW_RULE");
+    }
+    if (!agents.deleteToolPermission(agent.id, toolName)) throw new ApiError(404, "Tool permission not found", "NOT_FOUND");
     reply.status(204).send();
   });
 

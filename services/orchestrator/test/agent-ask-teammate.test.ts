@@ -10,6 +10,7 @@ import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { approvalsRepository } from "../src/repositories/approvals.js";
+import { teamsRepository } from "../src/repositories/teams.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { buildServer } from "../src/server.js";
@@ -81,6 +82,37 @@ describe("model-initiated ask_teammate", () => {
     expect(JSON.stringify(provider.requests[0] ?? [])).not.toContain("ask_teammate");
     const profileEvent = taskRecordsRepository(db).listEvents("parent").find((event) => event.type === "optimization.tool_profile_selected");
     expect(profileEvent?.payload.tools).not.toContain("ask_teammate");
+  });
+
+  it("exposes an explicitly allowed ask_teammate to a legacy allow-list with a safe target roster", async () => {
+    const parentAgent = agentsRepository(db).create({ id: "parent-agent", projectId: "p1", name: "Implementer", role: "custom" });
+    const targetAgent = agentsRepository(db).create({ id: "target-agent", projectId: "p1", name: "Research", role: "researcher" });
+    const disabledAgent = agentsRepository(db).create({ id: "disabled-agent", projectId: "p1", name: "Disabled", role: "researcher" });
+    agentsRepository(db).update(disabledAgent.id, "p1", { enabled: false });
+    teamsRepository(db).create({ id: "team-1", projectId: "p1", name: "Team", createdAt: now() });
+    const teamAgent = agentsRepository(db).create({ id: "team-agent", projectId: "p1", name: "Team member", role: "researcher", teamId: "team-1" });
+    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: workspace, createdAt: now() });
+    const otherProjectAgent = agentsRepository(db).create({ id: "other-project-agent", projectId: "p2", name: "Other project", role: "researcher" });
+    agentsRepository(db).update(otherProjectAgent.id, "p2", { enabled: true });
+    seedParent(parentAgent.id);
+    // A legacy imported profile has an explicit allow-list. Adding one tool
+    // must not make that profile fall back to the unrestricted default.
+    agentsRepository(db).upsertToolPermission(parentAgent.id, { toolName: "read_file", effect: "allow" });
+    agentsRepository(db).upsertToolPermission(parentAgent.id, { toolName: "ask_teammate", effect: "allow" });
+
+    const provider = new MockProvider({ chunks: [[{ type: "text", text: "ready" }, done]] });
+    await executeAgentChatTask({ db, taskId: "parent", provider, maxTurns: 2 });
+
+    const profileEvent = taskRecordsRepository(db).listEvents("parent").find((event) => event.type === "optimization.tool_profile_selected");
+    expect(profileEvent?.payload.tools).toContain("ask_teammate");
+    expect(profileEvent?.payload.tools).not.toContain("run_command");
+    const systemPrompt = provider.requests[0]?.filter((message) => message.role === "system").map((message) => message.content).join("\n") ?? "";
+    expect(systemPrompt).toContain("agentId");
+    expect(systemPrompt).toContain("target-agent");
+    expect(systemPrompt).toContain("Research");
+    expect(systemPrompt).not.toContain("other-project-agent");
+    expect(systemPrompt).not.toContain(disabledAgent.id);
+    expect(systemPrompt).not.toContain(teamAgent.id);
   });
 
   it("requires a one-shot approval even when the parent requested auto approval", async () => {

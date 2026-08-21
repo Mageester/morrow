@@ -361,4 +361,46 @@ describe("Teammate roster rail", () => {
       memoryWriteScopes: ["agent"],
     });
   });
+
+  it("lets a legacy explicit allow-list opt into ask teammate without widening its other tools", async () => {
+    const agent = {
+      version: 1, id: "agent-legacy", projectId: "project-1", name: "Implementer", role: "custom",
+      instructions: "Allowed tools: read_file", providerOverride: null, modelOverride: null, enabled: true, teamId: null,
+      memoryReadScopes: [], memoryWriteScopes: [], maxProviderCalls: null, maxTokenBudget: null, maxWallClockMs: null,
+      maxChildTasks: null, approvalRequired: false, createdBy: "user",
+      createdAt: "2026-08-20T09:00:00.000Z", updatedAt: "2026-08-20T09:00:00.000Z",
+    };
+    const calls = stubFetch([entry({ agentId: "agent-legacy", name: "Implementer" })], (url, init) => {
+      if (url === "/api/projects/project-1/agents") return Response.json([agent]);
+      if (url === "/api/agents/agent-legacy/tool-permissions?projectId=project-1") {
+        return Response.json([{
+          version: 1, id: "permission-read", agentId: agent.id, toolName: "read_file", effect: "allow", priority: 10,
+          createdAt: "2026-08-20T09:00:00.000Z",
+        }]);
+      }
+      if (url === "/api/agents/agent-legacy" && init?.method === "PUT") return Response.json(agent);
+      if (url === "/api/agents/agent-legacy/tool-permissions?projectId=project-1" && init?.method === "PUT") {
+        return Response.json({
+          version: 1, id: "permission-ask", agentId: agent.id, toolName: "ask_teammate", effect: "allow", priority: 10,
+          createdAt: "2026-08-20T09:00:00.000Z",
+        });
+      }
+      return undefined;
+    });
+    renderRail();
+    const user = userEvent.setup();
+
+    const row = await screen.findByTestId("roster-row");
+    await user.click(within(row.parentElement!).getByRole("button", { name: "Configure Implementer" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit teammate Implementer" });
+    await user.click(within(dialog).getByRole("button", { name: /coordination access/i }));
+    const askPermission = within(dialog).getByRole("checkbox", { name: /ask other teammates/i });
+    expect(askPermission).not.toBeChecked();
+    await user.click(askPermission);
+    await user.click(within(dialog).getByRole("button", { name: "Save teammate" }));
+
+    const permissionUpdate = calls.find((call) => call.url === "/api/agents/agent-legacy/tool-permissions?projectId=project-1" && call.init?.method === "PUT");
+    expect(JSON.parse(String(permissionUpdate!.init!.body))).toMatchObject({ toolName: "ask_teammate", effect: "allow" });
+    expect(calls.some((call) => call.url.startsWith("/api/agents/agent-legacy/tool-permissions/read_file?") && call.init?.method === "DELETE")).toBe(false);
+  });
 });

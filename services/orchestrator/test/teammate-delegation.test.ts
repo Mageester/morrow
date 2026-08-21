@@ -83,6 +83,23 @@ describe("model-authored teammate dispatch boundary", () => {
     expect(taskRepository(db).listChildren("parent")).toHaveLength(0);
   });
 
+  it("refuses the simple model spawn path for a team caller", () => {
+    const caller = seedParent();
+    teamsRepository(db).create({ id: "caller-team", projectId: "p1", name: "Caller team", createdAt: now() });
+    agentsRepository(db).update(caller.id, "p1", { teamId: "caller-team" });
+    const target = agentsRepository(db).create({ id: "standalone-target", projectId: "p1", name: "Target", role: "researcher" });
+
+    expect(() => spawnAgentChatSubagent(
+      { db, runner: { run }, env: process.env },
+      { id: "parent", projectId: "p1", agentId: caller.id },
+      target.id,
+      "bounded objective",
+      { modelInitiated: true },
+    )).toThrowError(expect.objectContaining({ code: "TEAM_AGENT_REQUIRES_DELEGATION" }));
+    expect(run).not.toHaveBeenCalled();
+    expect(taskRepository(db).listChildren("parent")).toHaveLength(0);
+  });
+
   it("suppresses duplicate in-process and post-restart spawns, while binding the child to its own profile", () => {
     const caller = seedParent();
     const target = agentsRepository(db).create({

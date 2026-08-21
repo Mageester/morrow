@@ -1,4 +1,4 @@
-import { AgentSchema, RosterSchema, type Agent, type AgentRole, type MemoryScope, type Roster } from "@morrow/contracts";
+import { AgentSchema, AgentToolPermissionSchema, RosterSchema, type Agent, type AgentRole, type AgentToolPermission, type MemoryScope, type Roster, type UpsertToolPermissionInput } from "@morrow/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "./client.js";
 
@@ -60,6 +60,13 @@ export const agentQueries = {
       refetchIntervalInBackground: true,
     });
   },
+  toolPermissions(projectId: string, agentId: string) {
+    return queryOptions({
+      queryKey: [...agentKeys.list(projectId), agentId, "tool-permissions"] as const,
+      queryFn: () => api.get(`/api/agents/${encodeURIComponent(agentId)}/tool-permissions?projectId=${encodeURIComponent(projectId)}`, AgentToolPermissionSchema.array()),
+      enabled: Boolean(projectId) && Boolean(agentId),
+    });
+  },
 };
 
 export interface CreateTeammateInput {
@@ -78,5 +85,11 @@ export const agentApi = {
   },
   update(agentId: string, projectId: string, patch: Partial<CreateTeammateInput> & { enabled?: boolean }): Promise<Agent> {
     return api.put(`/api/agents/${encodeURIComponent(agentId)}`, { projectId, ...patch }, AgentSchema);
+  },
+  setToolPermission(agentId: string, projectId: string, input: UpsertToolPermissionInput): Promise<AgentToolPermission> {
+    return api.put(`/api/agents/${encodeURIComponent(agentId)}/tool-permissions?projectId=${encodeURIComponent(projectId)}`, input, AgentToolPermissionSchema);
+  },
+  deleteToolPermission(agentId: string, projectId: string, toolName: string): Promise<null> {
+    return api.delete(`/api/agents/${encodeURIComponent(agentId)}/tool-permissions/${encodeURIComponent(toolName)}?projectId=${encodeURIComponent(projectId)}`, AgentToolPermissionSchema.nullable().transform(() => null));
   },
 };

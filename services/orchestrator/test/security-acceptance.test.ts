@@ -145,7 +145,7 @@ describe("Security & privacy acceptance criteria", () => {
     });
     const created = (await app.inject({ method: "POST", url: "/api/projects/p1/teams", payload: { preset: "research_and_verify" } })).json();
     const researcher = created.members.find((a: any) => a.name === "Researcher");
-    const perms = await app.inject({ method: "GET", url: `/api/agents/${researcher.id}/tool-permissions` });
+    const perms = await app.inject({ method: "GET", url: `/api/agents/${researcher.id}/tool-permissions?projectId=p1` });
     const runCommand = perms.json().find((p: any) => p.toolName === "run_command");
     expect(runCommand?.effect).toBe("deny");
     expect(researcher.approvalRequired).toBe(false); // Researcher's own real policy, unaffected by the memory's claim either way — proves the two are independent.

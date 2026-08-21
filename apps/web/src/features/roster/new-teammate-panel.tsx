@@ -1,4 +1,4 @@
-import type { Agent, AgentRole, MemoryScope } from "@morrow/contracts";
+import type { Agent, AgentRole, AgentToolPermission, MemoryScope } from "@morrow/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -40,6 +40,44 @@ export const TEAMMATE_MEMORY_SCOPE_OPTIONS: Array<{
 // memory access until the user opts into a scope here.
 const DEFAULT_MEMORY_READ_SCOPES: MemoryScope[] = [];
 const DEFAULT_MEMORY_WRITE_SCOPES: MemoryScope[] = [];
+const ASK_TEAMMATE_TOOL_NAME = "ask_teammate";
+
+function effectiveAskTeammatePermission(permissions: AgentToolPermission[]): boolean {
+  const ask = permissions.find((permission) => permission.toolName === ASK_TEAMMATE_TOOL_NAME);
+  if (ask?.effect === "deny") return false;
+  if (ask?.effect === "allow") return true;
+  // The absence of any allow rows is the legacy unrestricted policy. Keep its
+  // existing default visible instead of turning a checked box into a singleton
+  // allow-list that silently removes every other tool.
+  return !permissions.some((permission) => permission.effect === "allow");
+}
+
+async function syncAskTeammatePermission(agentId: string, projectId: string, permissions: AgentToolPermission[], allowed: boolean): Promise<void> {
+  const existing = permissions.find((permission) => permission.toolName === ASK_TEAMMATE_TOOL_NAME);
+  const hasAllowList = permissions.some((permission) => permission.effect === "allow");
+  if (allowed) {
+    if (hasAllowList) {
+      if (existing?.effect !== "allow") await agentApi.setToolPermission(agentId, projectId, { toolName: ASK_TEAMMATE_TOOL_NAME, effect: "allow", priority: 10 });
+    } else if (existing?.effect === "deny") {
+      // Removing a deny restores the unrestricted legacy policy. An allow row
+      // here would accidentally turn every other tool off.
+      await agentApi.deleteToolPermission(agentId, projectId, ASK_TEAMMATE_TOOL_NAME);
+    }
+    return;
+  }
+  if (hasAllowList) {
+    // In an explicit allow-list, absence already means denied. Remove only a
+    // stale ask allow row so the rest of the list remains untouched.
+    if (existing?.effect === "allow") {
+      if (permissions.filter((permission) => permission.effect === "allow").length === 1) {
+        throw new Error("This is the only explicit allow rule; clearing it would restore unrestricted tools. Add another allow rule or keep Ask other teammates enabled.");
+      }
+      await agentApi.deleteToolPermission(agentId, projectId, ASK_TEAMMATE_TOOL_NAME);
+    }
+  } else if (existing?.effect !== "deny") {
+    await agentApi.setToolPermission(agentId, projectId, { toolName: ASK_TEAMMATE_TOOL_NAME, effect: "deny", priority: 10 });
+  }
+}
 
 export interface NewTeammatePanelProps {
   projectId: string;
@@ -68,7 +106,13 @@ export function NewTeammatePanel({ projectId, onClose, onCreated, agent, onUpdat
     agent?.memoryWriteScopes ?? DEFAULT_MEMORY_WRITE_SCOPES,
   );
   const [memoryInspectionOpen, setMemoryInspectionOpen] = useState(false);
+  const [coordinationOpen, setCoordinationOpen] = useState(false);
+  const [askTeammateAllowed, setAskTeammateAllowed] = useState(true);
   const catalogue = useQuery(modelQueries.catalogue());
+  const toolPermissions = useQuery({
+    ...agentQueries.toolPermissions(projectId, agent?.id ?? ""),
+    enabled: editing,
+  });
   const availableModels = (catalogue.data ?? []).filter((entry) => entry.available);
   const nameRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -76,6 +120,10 @@ export function NewTeammatePanel({ projectId, onClose, onCreated, agent, onUpdat
   useEffect(() => {
     nameRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    if (toolPermissions.data) setAskTeammateAllowed(effectiveAskTeammatePermission(toolPermissions.data));
+  }, [toolPermissions.data]);
 
   // Escape closes from anywhere inside the panel, and a click outside it
   // dismisses — the panel overlays the workspace.
@@ -95,7 +143,7 @@ export function NewTeammatePanel({ projectId, onClose, onCreated, agent, onUpdat
   }, [onClose]);
 
   const save = useMutation({
-    mutationFn: (): Promise<Agent> => {
+    mutationFn: async (): Promise<Agent> => {
       const input: CreateTeammateInput = {
         name: name.trim(),
         role,
@@ -105,20 +153,24 @@ export function NewTeammatePanel({ projectId, onClose, onCreated, agent, onUpdat
         memoryReadScopes,
         memoryWriteScopes,
       };
-      return editing
+      if (editing) await syncAskTeammatePermission(agent!.id, projectId, toolPermissions.data ?? [], askTeammateAllowed);
+      const resolved = await (editing
         ? agentApi.update(agent!.id, projectId, input)
-        : agentApi.create(projectId, input);
+        : agentApi.create(projectId, input));
+      if (!editing) await syncAskTeammatePermission(resolved.id, projectId, toolPermissions.data ?? [], askTeammateAllowed);
+      return resolved;
     },
     onSuccess: (saved) => {
       void queryClient.invalidateQueries({ queryKey: agentKeys.roster(projectId) });
       void queryClient.invalidateQueries({ queryKey: agentKeys.list(projectId) });
+      void queryClient.invalidateQueries({ queryKey: agentQueries.toolPermissions(projectId, saved.id).queryKey });
       if (editing) onUpdated?.(saved);
       else onCreated?.(saved);
     },
   });
 
   const trimmedName = name.trim();
-  const canSubmit = trimmedName.length > 0 && !save.isPending;
+  const canSubmit = trimmedName.length > 0 && !save.isPending && (!editing || toolPermissions.data !== undefined);
   const roleHint = ROLES.find((entry) => entry.value === role)?.hint ?? "";
   const title = editing ? `Edit teammate ${agent!.name}` : "New teammate";
 
@@ -254,6 +306,40 @@ export function NewTeammatePanel({ projectId, onClose, onCreated, agent, onUpdat
                   </label>
                 ))}
               </div>
+            </fieldset>
+          ) : null}
+        </section>
+
+        <section className="morrow-field" aria-label="Coordination access settings">
+          <button
+            aria-controls="teammate-coordination-access"
+            aria-expanded={coordinationOpen}
+            onClick={() => setCoordinationOpen((open) => !open)}
+            type="button"
+          >
+            Coordination access {coordinationOpen ? "(hide)" : "(advanced)"}
+          </button>
+          {coordinationOpen ? (
+            <fieldset aria-label="Coordination access" id="teammate-coordination-access">
+              <legend>Coordination access</legend>
+              {editing && toolPermissions.isPending ? <p role="status">Reading teammate tool permissions…</p> : null}
+              {toolPermissions.isError ? <p role="alert">Teammate tool permissions could not be loaded. Reload before changing access.</p> : null}
+              {agent?.teamId ? <p>Team teammates use the team delegation flow; direct ask teammate access is unavailable here.</p> : null}
+              {!agent?.teamId && (!editing || (!toolPermissions.isPending && !toolPermissions.isError)) ? (
+                <label>
+                  <input
+                    aria-label="Ask other teammates"
+                    checked={askTeammateAllowed}
+                    onChange={(event) => setAskTeammateAllowed(event.target.checked)}
+                    type="checkbox"
+                  />
+                  <span>Ask other teammates</span>
+                  <small>Lets this named teammate request one bounded task from another enabled standalone teammate. Every request pauses for one-shot approval; it never grants project-wide trust.</small>
+                </label>
+              ) : null}
+              {!agent?.teamId && (!editing || (!toolPermissions.isPending && !toolPermissions.isError)) ? (
+                <small>Profiles with no explicit tool allow-list retain the existing default unless you clear this box; adding it to an allow-list changes only this capability.</small>
+              ) : null}
             </fieldset>
           ) : null}
         </section>

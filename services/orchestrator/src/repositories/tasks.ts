@@ -4,6 +4,7 @@ import type { Task as TaskRecord } from "@morrow/contracts";
 type Input = {
   id: string; projectId: string; kind: string; status: string;
   idempotencyKey?: string; idempotencyFingerprint?: string; parentTaskId?: string; agentId?: string; worktreeId?: string; missionId?: string;
+  expectedAgentProfileHash?: string;
   createdAt: string; updatedAt?: string; startedAt?: string; completedAt?: string;
 };
 type Update = { status: string; updatedAt: string; startedAt?: string | null; completedAt?: string | null };
@@ -29,11 +30,12 @@ export function taskRepository(db: Database.Database) {
   return {
     createTask(i: Input) {
       db.prepare(
-        "INSERT INTO tasks(id,schema_version,project_id,type,status,idempotency_key,idempotency_fingerprint,parent_task_id,agent_id,worktree_id,mission_id,created_at,updated_at,started_at,completed_at) VALUES(@id,1,@projectId,@kind,@status,@idempotencyKey,@idempotencyFingerprint,@parentTaskId,@agentId,@worktreeId,@missionId,@createdAt,@updatedAt,@startedAt,@completedAt)"
+        "INSERT INTO tasks(id,schema_version,project_id,type,status,idempotency_key,idempotency_fingerprint,expected_agent_profile_hash,parent_task_id,agent_id,worktree_id,mission_id,created_at,updated_at,started_at,completed_at) VALUES(@id,1,@projectId,@kind,@status,@idempotencyKey,@idempotencyFingerprint,@expectedAgentProfileHash,@parentTaskId,@agentId,@worktreeId,@missionId,@createdAt,@updatedAt,@startedAt,@completedAt)"
       ).run({
         ...i,
         idempotencyKey: i.idempotencyKey ?? null,
         idempotencyFingerprint: i.idempotencyFingerprint ?? null,
+        expectedAgentProfileHash: i.expectedAgentProfileHash ?? null,
         parentTaskId: i.parentTaskId ?? null,
         agentId: i.agentId ?? null,
         worktreeId: i.worktreeId ?? null,
@@ -51,6 +53,10 @@ export function taskRepository(db: Database.Database) {
     getIdempotencyFingerprint(id: string) {
       const row = db.prepare("SELECT idempotency_fingerprint FROM tasks WHERE id=?").get(id) as { idempotency_fingerprint: string | null } | undefined;
       return row?.idempotency_fingerprint ?? null;
+    },
+    getExpectedAgentProfileHash(id: string) {
+      const row = db.prepare("SELECT expected_agent_profile_hash FROM tasks WHERE id=?").get(id) as { expected_agent_profile_hash: string | null } | undefined;
+      return row?.expected_agent_profile_hash ?? null;
     },
     getTaskById(id: string) {
       const r = get.get(id);

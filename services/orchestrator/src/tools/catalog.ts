@@ -183,7 +183,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
       objective: { type: "string", description: "One bounded objective for the teammate, up to 2,000 characters" },
     },
     constraints: [
-      "Exposed only to tasks running as a named agent profile",
+      "Exposed only to tasks running as a standalone named agent profile",
       "Target must be enabled, standalone, in this project, and different from the caller",
       "Always requires one-shot approval; auto-approval and project trust never apply",
       "The target's provider, model, tools, memory scopes, and budgets are resolved server-side",
