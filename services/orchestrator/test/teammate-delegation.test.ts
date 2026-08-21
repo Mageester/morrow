@@ -185,7 +185,11 @@ describe("model-authored teammate dispatch boundary", () => {
       registry,
     });
 
-    expect(duplicate).toBe(first);
+    // With registry eviction, the duplicate resolves through the durable
+    // idempotency key rather than the process-local cache: same committed
+    // child, runner still called exactly once.
+    expect(duplicate.replayed).toBe(true);
+    expect(duplicate.task.id).toBe(first.task.id);
     expect(run).toHaveBeenCalledTimes(1);
     expect(taskRepository(db).listChildren("parent")).toHaveLength(1);
     expect(first.task.parentTaskId).toBe("parent");
@@ -212,6 +216,10 @@ describe("model-authored teammate dispatch boundary", () => {
     expect(restarted.replayed).toBe(true);
     expect(restarted.task.id).toBe(first.task.id);
     expect(run).toHaveBeenCalledTimes(1);
+
+    // Entries only need to live until the durable child exists; the registry
+    // must not accumulate them for the life of the process.
+    expect(registry.size()).toBe(0);
 
     const childPolicy = buildAgentExecutionPolicy(target, agentsRepository(db).listToolPermissions(target.id));
     expect(childPolicy.agentId).toBe(target.id);

@@ -262,7 +262,14 @@ export function spawnAgentChatSubagent(
 
   if (options.toolCallId && options.registry) {
     const key = teammateSpawnKey(parent.id, options.toolCallId);
-    return options.registry.run(key, create);
+    try {
+      return options.registry.run(key, create);
+    } finally {
+      // Once create() returns, the durable child exists and its idempotency
+      // key owns duplicate suppression. Entries must not accumulate for the
+      // life of the process; failures were never cached and stay retryable.
+      options.registry.clear(key);
+    }
   }
   return create();
 }
