@@ -6,6 +6,7 @@ import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { teamsRepository } from "../src/repositories/teams.js";
+import { delegationsRepository } from "../src/repositories/delegations.js";
 import {
   spawnAgentChatSubagent,
 } from "../src/mission/task-dispatcher.js";
@@ -98,6 +99,33 @@ describe("model-authored teammate dispatch boundary", () => {
     )).toThrowError(expect.objectContaining({ code: "TEAM_AGENT_REQUIRES_DELEGATION" }));
     expect(run).not.toHaveBeenCalled();
     expect(taskRepository(db).listChildren("parent")).toHaveLength(0);
+  });
+
+  it("stores the approved profile hash on delegation-bound children", () => {
+    seedParent();
+    teamsRepository(db).create({ id: "team-1", projectId: "p1", name: "Team", createdAt: now() });
+    const target = agentsRepository(db).create({ id: "team-target", projectId: "p1", name: "Verifier", role: "tester", teamId: "team-1" });
+    delegationsRepository(db).create({
+      id: "del-1", parentTaskId: "parent", teamId: "team-1", agentId: target.id,
+      objective: "Verify the findings", acceptanceCriteria: [], contextSnapshotRef: "task:parent",
+      allowedTools: [], allowedMemoryScopes: [], allowedWriteMemoryScopes: [],
+      providerId: null, model: null,
+      budget: { maxProviderCalls: null, maxTokenBudget: null, maxWallClockMs: null },
+      approvalRequired: true, deadlineAt: null, correlationId: "corr-del-1", createdAt: now(),
+    });
+
+    const result = spawnAgentChatSubagent(
+      { db, runner: { run }, env: process.env },
+      { id: "parent", projectId: "p1" },
+      target.id,
+      "Verify the findings",
+      { deferRun: true, delegationId: "del-1", targetProfileHash: "approved-hash" },
+    );
+    // The approve-time fingerprint rides on the task row so execution start
+    // can refuse a profile that changed after the user said yes — the same
+    // binding ask_teammate already carries.
+    expect(taskRepository(db).getExpectedAgentProfileHash(result.task.id)).toBe("approved-hash");
+    expect(run).not.toHaveBeenCalled(); // deferRun
   });
 
   it("suppresses duplicate in-process and post-restart spawns, while binding the child to its own profile", () => {

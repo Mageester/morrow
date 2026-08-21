@@ -7,6 +7,7 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { agentsRepository } from "../src/repositories/agents.js";
 import { teamsRepository } from "../src/repositories/teams.js";
+import { teammateProfileFingerprint } from "../src/tools/teammate-delegation.js";
 
 function ts() { return new Date().toISOString(); }
 

@@ -261,7 +261,7 @@ import { countChatTokens, prepareContextForProvider, admitProviderRequest } from
 import { boundCompletedToolArguments, buildProviderProjection } from "./execution/provider-projection.js";
 import { resolveModelBudget } from "./routing/model-budget.js";
 import { AgentTaskDispatchError, dispatchAgentTask, spawnAgentChatSubagent as dispatchAgentChatSubagent } from "./mission/task-dispatcher.js";
-import { TeammateSpawnRegistry } from "./tools/teammate-delegation.js";
+import { TeammateSpawnRegistry, teammateProfileFingerprint } from "./tools/teammate-delegation.js";
 import { createResearchAndVerifyTeam } from "./mission/research-and-verify-preset.js";
 import { runReadmeSummarySample, ReadmeSummarySampleError } from "./mission/readme-summary-sample.js";
 import { registerWebMissionRoutes } from "./web/mission-routes.js";
@@ -1034,9 +1034,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     // Persist the running delegation before starting the child. This closes the
     // race where execution could observe an unscoped team agent between spawn
     // and approval, and makes restart/recovery resolve the same policy row.
+    // The approve-time target fingerprint binds the child the same way
+    // ask_teammate binds its spawns: a profile that changes after the user
+    // approves is cancelled at execution start instead of silently running.
+    const approvedFor = agents.get(delegation.agentId);
+    const targetProfileHash = approvedFor
+      ? teammateProfileFingerprint(approvedFor, agents.listToolPermissions(approvedFor.id))
+      : undefined;
     const result = spawnAgentChatSubagent(parent, delegation.agentId, delegation.objective, {
       deferRun: true,
       delegationId,
+      ...(targetProfileHash ? { targetProfileHash } : {}),
     });
     const started = delegations.approveAndStart(delegationId, result.task.id, now);
     if (!started || started.status !== "running" || started.childTaskId !== result.task.id) {
@@ -2117,7 +2125,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     parent: { id: string; projectId: string; agentId?: string | null | undefined },
     agentId: string,
     label: string | undefined,
-    options: { deferRun?: boolean; delegationId?: string; toolCallId?: string; modelInitiated?: boolean; contextRefs?: Array<{ kind: "artifact" | "evidence"; id: string }> } = {},
+    options: { deferRun?: boolean; delegationId?: string; toolCallId?: string; modelInitiated?: boolean; targetProfileHash?: string; contextRefs?: Array<{ kind: "artifact" | "evidence"; id: string }> } = {},
   ) {
     try {
       return dispatchAgentChatSubagent(
