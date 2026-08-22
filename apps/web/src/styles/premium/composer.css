@@ -85,6 +85,7 @@
   flex-wrap: nowrap;
   gap: 7px;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   scrollbar-width: none;
 }
 
@@ -198,16 +199,19 @@
   box-shadow: none;
 }
 
-.morrow-chat-composer .morrow-chat-composer__reasoning-toggle:has(input:checked),
-.morrow-chat-composer .morrow-chat-composer__auto-approve:has(input:checked) {
+/* Both of these render inside a popover portaled to the body, so neither can
+   be scoped through a `.morrow-chat-composer` ancestor any more. Losing it is
+   how a switch keeps looking off while it is on. */
+.morrow-chat-composer__reasoning-toggle:has(input:checked),
+.morrow-chat-composer__auto-approve:has(input:checked) {
   border-color: var(--morrow-product-copper-line);
   background: var(--morrow-product-copper-soft);
   color: var(--morrow-product-copy-soft);
 }
 
 /* Checkbox chips carry their state in a small copper tick, not a system box. */
-.morrow-chat-composer .morrow-chat-composer__auto-approve input,
-.morrow-chat-composer .morrow-chat-composer__reasoning-toggle input {
+.morrow-chat-composer__auto-approve input,
+.morrow-chat-composer__reasoning-toggle input {
   width: 10px;
   height: 10px;
   flex: none;
@@ -727,8 +731,8 @@
  * popover panel; what stays here is the switch mark, which is the same control
  * wherever it is shown.
  */
-.morrow-chat-composer .morrow-composer-popover__panel .morrow-chat-composer__auto-approve,
-.morrow-chat-composer .morrow-composer-popover__panel .morrow-chat-composer__reasoning-toggle {
+.morrow-composer-popover__panel .morrow-chat-composer__auto-approve,
+.morrow-composer-popover__panel .morrow-chat-composer__reasoning-toggle {
   display: flex;
   width: 100%;
   height: auto;
@@ -746,8 +750,8 @@
   white-space: normal;
 }
 
-.morrow-chat-composer .morrow-composer-popover__panel .morrow-chat-composer__auto-approve:hover,
-.morrow-chat-composer .morrow-composer-popover__panel .morrow-chat-composer__reasoning-toggle:hover {
+.morrow-composer-popover__panel .morrow-chat-composer__auto-approve:hover,
+.morrow-composer-popover__panel .morrow-chat-composer__reasoning-toggle:hover {
   background: var(--morrow-product-field-inset);
 }
 
@@ -760,20 +764,20 @@
   background: transparent;
 }
 
-.morrow-chat-composer .morrow-chat-composer__reasoning-toggle:has(input:checked) .morrow-chat-composer__toggle-mark {
+.morrow-chat-composer__reasoning-toggle:has(input:checked) .morrow-chat-composer__toggle-mark {
   border-color: var(--morrow-product-copper);
   background: var(--morrow-product-copper);
   box-shadow: 0 0 0 3px rgb(190 123 82 / 0.12);
 }
 
-.morrow-chat-composer .morrow-composer-popover__panel .morrow-chat-composer__auto-approve:has(input:focus-visible),
-.morrow-chat-composer .morrow-composer-popover__panel .morrow-chat-composer__reasoning-toggle:has(input:focus-visible) {
+.morrow-composer-popover__panel .morrow-chat-composer__auto-approve:has(input:focus-visible),
+.morrow-composer-popover__panel .morrow-chat-composer__reasoning-toggle:has(input:focus-visible) {
   outline: 2px solid var(--morrow-product-copper);
   outline-offset: 2px;
 }
 
 /* The slider gets the panel's full width, with its captions back. */
-.morrow-chat-composer .morrow-composer-popover__panel .morrow-reasoning-slider {
+.morrow-composer-popover__panel .morrow-reasoning-slider {
   display: flex;
   width: 100%;
   height: auto;
@@ -785,7 +789,7 @@
   gap: 6px;
 }
 
-.morrow-chat-composer .morrow-composer-popover__panel .morrow-reasoning-slider__label {
+.morrow-composer-popover__panel .morrow-reasoning-slider__label {
   display: block;
   color: var(--morrow-product-faint);
   font-size: 10.5px;
