@@ -471,7 +471,23 @@ health_ok() {
   printf '%s' "$body" | grep -q '"ok"[[:space:]]*:[[:space:]]*true' || return 1
   printf '%s' "$body" | grep -q '"service"[[:space:]]*:[[:space:]]*"morrow-orchestrator"' || return 1
   printf '%s' "$body" | grep -q '"apiVersion"[[:space:]]*:[[:space:]]*1' || return 1
+  # "A Morrow answers on this port" is not the same claim as "the Morrow I just
+  # installed is running". A development checkout, or an older install, holding
+  # the port would otherwise satisfy this gate and the installer would report
+  # success for a build that never ran. serviceEntry is the service's own answer
+  # to "which code am I?", so it is what decides.
+  if [ -n "${EXPECT_ENTRY:-}" ]; then
+    printf '%s' "$body" | grep -q "\"serviceEntry\"[[:space:]]*:[[:space:]]*\"$EXPECT_ENTRY" || return 1
+  fi
   return 0
+}
+
+
+# Who is already answering on this port, if anyone? Returns the serviceEntry.
+foreign_service_entry() {
+  body="$(fetch_stdout "$HEALTH_URL" 2>/dev/null)" || return 1
+  printf '%s' "$body" | grep -q '"service"[[:space:]]*:[[:space:]]*"morrow-orchestrator"' || return 1
+  printf '%s' "$body" | sed -n 's/.*"serviceEntry"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
 }
 
 wait_for_health() {
@@ -532,7 +548,31 @@ main() {
     return 0
   fi
 
+  # Refuse to hand the port's verdict to somebody else's Morrow. A development
+  # checkout (pnpm dev) or an older install already listening here would answer
+  # this installer's health probe and make a build that never started look
+  # successful - which is exactly how an install can report 0.4.0 while 0.3.0 is
+  # what actually answers.
+  existing="$(foreign_service_entry || true)"
+  if [ -n "$existing" ]; then
+    case "$existing" in
+      "$PREFIX/app"*) ;;
+      *)
+        say ""
+        say "Another Morrow is already serving $HEALTH_URL:"
+        say "  $existing"
+        say ""
+        say "Morrow is installed to $PREFIX, but it was not started: that would"
+        say "collide on the port and on $DATA_HOME. Stop the other one first"
+        say "(if it is a source checkout, stop it where you started it), then run:"
+        say "  morrow start"
+        return 0
+        ;;
+    esac
+  fi
+
   say "Starting Morrow..."
+  EXPECT_ENTRY="$PREFIX/app"
   "$BIN_DIR/morrow" start >/dev/null 2>&1 || true
   if ! wait_for_health; then
     if [ "$HAD_PREVIOUS" = "1" ] && rollback; then
