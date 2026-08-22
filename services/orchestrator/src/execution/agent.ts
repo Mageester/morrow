@@ -12,6 +12,7 @@ import { projectRepository } from "../repositories/projects.js";
 import { agentsRepository } from "../repositories/agents.js";
 import { delegationsRepository } from "../repositories/delegations.js";
 import { teammateTrustRepository } from "../repositories/teammate-trust.js";
+import { teamAutonomyStore, tokensUsedInTaskTree } from "./team-autonomy.js";
 import { teamsRepository } from "../repositories/teams.js";
 import { intelligenceRepository } from "../repositories/intelligence.js";
 import { taskRepository } from "../repositories/tasks.js";
@@ -873,6 +874,7 @@ export async function executeAgentChatTask({
   const agentRepo = agentsRepository(db);
   const delegationRepo = delegationsRepository(db);
   const teammateTrust = teammateTrustRepository(db);
+  const teamAutonomy = teamAutonomyStore(db);
   const assignedAgent = assignedAgentId ? agentRepo.get(assignedAgentId) : undefined;
   if (assignedAgentId && (!assignedAgent || assignedAgent.projectId !== projectId)) {
     throw new Error("Assigned agent is not available in this project");
@@ -1043,25 +1045,53 @@ export async function executeAgentChatTask({
    * resolution, profile binding, and the child's own policy intersection have
    * all already run by the time this is consulted.
    */
-  const standingTrustFor = (ask: { agentId: string; profileHash: string }): { granted: boolean; reason: string } => {
-    // The built-in Morrow assistant deliberately has no synthetic agent row or
-    // durable caller policy. It may orchestrate, but every delegation remains
-    // a visible one-shot user decision.
-    if (!assignedAgent) return { granted: false, reason: "no_agent_profile" };
-    const grant = teammateTrust.find(projectId, assignedAgent.id, ask.agentId);
-    if (!grant) return { granted: false, reason: "no_grant" };
-    if (grant.targetProfileHash !== ask.profileHash) return { granted: false, reason: "profile_drift" };
-    // Depth is measured over the durable task chain, not anything the model
-    // said, so a teammate cannot talk its way past its own ceiling.
+  /** Depth of this task in the durable delegation chain, and the chain's root. */
+  const delegationChain = (): { depth: number; rootTaskId: string } => {
     let depth = 0;
+    let rootTaskId = task.id;
     let cursor = task.parentTaskId;
-    while (cursor && depth <= grant.maxDepth) {
+    // Bounded so a cycle in the durable rows can never hang a delegation.
+    while (cursor && depth < 64) {
       depth += 1;
+      rootTaskId = cursor;
       cursor = tasks.getTaskById(cursor)?.parentTaskId ?? null;
     }
-    if (depth >= grant.maxDepth) return { granted: false, reason: "depth_exhausted" };
-    if (tasks.listChildren(task.id).length >= grant.maxChildren) return { granted: false, reason: "fanout_exhausted" };
-    return { granted: true, reason: "granted" };
+    return { depth, rootTaskId };
+  };
+
+  const standingTrustFor = (ask: { agentId: string; profileHash: string }): { granted: boolean; reason: string } => {
+    // A pair (or project-wide) grant is the narrow, specific answer, so it wins
+    // wherever one exists.
+    if (assignedAgent) {
+      const grant = teammateTrust.find(projectId, assignedAgent.id, ask.agentId);
+      if (grant) {
+        if (grant.targetProfileHash !== ask.profileHash) return { granted: false, reason: "profile_drift" };
+        // Depth is measured over the durable task chain, not anything the model
+        // said, so a teammate cannot talk its way past its own ceiling.
+        const { depth } = delegationChain();
+        if (depth >= grant.maxDepth) return { granted: false, reason: "depth_exhausted" };
+        if (tasks.listChildren(task.id).length >= grant.maxChildren) return { granted: false, reason: "fanout_exhausted" };
+        return { granted: true, reason: "granted" };
+      }
+    }
+
+    // Otherwise the team-level grant — the one the user turns on to walk away.
+    // It is the only route by which the built-in Morrow assistant can delegate
+    // without a prompt: Morrow has no agent row, so it can never hold a pair
+    // grant, and requiring one left the orchestrator asking permission for
+    // every hand-off it made.
+    const team = teamAutonomy.get(projectId);
+    if (!team) return { granted: false, reason: assignedAgent ? "no_grant" : "no_team_autonomy" };
+
+    const { depth, rootTaskId } = delegationChain();
+    if (depth >= team.maxDepth) return { granted: false, reason: "depth_exhausted" };
+    if (tasks.listChildren(task.id).length >= team.maxChildren) return { granted: false, reason: "fanout_exhausted" };
+    // Tokens are counted over the whole run, not this task alone: a runaway
+    // fan-out spends inside the children, where a per-task check never looks.
+    if (tokensUsedInTaskTree(db, rootTaskId) >= team.maxTotalTokens) {
+      return { granted: false, reason: "token_budget_exhausted" };
+    }
+    return { granted: true, reason: "granted_team_autonomy" };
   };
   const spawnAskedTeammate = (toolCallId: string, raw: Record<string, unknown>): string => {
     const input = parseAskTeammateInput(raw);

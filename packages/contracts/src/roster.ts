@@ -176,6 +176,23 @@ export const CreateTeammateTrustGrantSchema = z.object({
   maxChildren: z.number().int().min(1).max(16).default(4),
 }).strict();
 
+/**
+ * The single grant that lets Morrow run its team unattended.
+ *
+ * Every bound here is something Morrow actually measures. Cost in dollars is
+ * deliberately absent: no provider reports one and there is no price table, so
+ * a spend limit would be a number that never fires. Tokens are counted, so
+ * tokens are what is enforced. The ceilings cap how far a user can loosen the
+ * grant in one go, because "walk away" has to stay survivable.
+ */
+export const TeamAutonomyGrantRequestSchema = z.object({
+  maxDepth: z.number().int().min(1).max(8).optional(),
+  maxChildren: z.number().int().min(1).max(16).optional(),
+  maxTotalTokens: z.number().int().min(1_000).max(50_000_000).optional(),
+}).strict();
+
+export type TeamAutonomyGrantRequest = z.infer<typeof TeamAutonomyGrantRequestSchema>;
+
 export const TeammateTrustGrantsSchema = z.object({
   version: SchemaVersionSchema,
   projectId: z.string().min(1),

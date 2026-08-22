@@ -29,6 +29,7 @@ const load = {
   chatCommand: async () => (await import("./commands/chat.js")).chatCommand,
   conversationsCommand: async () => (await import("./commands/conversations.js")).conversationsCommand,
   cortexCommand: async () => (await import("./commands/cortex.js")).cortexCommand,
+  teamCommand: async () => (await import("./commands/team.js")).teamCommand,
   importCommand: async () => (await import("./commands/import.js")).importCommand,
   initCommand: async () => (await import("./commands/projects.js")).initCommand,
   integrationsCommand: async () => (await import("./commands/integrations.js")).integrationsCommand,
@@ -66,7 +67,7 @@ export const VERSION = MORROW_VERSION;
 // would run against the wrong workspace instead of failing loudly.
 const VALUE_FLAGS = ["project", "in", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines", "worktree", "base", "task", "agent", "status", "target", "command", "template", "transport"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-export const COMMANDS = new Set(["ask", "fix", "plan", "build", "yolo", "new", "mission", "cortex", "acceptance", "provenance", "capabilities", "auth", "model", "settings", "start", "stop", "restart", "status", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index", "mcp"]);
+export const COMMANDS = new Set(["ask", "fix", "plan", "build", "yolo", "new", "mission", "cortex", "team", "acceptance", "provenance", "capabilities", "auth", "model", "settings", "start", "stop", "restart", "status", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index", "mcp"]);
 const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "serve", "logs"];
 
 type Invocation =
@@ -158,6 +159,7 @@ export async function run(argv: string[]): Promise<number> {
       case "plan": { const p = promptOf(); return await chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
       case "new": return await chatWith({ new: true });
       case "cortex": return await (await load.cortexCommand())(ctx, sub, args);
+      case "team": return await (await load.teamCommand())(ctx, sub, args);
       case "acceptance": return await (await load.acceptanceCommand())(ctx, sub, args);
       case "provenance": return await (await load.provenanceCommand())(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
       case "capabilities": return await (await load.capabilitiesCommand())(ctx);

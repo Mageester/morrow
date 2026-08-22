@@ -23,6 +23,7 @@ import {
   UpdateAgentSchema,
   UpsertToolPermissionSchema,
   CreateTeammateTrustGrantSchema,
+  TeamAutonomyGrantRequestSchema,
   UpsertSkillAccessSchema,
   CreateProjectRuleSchema,
   PatchConventionSchema,
@@ -264,6 +265,7 @@ import { resolveModelBudget } from "./routing/model-budget.js";
 import { AgentTaskDispatchError, cleanupUnstartedChild, dispatchAgentTask, spawnAgentChatSubagent as dispatchAgentChatSubagent } from "./mission/task-dispatcher.js";
 import { TeammateSpawnRegistry, teammateProfileFingerprint } from "./tools/teammate-delegation.js";
 import { teammateTrustRepository } from "./repositories/teammate-trust.js";
+import { TEAM_AUTONOMY_DEFAULTS, teamAutonomyStore } from "./execution/team-autonomy.js";
 import { createResearchAndVerifyTeam } from "./mission/research-and-verify-preset.js";
 import { runReadmeSummarySample, ReadmeSummarySampleError } from "./mission/readme-summary-sample.js";
 import { registerWebMissionRoutes } from "./web/mission-routes.js";
@@ -382,6 +384,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const projects = projectRepository(deps.db);
   const agents = agentsRepository(deps.db);
   const teammateTrust = teammateTrustRepository(deps.db);
+  const teamAutonomy = teamAutonomyStore(deps.db);
   const teams = teamsRepository(deps.db);
   const delegations = delegationsRepository(deps.db);
   const handoffs = handoffsRepository(deps.db);
@@ -895,6 +898,35 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       maxChildren: body.maxChildren,
       createdAt: new Date().toISOString(),
     });
+  });
+
+  // Team autonomy: the single grant that lets Morrow run its team unattended.
+  // The per-pair grants above answer "may A ask B"; this answers "may the team
+  // work without stopping to ask me", which is the question a user actually has
+  // when they want to walk away. Its limits are only ever things Morrow can
+  // measure, so they genuinely stop a runaway.
+
+  app.get("/api/projects/:projectId/team-autonomy", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const grant = teamAutonomy.get(projectId);
+    return { version: 1 as const, projectId, enabled: grant !== null, grant, defaults: TEAM_AUTONOMY_DEFAULTS };
+  });
+
+  app.put("/api/projects/:projectId/team-autonomy", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = TeamAutonomyGrantRequestSchema.parse(request.body ?? {});
+    const grant = teamAutonomy.grant(projectId, body);
+    return { version: 1 as const, projectId, enabled: true, grant };
+  });
+
+  app.delete("/api/projects/:projectId/team-autonomy", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    teamAutonomy.revoke(projectId);
+    reply.status(204);
+    return null;
   });
 
   app.delete("/api/projects/:projectId/teammate-trust/:grantId", async (request, reply) => {

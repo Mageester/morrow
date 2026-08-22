@@ -277,6 +277,15 @@ function statusToExit(status: number): number {
   return EXIT.ERROR;
 }
 
+export interface TeamAutonomyLimits {
+  maxDepth: number;
+  maxChildren: number;
+  maxTotalTokens: number;
+}
+export interface TeamAutonomyGrant extends TeamAutonomyLimits {
+  grantedAt: string;
+}
+
 export class MorrowApi {
   constructor(public readonly baseUrl: string) {}
 
@@ -327,6 +336,24 @@ export class MorrowApi {
   // ── Projects ──────────────────────────────────────────────────────────────
   listProjects() { return this.req<Project[]>("GET", "/api/projects"); }
   getProject(id: string) { return this.req<Project>("GET", `/api/projects/${id}`); }
+
+  /** Team autonomy: the one grant that lets Morrow run its team unattended. */
+  getTeamAutonomy(projectId: string) {
+    return this.req<{ version: 1; projectId: string; enabled: boolean; grant: TeamAutonomyGrant | null; defaults: TeamAutonomyLimits }>(
+      "GET",
+      `/api/projects/${encodeURIComponent(projectId)}/team-autonomy`,
+    );
+  }
+  grantTeamAutonomy(projectId: string, limits: Partial<TeamAutonomyLimits> = {}) {
+    return this.req<{ version: 1; projectId: string; enabled: boolean; grant: TeamAutonomyGrant }>(
+      "PUT",
+      `/api/projects/${encodeURIComponent(projectId)}/team-autonomy`,
+      limits,
+    );
+  }
+  revokeTeamAutonomy(projectId: string) {
+    return this.req<null>("DELETE", `/api/projects/${encodeURIComponent(projectId)}/team-autonomy`);
+  }
   listAgents(projectId: string) { return this.req<Agent[]>("GET", `/api/projects/${projectId}/agents`); }
   createProject(name: string, workspacePath: string) {
     return this.req<Project>("POST", "/api/projects", { name, workspacePath });
