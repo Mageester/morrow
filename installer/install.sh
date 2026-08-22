@@ -27,6 +27,7 @@ HEALTH_ATTEMPTS="${MORROW_HEALTH_ATTEMPTS:-45}"
 MIN_NODE_MAJOR=22
 
 WANT_VERSION=""
+WANT_REF=""
 FORCE_SOURCE=0
 START_SERVICE=1
 MODIFY_PATH=1
@@ -62,6 +63,9 @@ Options:
   --version <v>      Install a specific release (default: the published latest)
   --prefix <dir>     Application directory (default: ~/.local/share/morrow)
   --bin-dir <dir>    Launcher directory  (default: ~/.local/bin)
+  --ref <branch|tag> Install that git ref instead of the published release,
+                     built from source. Use this for the latest development
+                     code: --ref main
   --source           Build from source even if a prebuilt artifact exists
   --no-start         Install without starting the service or health-gating it
   --no-modify-path   Do not touch shell profiles
@@ -78,6 +82,7 @@ while [ $# -gt 0 ]; do
     --version) [ $# -ge 2 ] || fail "--version requires a value"; WANT_VERSION="${2#v}"; shift 2 ;;
     --prefix) [ $# -ge 2 ] || fail "--prefix requires a value"; PREFIX="$2"; shift 2 ;;
     --bin-dir) [ $# -ge 2 ] || fail "--bin-dir requires a value"; BIN_DIR="$2"; shift 2 ;;
+    --ref) [ $# -ge 2 ] || fail "--ref requires a value"; WANT_REF="$2"; FORCE_SOURCE=1; shift 2 ;;
     --source) FORCE_SOURCE=1; shift ;;
     --no-start) START_SERVICE=0; shift ;;
     --no-modify-path) MODIFY_PATH=0; shift ;;
@@ -393,14 +398,29 @@ install_source() {
   [ -n "$node_bin" ] || fail "a source install needs Node.js $MIN_NODE_MAJOR or newer on PATH (https://nodejs.org)."
 
   checkout="$STAGING/morrow"
-  say "Cloning Morrow v$version..."
+  # A named ref installs development code; otherwise it is the release tag.
+  if [ -n "$WANT_REF" ]; then
+    clone_ref="$WANT_REF"
+    say "Cloning Morrow at $clone_ref..."
+  else
+    clone_ref="v$version"
+    say "Cloning Morrow v$version..."
+  fi
   # A tag checkout is a detached HEAD; silence git's advice so the installer's
   # own output is the only thing the user reads.
-  git -c advice.detachedHead=false clone --quiet --depth 1 --branch "v$version" "$REPOSITORY" "$checkout" \
-    || fail "could not clone $REPOSITORY at tag v$version."
+  git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$clone_ref" "$REPOSITORY" "$checkout" \
+    || fail "could not clone $REPOSITORY at $clone_ref."
 
   actual_commit="$(git -C "$checkout" rev-parse HEAD)"
-  if [ -n "$expect_commit" ]; then
+  if [ -n "$WANT_REF" ]; then
+    # Development code is not a published release: there is no manifest entry to
+    # check it against, and the ref moves. Say so plainly rather than implying
+    # the same verification a release install gets.
+    say "Installing development code from $clone_ref at commit $(printf '%.12s' "$actual_commit")."
+    warn "this is unreleased code, verified only by HTTPS to the repository - not a published release."
+    version="$("$node_bin" -e 'process.stdout.write(require("'"$checkout"'/package.json").version)' 2>/dev/null || printf '%s' "$clone_ref")"
+    version="$version+$(printf '%.7s' "$actual_commit")"
+  elif [ -n "$expect_commit" ]; then
     [ "$actual_commit" = "$expect_commit" ] \
       || fail "source commit mismatch: the manifest names $expect_commit but tag v$version is $actual_commit."
     say "Source verified at commit $(printf '%.12s' "$actual_commit")."

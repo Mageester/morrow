@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -34,7 +34,7 @@ export async function uninstallCommand(ctx: Context): Promise<number> {
   }
 
   const installRoot = resolveInstallRoot();
-  const binPath = join(installRoot, "bin");
+  const binPath = resolveBinDir();
   const choices = await resolveChoices(ctx);
   if (!choices) {
     if (!ctx.out.json) ctx.out.info("Uninstall cancelled. Nothing was removed.");
@@ -62,8 +62,29 @@ export async function uninstallCommand(ctx: Context): Promise<number> {
     return EXIT.OK;
   }
 
-  const stopped = await stop(ctx);
-  if (!ctx.out.json) ctx.out.info(stopped ? "Service stopped." : "Service was not running.");
+  // A service that cannot be stopped must not strand the uninstall. On POSIX
+  // nothing holds a file lock, so removal is safe regardless; the previous
+  // behaviour let a stop failure throw out of the command *before* a single
+  // file was removed, which is how "morrow uninstall" could report a full list
+  // of things it was about to delete and then delete none of them.
+  let stopped = false;
+  let stopProblem: string | null = null;
+  try {
+    stopped = await stop(ctx);
+  } catch (error) {
+    stopProblem = error instanceof Error ? error.message : String(error);
+    if (process.platform === "win32") {
+      throw new CliError(`Morrow could not stop its service, and files are locked while it runs: ${stopProblem}`, {
+        code: "UNINSTALL_SERVICE_RUNNING",
+        exitCode: EXIT.SERVICE_UNAVAILABLE,
+        hint: "Stop the running Morrow, then run `morrow uninstall` again.",
+      });
+    }
+  }
+  if (!ctx.out.json) {
+    if (stopProblem) ctx.out.warn(`Could not stop the running service: ${stopProblem}`);
+    else ctx.out.info(stopped ? "Service stopped." : "Service was not running.");
+  }
 
   if (process.platform === "win32") {
     const script = writeWindowsUninstallScript({ ctx, installRoot, binPath, choices });
@@ -159,10 +180,51 @@ async function confirm(rl: ReturnType<typeof createInterface>, question: string,
   return answer === "y" || answer === "yes";
 }
 
-function resolveInstallRoot(): string {
-  if (process.env.MORROW_INSTALL_ROOT) return process.env.MORROW_INSTALL_ROOT;
-  if (process.env.LOCALAPPDATA) return join(process.env.LOCALAPPDATA, "Morrow");
-  return join(homedir(), "AppData", "Local", "Morrow");
+/**
+ * Where the installer for THIS platform puts the application.
+ *
+ * This used to return `%LOCALAPPDATA%\Morrow` unconditionally, falling back to
+ * `~/AppData/Local/Morrow` — a Windows path built out of a POSIX home. On macOS
+ * and Linux that names a directory that has never existed, so `morrow
+ * uninstall` reported "Application files ... (not present)" and left the real
+ * installation in place. It must match installer/install.sh.
+ */
+export function resolveInstallRoot(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string {
+  if (env.MORROW_INSTALL_ROOT) return env.MORROW_INSTALL_ROOT;
+  if (platform === "win32") {
+    return env.LOCALAPPDATA ? join(env.LOCALAPPDATA, "Morrow") : join(homedir(), "AppData", "Local", "Morrow");
+  }
+  if (env.MORROW_PREFIX) return env.MORROW_PREFIX;
+  return join(env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "morrow");
+}
+
+/** Where the `morrow` launcher lives. Windows keeps it inside the install root;
+ *  POSIX puts it on the user's PATH directory, per install.sh. */
+export function resolveBinDir(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string {
+  if (platform === "win32") return join(resolveInstallRoot(env, platform), "bin");
+  if (env.MORROW_BIN_DIR) return env.MORROW_BIN_DIR;
+  return env.XDG_BIN_HOME || join(homedir(), ".local", "bin");
+}
+
+/** The exact block install.sh appends to a shell profile, so uninstall can take
+ *  it back out again without disturbing anything else in the file. */
+const PROFILE_MARKER = "# Added by the Morrow installer";
+
+export function stripInstallerPathBlock(contents: string, binDir: string): string {
+  const lines = contents.split("\n");
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const isMarker = lines[i]!.trim() === PROFILE_MARKER;
+    const exportsBin = (lines[i + 1] ?? "").includes(binDir);
+    if (isMarker && exportsBin) {
+      i += 1; // drop the marker and the export line that follows it
+      // Also drop the blank line the installer wrote before the marker.
+      while (kept.length > 0 && kept[kept.length - 1]!.trim() === "") kept.pop();
+      continue;
+    }
+    kept.push(lines[i]!);
+  }
+  return kept.join("\n");
 }
 
 function buildTargets(ctx: Context, installRoot: string, choices: UninstallChoices): UninstallTarget[] {
@@ -223,6 +285,27 @@ Remove-Item -LiteralPath $PSCommandPath -Force
 
 function removeSelectedNow(ctx: Context, installRoot: string, choices: UninstallChoices): void {
   for (const path of selectedPaths(ctx, installRoot, choices)) rmSync(path, { recursive: true, force: true });
+
+  // The POSIX launcher lives outside the install root (on the user's PATH
+  // directory), so removing the app tree alone leaves a `morrow` command that
+  // execs a directory that is no longer there.
+  if (process.platform !== "win32" && choices.removeApp) {
+    rmSync(join(resolveBinDir(), "morrow"), { force: true });
+  }
+  if (process.platform !== "win32" && choices.removePath) {
+    const binDir = resolveBinDir();
+    for (const profile of [".zshrc", ".bashrc", ".bash_profile", ".profile"].map((name) => join(homedir(), name))) {
+      if (!existsSync(profile)) continue;
+      try {
+        const current = readFileSync(profile, "utf8");
+        const stripped = stripInstallerPathBlock(current, binDir);
+        if (stripped !== current) writeFileSync(profile, stripped, "utf8");
+      } catch {
+        // A profile we cannot read is one we must not damage; leaving the PATH
+        // entry behind is harmless once the launcher itself is gone.
+      }
+    }
+  }
 }
 
 function selectedPaths(ctx: Context, installRoot: string, choices: UninstallChoices): string[] {
