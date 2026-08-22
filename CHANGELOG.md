@@ -6,6 +6,64 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-22
+
+Teammates stop asking permission for every step. A delegation used to pause for
+a fresh decision on every hop, which is right for a first handoff and is why a
+roster of specialists could never behave like a team. This release adds the
+durable record of a decision you make once, hardens the authority model that
+record leans on, and makes the composer's floating panels visible again.
+
+### Added
+
+- Standing teammate trust grants: a named teammate can hand work to another
+  without a prompt per hop. A grant binds the target's profile fingerprint,
+  carries its own delegation-depth and fan-out ceilings measured over the
+  durable task chain, is revocable, and is granted per pair from that
+  teammate's own Coordination settings. Every way a grant can fail to apply
+  falls back to asking rather than to proceeding.
+- Recent runs: what the scheduled routines did unattended, with failures and
+  approval waits surfaced instead of hidden behind a per-schedule drill-down.
+- A build gate that fails on an orchestrator route no client can reach, so
+  capability can no longer ship without a way in.
+- An isolated orchestrator and web stack for local verification, so a
+  verification run cannot reach the developer's own database.
+
+### Fixed
+
+- Skill-access routes are scoped by project; an agent id from another project
+  no longer resolves.
+- Delegated memory writes are intersected separately from reads, so a read-only
+  team policy cannot promote readable memory into writable memory on a child.
+- Delegation preserves an unrestricted tool policy instead of narrowing it to
+  an accidental singleton allow-list, and the sole-allow invariant is enforced
+  at the repository boundary.
+- Team delegation children are bound to the approved profile hash, profile
+  drift resolves to one consistent interrupted state, spawns are idempotent,
+  orphaned children are cleaned up, and the team concurrency limit is enforced.
+- Teammates with live delegations or running tasks can no longer be deleted.
+- Every floating panel in the composer — model picker, Thinking, settings, and
+  capability status — is visible again. They were being clipped out of
+  existence by the chip bar's scroll container.
+- Portaling those panels cost them their own width cap and every stylesheet
+  rule scoped through the composer; both are restored, and a panel whose
+  trigger is hidden at a breakpoint now closes instead of stranding itself in
+  the corner.
+- The capability status control has an accessible name describing what it does
+  rather than only the route it is showing.
+
+### Limitations
+
+- Migrations 63 and 64 are a one-way door: once a database is opened by this
+  release, an earlier build cannot open it again, because the orchestrator
+  refuses a schema newer than itself. Upgrade rather than downgrade.
+- Group conversations remain reachable only through the API. The orchestrator
+  enforces participants and membership, but nothing in the interface creates
+  one yet.
+- Six end-to-end tests fail in this release. All six failed in 0.3.0 as well;
+  none is a regression, and none is a credential leak. The accessibility
+  failure on Home is real and unfixed.
+
 ## [0.3.0] - 2026-08-21
 
 AI teammates become a usable local-first team: named specialists can share
