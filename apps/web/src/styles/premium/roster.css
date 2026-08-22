@@ -1916,3 +1916,42 @@
   color: var(--morrow-product-faint, #8a8b82);
   font-size: 10.5px;
 }
+
+/* The one team-level decision, above the per-teammate list it replaces. */
+.morrow-team-autonomy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px 12px;
+  border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+}
+
+.morrow-team-autonomy__switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.morrow-team-autonomy__switch input {
+  cursor: pointer;
+}
+
+.morrow-team-autonomy__detail {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  opacity: 0.72;
+}
+
+/* Limits are shown rather than implied: an unattended grant should say what it
+   actually permits. */
+.morrow-team-autonomy__limits {
+  margin: 2px 0 0;
+  padding-left: 16px;
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: 0.6;
+}

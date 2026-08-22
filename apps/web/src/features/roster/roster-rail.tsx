@@ -7,6 +7,7 @@ import { agentQueries } from "../../api/agents.js";
 import { conversationQueries } from "../../api/conversations.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 import { EditTeammatePanel, NewTeammatePanel } from "./new-teammate-panel.js";
+import { TeamAutonomyToggle } from "./team-autonomy-toggle.js";
 import { TeammateAvatar } from "./teammate-avatar.js";
 import { useOpenTeammateThread } from "./use-open-teammate-thread.js";
 
@@ -104,6 +105,10 @@ export function RosterRail({
           <Plus aria-hidden="true" size={14} strokeWidth={2.2} />
         </button>
       </div>
+
+      {/* The one decision that makes a team of workers usable, above the
+          per-teammate detail rather than buried inside one teammate's editor. */}
+      <TeamAutonomyToggle projectId={projectId} />
 
       {roster.isPending ? (
         <p aria-live="polite" className="morrow-roster__note" role="status">Reading the roster…</p>

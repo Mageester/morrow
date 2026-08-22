@@ -1,4 +1,4 @@
-import { AgentSchema, AgentToolPermissionSchema, RosterSchema, TeammateTrustGrantSchema, TeammateTrustGrantsSchema, type CreateTeammateTrustGrantInput, type Agent, type AgentRole, type AgentToolPermission, type MemoryScope, type Roster, type UpsertToolPermissionInput } from "@morrow/contracts";
+import { AgentSchema, AgentToolPermissionSchema, RosterSchema, TeammateTrustGrantSchema, TeammateTrustGrantsSchema, type CreateTeammateTrustGrantInput, TeamAutonomyStateSchema, type TeamAutonomyGrantRequest, type Agent, type AgentRole, type AgentToolPermission, type MemoryScope, type Roster, type UpsertToolPermissionInput } from "@morrow/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "./client.js";
 
@@ -127,5 +127,39 @@ export const teammateTrustApi = {
       `${projectPath(projectId)}/teammate-trust/${encodeURIComponent(grantId)}`,
       TeammateTrustGrantSchema.nullable().transform(() => null),
     );
+  },
+};
+
+export const teamAutonomyKeys = {
+  all: ["team-autonomy"] as const,
+  state(projectId: string) {
+    return [...this.all, projectId] as const;
+  },
+};
+
+export const teamAutonomyQueries = {
+  state(projectId: string) {
+    return queryOptions({
+      queryKey: teamAutonomyKeys.state(projectId),
+      queryFn: () => api.get(`${projectPath(projectId)}/team-autonomy`, TeamAutonomyStateSchema),
+      enabled: Boolean(projectId),
+    });
+  },
+};
+
+/**
+ * The single grant that lets Morrow run its teammates unattended.
+ *
+ * The per-pair grants above answer "may A hand work to B", which needs one
+ * decision per pair and excludes Morrow itself. This answers the question a
+ * user actually has — "may the team get on with it while I am away" — so it is
+ * one decision, bounded by limits Morrow can measure, and revocable mid-run.
+ */
+export const teamAutonomyApi = {
+  grant(projectId: string, limits: TeamAutonomyGrantRequest = {}) {
+    return api.put(`${projectPath(projectId)}/team-autonomy`, limits, TeamAutonomyStateSchema);
+  },
+  revoke(projectId: string) {
+    return api.delete(`${projectPath(projectId)}/team-autonomy`, TeamAutonomyStateSchema.nullable().transform(() => null));
   },
 };

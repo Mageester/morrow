@@ -193,6 +193,26 @@ export const TeamAutonomyGrantRequestSchema = z.object({
 
 export type TeamAutonomyGrantRequest = z.infer<typeof TeamAutonomyGrantRequestSchema>;
 
+export const TeamAutonomyLimitsSchema = z.object({
+  maxDepth: z.number().int(),
+  maxChildren: z.number().int(),
+  maxTotalTokens: z.number().int(),
+}).strict();
+
+export const TeamAutonomyGrantSchema = TeamAutonomyLimitsSchema.extend({
+  grantedAt: z.string().min(1),
+}).strict();
+
+export const TeamAutonomyStateSchema = z.object({
+  version: SchemaVersionSchema,
+  projectId: z.string().min(1),
+  enabled: z.boolean(),
+  grant: TeamAutonomyGrantSchema.nullable(),
+  defaults: TeamAutonomyLimitsSchema.optional(),
+}).strict();
+
+export type TeamAutonomyState = z.infer<typeof TeamAutonomyStateSchema>;
+
 export const TeammateTrustGrantsSchema = z.object({
   version: SchemaVersionSchema,
   projectId: z.string().min(1),
