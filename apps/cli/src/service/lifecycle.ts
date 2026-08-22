@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readlinkSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Context } from "../cli/context.js";
@@ -124,7 +124,18 @@ export async function serveForeground(ctx: Context): Promise<number> {
 export async function serveDetached(ctx: Context): Promise<void> {
   ctx.out.diag(`[${lifecycleTimestamp()}] service start requested (${ctx.service.baseUrl})`);
   if (await isRunning(ctx)) {
-    ctx.out.info(`Service already running at ${displayUrl(ctx.service.baseUrl)}.`);
+    // "Something answers here" is not the same as "your Morrow is running". A
+    // source checkout or another install holding this port would otherwise make
+    // `morrow start` report success for a service this install does not own —
+    // and every later command would silently talk to that one instead.
+    const entry = await serviceEntryOf(ctx);
+    const mine = entry ? entry.startsWith(dirname(dirname(BIN_PATH))) : true;
+    if (entry && !mine) {
+      ctx.out.warn(`A different Morrow is already serving ${displayUrl(ctx.service.baseUrl)}: ${entry}`);
+      ctx.out.info("This install was not started. Stop that one first (`morrow stop`, or where you started it) to run this build instead.");
+    } else {
+      ctx.out.info(`Service already running at ${displayUrl(ctx.service.baseUrl)}.`);
+    }
     ctx.out.diag(`[${lifecycleTimestamp()}] service start skipped; health endpoint already reachable`);
     return;
   }
@@ -337,12 +348,51 @@ function readCommandLine(pid: number): string | null {
  * the pid's command line against it is direct evidence that this process is that
  * service, not a guess.
  */
+function processCwd(pid: number): string | null {
+  try {
+    if (process.platform === "linux") return readlinkSync(`/proc/${pid}/cwd`);
+    if (process.platform === "darwin") {
+      const out = execFileSync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8" });
+      const line = out.split("\n").find((l) => l.startsWith("n"));
+      return line ? line.slice(1) : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Does this process's command line name the entry file the service reports?
+ *
+ * A source checkout is launched as `node ... src/index.ts` from the package
+ * directory, so the entry on the command line is RELATIVE while /api/health
+ * reports it absolute. Resolving the argument against the process's working
+ * directory is what closes that gap, and it keeps the evidence exact: the
+ * resolved path must equal the entry the service named for itself.
+ */
+export function entryMatchesCommandLine(commandLine: string, serviceEntry: string, cwd: string | null): boolean {
+  if (commandLine.includes(serviceEntry)) return true;
+  if (!cwd) return false;
+  for (const token of commandLine.split(/\s+/)) {
+    // A bare filename would match far too much; require a path with structure,
+    // and require the resolved result to BE the entry, not merely resemble it.
+    if (!token || isAbsolute(token) || !token.includes("/")) continue;
+    if (resolve(cwd, token) === serviceEntry) return true;
+  }
+  return false;
+}
+
+function processEntryMatches(commandLine: string, pid: number, serviceEntry: string): boolean {
+  return entryMatchesCommandLine(commandLine, serviceEntry, processCwd(pid));
+}
+
 function processOwnsCliService(pid: number, serviceEntry?: string | null): boolean {
   const commandLine = readCommandLine(pid);
   if (!commandLine) return false;
   if (commandLine.toLowerCase().includes(BIN_PATH.toLowerCase()) && /(?:^|\s)serve(?:\s|$)/i.test(commandLine)) return true;
   // Only an absolute entry path is specific enough to identify a process by.
-  if (serviceEntry && isAbsolute(serviceEntry) && commandLine.includes(serviceEntry)) return true;
+  if (serviceEntry && isAbsolute(serviceEntry) && processEntryMatches(commandLine, pid, serviceEntry)) return true;
   return false;
 }
 
