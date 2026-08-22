@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { closeSync, existsSync, openSync, readFileSync, readlinkSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Context } from "../cli/context.js";
 import { CliError, EXIT } from "../cli/errors.js";
@@ -124,7 +124,18 @@ export async function serveForeground(ctx: Context): Promise<number> {
 export async function serveDetached(ctx: Context): Promise<void> {
   ctx.out.diag(`[${lifecycleTimestamp()}] service start requested (${ctx.service.baseUrl})`);
   if (await isRunning(ctx)) {
-    ctx.out.info(`Service already running at ${displayUrl(ctx.service.baseUrl)}.`);
+    // "Something answers here" is not the same as "your Morrow is running". A
+    // source checkout or another install holding this port would otherwise make
+    // `morrow start` report success for a service this install does not own —
+    // and every later command would silently talk to that one instead.
+    const entry = await serviceEntryOf(ctx);
+    const mine = entry ? entry.startsWith(dirname(dirname(BIN_PATH))) : true;
+    if (entry && !mine) {
+      ctx.out.warn(`A different Morrow is already serving ${displayUrl(ctx.service.baseUrl)}: ${entry}`);
+      ctx.out.info("This install was not started. Stop that one first (`morrow stop`, or where you started it) to run this build instead.");
+    } else {
+      ctx.out.info(`Service already running at ${displayUrl(ctx.service.baseUrl)}.`);
+    }
     ctx.out.diag(`[${lifecycleTimestamp()}] service start skipped; health endpoint already reachable`);
     return;
   }
@@ -220,7 +231,8 @@ export async function stop(ctx: Context): Promise<boolean> {
   if ((!pid || !processAlive(pid)) && running) {
     const health = await new MorrowApi(ctx.service.baseUrl).health();
     const ownerPid = Number.isSafeInteger(health.ownerPid) ? health.ownerPid! : 0;
-    pid = recoverReachableServicePid(pid, health, isLocalService(ctx.service.baseUrl), ownerPid > 0 && processOwnsCliService(ownerPid));
+    const entry = typeof health.serviceEntry === "string" ? health.serviceEntry : null;
+    pid = recoverReachableServicePid(pid, health, isLocalService(ctx.service.baseUrl), ownerPid > 0 && processOwnsCliService(ownerPid, entry));
     if (pid) {
       mkdirSync(dirname(ctx.paths.pidFile), { recursive: true });
       writeFileSync(ctx.paths.pidFile, String(pid));
@@ -235,13 +247,28 @@ export async function stop(ctx: Context): Promise<boolean> {
       return false;
     }
     if (pid) rmSync(ctx.paths.pidFile, { force: true });
-    throw new CliError(`Service is reachable at ${displayUrl(ctx.service.baseUrl)}, but no local pid file matches it.`, {
-      code: "SERVICE_UNMANAGED",
-      exitCode: EXIT.SERVICE_UNAVAILABLE,
-      hint: "Stop that process with its own manager, or fix stale .morrow state before retrying.",
-    });
+    // Name the process rather than telling the user to go and find it. This
+    // branch is reached most often when a source checkout is running the service
+    // (pnpm dev / tsx), which writes no pid file and which the user may not
+    // realise is what is answering on this port.
+    const health = await new MorrowApi(ctx.service.baseUrl).health().catch(() => null);
+    const owner = Number.isSafeInteger(health?.ownerPid) ? health!.ownerPid! : 0;
+    const entry = typeof health?.serviceEntry === "string" ? health.serviceEntry : null;
+    const detail = owner > 0 ? ` It is pid ${owner}${entry ? `, running ${entry}` : ""}.` : "";
+    throw new CliError(
+      `Service is reachable at ${displayUrl(ctx.service.baseUrl)}, but it was not started by this Morrow install.${detail}`,
+      {
+        code: "SERVICE_UNMANAGED",
+        exitCode: EXIT.SERVICE_UNAVAILABLE,
+        hint: entry?.includes(`${sep}src${sep}`)
+          ? "That is a development checkout, not the installed build. Stop it where you started it (Ctrl+C in that terminal, or stop the dev task)."
+          : owner > 0
+            ? `Stop it with \`kill ${owner}\`, then retry.`
+            : "Stop that process, or fix stale .morrow state before retrying.",
+      },
+    );
   }
-  if (!isLocalService(ctx.service.baseUrl) || !processOwnsCliService(pid)) {
+  if (!isLocalService(ctx.service.baseUrl) || !processOwnsCliService(pid, await serviceEntryOf(ctx))) {
     rmSync(ctx.paths.pidFile, { force: true });
     throw new CliError(`Service is reachable at ${displayUrl(ctx.service.baseUrl)}, but the recorded pid is not a Morrow service process.`, {
       code: "SERVICE_UNMANAGED",
@@ -280,21 +307,93 @@ export function recoverReachableServicePid(pid: number | null, health: { ownerPi
   return health.ownerPid!;
 }
 
-function processOwnsCliService(pid: number): boolean {
+/** The orchestrator entry the running service reports for itself, if it answers. */
+async function serviceEntryOf(ctx: Context): Promise<string | null> {
   try {
-    let commandLine: string;
+    const health = await new MorrowApi(ctx.service.baseUrl).health();
+    return typeof health.serviceEntry === "string" ? health.serviceEntry : null;
+  } catch {
+    return null;
+  }
+}
+
+function readCommandLine(pid: number): string | null {
+  try {
     if (process.platform === "win32") {
       const script = `(Get-CimInstance Win32_Process -Filter \"ProcessId = ${pid}\").CommandLine`;
-      commandLine = execFileSync("powershell.exe", ["-NoProfile", "-Command", script], { encoding: "utf8", windowsHide: true });
-    } else if (process.platform === "linux") {
-      commandLine = readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ");
-    } else {
-      commandLine = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+      return execFileSync("powershell.exe", ["-NoProfile", "-Command", script], { encoding: "utf8", windowsHide: true });
     }
-    return commandLine.toLowerCase().includes(BIN_PATH.toLowerCase()) && /(?:^|\s)serve(?:\s|$)/i.test(commandLine);
+    if (process.platform === "linux") {
+      return readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ");
+    }
+    return execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * Is `pid` really the Morrow service this CLI is talking to?
+ *
+ * Two independent proofs, because there are two legitimate ways to run one:
+ *
+ *  - a packaged install launches it through the `morrow` launcher with `serve`;
+ *  - a source checkout runs the orchestrator entry directly (`pnpm dev`, tsx),
+ *    whose command line contains neither.
+ *
+ * The second case used to fail this check, so `morrow stop` refused a service it
+ * was otherwise happily talking to, told the user to "stop that process with its
+ * own manager", and — because uninstall stops first — made Morrow undeletable.
+ * `serviceEntry` comes from the service's own /api/health response, so matching
+ * the pid's command line against it is direct evidence that this process is that
+ * service, not a guess.
+ */
+function processCwd(pid: number): string | null {
+  try {
+    if (process.platform === "linux") return readlinkSync(`/proc/${pid}/cwd`);
+    if (process.platform === "darwin") {
+      const out = execFileSync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8" });
+      const line = out.split("\n").find((l) => l.startsWith("n"));
+      return line ? line.slice(1) : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Does this process's command line name the entry file the service reports?
+ *
+ * A source checkout is launched as `node ... src/index.ts` from the package
+ * directory, so the entry on the command line is RELATIVE while /api/health
+ * reports it absolute. Resolving the argument against the process's working
+ * directory is what closes that gap, and it keeps the evidence exact: the
+ * resolved path must equal the entry the service named for itself.
+ */
+export function entryMatchesCommandLine(commandLine: string, serviceEntry: string, cwd: string | null): boolean {
+  if (commandLine.includes(serviceEntry)) return true;
+  if (!cwd) return false;
+  for (const token of commandLine.split(/\s+/)) {
+    // A bare filename would match far too much; require a path with structure,
+    // and require the resolved result to BE the entry, not merely resemble it.
+    if (!token || isAbsolute(token) || !token.includes("/")) continue;
+    if (resolve(cwd, token) === serviceEntry) return true;
+  }
+  return false;
+}
+
+function processEntryMatches(commandLine: string, pid: number, serviceEntry: string): boolean {
+  return entryMatchesCommandLine(commandLine, serviceEntry, processCwd(pid));
+}
+
+function processOwnsCliService(pid: number, serviceEntry?: string | null): boolean {
+  const commandLine = readCommandLine(pid);
+  if (!commandLine) return false;
+  if (commandLine.toLowerCase().includes(BIN_PATH.toLowerCase()) && /(?:^|\s)serve(?:\s|$)/i.test(commandLine)) return true;
+  // Only an absolute entry path is specific enough to identify a process by.
+  if (serviceEntry && isAbsolute(serviceEntry) && processEntryMatches(commandLine, pid, serviceEntry)) return true;
+  return false;
 }
 
 export function tailLog(ctx: Context, lines: number): string {

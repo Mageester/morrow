@@ -1,7 +1,9 @@
 import type { ModelStatus, PresetStatus, ProviderId } from "@morrow/contracts";
 import { Check, ChevronsUpDown } from "lucide-react";
 import { useId, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ChatComposerModelRoute } from "./chat-composer.js";
+import { useAnchoredPanel } from "./use-anchored-panel.js";
 
 /**
  * Display names for providers in the picker.
@@ -134,7 +136,8 @@ const AUTO_LABEL = "Auto — recommended";
 export function ModelPicker({ models, presets, value, onChange, disabled = false }: ModelPickerProps) {
   const id = useId();
   const listId = `morrow-model-list-${id}`;
-  const [open, setOpen] = useState(false);
+  const panel = useAnchoredPanel<HTMLButtonElement>();
+  const open = panel.open;
   const [query, setQuery] = useState("");
   const [showUnavailable, setShowUnavailable] = useState(false);
 
@@ -166,7 +169,7 @@ export function ModelPicker({ models, presets, value, onChange, disabled = false
 
   function choose(route: ChatComposerModelRoute | undefined) {
     onChange(route);
-    setOpen(false);
+    panel.close();
     setQuery("");
   }
 
@@ -178,7 +181,8 @@ export function ModelPicker({ models, presets, value, onChange, disabled = false
         className="morrow-model-picker__trigger"
         data-open={open ? "true" : "false"}
         disabled={disabled}
-        onClick={() => setOpen((next) => !next)}
+        onClick={panel.toggle}
+        ref={panel.anchorRef}
         type="button"
       >
         <span className="morrow-model-picker__value">
@@ -188,13 +192,15 @@ export function ModelPicker({ models, presets, value, onChange, disabled = false
         <ChevronsUpDown aria-hidden="true" size={14} />
       </button>
 
-      {open ? (
-        <div
-          className="morrow-model-picker__panel"
-          data-open="true"
-          onKeyDown={(event) => { if (event.key === "Escape") { setOpen(false); } }}
-          role="menu"
-        >
+      {open && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="morrow-model-picker__panel"
+              data-open="true"
+              ref={panel.panelRef}
+              role="menu"
+              style={panel.style}
+            >
           <input
             aria-label="Search models"
             autoFocus
@@ -268,7 +274,8 @@ export function ModelPicker({ models, presets, value, onChange, disabled = false
               <li className="morrow-model-picker__empty">No models match “{query}”.</li>
             ) : null}
           </ul>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );

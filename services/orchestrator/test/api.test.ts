@@ -54,6 +54,27 @@ describe("REST API and Task Runner Vertical Slice", () => {
     expect(clear.statusCode).toBe(409);
     expect(clear.json().error?.code ?? clear.json().code).toBe("SOLE_EXPLICIT_ALLOW_RULE");
     expect((await app.inject({ method: "GET", url: "/api/agents/a-scope/tool-permissions?projectId=p1" })).json()).toHaveLength(1);
+    // The explicit escape hatch: a confirmed delete may restore the default
+    // unrestricted policy, so the guard is never a dead end.
+    const restore = await app.inject({ method: "DELETE", url: "/api/agents/a-scope/tool-permissions/ask_teammate?projectId=p1&confirmDefault=true" });
+    expect(restore.statusCode).toBe(204);
+    expect((await app.inject({ method: "GET", url: "/api/agents/a-scope/tool-permissions?projectId=p1" })).json()).toHaveLength(0);
+  });
+
+  it("scopes teammate skill access by project like tool permissions", async () => {
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p1", 1, "P1", tempDir, now, now);
+    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p2", 1, "P2", tempDir, now, now);
+    db.prepare("INSERT INTO agents(id,schema_version,project_id,name,role,instructions,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run("a-skill", 1, "p1", "Skilled", "custom", "", 1, now, now);
+    expect((await app.inject({ method: "GET", url: "/api/agents/a-skill/skill-access?projectId=p2" })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: "PUT",
+      url: "/api/agents/a-skill/skill-access?projectId=p2",
+      payload: { skillId: "s1", effect: "allow" },
+    })).statusCode).toBe(404);
+    expect((await app.inject({ method: "DELETE", url: "/api/agents/a-skill/skill-access/s1?projectId=p2" })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: "/api/agents/a-skill/skill-access?projectId=p1" })).statusCode).toBe(200);
   });
 
   it("includes context usage metadata in task aggregates without message content", async () => {

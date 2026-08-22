@@ -31,6 +31,7 @@ export const scheduleKeys = {
   list(projectId: string) { return [...this.all, "list", projectId] as const; },
   notificationOptions(projectId: string) { return [...this.all, "notification-options", projectId] as const; },
   runs(projectId: string, scheduleId: string) { return [...this.all, "runs", projectId, scheduleId] as const; },
+  projectRuns(projectId: string) { return [...this.all, "project-runs", projectId] as const; },
 };
 
 export const scheduleQueries = {
@@ -53,6 +54,20 @@ export const scheduleQueries = {
       queryKey: scheduleKeys.runs(projectId, scheduleId),
       queryFn: () => api.get(`${schedulesPath(projectId)}/${encodeURIComponent(scheduleId)}/runs`, scheduleRunListSchema),
       enabled: Boolean(projectId) && Boolean(scheduleId),
+    });
+  },
+  /**
+   * Every routine run in the project, newest first.
+   *
+   * The per-schedule history answers "how has this one been doing"; this
+   * answers the question someone actually opens Morrow with — "did anything
+   * run while I was away, and did any of it break".
+   */
+  projectRuns(projectId: string, limit = 20) {
+    return queryOptions({
+      queryKey: scheduleKeys.projectRuns(projectId),
+      queryFn: () => api.get(`/api/projects/${encodeURIComponent(projectId)}/schedule-runs?limit=${limit}`, scheduleRunListSchema),
+      enabled: Boolean(projectId),
     });
   },
 };

@@ -122,6 +122,7 @@ export function runReadmeSummarySample(input: RunReadmeSummarySampleInput): RunR
       id: createId(), parentTaskId: parentTask.id, teamId: team.id, agentId: researcher.id,
       objective, acceptanceCriteria, contextSnapshotRef: `task:${parentTask.id}`,
       allowedTools: ["read_file"], allowedMemoryScopes: researcher.memoryReadScopes,
+      allowedWriteMemoryScopes: [],
       providerId: null, model: null,
       budget: { maxProviderCalls: researcher.maxProviderCalls, maxTokenBudget: researcher.maxTokenBudget, maxWallClockMs: researcher.maxWallClockMs },
       approvalRequired: false, deadlineAt: null, correlationId: createId(), createdAt: t0,

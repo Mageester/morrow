@@ -7,6 +7,8 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { agentsRepository } from "../src/repositories/agents.js";
 import { teamsRepository } from "../src/repositories/teams.js";
+import { delegationsRepository } from "../src/repositories/delegations.js";
+import { teammateProfileFingerprint } from "../src/tools/teammate-delegation.js";
 
 function ts() { return new Date().toISOString(); }
 
@@ -44,6 +46,98 @@ describe("Teams API — Research and verify preset", () => {
   it("rejects an unknown preset", async () => {
     const res = await app.inject({ method: "POST", url: "/api/projects/p1/teams", payload: { preset: "build_and_test" } });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("refuses to delete a teammate with a live delegation or unfinished task", async () => {
+    const created = await app.inject({ method: "POST", url: "/api/projects/p1/teams", payload: { preset: "research_and_verify" } });
+    const teamId = created.json().team.id;
+    const researcher = created.json().members.find((m: any) => m.name === "Researcher");
+    taskRepository(db).createTask({ id: "parent", projectId: "p1", kind: "agent_chat", status: "running", createdAt: ts() });
+    const delegated = await app.inject({
+      method: "POST",
+      url: "/api/tasks/parent/delegations",
+      payload: { teamId, agentId: researcher.id, objective: "Summarize sources" },
+    });
+    expect(delegated.statusCode).toBe(201);
+
+    // Pending delegation: deletion must be refused, leaving the durable
+    // record inspectable instead of dangling.
+    const refused = await app.inject({ method: "DELETE", url: `/api/agents/${researcher.id}`, payload: { projectId: "p1" } });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error?.code ?? refused.json().code).toBe("AGENT_IN_FLIGHT");
+
+    // Terminal delegation and no unfinished tasks: deletion succeeds again.
+    delegationsRepository(db).reject(delegated.json().id, ts());
+    const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${researcher.id}`, payload: { projectId: "p1" } });
+    expect(deleted.statusCode).toBe(204);
+  });
+
+  it("enforces the team's sequential concurrency limit on delegation starts", async () => {
+    const previousMockProvider = process.env.MOCK_PROVIDER;
+    process.env.MOCK_PROVIDER = "true";
+    try {
+      const created = await app.inject({ method: "POST", url: "/api/projects/p1/teams", payload: { preset: "research_and_verify" } });
+      const body = created.json();
+      const verifier = body.members.find((m: any) => m.name === "Verifier");
+      const researcher = body.members.find((m: any) => m.name === "Researcher");
+      taskRepository(db).createTask({ id: "parent", projectId: "p1", kind: "agent_chat", status: "running", createdAt: ts() });
+      const first = await app.inject({
+        method: "POST", url: "/api/tasks/parent/delegations",
+        payload: { teamId: body.team.id, agentId: verifier.id, objective: "Verify" },
+      });
+      const second = await app.inject({
+        method: "POST", url: "/api/tasks/parent/delegations",
+        payload: { teamId: body.team.id, agentId: researcher.id, objective: "Research more" },
+      });
+
+      const startedFirst = await app.inject({
+        method: "POST", url: `/api/delegations/${first.json().id}/resolve`,
+        payload: { parentTaskId: "parent", decision: "approve" },
+      });
+      expect(startedFirst.statusCode).toBe(200);
+
+      // defaultConcurrencyLimit is 1 this slice: a second concurrent start is
+      // refused with a named rule instead of silently interleaving members.
+      const startedSecond = await app.inject({
+        method: "POST", url: `/api/delegations/${second.json().id}/resolve`,
+        payload: { parentTaskId: "parent", decision: "approve" },
+      });
+      expect(startedSecond.statusCode).toBe(409);
+      expect(startedSecond.json().error?.code ?? startedSecond.json().code).toBe("TEAM_CONCURRENCY_LIMIT");
+
+      // Cancelling the running delegation frees the slot.
+      await app.inject({ method: "POST", url: `/api/delegations/${first.json().id}/cancel`, payload: { parentTaskId: "parent" } });
+      const retried = await app.inject({
+        method: "POST", url: `/api/delegations/${second.json().id}/resolve`,
+        payload: { parentTaskId: "parent", decision: "approve" },
+      });
+      expect(retried.statusCode).toBe(200);
+    } finally {
+      if (previousMockProvider === undefined) delete process.env.MOCK_PROVIDER;
+      else process.env.MOCK_PROVIDER = previousMockProvider;
+    }
+  });
+
+  it("narrows delegation memory writes to the team policy intersection", async () => {
+    const created = await app.inject({ method: "POST", url: "/api/projects/p1/teams", payload: { preset: "research_and_verify" } });
+    const teamId = created.json().team.id;
+    const verifier = created.json().members.find((m: any) => m.name === "Verifier");
+    taskRepository(db).createTask({ id: "parent", projectId: "p1", kind: "agent_chat", status: "running", createdAt: ts() });
+
+    // A "read" team lets members read shared memory but never write it, no
+    // matter what their standing profile says.
+    teamsRepository(db).setStatus(teamId, "paused", ts());
+    db.prepare("UPDATE teams SET status='active', shared_memory_policy='read' WHERE id=?").run(teamId);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tasks/parent/delegations",
+      payload: { teamId, agentId: verifier.id, objective: "Verify the findings" },
+    });
+    expect(res.statusCode).toBe(201);
+    const delegation = res.json();
+    expect(delegation.allowedMemoryScopes).toContain("team");
+    expect(delegation.allowedWriteMemoryScopes).toEqual([]);
   });
 
   it("lists and fetches teams scoped to their project", async () => {

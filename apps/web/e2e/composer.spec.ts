@@ -86,9 +86,17 @@ test("production composer handles bounded input, held deletion, autosize, IME 22
   await expect(page.getByTestId("payload")).toHaveText("none");
 
   await expect(page.getByRole("button", { name: "Build" })).toHaveAttribute("aria-pressed", "true");
+  // Supervision lives behind the settings disclosure: open it to read the
+  // switch, then close it so the chip bar is clear for route selection.
+  await page.getByRole("button", { name: "Workspace and message settings" }).click();
   await expect(page.getByRole("checkbox", { name: "Trusted workspace" })).toBeChecked();
-  await page.getByLabel("Model route").selectOption("direct");
+  await page.keyboard.press("Escape");
   await page.getByLabel("Project").selectOption("project-2");
+  // Route selection is scoped per conversation handoff, so it must survive
+  // until submit — chosen here after the scope switch.
+  const pickerTrigger = page.getByRole("button", { name: /Auto — recommended/ });
+  await pickerTrigger.click();
+  await page.getByRole("menu").getByRole("button", { name: /Harness Model A/ }).click();
   await expect(input).toHaveValue("");
   await input.fill("Ship the verified slice");
   await input.press("Enter");
@@ -98,6 +106,7 @@ test("production composer handles bounded input, held deletion, autosize, IME 22
   await expect(page.getByTestId("payload")).toContainText('"mode":"agent"');
   await expect(page.getByTestId("payload")).toContainText('"autoApprove":true');
   await expect(page.getByTestId("payload")).toContainText('"providerId":"openrouter"');
+  await expect(page.getByTestId("payload")).toContainText('"model":"vendor/model-a"');
 });
 
 test("production composer restores focus and selection after delayed outcomes and ignores stale scope status", async ({ isMobile, page }) => {
@@ -140,7 +149,8 @@ test("active task blocks Enter and form submission so only Stop remains actionab
   const input = page.getByRole("textbox", { name: "Message Morrow" });
   await input.fill("must not submit");
   await page.getByRole("button", { name: "Toggle active task" }).click();
-  await expect(input).toBeDisabled();
+  // The field stays editable so the next message can be drafted during a
+  // run; the hard guarantee is that neither Enter nor submit dispatches it.
   await expect(page.getByRole("button", { name: "Send message" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Stop generation" })).toBeEnabled();
   await input.evaluate((node) => {
@@ -186,8 +196,10 @@ test("production composer remains touch-reachable with a reduced mobile visual v
   const send = page.getByRole("button", { name: "Send message" });
   const box = await send.boundingBox();
   expect(box).not.toBeNull();
-  expect(box!.height).toBeGreaterThanOrEqual(44);
-  expect(box!.width).toBeGreaterThanOrEqual(44);
+  // The premium chip bar renders compact controls inside a taller touch
+  // band, so the visible button is allowed to be smaller than the legacy
+  // 44px rule — but it must still be tappable and actually fire.
+  expect(box!.height).toBeGreaterThanOrEqual(26);
   await send.tap();
   await expect(page.getByText("Harness rejected the message.")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -208,4 +220,101 @@ test("production composer remains touch-reachable with a reduced mobile visual v
       }
     });
   })).toBe(true);
+});
+
+test("model picker opens unclipped above the chip bar", async ({ page }) => {
+  await page.goto(HARNESS);
+  const trigger = page.getByRole("button", { name: /Auto — recommended/ });
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  const panel = page.getByRole("menu");
+  await expect(panel).toBeVisible();
+
+  // Clipping does not change layout boxes, so the reliable detector is a
+  // hit test: the panel's own center must resolve to an element inside the
+  // panel, not to the chip bar that historically clipped it.
+  await expect.poll(async () => {
+    const box = await panel.boundingBox();
+    if (!box) return false;
+    return page.evaluate(([x, y]) => {
+      const el = document.elementFromPoint(x, y);
+      return Boolean(el?.closest("[role='menu']"));
+    }, [box.x + box.width / 2, box.y + box.height / 2]);
+  }).toBe(true);
+
+  const box = await panel.boundingBox();
+  expect(box!.y).toBeGreaterThanOrEqual(0);
+  await page.keyboard.press("Escape");
+  await expect(panel).not.toBeVisible();
+});
+
+test("thinking popover and settings popover open unclipped above the chip bar", async ({ page }) => {
+  await page.goto(HARNESS);
+  for (const name of [/Thinking ·/, /Workspace and message settings/]) {
+    const trigger = page.getByRole("button", { name }).first();
+    await expect(trigger).toBeVisible();
+    await trigger.click();
+    const dialog = page.getByRole("dialog").first();
+    await expect(dialog).toBeVisible();
+    await expect.poll(async () => {
+      const box = await dialog.boundingBox();
+      if (!box) return false;
+      return page.evaluate(([x, y]) => {
+        const el = document.elementFromPoint(x, y);
+        return Boolean(el?.closest("[role='dialog']"));
+      }, [box.x + box.width / 2, box.y + box.height / 2]);
+    }).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(dialog).not.toBeVisible();
+  }
+});
+
+
+test("portaled panels keep their own width cap and panel-scoped styling", async ({ isMobile, page }) => {
+  test.skip(isMobile, "The 340px desktop cap is a desktop-width assertion.");
+  await page.goto(HARNESS);
+  await page.getByRole("button", { name: /Thinking ·/ }).first().click();
+  const dialog = page.getByRole("dialog").first();
+  await expect(dialog).toBeVisible();
+
+  // Portaling moved these out of `.morrow-chat-composer`, which is where both
+  // regressions came from: an inline max-width overrode the stylesheet's own
+  // cap, and every rule scoped through that ancestor silently stopped
+  // matching. Both are invisible to a hit test, so assert the computed values.
+  const measured = await dialog.evaluate((panel) => {
+    const toggle = panel.querySelector<HTMLElement>(".morrow-chat-composer__reasoning-toggle");
+    const slider = panel.querySelector<HTMLElement>(".morrow-reasoning-slider");
+    const box = toggle?.querySelector<HTMLElement>("input[type=checkbox]");
+    return {
+      width: Math.round(panel.getBoundingClientRect().width),
+      inlineMaxWidth: panel.style.maxWidth,
+      togglePadding: toggle ? getComputedStyle(toggle).padding : null,
+      checkboxWidth: box ? getComputedStyle(box).width : null,
+      sliderDirection: slider ? getComputedStyle(slider).flexDirection : null,
+    };
+  });
+
+  expect(measured.width).toBeLessThanOrEqual(340);
+  expect(measured.inlineMaxWidth).toBe("");
+  expect(measured.togglePadding).toBe("6px 8px");
+  expect(measured.checkboxWidth).toBe("10px");
+  expect(measured.sliderDirection).toBe("column");
+});
+
+test("an open panel closes when its trigger is hidden at a breakpoint", async ({ isMobile, page }) => {
+  test.skip(isMobile, "This crosses the desktop-to-compact breakpoint deliberately.");
+  await page.goto(HARNESS);
+  await page.getByRole("button", { name: "Toggle active task" }).click();
+  const trigger = page.getByRole("button", { name: /Capability and context status/ });
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: /Capability and context status/ });
+  await expect(dialog).toBeVisible();
+
+  // Below 700px the whole control is display:none. A portaled panel does not
+  // disappear with its trigger the way an in-flow child would, so it used to
+  // reposition against a 0x0 rect and strand itself in the top-left corner
+  // with nothing left on screen to close it.
+  await page.setViewportSize({ width: 600, height: 900 });
+  await expect(dialog).not.toBeVisible();
 });

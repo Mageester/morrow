@@ -87,7 +87,7 @@ export interface SpawnAgentChatSubagentOptions {
  * transaction; leaving a queued task or empty child thread would make a failed
  * handoff appear durable and could later run without its promised context.
  */
-function cleanupUnstartedChild(
+export function cleanupUnstartedChild(
   db: Database.Database,
   projectId: string,
   taskId: string,
@@ -132,17 +132,12 @@ export function spawnAgentChatSubagent(
       }
       try {
         resolveStandaloneTeammateTarget(parent, agent, agentId);
-        const groupConversation = dependencies.db.prepare(
-          `SELECT c.mode, c.id AS conversation_id
-           FROM conversations c
-           INNER JOIN conversation_messages m ON m.conversation_id = c.id
-           WHERE m.task_id = ? LIMIT 1`,
-        ).get(parent.id) as { mode?: string; conversation_id?: string } | undefined;
-        if (groupConversation?.mode === "group" && groupConversation.conversation_id) {
+        const groupContext = conversationsRepository(dependencies.db).groupContextForTask(parent.id);
+        if (groupContext?.mode === "group") {
           const participant = dependencies.db.prepare(
             `SELECT 1 FROM conversation_participants
              WHERE conversation_id=? AND agent_id=? AND role='participant' AND status='active'`,
-          ).get(groupConversation.conversation_id, agent.id);
+          ).get(groupContext.conversationId, agent.id);
           if (!participant) throw new AgentTaskDispatchError(409, "Invite this teammate to the shared thread before asking them.", "AGENT_NOT_PARTICIPANT");
         }
       } catch (error) {
@@ -161,7 +156,9 @@ export function spawnAgentChatSubagent(
 
     const idempotencyKey = options.toolCallId
       ? `ask_teammate:${parent.id}:${options.toolCallId}`
-      : undefined;
+      : options.delegationId
+        ? `delegation:${parent.id}:${options.delegationId}`
+        : undefined;
     const content = label ?? `Delegated task for ${agent.name}`;
     const tasks = taskRepository(dependencies.db);
     let conversationId: string | undefined;
@@ -260,7 +257,14 @@ export function spawnAgentChatSubagent(
 
   if (options.toolCallId && options.registry) {
     const key = teammateSpawnKey(parent.id, options.toolCallId);
-    return options.registry.run(key, create);
+    try {
+      return options.registry.run(key, create);
+    } finally {
+      // Once create() returns, the durable child exists and its idempotency
+      // key owns duplicate suppression. Entries must not accumulate for the
+      // life of the process; failures were never cached and stay retryable.
+      options.registry.clear(key);
+    }
   }
   return create();
 }

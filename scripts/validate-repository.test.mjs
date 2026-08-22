@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { installerSafetyFailures } from "./lib/installer-safety.mjs";
+import { installerSafetyFailures, posixInstallerSafetyFailures } from "./lib/installer-safety.mjs";
 import { versionDriftFailures } from "./lib/version-consistency.mjs";
 
 test("package is private and unlicensed", async () => {
@@ -85,6 +85,34 @@ test("installer safety guard rejects the retired CLI-only package contract", () 
   assert.ok(failures.some((failure) => /bundled local web app/.test(failure)), "must require the installed /app surface");
   assert.ok(failures.some((failure) => /consumer app launcher/.test(failure)), "must require a no-terminal app launch path");
 });
+
+test("the live install.sh upgrades atomically, verifies downloads, and preserves user data", async () => {
+  const installer = await readFile("installer/install.sh", "utf8");
+  assert.deepEqual(posixInstallerSafetyFailures(installer), []);
+
+  const bytes = await readFile("installer/install.sh");
+  assert.equal([...bytes].findIndex((b) => b > 127), -1, "install.sh must be ASCII so it reads identically under any locale");
+});
+
+// Each guard is checked against a script that violates exactly one invariant, so
+// a guard that silently stops matching is caught here rather than in a user's
+// broken install.
+for (const [name, mutate, expected] of [
+  ["a delete of the user's data home", (s) => s.replace('rm -rf "$PREFIX/app.old"', 'rm -rf "$DATA_HOME"'), /destroys user data/],
+  ["a removed rollback path", (s) => s.replace("rollback() {", "rollback_disabled() {"), /must roll back/],
+  ["an unverified artifact download", (s) => s.replace("SHA-256 mismatch", "oops"), /must verify a downloaded artifact/],
+  ["an unverified source checkout", (s) => s.replace("source commit mismatch", "oops"), /must verify a source checkout/],
+  ["discarding the previous version before the health probe", (s) => s.replace(/rm -rf "\$PREFIX\/app\.old"/, ""), /must keep app\.old/],
+  ["an artifact URL from any host", (s) => s.replace("https://github.com/Mageester/morrow/releases/download/*", "*"), /not Morrow release assets/],
+  ["an app prefix inside the data home", (s) => s.replace('case "$PREFIX" in "$DATA_HOME"', 'case "$PREFIX" in "$OTHER"'), /refuse a --prefix inside the data home/],
+]) {
+  test(`POSIX installer guard catches ${name}`, async () => {
+    const installer = await readFile("installer/install.sh", "utf8");
+    const failures = posixInstallerSafetyFailures(mutate(installer));
+    assert.ok(failures.length > 0, `mutating "${name}" must be rejected`);
+    assert.match(failures.join("\n"), expected);
+  });
+}
 
 test("the live repo has a single consistent product version", async () => {
   const [rootPackageJson, cliUpdateTs, readme, changelog] = await Promise.all([

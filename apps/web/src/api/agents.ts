@@ -1,4 +1,4 @@
-import { AgentSchema, AgentToolPermissionSchema, RosterSchema, type Agent, type AgentRole, type AgentToolPermission, type MemoryScope, type Roster, type UpsertToolPermissionInput } from "@morrow/contracts";
+import { AgentSchema, AgentToolPermissionSchema, RosterSchema, TeammateTrustGrantSchema, TeammateTrustGrantsSchema, type CreateTeammateTrustGrantInput, type Agent, type AgentRole, type AgentToolPermission, type MemoryScope, type Roster, type UpsertToolPermissionInput } from "@morrow/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "./client.js";
 
@@ -91,5 +91,41 @@ export const agentApi = {
   },
   deleteToolPermission(agentId: string, projectId: string, toolName: string): Promise<null> {
     return api.delete(`/api/agents/${encodeURIComponent(agentId)}/tool-permissions/${encodeURIComponent(toolName)}?projectId=${encodeURIComponent(projectId)}`, AgentToolPermissionSchema.nullable().transform(() => null));
+  },
+};
+
+export const teammateTrustKeys = {
+  all: ["teammate-trust"] as const,
+  list(projectId: string) {
+    return [...this.all, projectId] as const;
+  },
+};
+
+export const teammateTrustQueries = {
+  list(projectId: string) {
+    return queryOptions({
+      queryKey: teammateTrustKeys.list(projectId),
+      queryFn: () => api.get(`${projectPath(projectId)}/teammate-trust`, TeammateTrustGrantsSchema),
+      enabled: Boolean(projectId),
+    });
+  },
+};
+
+/**
+ * Standing permission for one teammate to hand work to another unprompted.
+ *
+ * The server resolves the target's profile fingerprint when granting, so the
+ * client never supplies it — a grant always describes the teammate as it was
+ * when the user agreed, and a later policy change re-prompts on its own.
+ */
+export const teammateTrustApi = {
+  grant(projectId: string, input: CreateTeammateTrustGrantInput) {
+    return api.post(`${projectPath(projectId)}/teammate-trust`, input, TeammateTrustGrantSchema);
+  },
+  revoke(projectId: string, grantId: string) {
+    return api.delete(
+      `${projectPath(projectId)}/teammate-trust/${encodeURIComponent(grantId)}`,
+      TeammateTrustGrantSchema.nullable().transform(() => null),
+    );
   },
 };

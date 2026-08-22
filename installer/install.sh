@@ -1,0 +1,643 @@
+#!/bin/sh
+# Morrow installer for macOS and Linux. Requires a POSIX shell.
+#
+#   curl -fsSL https://morrowproject.getaxiom.ca/install.sh | sh
+#
+# This is the POSIX counterpart to installer/install.ps1 and deliberately keeps
+# the same contract: read the published manifest, verify what was downloaded,
+# validate the tree BEFORE touching the live install, activate atomically with a
+# preserved previous version, gate success on a real health probe, and roll back
+# rather than leave a broken install behind. User data is never touched.
+#
+# Two install kinds:
+#   prebuilt  a published tarball for this platform (self-contained, bundled Node)
+#   source    a verified git checkout of the release tag, built locally
+# `prebuilt` is used whenever the manifest advertises an artifact for this
+# platform and falls back to `source` otherwise, so this script keeps working
+# unchanged the day platform tarballs start shipping.
+set -eu
+
+BASE_URL="${MORROW_BASE_URL:-https://morrowproject.getaxiom.ca}"
+REPOSITORY="${MORROW_REPOSITORY:-https://github.com/Mageester/morrow.git}"
+DATA_HOME="${MORROW_HOME:-$HOME/.morrow}"
+PREFIX="${MORROW_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/morrow}"
+BIN_DIR="${MORROW_BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
+HEALTH_URL="${MORROW_HEALTH_URL:-http://127.0.0.1:4317/api/health}"
+HEALTH_ATTEMPTS="${MORROW_HEALTH_ATTEMPTS:-45}"
+MIN_NODE_MAJOR=22
+
+WANT_VERSION=""
+WANT_REF=""
+FORCE_SOURCE=0
+START_SERVICE=1
+MODIFY_PATH=1
+INSTALL_BROWSERS=1
+STAGING=""
+
+# Set by install_prebuilt/install_source and activate. These are globals rather
+# than command-substitution results on purpose: a `$(...)` capture would swallow
+# progress output into the value, and would run `fail` in a subshell where its
+# exit could not stop the install.
+STAGED=""
+HAD_PREVIOUS=0
+
+say() { printf '%s\n' "$*"; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
+fail() { printf 'Morrow installation failed: %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+cleanup() {
+  [ -n "$STAGING" ] && [ -d "$STAGING" ] && rm -rf "$STAGING"
+  return 0
+}
+trap cleanup EXIT INT TERM
+
+usage() {
+  cat <<'EOF'
+Morrow installer (macOS, Linux)
+
+  curl -fsSL https://morrowproject.getaxiom.ca/install.sh | sh
+  curl -fsSL https://morrowproject.getaxiom.ca/install.sh | sh -s -- [options]
+
+Options:
+  --version <v>      Install a specific release (default: the published latest)
+  --prefix <dir>     Application directory (default: ~/.local/share/morrow)
+  --bin-dir <dir>    Launcher directory  (default: ~/.local/bin)
+  --ref <branch|tag> Install that git ref instead of the published release,
+                     built from source. Use this for the latest development
+                     code: --ref main
+  --source           Build from source even if a prebuilt artifact exists
+  --no-start         Install without starting the service or health-gating it
+  --no-modify-path   Do not touch shell profiles
+  --no-browsers      Skip the optional Playwright browser download
+  --help             Show this message
+
+Your data in ~/.morrow (conversations, memory, credentials, projects) is never
+modified by this installer, including during an upgrade.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --version) [ $# -ge 2 ] || fail "--version requires a value"; WANT_VERSION="${2#v}"; shift 2 ;;
+    --prefix) [ $# -ge 2 ] || fail "--prefix requires a value"; PREFIX="$2"; shift 2 ;;
+    --bin-dir) [ $# -ge 2 ] || fail "--bin-dir requires a value"; BIN_DIR="$2"; shift 2 ;;
+    --ref) [ $# -ge 2 ] || fail "--ref requires a value"; WANT_REF="$2"; FORCE_SOURCE=1; shift 2 ;;
+    --source) FORCE_SOURCE=1; shift ;;
+    --no-start) START_SERVICE=0; shift ;;
+    --no-modify-path) MODIFY_PATH=0; shift ;;
+    --no-browsers) INSTALL_BROWSERS=0; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) fail "unknown option: $1 (try --help)" ;;
+  esac
+done
+
+# --- Fetching and verification -------------------------------------------------
+
+# Pin TLS for anything fetched over the network. The loopback health probe and
+# an explicitly overridden MORROW_BASE_URL (a mirror, or the test suite) are the
+# only plain-http fetches, and neither is a supply-chain surface: the health
+# probe reads localhost, and every artifact URL is independently required to be
+# an https Morrow release asset before it is downloaded.
+fetch_flags() {
+  case "$1" in
+    https://*) printf '%s' "--proto =https --tlsv1.2" ;;
+    *) printf '%s' "" ;;
+  esac
+}
+
+fetch_stdout() {
+  if have curl; then curl -fsSL $(fetch_flags "$1") "$1"
+  elif have wget; then wget -qO- "$1"
+  else fail "neither curl nor wget is available"; fi
+}
+
+fetch_to() {
+  if have curl; then curl -fsSL $(fetch_flags "$1") -o "$2" "$1"
+  elif have wget; then wget -qO "$2" "$1"
+  else fail "neither curl nor wget is available"; fi
+}
+
+sha256_of() {
+  if have sha256sum; then sha256sum "$1" | cut -d' ' -f1
+  elif have shasum; then shasum -a 256 "$1" | cut -d' ' -f1
+  else fail "no SHA-256 tool found (need sha256sum or shasum)"; fi
+}
+
+# Minimal readers for the release manifest. The manifest is generated by
+# Morrow's own release packager with a known flat shape, and every value read
+# here is validated before use, so a malformed or hostile manifest is rejected
+# rather than trusted.
+json_string() {
+  # json_string <json> <key>
+  printf '%s' "$1" | tr -d '\n' | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -n 1
+}
+
+json_number() {
+  printf '%s' "$1" | tr -d '\n' | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p" | head -n 1
+}
+
+manifest_artifact() {
+  # manifest_artifact <manifest> <platform> -> the one artifact object, or empty
+  printf '%s' "$1" | tr -d '\n' | tr '{' '\n' | tr '}' '\n' | grep "\"platform\"[[:space:]]*:[[:space:]]*\"$2\"" | head -n 1
+}
+
+# --- Platform ------------------------------------------------------------------
+
+detect_platform() {
+  os="$(uname -s)"
+  arch="$(uname -m)"
+  case "$os" in
+    Darwin) os="darwin" ;;
+    Linux) os="linux" ;;
+    *) fail "unsupported operating system: $os. Morrow supports macOS, Linux, and Windows." ;;
+  esac
+  case "$arch" in
+    x86_64|amd64) arch="x64" ;;
+    arm64|aarch64) arch="arm64" ;;
+    *) fail "unsupported architecture: $arch" ;;
+  esac
+  printf '%s-%s' "$os" "$arch"
+}
+
+node_major() {
+  "$1" -e 'process.stdout.write(String(process.versions.node.split(".")[0]))' 2>/dev/null || printf '0'
+}
+
+resolve_node() {
+  # Prefer a PATH node new enough to run Morrow; report nothing if there is none.
+  if have node; then
+    candidate="$(command -v node)"
+    if [ "$(node_major "$candidate")" -ge "$MIN_NODE_MAJOR" ] 2>/dev/null; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# --- App tree validation and atomic activation ---------------------------------
+#
+# Mirrors Invoke-MorrowActivation in install.ps1: stage beside the live install,
+# validate before any swap, promote by rename, verify, and restore the preserved
+# previous version on any failure. Only <prefix>/app is ever replaced.
+
+tree_kind() {
+  [ -f "$1/INSTALL_KIND" ] && cat "$1/INSTALL_KIND" 2>/dev/null || printf 'unknown'
+}
+
+tree_valid() {
+  # tree_valid <dir> - a tree is valid only if every file its kind requires exists.
+  tree="$1"
+  [ -d "$tree" ] || return 1
+  [ -L "$tree" ] && return 1
+  case "$(tree_kind "$tree")" in
+    source)
+      for rel in apps/cli/bin/morrow.mjs services/orchestrator/dist/src/index.js apps/web/dist/index.html node_modules; do
+        [ -e "$tree/$rel" ] || return 1
+      done
+      ;;
+    prebuilt)
+      for rel in runtime/bin/node orchestrator/dist/src/index.js orchestrator/cli/bin/morrow.mjs web/index.html; do
+        [ -e "$tree/$rel" ] || return 1
+      done
+      ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+recover_interrupted_activation() {
+  app="$PREFIX/app"; new="$PREFIX/app.new"; old="$PREFIX/app.old"
+  if tree_valid "$app"; then
+    rm -rf "$new" "$old"
+    return 0
+  fi
+  [ -e "$app" ] && rm -rf "$app"
+  if tree_valid "$new"; then
+    mv "$new" "$app"
+    tree_valid "$old" || rm -rf "$old"
+    return 0
+  fi
+  [ -e "$new" ] && rm -rf "$new"
+  if tree_valid "$old"; then
+    mv "$old" "$app"
+    return 0
+  fi
+  [ -e "$old" ] && rm -rf "$old"
+  return 0
+}
+
+activate() {
+  # activate <staged-tree> - sets HAD_PREVIOUS=1 if a previous version was preserved
+  staged="$1"
+  mkdir -p "$PREFIX"
+  app="$PREFIX/app"; new="$PREFIX/app.new"; old="$PREFIX/app.old"
+
+  recover_interrupted_activation
+
+  rm -rf "$new"
+  mv "$staged" "$new"
+  if ! tree_valid "$new"; then
+    rm -rf "$new"
+    fail "the staged installation is incomplete; the existing installation was not touched."
+  fi
+
+  # Stop a running instance before swapping. Best effort: a failing launcher must
+  # never block an upgrade.
+  if [ -x "$BIN_DIR/morrow" ]; then
+    "$BIN_DIR/morrow" stop >/dev/null 2>&1 || true
+  fi
+
+  HAD_PREVIOUS=0
+  if [ -d "$app" ]; then
+    HAD_PREVIOUS=1
+    rm -rf "$old"
+    mv "$app" "$old"
+  fi
+  if ! mv "$new" "$app"; then
+    [ "$HAD_PREVIOUS" -eq 1 ] && [ -d "$old" ] && mv "$old" "$app"
+    fail "could not activate the new version; the previous installation is intact."
+  fi
+
+  if ! tree_valid "$app"; then
+    rm -rf "$app"
+    [ "$HAD_PREVIOUS" -eq 1 ] && [ -d "$old" ] && mv "$old" "$app"
+    fail "installation incomplete after activation; the previous version was restored."
+  fi
+}
+
+rollback() {
+  app="$PREFIX/app"; old="$PREFIX/app.old"
+  if [ -d "$old" ]; then
+    "$BIN_DIR/morrow" stop >/dev/null 2>&1 || true
+    rm -rf "$app"
+    mv "$old" "$app"
+    "$BIN_DIR/morrow" start >/dev/null 2>&1 || true
+    return 0
+  fi
+  return 1
+}
+
+# --- Launcher shim -------------------------------------------------------------
+
+write_shim() {
+  # write_shim <node-path>  (empty for prebuilt trees, which bundle their own)
+  mkdir -p "$BIN_DIR"
+  shim="$BIN_DIR/morrow"
+  if [ -n "$1" ]; then
+    cat >"$shim" <<EOF
+#!/bin/sh
+# Morrow launcher. Generated by the installer; edits are lost on upgrade.
+APP="$PREFIX/app"
+NODE="$1"
+[ -x "\$NODE" ] || NODE="\$(command -v node 2>/dev/null || true)"
+[ -n "\$NODE" ] || { echo "Morrow needs Node.js $MIN_NODE_MAJOR or newer on PATH." >&2; exit 1; }
+# Without this the service has no idea where its own web app is and /app answers
+# 404, so an installed Morrow has a working CLI and no user interface at all.
+# The packaged Windows build sets the same variable from its launcher.
+MORROW_WEB_ROOT="\${MORROW_WEB_ROOT:-\$APP/apps/web/dist}"
+export MORROW_WEB_ROOT
+exec "\$NODE" "\$APP/apps/cli/bin/morrow.mjs" "\$@"
+EOF
+  else
+    cat >"$shim" <<EOF
+#!/bin/sh
+# Morrow launcher. Generated by the installer; edits are lost on upgrade.
+APP="$PREFIX/app"
+MORROW_WEB_ROOT="\${MORROW_WEB_ROOT:-\$APP/web}"
+export MORROW_WEB_ROOT
+exec "\$APP/runtime/bin/node" "\$APP/orchestrator/cli/bin/morrow.mjs" "\$@"
+EOF
+  fi
+  chmod 755 "$shim"
+}
+
+profile_files() {
+  # The shells whose profiles we are willing to touch, if they exist.
+  for f in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+    [ -f "$f" ] && printf '%s\n' "$f"
+  done
+}
+
+ensure_on_path() {
+  case ":$PATH:" in *":$BIN_DIR:"*) return 0 ;; esac
+  if [ "$MODIFY_PATH" -eq 0 ]; then
+    warn "$BIN_DIR is not on your PATH. Add it to run 'morrow'."
+    return 0
+  fi
+  line="export PATH=\"$BIN_DIR:\$PATH\""
+  written=0
+  # Read line-by-line rather than word-splitting: a home directory may contain spaces.
+  while IFS= read -r profile; do
+    [ -n "$profile" ] || continue
+    if ! grep -Fq "$BIN_DIR" "$profile" 2>/dev/null; then
+      printf '\n# Added by the Morrow installer\n%s\n' "$line" >>"$profile"
+      say "  added $BIN_DIR to PATH in $profile"
+    fi
+    written=1
+  done <<EOF
+$(profile_files)
+EOF
+  if [ "$written" -eq 0 ]; then
+    printf '\n# Added by the Morrow installer\n%s\n' "$line" >>"$HOME/.profile"
+    say "  added $BIN_DIR to PATH in $HOME/.profile"
+  fi
+  PATH="$BIN_DIR:$PATH"
+  export PATH
+}
+
+# --- Install kinds -------------------------------------------------------------
+
+install_prebuilt() {
+  # install_prebuilt <artifact-json> <version>
+  artifact="$1"; version="$2"
+  url="$(json_string "$artifact" url)"
+  sha="$(json_string "$artifact" sha256)"
+  filename="$(json_string "$artifact" filename)"
+  size="$(json_number "$artifact" size)"
+
+  case "$url" in https://github.com/Mageester/morrow/releases/download/*) ;; *) fail "the release artifact URL is not a Morrow release asset." ;; esac
+  printf '%s' "$sha" | grep -Eq '^[a-fA-F0-9]{64}$' || fail "the artifact checksum is malformed."
+
+  archive="$STAGING/$filename"
+  if [ -n "$size" ]; then
+    say "Downloading Morrow $version ($filename, ~$((size / 1048576)) MB)..."
+  else
+    say "Downloading Morrow $version ($filename)..."
+  fi
+  fetch_to "$url" "$archive"
+
+  say "Verifying SHA-256 checksum..."
+  actual="$(sha256_of "$archive")"
+  [ "$(printf '%s' "$actual" | tr 'A-F' 'a-f')" = "$(printf '%s' "$sha" | tr 'A-F' 'a-f')" ] \
+    || fail "SHA-256 mismatch. Expected $sha, got $actual."
+
+  say "Checksum verified. Extracting..."
+  extract="$STAGING/extract"
+  mkdir -p "$extract"
+  tar -xzf "$archive" -C "$extract"
+
+  # Support both package shapes: files at the archive root, or nested under one
+  # top-level directory.
+  staged=""
+  if [ -e "$extract/orchestrator/dist/src/index.js" ]; then
+    staged="$extract"
+  else
+    for candidate in "$extract"/*; do
+      [ -d "$candidate" ] || continue
+      [ -e "$candidate/orchestrator/dist/src/index.js" ] || continue
+      staged="$candidate"
+      break
+    done
+  fi
+  [ -n "$staged" ] || fail "the release archive layout is unrecognised."
+  printf 'prebuilt' >"$staged/INSTALL_KIND"
+  STAGED="$staged"
+}
+
+install_source() {
+  # install_source <version> <expected-commit>
+  version="$1"; expect_commit="$2"
+
+  have git || fail "a source install needs git. Install git, or wait for a prebuilt package for this platform."
+  node_bin="$(resolve_node || true)"
+  [ -n "$node_bin" ] || fail "a source install needs Node.js $MIN_NODE_MAJOR or newer on PATH (https://nodejs.org)."
+
+  checkout="$STAGING/morrow"
+  # A named ref installs development code; otherwise it is the release tag.
+  if [ -n "$WANT_REF" ]; then
+    clone_ref="$WANT_REF"
+    say "Cloning Morrow at $clone_ref..."
+  else
+    clone_ref="v$version"
+    say "Cloning Morrow v$version..."
+  fi
+  # A tag checkout is a detached HEAD; silence git's advice so the installer's
+  # own output is the only thing the user reads.
+  git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$clone_ref" "$REPOSITORY" "$checkout" \
+    || fail "could not clone $REPOSITORY at $clone_ref."
+
+  actual_commit="$(git -C "$checkout" rev-parse HEAD)"
+  if [ -n "$WANT_REF" ]; then
+    # Development code is not a published release: there is no manifest entry to
+    # check it against, and the ref moves. Say so plainly rather than implying
+    # the same verification a release install gets.
+    say "Installing development code from $clone_ref at commit $(printf '%.12s' "$actual_commit")."
+    warn "this is unreleased code, verified only by HTTPS to the repository - not a published release."
+    version="$("$node_bin" -e 'process.stdout.write(require("'"$checkout"'/package.json").version)' 2>/dev/null || printf '%s' "$clone_ref")"
+    version="$version+$(printf '%.7s' "$actual_commit")"
+  elif [ -n "$expect_commit" ]; then
+    [ "$actual_commit" = "$expect_commit" ] \
+      || fail "source commit mismatch: the manifest names $expect_commit but tag v$version is $actual_commit."
+    say "Source verified at commit $(printf '%.12s' "$actual_commit")."
+  else
+    warn "the manifest records no source commit for v$version; integrity rests on HTTPS alone."
+  fi
+  rm -rf "$checkout/.git"
+
+  pnpm_version="$("$node_bin" -e 'const p=require("'"$checkout"'/package.json");process.stdout.write(String(p.packageManager||"pnpm@10.12.1").split("@").pop())' 2>/dev/null || printf '10.12.1')"
+  if have pnpm && [ "$(pnpm --version 2>/dev/null | cut -d. -f1)" = "$(printf '%s' "$pnpm_version" | cut -d. -f1)" ]; then
+    pnpm_cmd="pnpm"
+  else
+    have npx || fail "neither a matching pnpm nor npx is available to build from source."
+    pnpm_cmd="npx --yes pnpm@$pnpm_version"
+  fi
+
+  say "Installing dependencies (this takes a few minutes)..."
+  # Browsers are fetched after the health gate instead, so a browser download can
+  # never fail an otherwise good install.
+  ( cd "$checkout" && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 $pnpm_cmd install --frozen-lockfile --silent ) \
+    || fail "dependency installation failed. Run with --no-start and inspect the output above."
+
+  say "Building..."
+  ( cd "$checkout" && $pnpm_cmd build >/dev/null ) \
+    || fail "the build failed. Morrow was not installed and your previous installation is intact."
+
+  printf 'source' >"$checkout/INSTALL_KIND"
+  printf '%s' "$actual_commit" >"$checkout/INSTALL_COMMIT"
+  STAGED="$checkout"
+}
+
+install_browsers() {
+  [ "$INSTALL_BROWSERS" -eq 1 ] || return 0
+  app="$PREFIX/app"
+  [ "$(tree_kind "$app")" = "source" ] || return 0
+  say "Setting up browser automation (optional)..."
+  if ( cd "$app" && npx --yes playwright install chromium >/dev/null 2>&1 ); then
+    say "  browser automation ready."
+  else
+    warn "browser automation could not be set up. Morrow works without it; run 'npx playwright install chromium' in $app to add it later."
+  fi
+}
+
+# --- Health gate ---------------------------------------------------------------
+
+health_ok() {
+  body="$(fetch_stdout "$HEALTH_URL" 2>/dev/null)" || return 1
+  printf '%s' "$body" | grep -q '"ok"[[:space:]]*:[[:space:]]*true' || return 1
+  printf '%s' "$body" | grep -q '"service"[[:space:]]*:[[:space:]]*"morrow-orchestrator"' || return 1
+  printf '%s' "$body" | grep -q '"apiVersion"[[:space:]]*:[[:space:]]*1' || return 1
+  # "A Morrow answers on this port" is not the same claim as "the Morrow I just
+  # installed is running". A development checkout, or an older install, holding
+  # the port would otherwise satisfy this gate and the installer would report
+  # success for a build that never ran. serviceEntry is the service's own answer
+  # to "which code am I?", so it is what decides.
+  if [ -n "${EXPECT_ENTRY:-}" ]; then
+    printf '%s' "$body" | grep -q "\"serviceEntry\"[[:space:]]*:[[:space:]]*\"$EXPECT_ENTRY" || return 1
+  fi
+  return 0
+}
+
+
+# Who is already answering on this port, if anyone? Returns the serviceEntry.
+foreign_service_entry() {
+  body="$(fetch_stdout "$HEALTH_URL" 2>/dev/null)" || return 1
+  printf '%s' "$body" | grep -q '"service"[[:space:]]*:[[:space:]]*"morrow-orchestrator"' || return 1
+  printf '%s' "$body" | sed -n 's/.*"serviceEntry"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+# The health endpoint says the service is alive; it says nothing about whether
+# the user interface loads. Those are different failures, and shipping a Morrow
+# whose /app answers 404 is a working CLI with no app attached.
+app_ui_ok() {
+  ui_url="${HEALTH_URL%/api/health}/app/"
+  if have curl; then curl -fsS --max-time 10 $(fetch_flags "$ui_url") -o /dev/null "$ui_url" 2>/dev/null
+  elif have wget; then wget -q -O /dev/null "$ui_url" 2>/dev/null
+  else return 1; fi
+}
+
+wait_for_health() {
+  attempt=0
+  while [ "$attempt" -lt "$HEALTH_ATTEMPTS" ]; do
+    health_ok && return 0
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  return 1
+}
+
+# --- Main ----------------------------------------------------------------------
+
+main() {
+  platform="$(detect_platform)"
+  say "Morrow installer - $platform"
+  say ""
+
+  case "$PREFIX" in "$DATA_HOME"|"$DATA_HOME"/*) fail "--prefix must not live inside your data directory ($DATA_HOME)." ;; esac
+
+  STAGING="$(mktemp -d "${TMPDIR:-/tmp}/morrow-install.XXXXXX")"
+
+  say "Fetching the release manifest..."
+  manifest="$(fetch_stdout "$BASE_URL/releases/latest.json")" \
+    || fail "could not fetch the release manifest from $BASE_URL/releases/latest.json"
+  [ "$(json_number "$manifest" schemaVersion)" = "1" ] || fail "the release manifest is invalid."
+
+  version="$(json_string "$manifest" version)"
+  [ -n "$WANT_VERSION" ] && version="$WANT_VERSION"
+  [ -n "$version" ] || fail "the release manifest names no version."
+  commit="$(json_string "$manifest" commit)"
+  [ -n "$WANT_VERSION" ] && [ "$WANT_VERSION" != "$(json_string "$manifest" version)" ] && commit=""
+
+  artifact=""
+  if [ "$FORCE_SOURCE" -eq 0 ]; then
+    artifact="$(manifest_artifact "$manifest" "$platform")"
+  fi
+
+  if [ -n "$artifact" ]; then
+    install_prebuilt "$artifact" "$version"
+    node_for_shim=""
+  else
+    [ "$FORCE_SOURCE" -eq 1 ] || say "No prebuilt package is published for $platform yet - building from source."
+    install_source "$version" "$commit"
+    node_for_shim="$(resolve_node)"
+  fi
+
+  say "Installing to $PREFIX..."
+  activate "$STAGED"
+  write_shim "$node_for_shim"
+  ensure_on_path
+
+  if [ "$START_SERVICE" -eq 0 ]; then
+    say ""
+    say "Morrow $version installed to $PREFIX (not started, --no-start)."
+    say "Start it with: morrow start"
+    return 0
+  fi
+
+  # Refuse to hand the port's verdict to somebody else's Morrow. A development
+  # checkout (pnpm dev) or an older install already listening here would answer
+  # this installer's health probe and make a build that never started look
+  # successful - which is exactly how an install can report 0.4.0 while 0.3.0 is
+  # what actually answers.
+  existing="$(foreign_service_entry || true)"
+  if [ -n "$existing" ]; then
+    case "$existing" in
+      "$PREFIX/app"*) ;;
+      *)
+        say ""
+        say "Another Morrow is already serving $HEALTH_URL:"
+        say "  $existing"
+        say ""
+        say "Morrow is installed to $PREFIX, but it was not started: that would"
+        say "collide on the port and on $DATA_HOME. Stop the other one first"
+        say "(if it is a source checkout, stop it where you started it), then run:"
+        say "  morrow start"
+        return 0
+        ;;
+    esac
+  fi
+
+  say "Starting Morrow..."
+  EXPECT_ENTRY="$PREFIX/app"
+  "$BIN_DIR/morrow" start >/dev/null 2>&1 || true
+  if ! wait_for_health; then
+    if [ "$HAD_PREVIOUS" = "1" ] && rollback; then
+      fail "the new version did not pass its health check; the previous version was restored and restarted. Run 'morrow doctor' for details."
+    fi
+    fail "Morrow did not pass its health check. Run 'morrow doctor' for details."
+  fi
+
+  if app_ui_ok; then
+    say "App interface verified."
+  else
+    warn "the service is healthy but its web app did not load; 'morrow' still works from the terminal."
+  fi
+
+  # The new version is healthy: discard the preserved previous one.
+  rm -rf "$PREFIX/app.old"
+  install_browsers
+
+  say ""
+  say "Morrow $version installed successfully to $PREFIX."
+  say "Your data stays in $DATA_HOME."
+  say ""
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) say "Run 'morrow' to open the terminal shell, or 'morrow onboard' for guided setup." ;;
+    *) say "Open a new terminal, then run 'morrow' to open the terminal shell." ;;
+  esac
+  say "This is an unsigned beta."
+}
+
+# Test hook. Never set by the curl|sh path; it lets the installer's activation
+# and rollback logic be driven directly by the test suite, with no network and
+# against caller-provided paths.
+if [ "${MORROW_TEST_HOOK:-}" = "health" ]; then
+  # Exits 0 only for a response that is genuinely Morrow's orchestrator. This is
+  # the gate that decides whether an install is kept or rolled back, so it is
+  # driven directly by the test suite against real and near-miss responses.
+  health_ok && exit 0
+  exit 1
+fi
+
+if [ "${MORROW_TEST_HOOK:-}" = "activate" ]; then
+  [ -n "${MORROW_ACTIVATE_FROM:-}" ] && [ -n "${MORROW_ACTIVATE_ROOT:-}" ] \
+    || fail "MORROW_TEST_HOOK=activate requires MORROW_ACTIVATE_FROM and MORROW_ACTIVATE_ROOT."
+  PREFIX="$MORROW_ACTIVATE_ROOT"
+  BIN_DIR="${MORROW_ACTIVATE_BIN:-$MORROW_ACTIVATE_ROOT/bin}"
+  activate "$MORROW_ACTIVATE_FROM"
+  printf '%s\n' "$HAD_PREVIOUS"
+  exit 0
+fi
+
+main "$@"
