@@ -208,6 +208,47 @@ test("the health gate accepts only a real Morrow orchestrator", { skip }, async 
   assert.equal(await respond(real, 500), 1, "a 500 must not pass");
 });
 
+test("the health gate rejects a different Morrow holding the port", { skip }, async () => {
+  const { createServer } = await import("node:http");
+  const { spawn } = await import("node:child_process");
+
+  const probe = (body, expectEntry) =>
+    new Promise((resolve, reject) => {
+      const server = createServer((_req, res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(body);
+      });
+      server.on("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const { port } = server.address();
+        const child = spawn("sh", [INSTALLER], {
+          stdio: "ignore",
+          env: {
+            ...process.env,
+            MORROW_TEST_HOOK: "health",
+            MORROW_HEALTH_URL: `http://127.0.0.1:${port}/api/health`,
+            EXPECT_ENTRY: expectEntry,
+          },
+        });
+        child.on("close", (code) => {
+          server.closeAllConnections();
+          server.close();
+          resolve(code);
+        });
+      });
+    });
+
+  const ours = '{"ok":true,"service":"morrow-orchestrator","apiVersion":1,"serviceEntry":"/home/u/.local/share/morrow/app/apps/cli/bin/morrow.mjs"}';
+  // A development checkout answering the same port: healthy, correct service,
+  // and emphatically not the build we just installed.
+  const dev = '{"ok":true,"service":"morrow-orchestrator","apiVersion":1,"serviceEntry":"/home/u/Code/morrow/services/orchestrator/src/index.ts"}';
+
+  assert.equal(await probe(ours, "/home/u/.local/share/morrow/app"), 0, "the freshly installed service must pass");
+  assert.equal(await probe(dev, "/home/u/.local/share/morrow/app"), 1, "another Morrow on the port must not satisfy this install's health gate");
+  // Without an expectation the gate stays backwards-compatible.
+  assert.equal(await probe(dev, ""), 0);
+});
+
 test("the health gate fails when nothing is listening", { skip }, () => {
   // Port 1 is privileged and never Morrow; a refused connection must not pass.
   const probe = spawnSync("sh", [INSTALLER], {
