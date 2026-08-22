@@ -39,11 +39,18 @@ describe("RoutinesPanel", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("edits definition fields while keeping the saved run history visible", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(Response.json([routine]))
-      .mockResolvedValueOnce(Response.json([]))
-      .mockResolvedValueOnce(Response.json({ ...routine, name: "Monthly report", objective: "Review the month." }))
-      .mockResolvedValue(Response.json([{ ...routine, name: "Monthly report", objective: "Review the month." }]));
+    // Routed by URL rather than by call order: the panel's read queries are an
+    // implementation detail, and an ordered mock chain silently hands the wrong
+    // response to the wrong request the moment one is added.
+    const updated = { ...routine, name: "Monthly report", objective: "Review the month." };
+    let saved = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (init?.method === "PATCH") { saved = true; return Response.json(updated); }
+      if (url.includes("/schedule-runs")) return Response.json([]);
+      if (url.includes("/schedules")) return Response.json([]);
+      return Response.json([saved ? updated : routine]);
+    });
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     renderPanel();
@@ -61,10 +68,13 @@ describe("RoutinesPanel", () => {
     await user.type(screen.getByLabelText("Routine step 1"), "Read the monthly changelog");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
-    const [, init] = fetchMock.mock.calls[2] as unknown as [RequestInfo, RequestInit];
-    expect(String(fetchMock.mock.calls[2]![0])).toBe("/api/projects/project-1/routines/routine-1");
-    expect(init.method).toBe("PATCH");
+    const patched = await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([, options]) => (options as RequestInit | undefined)?.method === "PATCH");
+      expect(call).toBeTruthy();
+      return call as unknown as [RequestInfo, RequestInit];
+    });
+    const [target, init] = patched;
+    expect(String(target)).toBe("/api/projects/project-1/routines/routine-1");
     expect(JSON.parse(String(init.body))).toMatchObject({
       name: "Monthly report",
       objective: "Review the month.",
@@ -74,10 +84,14 @@ describe("RoutinesPanel", () => {
   });
 
   it("renders update errors instead of silently dropping an edit", async () => {
-    vi.stubGlobal("fetch", vi.fn()
-      .mockResolvedValueOnce(Response.json([routine]))
-      .mockResolvedValueOnce(Response.json([]))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ version: 1, error: { code: "OFFLINE", message: "Routine service is offline." } }), { status: 503 })));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (init?.method === "PATCH") {
+        return new Response(JSON.stringify({ version: 1, error: { code: "OFFLINE", message: "Routine service is offline." } }), { status: 503 });
+      }
+      if (url.includes("/schedule-runs") || url.includes("/schedules")) return Response.json([]);
+      return Response.json([routine]);
+    }));
     const user = userEvent.setup();
     renderPanel();
 

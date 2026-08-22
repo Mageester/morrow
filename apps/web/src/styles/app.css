@@ -6574,3 +6574,66 @@ a {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* What the routines did unattended. Failures are the reason this exists, so
+   they carry colour and everything else stays quiet. */
+.morrow-recent-runs {
+  margin: 0 0 var(--morrow-space-3);
+}
+
+.morrow-recent-runs__alert {
+  color: var(--morrow-warning);
+  font-size: 0.75rem;
+}
+
+.morrow-recent-runs__list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 1px;
+  list-style: none;
+}
+
+.morrow-recent-runs__row {
+  display: grid;
+  align-items: baseline;
+  padding: 6px 8px;
+  border-radius: var(--morrow-radius-sm);
+  column-gap: var(--morrow-space-2);
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  font-size: 0.8125rem;
+}
+
+.morrow-recent-runs__row:nth-child(odd) {
+  background: var(--morrow-surface-subtle);
+}
+
+.morrow-recent-runs__name {
+  overflow: hidden;
+  color: var(--morrow-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morrow-recent-runs__status {
+  color: var(--morrow-text-muted);
+  font-size: 0.75rem;
+}
+
+.morrow-recent-runs__row[data-tone="ok"] .morrow-recent-runs__status { color: var(--morrow-success, #5f9160); }
+.morrow-recent-runs__row[data-tone="bad"] .morrow-recent-runs__status { color: var(--morrow-warning); }
+
+.morrow-recent-runs__when {
+  color: var(--morrow-text-muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.morrow-recent-runs__error {
+  overflow: hidden;
+  color: var(--morrow-text-muted);
+  grid-column: 1 / -1;
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
