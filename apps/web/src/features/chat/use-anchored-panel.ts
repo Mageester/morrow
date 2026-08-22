@@ -40,6 +40,24 @@ export function useAnchoredPanel<T extends HTMLElement = HTMLElement>({ gap = 8 
     const panel = panelRef.current;
     if (!anchor || !panel) return;
     const rect = anchor.getBoundingClientRect();
+    // A trigger that has been hidden underneath us — a responsive rule dropping
+    // its container at a breakpoint, most often. Because the panel is portaled
+    // to the body it does not disappear with its trigger the way an in-flow
+    // child would; anchoring to the resulting 0x0 rect at the origin strands it
+    // in the top-left corner with nothing left on screen to close it. Follow
+    // the trigger instead.
+    //
+    // An empty rect alone is not proof: environments without a layout engine
+    // report every element as 0x0, which would close the panel the instant it
+    // opened. `checkVisibility` is what separates "hidden" from "unmeasured",
+    // and where it is unavailable the guard correctly declines to fire.
+    const unrendered = rect.width === 0 && rect.height === 0
+      && typeof anchor.checkVisibility === "function"
+      && !anchor.checkVisibility();
+    if (unrendered) {
+      setOpen(false);
+      return;
+    }
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
     const panelWidth = panel.offsetWidth;
@@ -57,10 +75,13 @@ export function useAnchoredPanel<T extends HTMLElement = HTMLElement>({ gap = 8 
       ? ({ bottom: viewportHeight - rect.top + gap, top: "auto" } as const)
       : ({ top: rect.bottom + gap, bottom: "auto" } as const);
 
+    // No inline max-width: each panel's stylesheet already caps itself in vw,
+    // so it cannot outgrow the viewport, and an inline value overrides that cap
+    // rather than reinforcing it — it stretched the 340px Thinking popover to
+    // 569px on a 1280px screen. Staying on screen is the left clamp's job.
     setStyle({
       ...alignment,
       left,
-      maxWidth: viewportWidth - EDGE_MARGIN * 2,
       position: "fixed",
       zIndex: 90,
     });

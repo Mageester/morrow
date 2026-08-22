@@ -269,3 +269,52 @@ test("thinking popover and settings popover open unclipped above the chip bar", 
   }
 });
 
+
+test("portaled panels keep their own width cap and panel-scoped styling", async ({ isMobile, page }) => {
+  test.skip(isMobile, "The 340px desktop cap is a desktop-width assertion.");
+  await page.goto(HARNESS);
+  await page.getByRole("button", { name: /Thinking ·/ }).first().click();
+  const dialog = page.getByRole("dialog").first();
+  await expect(dialog).toBeVisible();
+
+  // Portaling moved these out of `.morrow-chat-composer`, which is where both
+  // regressions came from: an inline max-width overrode the stylesheet's own
+  // cap, and every rule scoped through that ancestor silently stopped
+  // matching. Both are invisible to a hit test, so assert the computed values.
+  const measured = await dialog.evaluate((panel) => {
+    const toggle = panel.querySelector<HTMLElement>(".morrow-chat-composer__reasoning-toggle");
+    const slider = panel.querySelector<HTMLElement>(".morrow-reasoning-slider");
+    const box = toggle?.querySelector<HTMLElement>("input[type=checkbox]");
+    return {
+      width: Math.round(panel.getBoundingClientRect().width),
+      inlineMaxWidth: panel.style.maxWidth,
+      togglePadding: toggle ? getComputedStyle(toggle).padding : null,
+      checkboxWidth: box ? getComputedStyle(box).width : null,
+      sliderDirection: slider ? getComputedStyle(slider).flexDirection : null,
+    };
+  });
+
+  expect(measured.width).toBeLessThanOrEqual(340);
+  expect(measured.inlineMaxWidth).toBe("");
+  expect(measured.togglePadding).toBe("6px 8px");
+  expect(measured.checkboxWidth).toBe("10px");
+  expect(measured.sliderDirection).toBe("column");
+});
+
+test("an open panel closes when its trigger is hidden at a breakpoint", async ({ isMobile, page }) => {
+  test.skip(isMobile, "This crosses the desktop-to-compact breakpoint deliberately.");
+  await page.goto(HARNESS);
+  await page.getByRole("button", { name: "Toggle active task" }).click();
+  const trigger = page.getByRole("button", { name: /Capability and context status/ });
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: /Capability and context status/ });
+  await expect(dialog).toBeVisible();
+
+  // Below 700px the whole control is display:none. A portaled panel does not
+  // disappear with its trigger the way an in-flow child would, so it used to
+  // reposition against a 0x0 rect and strand itself in the top-left corner
+  // with nothing left on screen to close it.
+  await page.setViewportSize({ width: 600, height: 900 });
+  await expect(dialog).not.toBeVisible();
+});

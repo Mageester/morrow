@@ -157,6 +157,13 @@ export function CapabilityStatus({ taskId, route, reasoningConfig, disabled = fa
   return (
     <div className="morrow-capability-status">
       <button
+        // The visible label is the route, which is worth announcing — it is
+        // how someone knows which model they are on. On its own, though, it is
+        // an unexplained "Auto" or "Gemini · pro" with no hint that it opens
+        // anything, and `title` is not a dependable substitute because it is
+        // announced inconsistently and never on touch. Name the control and
+        // keep its value.
+        aria-label={`Capability and context status — ${triggerLabel}`}
         aria-controls={open ? panelId : undefined}
         aria-expanded={open}
         aria-haspopup="dialog"
