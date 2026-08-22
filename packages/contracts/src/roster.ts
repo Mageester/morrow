@@ -136,3 +136,52 @@ export type HandoffStatus = z.infer<typeof HandoffStatusSchema>;
 export type ThreadHandoff = z.infer<typeof ThreadHandoffSchema>;
 export type ThreadHandoffs = z.infer<typeof ThreadHandoffsSchema>;
 export type CreateThreadHandoffInput = z.infer<typeof CreateThreadHandoffSchema>;
+
+/**
+ * Standing permission for one teammate to hand work to another.
+ *
+ * Without a grant, every model-authored `ask_teammate` call stops for a fresh
+ * one-shot decision — correct for a first delegation, but it makes a team of
+ * teammates unable to actually work together. A grant is the durable record
+ * that the user already answered that question for this pair, and it carries
+ * the limits that keep "yes" from meaning "anything": the target profile
+ * fingerprint the user was shown when granting, how deep a chain of onward
+ * delegation may run, and how many children one parent turn may spawn.
+ *
+ * A grant never widens the target's own policy. The child still executes
+ * under its own tools, memory scopes, and budget; the grant only removes the
+ * prompt, never the intersection.
+ */
+export const TeammateTrustGrantSchema = z.object({
+  version: SchemaVersionSchema,
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  /** The teammate permitted to delegate. Null means any standalone teammate in the project. */
+  callerAgentId: z.string().min(1).nullable(),
+  targetAgentId: z.string().min(1),
+  /** Binds the grant to the exact target policy the user approved; drift re-prompts. */
+  targetProfileHash: z.string().min(1),
+  /** How many onward hops this grant permits. 1 means the target cannot re-delegate. */
+  maxDepth: z.number().int().min(1).max(5),
+  /** Ceiling on children spawned from a single parent turn under this grant. */
+  maxChildren: z.number().int().min(1).max(16),
+  createdAt: z.string().datetime(),
+  revokedAt: z.string().datetime().nullable(),
+}).strict();
+
+export const CreateTeammateTrustGrantSchema = z.object({
+  callerAgentId: z.string().min(1).nullable().default(null),
+  targetAgentId: z.string().min(1),
+  maxDepth: z.number().int().min(1).max(5).default(1),
+  maxChildren: z.number().int().min(1).max(16).default(4),
+}).strict();
+
+export const TeammateTrustGrantsSchema = z.object({
+  version: SchemaVersionSchema,
+  projectId: z.string().min(1),
+  grants: z.array(TeammateTrustGrantSchema),
+}).strict();
+
+export type TeammateTrustGrant = z.infer<typeof TeammateTrustGrantSchema>;
+export type CreateTeammateTrustGrantInput = z.infer<typeof CreateTeammateTrustGrantSchema>;
+export type TeammateTrustGrants = z.infer<typeof TeammateTrustGrantsSchema>;

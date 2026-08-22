@@ -22,6 +22,7 @@ import {
   CreateAgentSchema,
   UpdateAgentSchema,
   UpsertToolPermissionSchema,
+  CreateTeammateTrustGrantSchema,
   UpsertSkillAccessSchema,
   CreateProjectRuleSchema,
   PatchConventionSchema,
@@ -262,6 +263,7 @@ import { boundCompletedToolArguments, buildProviderProjection } from "./executio
 import { resolveModelBudget } from "./routing/model-budget.js";
 import { AgentTaskDispatchError, cleanupUnstartedChild, dispatchAgentTask, spawnAgentChatSubagent as dispatchAgentChatSubagent } from "./mission/task-dispatcher.js";
 import { TeammateSpawnRegistry, teammateProfileFingerprint } from "./tools/teammate-delegation.js";
+import { teammateTrustRepository } from "./repositories/teammate-trust.js";
 import { createResearchAndVerifyTeam } from "./mission/research-and-verify-preset.js";
 import { runReadmeSummarySample, ReadmeSummarySampleError } from "./mission/readme-summary-sample.js";
 import { registerWebMissionRoutes } from "./web/mission-routes.js";
@@ -379,6 +381,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   const projects = projectRepository(deps.db);
   const agents = agentsRepository(deps.db);
+  const teammateTrust = teammateTrustRepository(deps.db);
   const teams = teamsRepository(deps.db);
   const delegations = delegationsRepository(deps.db);
   const handoffs = handoffsRepository(deps.db);
@@ -853,6 +856,55 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found", "NOT_FOUND");
     return agent;
   };
+
+  // ── Teammate trust grants ──────────────────────────────────────────────────
+  //
+  // The durable record of "yes, these two may work together without asking me
+  // each time". Granting resolves the target's current profile fingerprint
+  // server-side and stores it, so a grant always describes the teammate the
+  // user was actually looking at; a later profile change re-prompts instead of
+  // riding the old decision.
+
+  app.get("/api/projects/:projectId/teammate-trust", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return { version: 1 as const, projectId, grants: teammateTrust.listForProject(projectId) };
+  });
+
+  app.post("/api/projects/:projectId/teammate-trust", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = CreateTeammateTrustGrantSchema.parse(request.body);
+    const target = agents.get(body.targetAgentId);
+    if (!target || target.projectId !== projectId) throw new ApiError(404, "Teammate not found", "NOT_FOUND");
+    if (!target.enabled) throw new ApiError(409, "A disabled teammate cannot be trusted", "AGENT_DISABLED");
+    if (target.teamId) throw new ApiError(409, "Team teammates coordinate through the team delegation flow", "TEAM_AGENT_REQUIRES_DELEGATION");
+    if (body.callerAgentId !== null) {
+      const caller = agents.get(body.callerAgentId);
+      if (!caller || caller.projectId !== projectId) throw new ApiError(404, "Teammate not found", "NOT_FOUND");
+      if (caller.id === target.id) throw new ApiError(409, "A teammate cannot be trusted to ask itself", "SELF_DELEGATION");
+    }
+    reply.status(201);
+    return teammateTrust.grant({
+      id: crypto.randomUUID(),
+      projectId,
+      callerAgentId: body.callerAgentId,
+      targetAgentId: target.id,
+      targetProfileHash: teammateProfileFingerprint(target, agents.listToolPermissions(target.id)),
+      maxDepth: body.maxDepth,
+      maxChildren: body.maxChildren,
+      createdAt: new Date().toISOString(),
+    });
+  });
+
+  app.delete("/api/projects/:projectId/teammate-trust/:grantId", async (request, reply) => {
+    const { projectId, grantId } = request.params as { projectId: string; grantId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    if (!teammateTrust.revoke(projectId, grantId, new Date().toISOString())) {
+      throw new ApiError(404, "Trust grant not found", "NOT_FOUND");
+    }
+    reply.status(204).send();
+  });
 
   app.get("/api/agents/:agentId/tool-permissions", async (request) => {
     return agents.listToolPermissions(scopedToolPermissionAgent(request).id);

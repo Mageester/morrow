@@ -11,6 +11,7 @@ import { gitDiff, gitLog, gitStatus, GitInspectionError } from "../tools/git.js"
 import { projectRepository } from "../repositories/projects.js";
 import { agentsRepository } from "../repositories/agents.js";
 import { delegationsRepository } from "../repositories/delegations.js";
+import { teammateTrustRepository } from "../repositories/teammate-trust.js";
 import { teamsRepository } from "../repositories/teams.js";
 import { intelligenceRepository } from "../repositories/intelligence.js";
 import { taskRepository } from "../repositories/tasks.js";
@@ -871,6 +872,7 @@ export async function executeAgentChatTask({
   const assignedAgentId = (task as { agentId?: string | null }).agentId ?? null;
   const agentRepo = agentsRepository(db);
   const delegationRepo = delegationsRepository(db);
+  const teammateTrust = teammateTrustRepository(db);
   const assignedAgent = assignedAgentId ? agentRepo.get(assignedAgentId) : undefined;
   if (assignedAgentId && (!assignedAgent || assignedAgent.projectId !== projectId)) {
     throw new Error("Assigned agent is not available in this project");
@@ -1036,6 +1038,34 @@ export async function executeAgentChatTask({
         "tool_failed",
       );
     }
+  };
+  /**
+   * Whether a standing grant lets this delegation proceed without stopping for
+   * a fresh decision.
+   *
+   * Every "no" here falls back to the one-shot approval prompt rather than
+   * failing the call: a missing, drifted, or exhausted grant means the user
+   * has not answered *this* question yet, which is a reason to ask, not a
+   * reason to refuse. The grant removes the prompt and nothing else â€” target
+   * resolution, profile binding, and the child's own policy intersection have
+   * all already run by the time this is consulted.
+   */
+  const standingTrustFor = (ask: { agentId: string; profileHash: string }): { granted: boolean; reason: string } => {
+    if (!assignedAgent) return { granted: false, reason: "no_agent_profile" };
+    const grant = teammateTrust.find(projectId, assignedAgent.id, ask.agentId);
+    if (!grant) return { granted: false, reason: "no_grant" };
+    if (grant.targetProfileHash !== ask.profileHash) return { granted: false, reason: "profile_drift" };
+    // Depth is measured over the durable task chain, not anything the model
+    // said, so a teammate cannot talk its way past its own ceiling.
+    let depth = 0;
+    let cursor = task.parentTaskId;
+    while (cursor && depth <= grant.maxDepth) {
+      depth += 1;
+      cursor = tasks.getTaskById(cursor)?.parentTaskId ?? null;
+    }
+    if (depth >= grant.maxDepth) return { granted: false, reason: "depth_exhausted" };
+    if (tasks.listChildren(task.id).length >= grant.maxChildren) return { granted: false, reason: "fanout_exhausted" };
+    return { granted: true, reason: "granted" };
   };
   const spawnAskedTeammate = (toolCallId: string, raw: Record<string, unknown>): string => {
     const input = parseAskTeammateInput(raw);
@@ -5907,8 +5937,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             event("workspace.inspected", { kind: "stop_process", processId, ok: outcome.ok });
           } else if (tc.name === ASK_TEAMMATE_TOOL_NAME) {
             // This is deliberately not part of the ordinary auto-approval
-            // branch: every model-authored delegation needs a fresh,
-            // one-shot human decision, even in trusted-workspace mode.
+            // branch: trusted-workspace mode and project trust never reach
+            // here. A model-authored delegation proceeds unprompted only
+            // under a standing teammate grant the user made for this pair,
+            // and otherwise still needs a fresh one-shot human decision.
             const ask = parseAskTeammateInput(args);
             let approvalRecord = approvals.listByTask(taskId).find((approval) =>
               approval.kind === "command"
@@ -5916,6 +5948,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               && approval.details.toolCallId === tc.id,
             );
             let isApproved = false;
+            if (!approvalRecord) {
+              const trust = standingTrustFor(ask);
+              event("delegation.trust_evaluated", {
+                targetAgentId: ask.agentId,
+                granted: trust.granted,
+                reason: trust.reason,
+              });
+              if (trust.granted) isApproved = true;
+            }
             if (approvalRecord) {
               const requestMatchesApproval = approvalRecord.details.targetAgentId === ask.agentId
                 && approvalRecord.details.objectiveHash === askObjectiveHash(ask.objective)

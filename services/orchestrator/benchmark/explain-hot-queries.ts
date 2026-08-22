@@ -20,6 +20,12 @@ const HOT_QUERIES: Array<{ label: string; sql: string; params: unknown[] }> = [
   { label: "tasks by project", sql: "SELECT * FROM tasks WHERE project_id = ?", params: ["p"] },
   { label: "agent state transitions by task", sql: "SELECT * FROM agent_state_transitions WHERE task_id=? ORDER BY sequence ASC", params: ["t"] },
   { label: "evidence by task", sql: "SELECT * FROM task_evidence WHERE task_id = ?", params: ["t"] },
+  // Runs once per model-authored delegation, before the approval boundary.
+  {
+    label: "teammate trust lookup",
+    sql: "SELECT * FROM teammate_trust_grants WHERE project_id=? AND target_agent_id=? AND revoked_at IS NULL AND (caller_agent_id=? OR caller_agent_id IS NULL) ORDER BY caller_agent_id IS NULL LIMIT 1",
+    params: ["p", "t", "c"],
+  },
 ];
 
 const directory = mkdtempSync(join(tmpdir(), "morrow-eqp-"));

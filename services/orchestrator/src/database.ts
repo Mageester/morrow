@@ -1846,6 +1846,39 @@ export const migrations:Migration[]=[
   ,{id:63,name:"delegation_write_memory_scopes",sql:`
     ALTER TABLE delegations ADD COLUMN allowed_write_memory_scopes_json TEXT NOT NULL DEFAULT '[]';
   `}
+  // Standing permission for one teammate to hand work to another without a
+  // fresh prompt per hop. This is the durable record of a decision the user
+  // made once, in the same shape the one-shot approval records it: bound to
+  // the target profile fingerprint the user was shown, and carrying its own
+  // ceilings so "trusted" never means "unbounded". Revocation is a timestamp
+  // rather than a delete so an audit of what was permitted stays readable.
+  ,{id:64,name:"teammate_trust_grants",sql:`
+    CREATE TABLE teammate_trust_grants (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      caller_agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+      target_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+      target_profile_hash TEXT NOT NULL,
+      max_depth INTEGER NOT NULL DEFAULT 1,
+      max_children INTEGER NOT NULL DEFAULT 4,
+      created_at TEXT NOT NULL,
+      revoked_at TEXT
+    );
+    -- The lookup on the delegation hot path is (project, target, live), which
+    -- narrows to at most two candidates: a grant naming this caller and a
+    -- project-wide one. Indexing project_id alone left it scanning every grant
+    -- in the project on every ask_teammate call.
+    CREATE INDEX teammate_trust_grants_lookup_idx
+      ON teammate_trust_grants(project_id, target_agent_id) WHERE revoked_at IS NULL;
+    CREATE INDEX teammate_trust_grants_project_idx ON teammate_trust_grants(project_id);
+    CREATE UNIQUE INDEX teammate_trust_grants_pair_idx
+      ON teammate_trust_grants(project_id, caller_agent_id, target_agent_id)
+      WHERE caller_agent_id IS NOT NULL AND revoked_at IS NULL;
+    CREATE UNIQUE INDEX teammate_trust_grants_any_caller_idx
+      ON teammate_trust_grants(project_id, target_agent_id)
+      WHERE caller_agent_id IS NULL AND revoked_at IS NULL;
+  `}
 ];
 /**
  * Durability mode for committed writes.

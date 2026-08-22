@@ -1857,3 +1857,62 @@
     min-width: 132px;
   }
 }
+
+/*
+ * Pair trust sits inside the teammate's own Coordination disclosure rather
+ * than in a separate screen: "who may this teammate work with" is a fact about
+ * this teammate, and splitting it out made people hunt for a second place to
+ * finish one thought.
+ */
+.morrow-trust {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--morrow-product-line, #3f4039);
+  border-radius: 11px;
+  background: var(--morrow-product-field-inset, rgb(255 255 255 / 0.02));
+}
+
+.morrow-trust legend {
+  padding: 0 4px;
+  color: var(--morrow-product-copy-soft, #c9c5bd);
+  font-size: 12px;
+}
+
+.morrow-trust__hint {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--morrow-product-faint, #8a8b82);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.morrow-trust__list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 2px;
+  list-style: none;
+}
+
+.morrow-trust__row label {
+  display: flex;
+  align-items: center;
+  padding: 5px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12.5px;
+  gap: 8px;
+}
+
+.morrow-trust__row label:hover {
+  background: var(--morrow-product-field-inset, rgb(255 255 255 / 0.03));
+}
+
+.morrow-trust__row input:disabled + .morrow-trust__name {
+  color: var(--morrow-product-faint, #8a8b82);
+}
+
+.morrow-trust__note {
+  color: var(--morrow-product-faint, #8a8b82);
+  font-size: 10.5px;
+}
