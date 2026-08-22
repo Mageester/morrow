@@ -4,14 +4,40 @@
     {
       "name": "morrow-orchestrator",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--filter", "@morrow/orchestrator", "dev"],
+      "runtimeArgs": [
+        "--filter",
+        "@morrow/orchestrator",
+        "dev"
+      ],
       "port": 4317
     },
     {
       "name": "morrow-web",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--filter", "@morrow/web", "dev"],
+      "runtimeArgs": [
+        "--filter",
+        "@morrow/web",
+        "dev"
+      ],
       "port": 4318
+    },
+    {
+      "name": "morrow-orchestrator-verify",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-lc",
+        "DATABASE_URL=/tmp/claude-1000/-home-dread-Code-morrow/cd108ebe-8020-49a4-9186-19cc516fc941/scratchpad/verify.db PORT=4399 exec pnpm --filter @morrow/orchestrator exec tsx src/index.ts"
+      ],
+      "port": 4399
+    },
+    {
+      "name": "morrow-web-verify",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-lc",
+        "PORT=4399 VITE_PORT=4320 exec pnpm --filter @morrow/web exec vite --host 127.0.0.1"
+      ],
+      "port": 4320
     }
   ]
 }
