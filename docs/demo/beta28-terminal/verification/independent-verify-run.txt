@@ -1,0 +1,37 @@
+
+── File existence ──
+  ✓  index.html exists
+  ✓  styles.css exists
+  ✓  app.js exists
+  ✓  verify.js exists
+
+── HTML checks ──
+  ✓  HTML: Links styles.css
+  ✓  HTML: Links app.js
+  ✓  HTML: Has #count
+  ✓  HTML: Has #increment
+  ✓  HTML: Has #decrement
+  ✓  HTML: Has #theme-toggle
+  ✓  HTML: Has #reset
+
+── JS checks ──
+  ✓  JS: getElementById("count")
+  ✓  JS: getElementById("increment")
+  ✓  JS: getElementById("decrement")
+  ✓  JS: getElementById("reset")
+  ✓  JS: getElementById("theme-toggle")
+  ✓  JS: addEventListener("click")
+  ✓  JS: localStorage.getItem
+  ✓  JS: localStorage.setItem
+  ✓  JS: setAttribute("data-theme",…)
+
+── CSS checks ──
+  ✓  CSS: Styles #count
+  ✓  CSS: Styles .btn
+  ✓  CSS: Uses CSS custom props
+  ✓  CSS: Has [data-theme="light"] vars
+  ✓  CSS: Has .theme-toggle styles
+
+✅  All checks passed.
+
+exit code: 0

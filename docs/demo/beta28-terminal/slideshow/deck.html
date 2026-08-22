@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Morrow beta.28 Terminal Experience — Real-Session Demonstration (Post-Fix, Verified)</title>
+<style>
+  @page { size: 1280px 720px; margin: 0; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; padding: 0; background: #0b0e14; color: #e6e9ef;
+  }
+  section.slide {
+    width: 1280px; height: 720px; padding: 56px 64px;
+    page-break-after: always;
+    display: flex; flex-direction: column;
+    position: relative;
+    background: linear-gradient(160deg, #0b0e14 0%, #12161f 100%);
+  }
+  section.slide:last-child { page-break-after: auto; }
+  .kicker { color: #6ee7b7; font-size: 15px; letter-spacing: 0.18em; text-transform: uppercase; font-weight: 700; margin-bottom: 10px; }
+  h1 { font-size: 38px; margin: 0 0 18px; color: #fff; line-height: 1.15; }
+  h2 { font-size: 26px; margin: 0 0 14px; color: #fff; }
+  p, li { font-size: 17px; line-height: 1.5; color: #c7cdd9; }
+  .facts { columns: 2; column-gap: 48px; }
+  .facts p { margin: 0 0 10px; break-inside: avoid; }
+  .facts b { color: #f2f4f8; }
+  .shots { display: flex; gap: 20px; align-items: flex-start; flex: 1; margin-top: 12px; }
+  .shots.single { justify-content: center; }
+  .shot { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .shot img { width: 100%; border-radius: 10px; border: 1px solid #2a3040; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+  .shot.big img { max-height: 440px; object-fit: contain; background: #05070c; }
+  .cap { font-size: 13px; color: #8b94a7; margin-top: 8px; }
+  .badge { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; padding: 4px 10px; border-radius: 999px; margin-right: 8px; }
+  .badge.real { background: rgba(110,231,183,0.15); color: #6ee7b7; border: 1px solid rgba(110,231,183,0.4); }
+  .badge.warn { background: rgba(252,165,165,0.15); color: #fca5a5; border: 1px solid rgba(252,165,165,0.4); }
+  .badge.fix { background: rgba(124,156,252,0.15); color: #9cb4fc; border: 1px solid rgba(124,156,252,0.4); }
+  .footer { position: absolute; bottom: 24px; left: 64px; right: 64px; display: flex; justify-content: space-between; font-size: 13px; color: #5b6478; }
+  code { background: #1a2030; padding: 2px 7px; border-radius: 5px; color: #a3e4b0; font-size: 14px; }
+  .stat-row { display: flex; gap: 24px; margin-top: 16px; }
+  .stat { background: #151a26; border: 1px solid #262d3f; border-radius: 12px; padding: 16px 20px; flex: 1; }
+  .stat .n { font-size: 30px; font-weight: 800; color: #fff; }
+  .stat .l { font-size: 12px; color: #8b94a7; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; }
+  ul { margin: 6px 0 0 20px; padding: 0; }
+  .diffblock { background: #0d1119; border: 1px solid #262d3f; border-radius: 10px; padding: 16px 20px; font-family: "Consolas", monospace; font-size: 14px; line-height: 1.6; margin-top: 10px; white-space: pre-wrap; }
+  .diffblock .old { color: #fca5a5; }
+  .diffblock .new { color: #6ee7b7; }
+</style>
+</head>
+<body>
+
+<!-- 1: Title -->
+<section class="slide">
+  <div class="kicker">Morrow · Real-Session Demonstration</div>
+  <h1>Beta.28 Terminal Experience<br>Verified Against a Real Fix</h1>
+  <p style="max-width:840px">This deck documents two connected real sessions: one that surfaced a genuine report-integrity bug in the exported task report, and — after the bug was fixed and merged (PR #36) — a fresh verification run proving the fix against a real, live orchestrator with real API calls, real failures, and real recovery.</p>
+  <div class="stat-row">
+    <div class="stat"><div class="n">450f3f5</div><div class="l">main @ PR #36 merge (fix)</div></div>
+    <div class="stat"><div class="n">deepseek-v4-flash</div><div class="l">Real live provider</div></div>
+    <div class="stat"><div class="n">2026-07-10</div><div class="l">Verification session date</div></div>
+  </div>
+  <div class="footer"><span>Morrow — beta.28 terminal experience (verified)</span><span>1 / 12</span></div>
+</section>
+
+<!-- 2: What was found -->
+<section class="slide">
+  <div class="kicker">Section 1</div>
+  <h2>What the First Demo Attempt Found</h2>
+  <p>Assembling the original evidence package surfaced a real bug: the exported report's <code>## Final Answer</code> contained the same planning sentence repeated <b>12 times</b>.</p>
+  <div class="diffblock"><span class="old">"Now I have full context. Let me apply all the changes."
+"Now I have full context. Let me apply all the changes."
+"Now I have full context. Let me apply all the changes."
+... (12 occurrences, concatenated from every ReAct turn)</span></div>
+  <p style="margin-top:14px;"><span class="badge warn">ROOT CAUSE</span>Neither the orchestrator's ReAct loop nor the CLI's terminal state reducer tracked turn boundaries — every turn's narration was folded into one ever-growing message.</p>
+  <div class="footer"><span>The defect found</span><span>2 / 12</span></div>
+</section>
+
+<!-- 3: The fix -->
+<section class="slide">
+  <div class="kicker">Section 2</div>
+  <h2>The Fix — PR #36</h2>
+  <ul>
+    <li>Orchestrator emits <code>assistant.turn_started</code> / <code>assistant.turn_completed</code> per ReAct turn, with a stable <code>turnId</code> and a <code>final</code> flag set only on the turn that produced no further tool calls.</li>
+    <li>CLI's state reducer mirrors turn identity explicitly — a delta only appends to its own open turn; an unmatched turn is dropped with a visible notice, never silently merged.</li>
+    <li><code>selectCanonicalFinalAnswer()</code> in <code>output-report.ts</code> is the single source of truth used by <code>/output</code>, <code>/output full</code>, <code>/export</code>, and the one-shot <code>--json</code> path alike.</li>
+    <li>Intermediate turns demoted to a bounded <code>## Intermediate Activity</code> section; recovery events get <code>## Recovery Summary</code>.</li>
+  </ul>
+  <p style="margin-top:14px;"><span class="badge real">MERGED</span>46 new/updated tests, including a regression fixture built from the real corrupted task. Full validation clean twice. CI green.</p>
+  <div class="footer"><span>The fix</span><span>3 / 12</span></div>
+</section>
+
+<!-- 4: Environment -->
+<section class="slide">
+  <div class="kicker">Section 3</div>
+  <h2>Verification Environment &amp; Facts</h2>
+  <div class="facts">
+    <p><b>OS:</b> Microsoft Windows 11 Home, 10.0.26200</p>
+    <p><b>Terminal:</b> Windows Terminal, real ConPTY session</p>
+    <p><b>Node:</b> v24.13.1</p>
+    <p><b>Orchestrator:</b> run directly from fixed source via <code>pnpm start</code></p>
+    <p><b>Provider / model:</b> DeepSeek — deepseek/deepseek-v4-flash (live API)</p>
+    <p><b>Workspace:</b> C:\Morrow-Demo\Beta28-Terminal-v3</p>
+    <p><b>Pass 1 sent:</b> 2026-07-10T06:06:48Z</p>
+    <p><b>Pass 2 sent:</b> 2026-07-10T06:08:15Z</p>
+  </div>
+  <p style="margin-top:18px;"><span class="badge warn">IMPORTANT</span>No <code>v0.1.0-beta.28</code> tag exists yet. This documents merged, pre-release code on <code>main</code>, not a shipped release.</p>
+  <div class="footer"><span>Environment &amp; facts</span><span>4 / 12</span></div>
+</section>
+
+<!-- 5: Boot + YOLO -->
+<section class="slide">
+  <div class="kicker">Section 4</div>
+  <h2>Boot &amp; YOLO Mode</h2>
+  <div class="shots">
+    <div class="shot big"><img src="../screenshots/01-boot-wide.png"><div class="cap">01 — Real boot screen, wide layout, project Beta28-Terminal-v3</div></div>
+    <div class="shot big"><img src="../screenshots/02-yolo-mode-enabled.png"><div class="cap">02 — Real <code>/yolo on</code> result and warning banner</div></div>
+  </div>
+  <div class="footer"><span>Boot &amp; YOLO mode</span><span>5 / 12</span></div>
+</section>
+
+<!-- 6: Live execution + pass1 complete -->
+<section class="slide">
+  <div class="kicker">Section 5</div>
+  <h2>Pass 1 — Live Execution &amp; Completion</h2>
+  <div class="shots">
+    <div class="shot"><img src="../screenshots/03-live-tool-execution.png"><div class="cap">03 — Live tool cards, real token stats (2.8k in / 76 out)</div></div>
+    <div class="shot"><img src="../screenshots/04-first-pass-completed-verified.png"><div class="cap">04 — 16/16 checks pass, 6 tool calls / 0 failed, real cached-token metering</div></div>
+  </div>
+  <div class="footer"><span>Pass 1</span><span>6 / 12</span></div>
+</section>
+
+<!-- 7: Failure + recovery -->
+<section class="slide">
+  <div class="kicker">Section 6</div>
+  <h2>Genuine Failure &amp; Recovery — Pass 2</h2>
+  <p>Prompt: add a dark/light theme toggle with localStorage persistence. A real, unstaged failure occurred.</p>
+  <div class="shots single">
+    <div class="shot big" style="max-width:760px"><img src="../screenshots/05-tool-failure-and-recovery.png"><div class="cap">05 — Real <code>propose_patch</code> failure on styles.css, live recovery in progress</div></div>
+  </div>
+  <p style="margin-top:14px;"><span class="badge real">NOT STAGED</span>4 real failures occurred across styles.css, app.js, and verify.js — each recovered via the real <code>tool.strategy_switch</code> escalation to <code>create_file</code>.</p>
+  <div class="footer"><span>Failure &amp; recovery</span><span>7 / 12</span></div>
+</section>
+
+<!-- 8: Pass 2 completion -->
+<section class="slide">
+  <div class="kicker">Section 7</div>
+  <h2>Pass 2 — Completed Despite Real Failures</h2>
+  <div class="shots single">
+    <div class="shot big" style="max-width:760px"><img src="../screenshots/06-second-pass-completed-after-recovery.png"><div class="cap">06 — Pass 2 complete: 20/20 verify checks, real recovery visible in tool log</div></div>
+  </div>
+  <div class="footer"><span>Pass 2 completion</span><span>8 / 12</span></div>
+</section>
+
+<!-- 9: THE VERIFICATION -->
+<section class="slide">
+  <div class="kicker">Section 8 — The Critical Check</div>
+  <h2>Final Answer: Once, Clean, No Duplication</h2>
+  <div class="shots">
+    <div class="shot"><img src="../screenshots/08-ctrl-o-output-report.png"><div class="cap">08 — Ctrl+O overlay: clean text, no repeated narration</div></div>
+    <div class="shot"><img src="../screenshots/12-output-failures.png"><div class="cap">12 — <code>/output failures</code>: clean Recovery Summary</div></div>
+  </div>
+  <p style="margin-top:14px;"><span class="badge fix">VERIFIED BY DIRECT FILE READ</span>The real exported .md file was read directly (not just screenshotted): <code>## Final Answer</code> appears exactly once, the repeated-preamble phrase count is <b>0</b>, and a new <code>## Intermediate Activity</code> section bounds the 7 non-final turns instead of dumping raw narration.</p>
+  <div class="footer"><span>The critical verification</span><span>9 / 12</span></div>
+</section>
+
+<!-- 10: Export -->
+<section class="slide">
+  <div class="kicker">Section 9</div>
+  <h2>Export &amp; Independent Verification</h2>
+  <div class="shots">
+    <div class="shot"><img src="../screenshots/13-export-confirmation.png"><div class="cap">13 — <code>/export</code> confirmation (username redacted)</div></div>
+  </div>
+  <ul>
+    <li><code>node verify.js</code> → exit 0, 20/20 checks (run independently via Bash, separate from Morrow's own check)</li>
+    <li>Exported report SHA-256 recorded in <code>evidence-manifest.json</code></li>
+  </ul>
+  <div class="footer"><span>Export &amp; verification</span><span>10 / 12</span></div>
+</section>
+
+<!-- 11: App verified working -->
+<section class="slide">
+  <div class="kicker">Section 10</div>
+  <h2>The Generated App, Verified Working</h2>
+  <div class="shots single">
+    <div class="shot big" style="max-width:600px"><img src="../screenshots/17-generated-app-working-in-browser.png"><div class="cap">17 — Real Chrome window, real local HTTP server, counter incremented to 4 via real OS-level clicks</div></div>
+  </div>
+  <ul>
+    <li>Increment/decrement/reset all confirmed working via real clicks</li>
+    <li>Theme toggle persists across reload via <code>localStorage</code>; counter correctly does not (expected — only theme is persisted)</li>
+  </ul>
+  <div class="footer"><span>App verified working</span><span>11 / 12</span></div>
+</section>
+
+<!-- 12: Closing -->
+<section class="slide">
+  <div class="kicker">Section 11 &amp; 12</div>
+  <h2>What Was Verified — Honestly</h2>
+  <div class="stat-row">
+    <div class="stat"><div class="n">0</div><div class="l">repeated preamble occurrences (was 12)</div></div>
+    <div class="stat"><div class="n">1</div><div class="l">Final Answer section (exactly once)</div></div>
+    <div class="stat"><div class="n">4/4</div><div class="l">real failures, all recovered</div></div>
+  </div>
+  <p style="margin-top:22px;"><span class="badge warn">DISCOVERED MID-VERIFICATION</span>The first re-run attempt against the "fixed" code still showed the bug — traced to a stale, pre-fix orchestrator background service still running on port 4317 from ~36 hours earlier. Stopped it, started a fresh orchestrator from the fixed source, and re-ran clean. Documented rather than hidden.</p>
+  <p><span class="badge real">CONFIRMED REAL</span>Every screenshot, stat, and transcript excerpt traces to a specific tool call, exported report, or independently-run command listed in <code>evidence-manifest.json</code>. No video (OBS access denied, documented). No false beta.28-release claim — <code>main</code> is still versioned <code>0.1.0-beta.27</code>.</p>
+  <div class="footer"><span>Closing</span><span>12 / 12</span></div>
+</section>
+
+</body>
+</html>

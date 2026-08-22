@@ -22,6 +22,8 @@ screenshots/
 .generated/
 artifacts/
 .artifacts/
+# Curated demo evidence is deliberately committed, unlike generated test screenshots above.
+!docs/demo/**/screenshots/
 
 # Local state
 .env
