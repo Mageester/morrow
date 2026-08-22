@@ -2,6 +2,8 @@ import { access, readFile } from "node:fs/promises";
 import process from "node:process";
 import { installerSafetyFailures } from "./lib/installer-safety.mjs";
 import { versionDriftFailures } from "./lib/version-consistency.mjs";
+import { apiReachabilityFailures } from "./lib/api-reachability.mjs";
+import { execFileSync } from "node:child_process";
 
 const requiredFiles = [
   "README.md",
@@ -84,6 +86,21 @@ try {
   }
 } catch {
   failures.push("Could not read one of the version-bearing files (package.json, apps/cli/src/service/update.ts, README.md, CHANGELOG.md)");
+}
+
+// Capability with no way in is Morrow's most expensive recurring defect, so a
+// route that no client calls fails the build unless it is acknowledged.
+try {
+  const serverSource = await readFile("services/orchestrator/src/server.ts", "utf8");
+  const clientFiles = execFileSync("bash", ["-c",
+    "find apps/web/src apps/cli/src apps/dashboard/src -type f \\( -name '*.ts' -o -name '*.tsx' \\) ! -name '*.test.*' 2>/dev/null",
+  ]).toString().split("\n").filter(Boolean);
+  const clientSource = (await Promise.all(clientFiles.map((file) => readFile(file, "utf8")))).join("\n");
+  for (const failure of apiReachabilityFailures({ serverSource, clientSource })) {
+    failures.push(`Unreachable API: ${failure}`);
+  }
+} catch (error) {
+  failures.push(`Could not run the API reachability check: ${error.message}`);
 }
 
 for (const path of requiredFiles) {
