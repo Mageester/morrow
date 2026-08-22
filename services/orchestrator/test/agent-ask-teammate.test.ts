@@ -74,14 +74,161 @@ describe("model-initiated ask_teammate", () => {
     expect(AskTeammateSchema.safeParse({ agentId: "a", objective: "help", providerId: "openai" }).success).toBe(false);
   });
 
-  it("does not expose ask_teammate to the default assistant", async () => {
+  it("exposes ask_teammate and the safe project roster to Morrow", async () => {
+    const targetAgent = agentsRepository(db).create({
+      id: "target-agent",
+      projectId: "p1",
+      name: "Browser Researcher",
+      role: "researcher",
+    });
     seedParent();
     const provider = new MockProvider({ chunks: [[{ type: "text", text: "finished" }, done]] });
     await executeAgentChatTask({ db, taskId: "parent", provider, maxTurns: 2 });
-    expect(provider.requests[0]?.flatMap((message) => message.toolCalls ?? []).map((call) => call.function.name)).not.toContain("ask_teammate");
-    expect(JSON.stringify(provider.requests[0] ?? [])).not.toContain("ask_teammate");
+
     const profileEvent = taskRecordsRepository(db).listEvents("parent").find((event) => event.type === "optimization.tool_profile_selected");
-    expect(profileEvent?.payload.tools).not.toContain("ask_teammate");
+    expect(profileEvent?.payload.tools).toContain("ask_teammate");
+    const systemPrompt = provider.requests[0]
+      ?.filter((message) => message.role === "system")
+      .map((message) => message.content)
+      .join("\n") ?? "";
+    expect(systemPrompt).toContain("Teammate coordination is available through ask_teammate");
+    expect(systemPrompt).toContain(targetAgent.id);
+    expect(systemPrompt).toContain(targetAgent.name);
+  });
+
+  it("lets Morrow start an approved teammate under the target profile", async () => {
+    const targetAgent = agentsRepository(db).create({
+      id: "target-agent",
+      projectId: "p1",
+      name: "Browser Researcher",
+      role: "researcher",
+    });
+    seedParent(undefined, true);
+    const objective = "Open the browser and inspect the release page.";
+    const spawned = vi.fn(() => ({
+      taskId: "child",
+      agentId: targetAgent.id,
+      providerId: "mock",
+      model: "mock-model",
+    }));
+    const provider = new MockProvider({ chunks: [
+      [tool("ask-default", "ask_teammate", { agentId: targetAgent.id, objective }), done],
+      [{ type: "text", text: "The browser researcher was started." }, done],
+    ] });
+
+    const running = executeAgentChatTask({
+      db,
+      taskId: "parent",
+      provider,
+      maxTurns: 3,
+      teammateSpawner: spawned,
+    } as any);
+    const started = Date.now();
+    let approvalId = "";
+    while (!approvalId && Date.now() - started < 1_000) {
+      approvalId = approvalsRepository(db).listByTask("parent").find((approval) => approval.status === "pending")?.id ?? "";
+      if (!approvalId) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    if (!approvalId) await running;
+    expect(approvalId).not.toBe("");
+    expect(spawned).not.toHaveBeenCalled();
+
+    const app = buildServer({ db, runner: new TaskRunner(db, async () => {}) });
+    const allow = await app.inject({
+      method: "POST",
+      url: `/api/approvals/${approvalId}/resolve`,
+      payload: { projectId: "p1", decision: "allow_once" },
+    });
+    expect(allow.statusCode).toBe(200);
+    await running;
+    expect(spawned).toHaveBeenCalledWith(expect.objectContaining({
+      parentTaskId: "parent",
+      agentId: targetAgent.id,
+      objective,
+    }));
+    await app.close();
+  });
+
+  it("routes a delegated browser objective through the target teammate's tools", async () => {
+    seedParent();
+    const targetAgent = agentsRepository(db).create({
+      id: "browser-agent",
+      projectId: "p1",
+      name: "Browser Researcher",
+      role: "researcher",
+    });
+    const conversations = conversationsRepository(db);
+    conversations.createConversation({
+      id: "browser-child-conversation",
+      projectId: "p1",
+      title: "Delegated: Browser Researcher",
+      agentId: targetAgent.id,
+      createdAt: now(),
+      updatedAt: now(),
+    });
+    conversations.appendMessage({
+      id: "browser-objective",
+      conversationId: "browser-child-conversation",
+      role: "user",
+      content: "Open the browser and inspect the release page.",
+      createdAt: now(),
+      updatedAt: now(),
+    });
+    taskRepository(db).createTask({
+      id: "browser-child",
+      projectId: "p1",
+      kind: "agent_chat",
+      status: "queued",
+      agentId: targetAgent.id,
+      parentTaskId: "parent",
+      createdAt: now(),
+    });
+    conversations.appendMessage({
+      id: "browser-assistant",
+      conversationId: "browser-child-conversation",
+      role: "assistant",
+      content: "",
+      taskId: "browser-child",
+      streamingState: "queued",
+      createdAt: now(),
+      updatedAt: now(),
+    });
+    taskRoutingRepository(db).upsert({
+      taskId: "browser-child",
+      presetId: "best-quality",
+      providerId: "mock",
+      model: "mock-model",
+      useMemory: false,
+      decision: {
+        version: 1,
+        presetId: "best-quality",
+        providerId: "mock",
+        model: "mock-model",
+        reason: "test",
+        fallbackUsed: false,
+        overridden: false,
+        privacy: "cloud",
+        candidates: [],
+        mode: "agent",
+        autoApprove: false,
+      },
+      createdAt: now(),
+    });
+    taskRecordsRepository(db).transitionAgentState("browser-child", {
+      id: "browser-state",
+      state: "idle",
+      details: {},
+      createdAt: now(),
+    });
+
+    const provider = new MockProvider({ chunks: [[{ type: "text", text: "finished" }, done]] });
+    await executeAgentChatTask({ db, taskId: "browser-child", provider, maxTurns: 2 });
+
+    const profileEvent = taskRecordsRepository(db).listEvents("browser-child")
+      .find((event) => event.type === "optimization.tool_profile_selected");
+    expect(profileEvent?.payload.tools).toContain("browser_open");
+    expect(profileEvent?.payload.tools).toContain("browser_snapshot");
+    expect(profileEvent?.payload.tools).toContain("browser_screenshot");
   });
 
   it("exposes an explicitly allowed ask_teammate to a legacy allow-list with a safe target roster", async () => {

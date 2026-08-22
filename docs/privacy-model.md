@@ -73,6 +73,12 @@ Local only still runs with web tools denied by default, since it forbids
 external network access outright. See
 [docs/decisions/0012-assistant-memory-and-teams.md](decisions/0012-assistant-memory-and-teams.md).
 
+When the built-in Morrow assistant asks a teammate to perform browser work,
+the request always pauses for one-shot approval. Only the bounded approved
+objective crosses into the child task. Browser access is then resolved from
+the target teammate's current tool policy and privacy mode; it is never copied
+from Morrow or silently widened by the handoff.
+
 ## Required safeguards
 
 - No silent telemetry

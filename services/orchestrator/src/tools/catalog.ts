@@ -175,7 +175,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
   {
     name: "ask_teammate",
     title: "Ask teammate",
-    description: "Ask another enabled standalone teammate to work on one bounded objective. The target's identity, provider, model, policy, memory, and budget are resolved by Morrow; this always requires a fresh one-shot approval.",
+    description: "Ask another enabled standalone teammate to work on one bounded objective. The target's identity, provider, model, policy, memory, and budget are resolved by Morrow; Morrow's built-in assistant always requires a fresh one-shot approval, while named teammates may use an explicit standing trust grant.",
     sideEffect: "execute",
     enabled: true,
     parameters: {
@@ -183,9 +183,9 @@ export const TOOL_CATALOG: ToolSpec[] = [
       objective: { type: "string", description: "One bounded objective for the teammate, up to 2,000 characters" },
     },
     constraints: [
-      "Exposed only to tasks running as a standalone named agent profile",
-      "Target must be enabled, standalone, in this project, and different from the caller",
-      "Always requires one-shot approval; auto-approval and project trust never apply",
+      "Exposed to Morrow's built-in assistant and standalone named agent profiles",
+      "Target must be enabled, standalone, in this project, and different from a named caller",
+      "Morrow requires one-shot approval; named callers require one-shot approval unless an explicit standing teammate grant applies",
       "The target's provider, model, tools, memory scopes, and budgets are resolved server-side",
       "Child execution is linked with parent_task_id and agent_id and receives no parent transcript",
     ],

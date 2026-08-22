@@ -69,14 +69,14 @@ export function buildTeammateBrief(agent: TeammateBriefInput | null | undefined)
  * to help the model choose among the already-filtered candidates.
  */
 export function buildTeammateRoster(
-  caller: Pick<TeammateRosterEntryInput, "id" | "projectId">,
+  caller: Pick<TeammateRosterEntryInput, "projectId"> & { id?: string | null },
   teammates: readonly TeammateRosterEntryInput[],
   participantIds?: ReadonlySet<string>,
 ): string {
   const entries = teammates
     .filter((teammate) => teammate.projectId === caller.projectId)
     .filter((teammate) => teammate.enabled && !teammate.teamId)
-    .filter((teammate) => teammate.id !== caller.id)
+    .filter((teammate) => !caller.id || teammate.id !== caller.id)
     .filter((teammate) => !participantIds || participantIds.has(teammate.id))
     .map(({ id, name, role }) => ({ agentId: id, name, role }))
     .sort((a, b) => a.name.localeCompare(b.name) || a.agentId.localeCompare(b.agentId));
@@ -86,6 +86,6 @@ export function buildTeammateRoster(
     "The current tool definitions and this roster are authoritative if an older standing brief names a narrower allowed-tool list.",
     "Use only one of these exact agentId values; never invent an ID or pass a name instead.",
     `Eligible standalone teammates (JSON): ${JSON.stringify(entries)}`,
-    "The target receives only the bounded objective and runs under its own current tools, memory, provider, model, and budget. Every request pauses for one-shot user approval.",
+    "The target receives only the bounded objective and runs under its own current tools, memory, provider, model, and budget. Requests from Morrow pause for one-shot user approval; a named teammate may proceed under an explicit standing trust grant.",
   ].join("\n");
 }

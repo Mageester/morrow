@@ -44,11 +44,14 @@ polling payload.
   delegation API, where team policy is intersected correctly.
 - `ask_teammate` accepts only `agentId` and `objective`. The server resolves an
   enabled, same-project, standalone target and rejects unknown, disabled,
-  cross-project, self, and team targets. Each request requires a fresh
-  `allow_once` approval, even when the parent requested auto approval. Approval
-  binds the target profile fingerprint (including policy-relevant fields) and
-  an objective hash; drift requires fresh approval. The parent's
-  `maxChildTasks` ceiling is checked before creating a child.
+  cross-project, self, and team targets. Both the built-in Morrow assistant and
+  standalone named teammates can author this handoff. Morrow has no synthetic
+  `agents` row, so its requests always require a fresh `allow_once` approval,
+  even when the parent requested auto approval. Named callers may instead use
+  an explicit, bounded standing teammate trust grant. Approval binds the target
+  profile fingerprint (including policy-relevant fields) and an objective hash;
+  drift requires fresh approval. A named parent's `maxChildTasks` ceiling is
+  checked before creating a child.
 - The pair `(parentTaskId, toolCallId)` is the model handoff idempotency key.
   An in-process registry suppresses races and the durable task idempotency
   record suppresses replay after restart. Only successful spawns are cached;
@@ -185,6 +188,13 @@ makes no claim of cloud team synchronization or always-on hosted teammates. A
 routine run is still an explicit fresh task with current policy. Provider or
 adapter data leaves the machine only when the user has configured and used that
 external service, consistent with [the privacy model](../privacy-model.md).
+
+The built-in Morrow assistant can initiate a teammate child but gains no
+teammate identity, private memory owner, target policy, or standing trust from
+doing so. Its request always stops at the one-shot approval boundary. The child
+receives only the approved objective and then independently resolves its own
+provider and tool policy; a browser objective therefore enables controlled
+browser tools only when that target profile permits them.
 
 ## Failure behavior
 
