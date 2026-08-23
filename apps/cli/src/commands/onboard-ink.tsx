@@ -101,7 +101,23 @@ export function runOnboardingLaunchpad(input: { providerConfigured: boolean; uni
       if (settled) return;
       settled = true;
       instance.unmount();
-      resolve(choice);
+      // Ink tears down asynchronously: `unmount()` only starts it, and stdin
+      // stays in raw mode with Ink's listeners attached until `waitUntilExit`
+      // settles. Resolving before then hands a raw-mode stdin to whatever runs
+      // next -- and the classic flow runs next, on `readline`, which never sees
+      // a line event because raw mode does not emit them. The prompt then hangs
+      // forever and Node reports an unsettled top-level await instead of asking
+      // the question. Wait for the real teardown, then restore cooked mode
+      // ourselves: Ink's own cleanup assumes the process is exiting, which is
+      // exactly the assumption the "Customize setup" path breaks.
+      void instance.waitUntilExit().then(() => {
+        const stdin = process.stdin;
+        if (stdin.isTTY && stdin.isRaw && typeof stdin.setRawMode === "function") {
+          stdin.setRawMode(false);
+        }
+        stdin.resume();
+        resolve(choice);
+      });
     };
     instance = render(
       <OnboardingLaunchpad

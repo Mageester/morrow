@@ -42,3 +42,66 @@ describe("Ink onboarding launchpad", () => {
     expect(onChoose).toHaveBeenCalledWith("start");
   });
 });
+
+describe("launchpad stdin handoff", () => {
+  // "Customize setup" returns "classic", and the classic flow reads with
+  // readline. readline never emits a line event while stdin is in raw mode, so
+  // if the launchpad resolves before Ink has finished tearing down, the first
+  // classic prompt hangs and Node reports an unsettled top-level await instead
+  // of asking the question. Observed live on 0.4.0+03c4260.
+  it("resolves only after Ink has finished tearing down", async () => {
+    const order: string[] = [];
+    let releaseExit: () => void = () => {};
+    let choose: ((choice: string) => void) | undefined;
+
+    const unmount = vi.fn(() => {
+      order.push("unmount");
+    });
+    const waitUntilExit = vi.fn(
+      () =>
+        new Promise<void>((r) => {
+          releaseExit = () => {
+            order.push("exited");
+            r();
+          };
+        }),
+    );
+
+    vi.resetModules();
+    vi.doMock("ink", async () => {
+      const actual = await vi.importActual<typeof import("ink")>("ink");
+      return {
+        ...actual,
+        render: (element: { props: { onChoose: (choice: string) => void } }) => {
+          choose = element.props.onChoose;
+          return { unmount, waitUntilExit };
+        },
+      };
+    });
+
+    const mod = await import("../src/commands/onboard-ink.js");
+    const pending = mod.runOnboardingLaunchpad({ providerConfigured: true, unicode: false });
+
+    let settled = false;
+    void pending.then(() => {
+      order.push("resolved");
+      settled = true;
+    });
+
+    expect(choose).toBeTypeOf("function");
+    choose!("classic");
+
+    // Ink has not finished tearing down yet, so nothing may be resolved.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(unmount).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+
+    releaseExit();
+    await expect(pending).resolves.toBe("classic");
+    expect(order).toEqual(["unmount", "exited", "resolved"]);
+
+    vi.doUnmock("ink");
+    vi.resetModules();
+  });
+});

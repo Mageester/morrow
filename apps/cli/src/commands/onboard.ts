@@ -233,10 +233,12 @@ export async function runInkOnboarding(ctx: Context): Promise<number | "classic"
 async function runStep(step: string, ctx: Context): Promise<boolean> {
   switch (step) {
     case "welcome": {
-      ctx.out.print(ctx.out.cyan(`   __  ______  ___  ___  _____  _      __`));
-      ctx.out.print(ctx.out.cyan(`  /  |/  / __ \\/ _ \\/ _ \\/ __ \\| |    / /`));
-      ctx.out.print(ctx.out.cyan(` / /|_/ / /_/ / , _/ , _/ /_/ /| | /\\ / / `));
-      ctx.out.print(ctx.out.cyan(`/_/  /_/\\____/_/|_/_/|_|\\____/  \\_/\\_/  `));
+      // The launchpad has already drawn the wordmark by the time anyone reaches
+      // this step, so repeating it in a different typeface read as two products
+      // bolted together. The figlet block that used to sit here was also
+      // malformed -- its glyph columns did not line up and the final row was
+      // short -- so it is replaced by the same wordmark the launchpad uses.
+      ctx.out.print(`${ctx.out.bold(ctx.out.cyan("MORROW"))}${ctx.out.gray("  private · local-first · yours")}`);
       ctx.out.print();
       ctx.out.print(ctx.out.bold("Private intelligence, built around you."));
       ctx.out.print();
