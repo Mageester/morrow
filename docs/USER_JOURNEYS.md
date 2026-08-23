@@ -29,8 +29,11 @@
   is unhealthy, the rollback exists but has no automated proof (`CURRENT_STATE.md`).
 
 ## Journey: Onboarding
-1. CLI: `morrow onboard` (`commands/onboard.ts`) or web `OnboardingWizard`.
-2. Sets `user.onboarded` / `onboardingStep` settings.
+1. CLI: `morrow onboard` opens the Ink launchpad, shows the first useful command,
+   and makes model connection the only primary setup action. **Explore first**
+   skips setup; `morrow onboard classic` retains every advanced choice.
+2. Sets `user.onboarded` / `onboardingStep` settings. Provider and launch steps
+   resume after interruption; status/reset remain available.
 - `⛔` **No verified continuous thread** from onboarding → provider → workspace →
   first task. Each step works in isolation; the seam between them is unproven
   (Journey A in `HERMES_LEVEL_PLAN.md` Phase 2 will close this).

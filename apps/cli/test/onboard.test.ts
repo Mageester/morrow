@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ConfigStore } from "../src/config/config.js";
 import { Context } from "../src/cli/context.js";
 import { Output } from "../src/cli/output.js";
-import { onboardCommand } from "../src/commands/onboard.js";
+import { onboardCommand, runInkOnboarding } from "../src/commands/onboard.js";
 import { EXIT } from "../src/cli/errors.js";
 
 // Mock common interactive prompt functions
@@ -24,6 +24,10 @@ vi.mock("../src/commands/common.js", async (importOriginal) => {
 
 vi.mock("../src/commands/chat.js", () => ({
   chatCommand: vi.fn().mockResolvedValue(0),
+}));
+
+vi.mock("../src/commands/onboard-ink.js", () => ({
+  runOnboardingLaunchpad: vi.fn(),
 }));
 
 // Mock lifecycle
@@ -48,6 +52,8 @@ vi.mock("node:os", async (importOriginal) => {
 
 import { ask, confirm, select, askSecret } from "../src/commands/common.js";
 import { chatCommand } from "../src/commands/chat.js";
+import { runOnboardingLaunchpad } from "../src/commands/onboard-ink.js";
+import { isRunning } from "../src/service/lifecycle.js";
 
 describe("CLI Onboarding Command", () => {
   const tempRoots: string[] = [];
@@ -65,6 +71,7 @@ describe("CLI Onboarding Command", () => {
     config = ConfigStore.load({ MORROW_HOME: home }, home);
     const out = new Output({ json: false, quiet: false, color: false });
     ctx = new Context({ out, config, paths: config.paths, flags: {} });
+    vi.mocked(isRunning).mockResolvedValue(true);
 
     // Mock API client calls
     ctx.api = () => ({
@@ -113,6 +120,36 @@ describe("CLI Onboarding Command", () => {
     const output = stdoutWrite.mock.calls.map(([val]: any) => String(val)).join("");
     expect(output).toContain("Onboarded");
     expect(output).toContain("Aidan");
+  });
+
+  it("the Ink fast path can explore first without the optional interrogation", async () => {
+    vi.mocked(runOnboardingLaunchpad).mockResolvedValueOnce("explore");
+
+    const exitCode = await runInkOnboarding(ctx);
+
+    expect(exitCode).toBe(EXIT.OK);
+    expect(config.get("user.onboarded")).toBe(true);
+    expect(config.get("defaults.mode")).toBe("agent");
+    expect(config.get("defaults.autoApprove")).toBe(false);
+    expect(ask).not.toHaveBeenCalled();
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("a connected model goes straight from the Ink launchpad to completion", async () => {
+    const saveOnboardingState = vi.fn().mockResolvedValue({ success: true });
+    ctx.api = () => ({
+      listProviders: vi.fn().mockResolvedValue([{ id: "openai", label: "OpenAI", configured: true }]),
+      saveOnboardingState,
+    } as any);
+    vi.mocked(runOnboardingLaunchpad).mockResolvedValueOnce("finish");
+
+    const exitCode = await runInkOnboarding(ctx);
+
+    expect(exitCode).toBe(EXIT.OK);
+    expect(config.get("user.onboarded")).toBe(true);
+    expect(config.get("user.onboardingStep")).toBeUndefined();
+    expect(saveOnboardingState).toHaveBeenLastCalledWith({ onboarded: true, onboardingStep: null });
+    expect(ask).not.toHaveBeenCalled();
   });
 
   it("completes full guided flow step-by-step and persists selections", async () => {

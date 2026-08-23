@@ -23,9 +23,14 @@ Open a new PowerShell window after installation:
 morrow
 ```
 
-Use `morrow onboard` for guided provider setup. Provider credentials are saved
-in Morrow's local owner-readable secrets file and are not written to task
-events, reports, diagnostic exports, or browser storage.
+Use `morrow onboard` for the value-first terminal setup. Its primary path asks
+only for the one requirement needed to run a task: a model connection. Profile,
+skills, autonomy, and project choices are optional and remain available through
+`morrow config` or `morrow onboard classic`. Setup can be paused, resumed,
+skipped with **Explore first**, inspected with `morrow onboard status`, or reset
+with `morrow onboard reset`. Provider credentials are saved in Morrow's local
+owner-readable secrets file and are not written to task events, reports,
+diagnostic exports, or browser storage.
 
 ## Verify or troubleshoot
 
