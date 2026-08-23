@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,18 +23,18 @@ test("release publication remains gated by package and install integration", asy
   assert.match(workflow, /softprops\/action-gh-release/);
 });
 
-test("release publication dispatches the existing site deployment with the published version", async () => {
+test("release publication is bound to the exact main commit and existing version tag", async () => {
   const workflow = await readFile(join(root, ".github", "workflows", "release.yml"), "utf8");
-  assert.match(workflow, /release-published/);
-  assert.match(workflow, /client_payload/);
-  assert.match(workflow, /inputs\.version/);
+  assert.match(workflow, /fetch-depth:\s*0/);
+  assert.match(workflow, /release-tag-integrity\.mjs/);
+  assert.match(workflow, /github\.sha/);
+  assert.match(workflow, /origin\/main/);
 });
 
-test("landing deployment stages the installer and release metadata at the public contract paths", async () => {
-  const workflow = await readFile(join(root, ".github", "workflows", "deploy-landing.yml"), "utf8");
-  assert.match(workflow, /installer\/install\.ps1/);
-  assert.match(workflow, /apps\/landing\/public\/install\.ps1/);
-  assert.match(workflow, /apps\/landing\/public\/releases\/latest\.json/);
-  assert.match(workflow, /apps\/landing\/public\/release-manifest\.json/);
-  assert.match(workflow, /github\.event\.client_payload\.version/);
+test("the obsolete GitHub Pages deployment is not a second production pipeline", () => {
+  assert.equal(
+    existsSync(join(root, ".github", "workflows", "deploy-landing.yml")),
+    false,
+    "morrow-axiom-site is the only production website pipeline",
+  );
 });
