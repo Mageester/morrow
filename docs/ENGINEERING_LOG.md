@@ -2,6 +2,48 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-08-23 - beta.29 issue reconciliation and empirical bug hunt
+
+- **[RESOLVED 2026-08-23] The 17 beta.29 findings were carrying stale product
+  state.** Each finding was traced against the current code and regression
+  suites. The current matrix now lives in `KNOWN_ISSUES.md`; the original 866-line
+  report remains available in Git history. Existing fixes cover read-only
+  outcomes, permission display, structured recovery, requirement conformance,
+  durable continuation, resume copy, canonical output/event folding, report
+  timing, help discoverability, and model identity/capability truth.
+- **[RESOLVED 2026-08-23] `morrow fix` could inherit a saved YOLO default.**
+  Root task commands now pass complete permission intent, and an explicit false
+  value outranks persisted configuration. `permission-precedence.test.ts` covers
+  `fix`, read-only, plan, explicit YOLO, and the unchanged interactive default.
+- **[RESOLVED 2026-08-23] Non-obvious agent decisions were not populated into
+  the existing Cortex ledger.** Build-mode agents now receive a bounded
+  `record_decision` tool for concise choice, reason, alternatives, trade-offs,
+  affected components, and task/mission attribution. It never accepts raw
+  chain-of-thought, redacts secret-like text, changes no workspace file, and
+  deduplicates retries from the same task. The existing `/decisions` command is
+  the inspection surface. `agent-decision-ledger.test.ts` covers persistence and
+  idempotency; catalog/profile tests cover exposure.
+- **[RESOLVED 2026-08-23] The Ink shell shared its screen with invoking-shell
+  scrollback.** It now uses the terminal alternate buffer, restores the original
+  screen on exit and around external-editor handoff, and retains the existing
+  reducer plus Ink clear behavior. `terminal-approval-flow.test.ts` asserts the
+  entry/exit escape sequence contract.
+- **[RESOLVED 2026-08-23] Mobile settings overflow and serious dark-theme
+  contrast failures.** The chapter selector wraps into a bounded two-column
+  grid at mobile widths and dark quiet/copper tokens meet the serious axe gate.
+  Full web E2E passed (81 primary + 11 applicable composer tests); seven composer
+  skips are deliberate desktop/mobile project partitions.
+- **Skipped-test audit:** optional-browser cases passed after local Chromium was
+  present (3 files, 22 tests). Five command-executor cases are Windows-only;
+  artifact cases require their target OS/package. No skipped product defect was
+  hidden. A production controller composition test completed in 671ms alone but
+  once exceeded the generic 5s limit under full-suite contention; its explicit
+  integration ceiling is now 15s without changing product behavior.
+- **Privacy/security impact:** decision summaries stay in the existing local
+  project-intelligence database, are bounded and secret-redacted, and carry no
+  raw reasoning. No provider, telemetry, remote storage, or permission bypass was
+  added.
+
 ## 2026-08-08 - long-session efficiency and cross-turn chat memory
 
 Both defects below were found by driving the real production path

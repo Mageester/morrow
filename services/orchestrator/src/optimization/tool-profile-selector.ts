@@ -42,13 +42,13 @@ const RESEARCH = [
 // tool needed to inspect, edit, run verification, and retrieve large results.
 const CODING_FOCUSED = [
   "inspect_workspace", "list_files", "read_file", "search_text", "search_files",
-  "git_diff", "run_command", "propose_patch", "create_file", "append_file", "read_artifact",
+  "git_diff", "run_command", "propose_patch", "create_file", "append_file", "read_artifact", "record_decision",
 ] as const;
 
 const CODING = [
   ...READ_ONLY_WORKSPACE,
   "run_command", "read_process_output", "stop_process", "propose_patch", "create_file",
-  "append_file", "create_directory", "create_skill",
+  "append_file", "create_directory", "create_skill", "record_decision",
 ] as const;
 
 const BROWSER = [

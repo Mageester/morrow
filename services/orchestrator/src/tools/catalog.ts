@@ -173,6 +173,26 @@ export const TOOL_CATALOG: ToolSpec[] = [
     constraints: ["Bounded to 20 steps", "Writes Morrow's plan record only, never a workspace file"],
   },
   {
+    name: "record_decision",
+    title: "Record decision",
+    description: "Record a concise, user-visible architecture or tooling choice in the project's decision ledger.",
+    sideEffect: "read-only",
+    enabled: true,
+    parameters: {
+      statement: { type: "string", description: "The choice that was made, in one sentence." },
+      reason: { type: "string", description: "The evidence-backed reason for the choice. Do not include private chain-of-thought." },
+      alternatives: { type: "array", items: { type: "string" }, description: "Serious alternatives considered, as short names." },
+      tradeoffs: { type: "array", items: { type: "string" }, description: "Important costs or constraints accepted with this choice." },
+      affectedComponents: { type: "array", items: { type: "string" }, description: "Project areas affected by the choice." },
+    },
+    constraints: [
+      "Stores concise summaries only; never raw reasoning or conversation text",
+      "Scoped to the current project and attributed to the current task",
+      "Duplicate retries from the same task are idempotent",
+      "Does not modify workspace files",
+    ],
+  },
+  {
     name: "ask_teammate",
     title: "Ask teammate",
     description: "Ask another enabled standalone teammate to work on one bounded objective. The target's identity, provider, model, policy, memory, and budget are resolved by Morrow; this always requires a fresh one-shot approval.",
@@ -305,7 +325,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
 /** Tool names the agent runtime actually implements (must match the catalog). */
 export const IMPLEMENTED_TOOL_NAMES = [
   "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols",
-  "git_status", "git_diff", "git_log", "run_command", "read_process_output", "stop_process", "write_plan", "ask_teammate", "propose_patch", "create_file", "append_file", "create_directory",
+  "git_status", "git_diff", "git_log", "run_command", "read_process_output", "stop_process", "write_plan", "record_decision", "ask_teammate", "propose_patch", "create_file", "append_file", "create_directory",
   "read_artifact", "find_skill", "load_skill", "create_skill", "browser_open", "browser_snapshot", "browser_console", "browser_click",
   "browser_type", "browser_key", "browser_select", "browser_viewport", "browser_screenshot", "browser_download", "browser_close",
   "read_mcp_resource",

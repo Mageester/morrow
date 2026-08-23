@@ -1763,6 +1763,21 @@ export async function executeAgentChatTask({
       }
     },
     {
+      name: "record_decision",
+      description: "Record a non-obvious architecture or tooling choice in the user-visible project decision ledger. Store only the concise choice, evidence-backed reason, alternatives, and trade-offs â€” never private chain-of-thought. Skip obvious implementation details.",
+      parameters: {
+        type: "object",
+        properties: {
+          statement: { type: "string", description: "The choice made, in one sentence (max 500 characters)" },
+          reason: { type: "string", description: "Why this choice fits the request and evidence (max 2,000 characters)" },
+          alternatives: { type: "array", items: { type: "string" }, description: "Serious alternatives considered" },
+          tradeoffs: { type: "array", items: { type: "string" }, description: "Costs or constraints accepted" },
+          affectedComponents: { type: "array", items: { type: "string" }, description: "Affected project areas" },
+        },
+        required: ["statement", "reason"]
+      }
+    },
+    {
       name: "ask_teammate",
       description: "Ask another enabled standalone teammate to work on one bounded objective. Available only to standalone named teammates; team members use the team delegation flow. Morrow resolves the target identity, provider, model, policy, memory, and budget from the target's durable profile; every request requires a fresh one-shot approval.",
       parameters: {
@@ -2059,6 +2074,7 @@ Ask mode: you can read this project but not change it. You have no write tools a
 
   const agentModeInstructions = `
 Build mode: you may change this project. On a multi-file build, call create_file for the first file as soon as you've decided it â€” do not silently draft every file before your first tool call. Finish the job, then verify it with run_command rather than declaring success from reading your own diff.
+When you make a non-obvious architecture, dependency, or tooling choice, call record_decision once with the choice, concise reason, serious alternatives, and trade-offs. This is a user-visible summary, never raw reasoning. Do not record routine implementation details.
 ${writeToolInstructions}`;
 
   const teammateIdentity = buildTeammateIdentity(assignedAgent ?? null);
@@ -2966,6 +2982,37 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         steps: steps.map((step: { id: string; title: string; status: PlanStepStatus }) => ({ id: step.id, title: step.title, status: step.status })),
       });
       return JSON.stringify({ status: "success", stepCount: steps.length });
+    } else if (toolName === "record_decision") {
+      const clean = (value: unknown, limit: number): string => redactSecrets(String(value ?? "").trim()).slice(0, limit);
+      const cleanList = (value: unknown, limit: number, maxItems: number): string[] => Array.isArray(value)
+        ? value.map((item) => clean(item, limit)).filter(Boolean).slice(0, maxItems)
+        : [];
+      const statement = clean(args.statement, 500);
+      const reason = clean(args.reason, 2_000);
+      if (!statement || !reason) {
+        return JSON.stringify({ status: "rejected", reason: "statement and reason are required" });
+      }
+      const cortex = new CortexService({
+        repo: intelligenceRepository(db),
+        getWorkspacePath: (pid) => projects.getProjectById(pid)?.workspacePath,
+        now,
+      });
+      cortex.ensureReady(projectId);
+      const existing = cortex.get(projectId).decisions.find((decision) =>
+        decision.statement === statement
+        && decision.sources.some((source) => source.kind === "user" && source.reference === taskId));
+      if (existing) return JSON.stringify({ status: "success", id: existing.id, label: existing.label, duplicate: true });
+      transitionAgentState("executing_tool", { tool: "record_decision" });
+      const decision = cortex.recordDecision(projectId, {
+        statement,
+        context: reason,
+        alternatives: cleanList(args.alternatives, 500, 10),
+        consequences: cleanList(args.tradeoffs, 500, 10),
+        affectedComponents: cleanList(args.affectedComponents, 200, 20),
+        missionId: taskMissionId,
+        sources: [{ kind: "user", reference: taskId, note: "Agent-recorded decision summary" }],
+      });
+      return JSON.stringify({ status: "success", id: decision.id, label: decision.label });
     } else if (toolName === "find_skill") {
       const query = (args.query || "").toLowerCase().trim();
       if (!query) return JSON.stringify({ skills: [] });
@@ -6684,7 +6731,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
             }
             resultStr = JSON.stringify(read.payload);
-          } else if (tc.name === "find_skill" || tc.name === "load_skill") {
+          } else if (tc.name === "find_skill" || tc.name === "load_skill" || tc.name === "record_decision") {
             // Read-only skill discovery/loading: no approval needed. (These were
             // advertised to the model but never dispatched here, so the model's
             // calls hit the Forbidden branch -- the cause of "Forbidden tool".)
