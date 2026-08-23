@@ -63,7 +63,10 @@ function resolveDisplayedRecordId(items: Array<{ id: string }>, ref: string, pre
  */
 export function resolveAutoApprove(ctx: Context, mode: AgentMode): boolean {
   if (mode !== "agent") return false;
-  if (flagBool(ctx.flags, "yolo")) return true;
+  // Presence matters: `morrow fix` passes yolo=false deliberately so the
+  // command's documented approval boundary wins over a persisted YOLO default.
+  // Treating only true as an override silently re-armed autonomy.
+  if (Object.prototype.hasOwnProperty.call(ctx.flags, "yolo")) return flagBool(ctx.flags, "yolo");
   return (ctx.config.get("defaults.autoApprove") as boolean | undefined) ?? false;
 }
 
