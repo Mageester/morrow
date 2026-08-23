@@ -382,7 +382,10 @@ describe("commands: safety", () => {
     const h = harness();
     const result = await run(h, "/yolo policy");
     const text = reportToLines(result.report!).join(" ");
-    expect(text).toContain("blocks");
+    // Both halves, or it is not a policy: what runs unattended, and what stays
+    // refused no matter the mode.
+    expect(text).toMatch(/will not ask|without asking/i);
+    expect(text).toMatch(/blocked|refused/i);
   });
 
   it("/panic disarms auto-approval and cancels", async () => {

@@ -35,6 +35,15 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ### Fixed
 
+- YOLO asked for approval. A mode whose entire purpose is running unattended
+  stopped on every shell command, and since an agent runs most of its work
+  through `bash -c`, that meant a prompt for nearly every step — in one real
+  session, 9 of 9 approvals raised during a YOLO run were shells. YOLO now runs
+  every command it is given without asking, and says so plainly on entry
+  instead of describing a narrower policy than it has. The categorical block
+  list (privilege escalation, host shutdown, disk wipes, workspace escape,
+  force push, history rewrites) is unchanged: those are refused in every mode
+  and were never prompts being skipped.
 - Public metadata refresh could not succeed at all: the response cap was 4 MiB
   against a 4.1 MiB document, and a strict ingestion schema discarded an entire
   provider over one unusual row — `anthropic`, `openai`, `groq`, `xai`,

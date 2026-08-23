@@ -53,9 +53,36 @@ describe("agent trusted workspace", () => {
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
-  it("does not auto-resolve a material external-effect approval", async () => {
+  // The whole point of the mode. Every one of these classifies as
+  // `approval_required`, and every one of them used to stop an unattended run
+  // dead — a shell most of all, since it is how an agent runs almost
+  // everything. Captured from a real session: 9 of 9 approvals raised during a
+  // YOLO run were `bash -c`.
+  it.each([
+    ["a shell", "bash", ["-c", "echo hello"]],
+    ["a shell pipeline", "sh", ["-c", "ls | wc -l"]],
+    ["a network transfer", "curl", ["-sS", "https://example.invalid"]],
+    ["a package publish", "npm", ["publish"]],
+    ["a release", "gh", ["release", "create", "v1.0.0"]],
+    ["a deploy", "vercel", ["deploy", "--prod"]],
+  ])("runs %s without asking", async (_label, exec, cmdArgs) => {
     seedYolo(db, ws, true);
-    const provider = new MockProvider({ chunks: [[tool("x1", "run_command", { executable: "gh", args: ["release", "create", "v1.0.0"], purpose: "publish release" }), done]], delayMs: 1 });
+    const provider = new MockProvider({ chunks: [[tool("x1", "run_command", { executable: exec, args: cmdArgs, purpose: "unattended" }), done], [text("done"), done]], delayMs: 1 });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(approvalsRepository(db).listByTask("t")).toHaveLength(0);
+    const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((e: any) => e.type === "approval.requested")).toBe(false);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
+
+  it("still asks for the same command when YOLO is off", async () => {
+    // The gate is the mode, not a reclassification: with YOLO off the exact
+    // same shell must still reach a human.
+    seedYolo(db, ws, false);
+    const provider = new MockProvider({ chunks: [[tool("x1", "run_command", { executable: "bash", args: ["-c", "echo hello"], purpose: "attended" }), done]], delayMs: 1 });
     const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
     runner.run("t");
 

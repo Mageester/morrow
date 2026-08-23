@@ -550,9 +550,21 @@ async function runRepl(ctx: Context, api: MorrowApi, project: Project, initial: 
     ["Session", `${conversation.title}  ${out.gray(shortId(conversation.id))}${resuming ? out.gray("  · resumed") : ""}`],
   ]);
   if (session.autoApprove) {
+    // Entering an unattended mode is the one moment the user gets to decide,
+    // so it is stated once, plainly, and in full — there will be no second
+    // chance to object per command, which is the entire point of the mode.
+    const bar = unicode ? "\u2588" : "|";
     out.print();
-    out.print("  " + out.yellow(`${unicode ? "⚠" : "!"} YOLO is on: commands and patches run without asking.`));
-    out.print("  " + out.gray("   Denied actions (shells, deletes, history rewrites) are still blocked. Toggle with /yolo."));
+    out.print("  " + out.yellow(`${bar} ${unicode ? "\u26a0" : "!"}  YOLO \u2014 UNATTENDED. Morrow will not ask before it acts.`));
+    out.print("  " + out.yellow(bar));
+    out.print("  " + out.yellow(bar) + "  " + out.gray("Runs without asking: shells, package managers, builds, tests, git,"));
+    out.print("  " + out.yellow(bar) + "  " + out.gray("network tools (curl/ssh/scp), process kills, publishes and deploys,"));
+    out.print("  " + out.yellow(bar) + "  " + out.gray("and any create/edit/delete inside " + project.workspacePath + "."));
+    out.print("  " + out.yellow(bar));
+    out.print("  " + out.yellow(bar) + "  " + out.gray("Still blocked: sudo, shutdown, disk wipes, workspace escape,"));
+    out.print("  " + out.yellow(bar) + "  " + out.gray("force push, history rewrites. Everything run is recorded."));
+    out.print("  " + out.yellow(bar));
+    out.print("  " + out.yellow(bar) + "  " + out.gray("/yolo off to stop  \u00b7  /yolo policy for the full policy  \u00b7  Esc to interrupt"));
   }
   out.print();
   out.print("  " + out.gray("What should we work on?  ") + out.gray("(type / for commands · Tab completes · /exit to quit)"));

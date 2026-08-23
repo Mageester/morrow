@@ -6184,13 +6184,22 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               // exact (executable, argv, cwd), not the broad risk pattern.
               const trustKey = canonicalCommandTrustKey(exec, cmdArgs, cmdCwd);
               const isTrusted = approvals.getCommandTrust(project.id, trustKey) !== undefined;
-              const trustedWorkspaceAction = autoApprove && policy.risk === "auto_approvable";
+              // YOLO means YOLO. The operator accepted this blast radius once,
+              // when they entered the mode and read the warning; a prompt per
+              // command is precisely the thing they turned off, and a mode that
+              // still stops on `bash -c` is interactive mode wearing a hat.
+              //
+              // This does NOT reach `denied`, which threw above and is a
+              // different kind of rule: those commands have no workspace-scoped
+              // meaning at all (privilege escalation, disk formatting, host
+              // shutdown, credential extraction), so there is no decision for a
+              // user to make about them and never was a prompt to skip.
+              const trustedWorkspaceAction = autoApprove;
               if (isTrusted || trustedWorkspaceAction) {
                 isApproved = true;
               } else {
-                // Trusted-workspace mode may auto-run only the classifier's
-                // auto_approvable category. A material external effect always
-                // reaches this real human boundary and cannot resolve itself.
+                // Outside YOLO, anything the classifier did not mark ordinary
+                // reaches a real human boundary and cannot resolve itself.
                 if (!approvalRecord || approvalRecord.status !== "pending") {
                   approvalRecord = approvals.create({
                     id: randomUUID(),
