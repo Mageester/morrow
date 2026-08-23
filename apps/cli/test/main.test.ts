@@ -6,8 +6,12 @@ import { resolveInvocation, run } from "../src/main.js";
 import { MORROW_VERSION } from "../src/service/update.js";
 
 describe("morrow root command", () => {
-  const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-  const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const stdout = vi
+    .spyOn(process.stdout, "write")
+    .mockImplementation(() => true);
+  const stderr = vi
+    .spyOn(process.stderr, "write")
+    .mockImplementation(() => true);
 
   afterEach(() => {
     stdout.mockClear();
@@ -26,8 +30,15 @@ describe("morrow root command", () => {
     expect(help).toContain("morrow onboard");
     expect(help).toContain("morrow auth");
     expect(help).toContain("morrow acceptance");
+    // beta.23 removed `morrow open` and banned the word "browser" from help so
+    // that help "no longer implies a browser application", when Morrow was
+    // repositioning from a local GUI to a terminal-first agent. `morrow open`
+    // stays gone -- it autostarted the service, which is the behaviour that
+    // release was fixing. The blanket ban is retired: 0.4.0 ships a real web
+    // interface from the same service, and leaving it unnamed did not make
+    // Morrow more terminal-first, it just made a shipped surface undiscoverable.
     expect(help).not.toContain("morrow open");
-    expect(help).not.toContain("browser");
+    expect(help).toContain("morrow web");
     // Advanced/admin commands are de-emphasized but discoverable.
     expect(help).toContain("projects");
     expect(help).not.toContain("completion");
@@ -39,9 +50,12 @@ describe("morrow root command", () => {
     // Generated, never hand-maintained: this used to be a literal list that
     // drifted from the palette. Asserting against the registry itself is the
     // only version of this test that cannot rot.
-    const { BUILTIN_COMMANDS } = await import("../src/terminal/commands/index.js");
+    const { BUILTIN_COMMANDS } =
+      await import("../src/terminal/commands/index.js");
     for (const command of BUILTIN_COMMANDS) {
-      expect(help, `/${command.name} missing from --help`).toContain(`/${command.name}`);
+      expect(help, `/${command.name} missing from --help`).toContain(
+        `/${command.name}`,
+      );
     }
   });
 
@@ -49,7 +63,9 @@ describe("morrow root command", () => {
     await expect(run(["--version"])).resolves.toBe(0);
     // Not a literal — see bin.test.ts. Version drift is enforced by
     // scripts/validate-repository.mjs, not by restating the number here.
-    expect(stdout.mock.calls.map(([value]) => String(value)).join("")).toContain(MORROW_VERSION);
+    expect(
+      stdout.mock.calls.map(([value]) => String(value)).join(""),
+    ).toContain(MORROW_VERSION);
   });
 
   it("reports a corrupt config as JSON instead of failing before doctor starts", async () => {
@@ -62,7 +78,9 @@ describe("morrow root command", () => {
       const raw = stdout.mock.calls.map(([value]) => String(value)).join("");
       const payload = JSON.parse(raw);
       expect(payload.ok).toBe(false);
-      expect(payload.checks).toContainEqual(expect.objectContaining({ name: "config", ok: false, critical: true }));
+      expect(payload.checks).toContainEqual(
+        expect.objectContaining({ name: "config", ok: false, critical: true }),
+      );
       expect(raw).not.toContain("must-not-leak");
       expect(stderr.mock.calls).toHaveLength(0);
     } finally {
@@ -84,11 +102,33 @@ describe("morrow root command", () => {
   });
 
   it("recognizes lifecycle commands instead of routing them into chat", () => {
-    for (const command of ["start", "stop", "restart", "status", "doctor", "uninstall"]) {
-      expect(resolveInvocation([command])).toEqual({ kind: "command", root: command, sub: undefined, args: [] });
+    for (const command of [
+      "start",
+      "stop",
+      "restart",
+      "status",
+      "doctor",
+      "uninstall",
+    ]) {
+      expect(resolveInvocation([command])).toEqual({
+        kind: "command",
+        root: command,
+        sub: undefined,
+        args: [],
+      });
     }
-    expect(resolveInvocation(["install-now"])).toEqual({ kind: "command", root: "install-now", sub: undefined, args: [] });
-    expect(resolveInvocation(["repair:paths"])).toEqual({ kind: "command", root: "repair:paths", sub: undefined, args: [] });
+    expect(resolveInvocation(["install-now"])).toEqual({
+      kind: "command",
+      root: "install-now",
+      sub: undefined,
+      args: [],
+    });
+    expect(resolveInvocation(["repair:paths"])).toEqual({
+      kind: "command",
+      root: "repair:paths",
+      sub: undefined,
+      args: [],
+    });
   });
 
   it("treats run as an explicit one-shot alias", () => {
@@ -99,7 +139,10 @@ describe("morrow root command", () => {
   });
 
   it("does not expose open as a browser command", () => {
-    expect(resolveInvocation(["open"])).toEqual({ kind: "prompt", prompt: "open" });
+    expect(resolveInvocation(["open"])).toEqual({
+      kind: "prompt",
+      prompt: "open",
+    });
   });
 
   it("treats sessions as a top-level command alias", () => {
@@ -184,7 +227,9 @@ describe("morrow root command", () => {
     process.env.MORROW_HOME = home;
     try {
       await expect(run(["uninstall", "--dry-run", "--json"])).resolves.toBe(0);
-      const payload = JSON.parse(stdout.mock.calls.map(([value]) => String(value)).join(""));
+      const payload = JSON.parse(
+        stdout.mock.calls.map(([value]) => String(value)).join(""),
+      );
       expect(payload.choices).toMatchObject({
         removeApp: true,
         removePath: true,
@@ -197,7 +242,9 @@ describe("morrow root command", () => {
         dryRun: true,
       });
       expect(payload.dataDirectory).toBe(home);
-      expect(payload.targets.map((target: { label: string }) => target.label)).toContain("Application files");
+      expect(
+        payload.targets.map((target: { label: string }) => target.label),
+      ).toContain("Application files");
     } finally {
       if (oldHome === undefined) delete process.env.MORROW_HOME;
       else process.env.MORROW_HOME = oldHome;
