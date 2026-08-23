@@ -421,7 +421,32 @@ async function interactiveProjectSelection(ctx: Context, api: MorrowApi, project
 
 // ── Interactive prompts ───────────────────────────────────────────────────────
 
+/**
+ * Prepare stdin for a line-oriented read.
+ *
+ * Ink's teardown calls `stdin.unref()` alongside `setRawMode(false)` (see
+ * ink/build/components/App.js `disableRawMode`). `unref()` tells the event loop
+ * not to stay alive for stdin, which is correct for Ink's own assumption that
+ * the process exits when the app does -- but this CLI keeps running and then
+ * asks a question. With stdin unref'd the loop has nothing holding it open, so
+ * Node reports "Detected unsettled top-level await" and exits instead of
+ * waiting for the answer. `resume()` does not undo this; only `ref()` does.
+ *
+ * Raw mode is cleared too: readline emits no line events while it is set, so a
+ * prompt reached straight after an Ink screen would accept Enter and do
+ * nothing. Both conditions are cheap to assert and harmless when already true.
+ */
+function prepareStdinForLineInput(): void {
+  const stdin = process.stdin;
+  if (stdin.isTTY && stdin.isRaw && typeof stdin.setRawMode === "function") {
+    stdin.setRawMode(false);
+  }
+  stdin.ref();
+  stdin.resume();
+}
+
 export function ask(question: string): Promise<string> {
+  prepareStdinForLineInput();
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   return new Promise((resolve) => {
     rl.question(question, (answer) => {
@@ -432,6 +457,7 @@ export function ask(question: string): Promise<string> {
 }
 
 export function askMultiline(question: string, opts: { endMarker?: string } = {}): Promise<string> {
+  prepareStdinForLineInput();
   const endMarker = opts.endMarker ?? ".";
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   const lines: string[] = [];
@@ -484,6 +510,10 @@ export function askSecret(question: string): Promise<string> {
     process.stderr.write(question);
     let value = "";
     stdin.setRawMode(true);
+    // ref() as well as resume(): an Ink screen earlier in the flow may have
+    // unref'd stdin on teardown, and a resumed-but-unref'd stdin does not keep
+    // the event loop alive, so the process exits mid-prompt.
+    stdin.ref();
     stdin.resume();
     stdin.setEncoding("utf8");
     const finish = () => {

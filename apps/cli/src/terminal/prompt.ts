@@ -248,6 +248,13 @@ export async function readLineWithCompletion(opts: PromptOptions): Promise<strin
 
 function simpleLine(label: string, input: NodeJS.ReadStream, output: NodeJS.WriteStream): Promise<string> {
   return new Promise((resolve) => {
+    // Ink unrefs stdin when it tears down, and an unref'd stdin does not hold
+    // the event loop open -- the process would exit before the answer arrives.
+    if (input.isTTY && input.isRaw && typeof input.setRawMode === "function") {
+      input.setRawMode(false);
+    }
+    input.ref();
+    input.resume();
     const rl = readline.createInterface({ input, output });
     rl.question(stripAnsi(label), (answer) => {
       rl.close();
