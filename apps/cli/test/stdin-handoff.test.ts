@@ -20,7 +20,9 @@ describe("readline prompts after an Ink screen", () => {
 
   it("re-refs stdin so the event loop stays alive for the answer", async () => {
     const ref = vi.spyOn(process.stdin, "ref").mockReturnValue(process.stdin);
-    const resume = vi.spyOn(process.stdin, "resume").mockReturnValue(process.stdin);
+    const resume = vi
+      .spyOn(process.stdin, "resume")
+      .mockReturnValue(process.stdin);
 
     vi.resetModules();
     vi.doMock("node:readline", () => ({
@@ -52,7 +54,11 @@ describe("readline prompts after an Ink screen", () => {
     // Define it, then spy: the point of the test is that the helper calls it.
     const hadSetRawMode = "setRawMode" in stdin;
     if (!hadSetRawMode) {
-      Object.defineProperty(stdin, "setRawMode", { value: () => stdin, configurable: true, writable: true });
+      Object.defineProperty(stdin, "setRawMode", {
+        value: () => stdin,
+        configurable: true,
+        writable: true,
+      });
     }
     const setRawMode = vi.spyOn(stdin, "setRawMode").mockReturnValue(stdin);
     vi.spyOn(stdin, "ref").mockReturnValue(stdin);
@@ -72,8 +78,15 @@ describe("readline prompts after an Ink screen", () => {
     expect(setRawMode).toHaveBeenCalledWith(false);
 
     vi.doUnmock("node:readline");
-    Object.defineProperty(stdin, "isTTY", { value: wasTTY, configurable: true });
-    Object.defineProperty(stdin, "isRaw", { value: wasRaw, configurable: true });
-    if (!hadSetRawMode) delete (stdin as unknown as Record<string, unknown>).setRawMode;
+    Object.defineProperty(stdin, "isTTY", {
+      value: wasTTY,
+      configurable: true,
+    });
+    Object.defineProperty(stdin, "isRaw", {
+      value: wasRaw,
+      configurable: true,
+    });
+    if (!hadSetRawMode)
+      delete (stdin as unknown as Record<string, unknown>).setRawMode;
   });
 });

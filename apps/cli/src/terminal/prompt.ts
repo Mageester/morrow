@@ -38,7 +38,9 @@ export interface PromptOptions {
 
 const ESC = "\x1b[";
 
-export async function readLineWithCompletion(opts: PromptOptions): Promise<string | typeof PROMPT_EXIT> {
+export async function readLineWithCompletion(
+  opts: PromptOptions,
+): Promise<string | typeof PROMPT_EXIT> {
   const input = opts.input ?? process.stdin;
   const output = opts.output ?? process.stdout;
 
@@ -60,7 +62,10 @@ export async function readLineWithCompletion(opts: PromptOptions): Promise<strin
     input.resume();
 
     const registry = builtinRegistry();
-    const menuVisible = (): boolean => buffer.startsWith("/") && /^\/\S*(?:\s+\S*)?$/.test(buffer) && !menuDismissed;
+    const menuVisible = (): boolean =>
+      buffer.startsWith("/") &&
+      /^\/\S*(?:\s+\S*)?$/.test(buffer) &&
+      !menuDismissed;
 
     /**
      * Candidates for the line as typed.
@@ -70,7 +75,11 @@ export async function readLineWithCompletion(opts: PromptOptions): Promise<strin
      * would mean the fallback could complete `/yolo` but never `/yolo on`,
      * which is the argument someone is actually reaching for.
      */
-    const matches = (): Array<{ name: string; summary: string; hasArgs: boolean }> => {
+    const matches = (): Array<{
+      name: string;
+      summary: string;
+      hasArgs: boolean;
+    }> => {
       if (!menuVisible()) return [];
       const [head = "", ...tail] = buffer.slice(1).split(/\s+/);
       const command = registry.get(head.toLowerCase());
@@ -78,15 +87,21 @@ export async function readLineWithCompletion(opts: PromptOptions): Promise<strin
         const prefix = (tail[0] ?? "").toLowerCase();
         return (command.subcommands ?? [])
           .filter((sub) => sub.startsWith(prefix))
-          .map((sub) => ({ name: `${command.name} ${sub}`, summary: command.summary, hasArgs: false }));
+          .map((sub) => ({
+            name: `${command.name} ${sub}`,
+            summary: command.summary,
+            hasArgs: false,
+          }));
       }
       // Same scorer the shell's palette uses, so the two surfaces rank
       // identically and "/m" does not mean different things in each.
-      return filterCommands(registry.browseOrder, head).map(({ command: match }) => ({
-        name: match.name,
-        summary: match.summary,
-        hasArgs: Boolean(match.usage ?? match.subcommands?.length),
-      }));
+      return filterCommands(registry.browseOrder, head).map(
+        ({ command: match }) => ({
+          name: match.name,
+          summary: match.summary,
+          hasArgs: Boolean(match.usage ?? match.subcommands?.length),
+        }),
+      );
     };
 
     const render = (): void => {
@@ -163,7 +178,10 @@ export async function readLineWithCompletion(opts: PromptOptions): Promise<strin
           const ms = matches();
           if (ms.length > 0) {
             const dir = key?.shift ? -1 : 0;
-            if (dir === 0 && (buffer !== "/" + ms[selected]!.name || ms[selected]!.hasArgs)) {
+            if (
+              dir === 0 &&
+              (buffer !== "/" + ms[selected]!.name || ms[selected]!.hasArgs)
+            ) {
               // First Tab completes to the selected command + a space for args.
               buffer = "/" + ms[selected]!.name + " ";
               cursor = buffer.length;
@@ -246,7 +264,11 @@ export async function readLineWithCompletion(opts: PromptOptions): Promise<strin
   });
 }
 
-function simpleLine(label: string, input: NodeJS.ReadStream, output: NodeJS.WriteStream): Promise<string> {
+function simpleLine(
+  label: string,
+  input: NodeJS.ReadStream,
+  output: NodeJS.WriteStream,
+): Promise<string> {
   return new Promise((resolve) => {
     // Ink unrefs stdin when it tears down, and an unref'd stdin does not hold
     // the event loop open -- the process would exit before the answer arrives.

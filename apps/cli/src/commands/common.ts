@@ -1,7 +1,22 @@
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
-import { existsSync, mkdirSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  parse,
+  relative,
+  resolve,
+} from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import type { Project } from "@morrow/contracts";
 import type { Context } from "../cli/context.js";
@@ -52,14 +67,18 @@ export async function resolveProject(
   //    precedence over the configured default. This is the isolation guarantee:
   //    being inside B's workspace selects B, regardless of what default is saved.
   const configured = ctx.config.get("defaults.project") as string | undefined;
-  const configuredProject = configured ? projects.find((p) => p.id === configured || p.name === configured) : undefined;
+  const configuredProject = configured
+    ? projects.find((p) => p.id === configured || p.name === configured)
+    : undefined;
   if (configuredProject) {
-    const configuredPath = canonicalProjectPath(configuredProject.workspacePath);
+    const configuredPath = canonicalProjectPath(
+      configuredProject.workspacePath,
+    );
     const safety = isSafeProjectRoot(configuredProject.workspacePath);
     if (!safety.safe) {
       throw usageError(
         `Default project "${configuredProject.name}" points at an unsafe workspace (${safety.reason}).`,
-        "Run `morrow init` inside a repository or `morrow projects select` to choose a safe project."
+        "Run `morrow init` inside a repository or `morrow projects select` to choose a safe project.",
       );
     }
     // Onboarding can be launched from a parent repository while registering a
@@ -70,16 +89,28 @@ export async function resolveProject(
 
   const cwdProjects = nearestContainingProjects(projects, cwd);
   if (cwdProjects.length === 1) return cwdProjects[0]!;
-  if (cwdProjects.length > 1) throw usageError("Multiple registered projects match this directory.", "Pass --project <id> to choose one explicitly.");
+  if (cwdProjects.length > 1)
+    throw usageError(
+      "Multiple registered projects match this directory.",
+      "Pass --project <id> to choose one explicitly.",
+    );
 
   // 3. When launched from a subdirectory, select the registered project whose
   //    workspace is the nearest parent Git root. This avoids using stale defaults
   //    while still refusing broad parents such as home or Documents.
   const gitRoot = findNearestGitRoot(cwd);
   if (gitRoot) {
-    const matches = projects.filter((p) => samePath(canonicalProjectPath(p.workspacePath), gitRoot) && isSafeProjectRoot(p.workspacePath).safe);
+    const matches = projects.filter(
+      (p) =>
+        samePath(canonicalProjectPath(p.workspacePath), gitRoot) &&
+        isSafeProjectRoot(p.workspacePath).safe,
+    );
     if (matches.length === 1) return matches[0]!;
-    if (matches.length > 1) throw usageError("Multiple registered projects match this Git repository.", "Pass --project <id> to choose one explicitly.");
+    if (matches.length > 1)
+      throw usageError(
+        "Multiple registered projects match this Git repository.",
+        "Pass --project <id> to choose one explicitly.",
+      );
   }
 
   // 4. The configured default project (only when cwd is not itself a workspace).
@@ -102,7 +133,7 @@ export async function resolveProject(
     if (configuredProject && !gitRoot) {
       if (!ctx.out.json) {
         ctx.out.warn(
-          `This directory isn't a registered Morrow project — resuming "${configuredProject.name}" instead. Run \`morrow init\` here to start fresh in this directory.`
+          `This directory isn't a registered Morrow project — resuming "${configuredProject.name}" instead. Run \`morrow init\` here to start fresh in this directory.`,
         );
       }
       return configuredProject;
@@ -113,11 +144,12 @@ export async function resolveProject(
 
   // 5. Interactive users get an explicit choice instead of silent filesystem
   //    access. Non-interactive commands fail with a clear refusal.
-  if (isInteractive(ctx)) return interactiveProjectSelection(ctx, api, projects);
+  if (isInteractive(ctx))
+    return interactiveProjectSelection(ctx, api, projects);
   if (!opts.required) return null;
   throw usageError(
     "No safe project selected.",
-    "Run `morrow init` inside a Git repository, pass --project <id|path>, or use the interactive `morrow` shell to choose a project."
+    "Run `morrow init` inside a Git repository, pass --project <id|path>, or use the interactive `morrow` shell to choose a project.",
   );
 }
 
@@ -138,13 +170,18 @@ async function resolveRef(
     const byPath = matchProjectByPath(projects, ref);
     if (byPath) return byPath;
     if (opts.autoCreateMissing) return autoCreateProjectForPath(ctx, api, ref);
-    throw notFound(`No project registered for path "${ref}". Add it with \`morrow projects add ${ref}\`.`);
+    throw notFound(
+      `No project registered for path "${ref}". Add it with \`morrow projects add ${ref}\`.`,
+    );
   }
 
   // Name match (unique).
   const byName = projects.filter((p) => p.name === ref);
   if (byName.length === 1) return byName[0]!;
-  if (byName.length > 1) throw usageError(`Multiple projects named "${ref}". Use the project id instead.`);
+  if (byName.length > 1)
+    throw usageError(
+      `Multiple projects named "${ref}". Use the project id instead.`,
+    );
 
   // Short-id prefix match — the id form `morrow projects list` prints (first 8
   // chars). Only after exact id/name so an exact match always wins.
@@ -178,9 +215,14 @@ export function matchProjectByIdPrefix(
   return { ambiguous: matches };
 }
 
-function matchProjectByPath(projects: Project[], ref: string): Project | undefined {
+function matchProjectByPath(
+  projects: Project[],
+  ref: string,
+): Project | undefined {
   const canonical = canonicalDirectory(ref) ?? ref;
-  return projects.find((p) => samePath(canonicalProjectPath(p.workspacePath), canonical));
+  return projects.find((p) =>
+    samePath(canonicalProjectPath(p.workspacePath), canonical),
+  );
 }
 
 /**
@@ -197,9 +239,17 @@ function matchProjectByPath(projects: Project[], ref: string): Project | undefin
  * An already-registered project at that path is reused rather than duplicated,
  * so re-running a build against the same directory keeps one mission history.
  */
-export async function resolveWorkspaceScope(ctx: Context, api: MorrowApi, ref: string): Promise<Project> {
+export async function resolveWorkspaceScope(
+  ctx: Context,
+  api: MorrowApi,
+  ref: string,
+): Promise<Project> {
   const requested = ref.trim();
-  if (!requested) throw usageError("--in requires a directory path.", "Example: morrow build \"…\" --in ./my-app");
+  if (!requested)
+    throw usageError(
+      "--in requires a directory path.",
+      'Example: morrow build "…" --in ./my-app',
+    );
   const target = resolve(requested);
   if (existsSync(target) && !statSync(target).isDirectory()) {
     throw usageError(`--in must name a directory, but ${target} is a file.`);
@@ -207,22 +257,34 @@ export async function resolveWorkspaceScope(ctx: Context, api: MorrowApi, ref: s
   const created = !existsSync(target);
   if (created) {
     const parsed = parse(target);
-    if (samePath(target, parsed.root)) throw usageError(`Refusing to use a drive root as a workspace: ${target}`);
+    if (samePath(target, parsed.root))
+      throw usageError(
+        `Refusing to use a drive root as a workspace: ${target}`,
+      );
     try {
       mkdirSync(target, { recursive: true });
     } catch (error) {
-      throw usageError(`Could not create workspace directory ${target}: ${error instanceof Error ? error.message : String(error)}`);
+      throw usageError(
+        `Could not create workspace directory ${target}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
-  const canonical = validateProjectDirectory(target, { force: flagBool(ctx.flags, "force") });
+  const canonical = validateProjectDirectory(target, {
+    force: flagBool(ctx.flags, "force"),
+  });
   prepareFreshWorkspace(ctx, canonical);
   const existing = matchProjectByPath(await api.listProjects(), canonical);
   if (existing) {
     ctx.out.diag(ctx.out.gray(`  workspace: ${existing.name}  ${canonical}`));
     return existing;
   }
-  const project = await api.createProject(basename(canonical) || canonical, canonical);
-  ctx.out.info(`${created ? "Created" : "Using"} workspace: ${project.name}  ${ctx.out.gray(canonical)}`);
+  const project = await api.createProject(
+    basename(canonical) || canonical,
+    canonical,
+  );
+  ctx.out.info(
+    `${created ? "Created" : "Using"} workspace: ${project.name}  ${ctx.out.gray(canonical)}`,
+  );
   return project;
 }
 
@@ -264,18 +326,32 @@ function prepareFreshWorkspace(ctx: Context, canonical: string): void {
     try {
       writeFileSync(gitignore, STARTER_GITIGNORE, "utf8");
     } catch {
-      ctx.out.warn(`Could not write ${gitignore}; generated files may appear as mission changes.`);
+      ctx.out.warn(
+        `Could not write ${gitignore}; generated files may appear as mission changes.`,
+      );
     }
   }
   if (existsSync(join(canonical, ".git"))) return;
-  const init = spawnSync("git", ["init"], { cwd: canonical, encoding: "utf8", windowsHide: true });
+  const init = spawnSync("git", ["init"], {
+    cwd: canonical,
+    encoding: "utf8",
+    windowsHide: true,
+  });
   if (init.status !== 0) {
-    ctx.out.warn("Could not initialize a Git repository here; mission change tracking and rollback will be limited.");
+    ctx.out.warn(
+      "Could not initialize a Git repository here; mission change tracking and rollback will be limited.",
+    );
   }
 }
 
-async function autoCreateProjectForPath(ctx: Context, api: MorrowApi, ref: string): Promise<Project> {
-  const canonical = validateProjectDirectory(ref, { force: flagBool(ctx.flags, "force") });
+async function autoCreateProjectForPath(
+  ctx: Context,
+  api: MorrowApi,
+  ref: string,
+): Promise<Project> {
+  const canonical = validateProjectDirectory(ref, {
+    force: flagBool(ctx.flags, "force"),
+  });
   const name = basename(canonical) || canonical;
   const project = await api.createProject(name, canonical);
   ctx.out.info(`Using current workspace as project: ${project.name}`);
@@ -283,12 +359,20 @@ async function autoCreateProjectForPath(ctx: Context, api: MorrowApi, ref: strin
 }
 
 export function looksLikePath(ref: string): boolean {
-  return ref.startsWith(".") || ref.startsWith("/") || ref.startsWith("~") || isAbsolute(ref) || ref.includes("/") || ref.includes("\\");
+  return (
+    ref.startsWith(".") ||
+    ref.startsWith("/") ||
+    ref.startsWith("~") ||
+    isAbsolute(ref) ||
+    ref.includes("/") ||
+    ref.includes("\\")
+  );
 }
 
 export function validateDirectory(path: string): string {
   if (!existsSync(path)) throw usageError(`Path does not exist: ${path}`);
-  if (!statSync(path).isDirectory()) throw usageError(`Path is not a directory: ${path}`);
+  if (!statSync(path).isDirectory())
+    throw usageError(`Path is not a directory: ${path}`);
   try {
     return realpathSync(path);
   } catch {
@@ -296,13 +380,16 @@ export function validateDirectory(path: string): string {
   }
 }
 
-export function validateProjectDirectory(path: string, opts: { force?: boolean } = {}): string {
+export function validateProjectDirectory(
+  path: string,
+  opts: { force?: boolean } = {},
+): string {
   const canonical = validateDirectory(path);
   const safety = isSafeProjectRoot(canonical);
   if (!safety.safe && !opts.force) {
     throw usageError(
       `Refusing to use unsafe workspace: ${canonical}`,
-      `${safety.reason}. Run this from a repository, choose a narrower directory, or repeat with --force if you intentionally want this scope.`
+      `${safety.reason}. Run this from a repository, choose a narrower directory, or repeat with --force if you intentionally want this scope.`,
     );
   }
   return canonical;
@@ -319,18 +406,35 @@ export function findNearestGitRoot(start: string): string | null {
   return null;
 }
 
-export function isSafeProjectRoot(path: string): { safe: boolean; reason?: string } {
+export function isSafeProjectRoot(path: string): {
+  safe: boolean;
+  reason?: string;
+} {
   const canonical = canonicalDirectory(path) ?? resolve(path);
   const parsed = parse(canonical);
-  if (samePath(canonical, parsed.root)) return { safe: false, reason: "Drive roots are too broad" };
+  if (samePath(canonical, parsed.root))
+    return { safe: false, reason: "Drive roots are too broad" };
 
   const home = canonicalDirectory(homedir());
-  if (home && samePath(canonical, home)) return { safe: false, reason: "Home directories are too broad" };
+  if (home && samePath(canonical, home))
+    return { safe: false, reason: "Home directories are too broad" };
 
   const base = basename(canonical).toLowerCase();
-  if (["documents", "desktop", "downloads"].includes(base)) return { safe: false, reason: `${basename(canonical)} is a broad user folder` };
-  if (base.startsWith("onedrive") && containsManyGitRepos(canonical, 2)) return { safe: false, reason: "OneDrive root contains multiple repositories" };
-  if (containsManyGitRepos(canonical, 3)) return { safe: false, reason: "Directory contains many unrelated Git repositories" };
+  if (["documents", "desktop", "downloads"].includes(base))
+    return {
+      safe: false,
+      reason: `${basename(canonical)} is a broad user folder`,
+    };
+  if (base.startsWith("onedrive") && containsManyGitRepos(canonical, 2))
+    return {
+      safe: false,
+      reason: "OneDrive root contains multiple repositories",
+    };
+  if (containsManyGitRepos(canonical, 3))
+    return {
+      safe: false,
+      reason: "Directory contains many unrelated Git repositories",
+    };
   return { safe: true };
 }
 
@@ -358,27 +462,41 @@ function normalizePath(path: string): string {
 
 function containsPath(parent: string, child: string): boolean {
   const rel = relative(parent, child);
-  return rel === "" || (rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel));
+  return (
+    rel === "" || (rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel))
+  );
 }
 
 /** All registered projects whose workspace contains `cwd`, tied for the
  *  deepest (most specific) match — usually one, but more than one means two
  *  projects were registered at the same path and the caller must refuse
  *  rather than arbitrarily pick the first, same as the Git-root fallback below. */
-function nearestContainingProjects(projects: Project[], cwd: string): Project[] {
+function nearestContainingProjects(
+  projects: Project[],
+  cwd: string,
+): Project[] {
   const matches = projects
-    .map((project) => ({ project, path: canonicalProjectPath(project.workspacePath), safety: isSafeProjectRoot(project.workspacePath) }))
+    .map((project) => ({
+      project,
+      path: canonicalProjectPath(project.workspacePath),
+      safety: isSafeProjectRoot(project.workspacePath),
+    }))
     .filter((item) => item.safety.safe && containsPath(item.path, cwd))
     .sort((a, b) => b.path.length - a.path.length);
   if (matches.length === 0) return [];
   const bestLength = matches[0]!.path.length;
-  return matches.filter((item) => item.path.length === bestLength).map((item) => item.project);
+  return matches
+    .filter((item) => item.path.length === bestLength)
+    .map((item) => item.project);
 }
 
 function containsManyGitRepos(path: string, threshold: number): boolean {
   let count = 0;
   try {
-    for (const child of readdirSync(path, { withFileTypes: true }).slice(0, 250)) {
+    for (const child of readdirSync(path, { withFileTypes: true }).slice(
+      0,
+      250,
+    )) {
       if (!child.isDirectory()) continue;
       if (existsSync(join(path, child.name, ".git"))) count++;
       if (count >= threshold) return true;
@@ -389,10 +507,16 @@ function containsManyGitRepos(path: string, threshold: number): boolean {
   return false;
 }
 
-async function interactiveProjectSelection(ctx: Context, api: MorrowApi, projects: Project[]): Promise<Project | null> {
+async function interactiveProjectSelection(
+  ctx: Context,
+  api: MorrowApi,
+  projects: Project[],
+): Promise<Project | null> {
   ctx.out.heading("Choose a project");
   ctx.out.info("Morrow will not inspect files until a project is explicit.");
-  const recent = projects.filter((p) => isSafeProjectRoot(p.workspacePath).safe);
+  const recent = projects.filter(
+    (p) => isSafeProjectRoot(p.workspacePath).safe,
+  );
   const choices = [
     ...(recent.length > 0 ? ["Open an existing project"] : []),
     "Register this folder",
@@ -400,9 +524,22 @@ async function interactiveProjectSelection(ctx: Context, api: MorrowApi, project
     "Continue without a project",
     "Exit",
   ];
-  const choice = choices[await select(ctx, "When launched outside a project", choices, (item) => item)]!;
+  const choice =
+    choices[
+      await select(
+        ctx,
+        "When launched outside a project",
+        choices,
+        (item) => item,
+      )
+    ]!;
   if (choice === "Open an existing project") {
-    const idx = await select(ctx, "Recent projects", recent, (p) => `${p.name}  ${ctx.out.gray(p.workspacePath)}`);
+    const idx = await select(
+      ctx,
+      "Recent projects",
+      recent,
+      (p) => `${p.name}  ${ctx.out.gray(p.workspacePath)}`,
+    );
     return recent[idx]!;
   }
   if (choice === "Initialize this folder") {
@@ -410,13 +547,19 @@ async function interactiveProjectSelection(ctx: Context, api: MorrowApi, project
     if (!path) return null;
     return autoCreateProjectForPath(ctx, api, path);
   }
-  if (choice === "Register this folder") return autoCreateProjectForPath(ctx, api, process.cwd());
+  if (choice === "Register this folder")
+    return autoCreateProjectForPath(ctx, api, process.cwd());
   if (choice === "Continue without a project") {
     const quick = await api.quickChat();
-    ctx.out.info(`Using filesystem-disabled chat workspace: ${quick.workspacePath}`);
+    ctx.out.info(
+      `Using filesystem-disabled chat workspace: ${quick.workspacePath}`,
+    );
     return api.getProject(quick.projectId);
   }
-  throw new CliError("No project selected.", { exitCode: EXIT.CANCELLED, code: "CANCELLED" });
+  throw new CliError("No project selected.", {
+    exitCode: EXIT.CANCELLED,
+    code: "CANCELLED",
+  });
 }
 
 // ── Interactive prompts ───────────────────────────────────────────────────────
@@ -456,13 +599,18 @@ export function ask(question: string): Promise<string> {
   });
 }
 
-export function askMultiline(question: string, opts: { endMarker?: string } = {}): Promise<string> {
+export function askMultiline(
+  question: string,
+  opts: { endMarker?: string } = {},
+): Promise<string> {
   prepareStdinForLineInput();
   const endMarker = opts.endMarker ?? ".";
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   const lines: string[] = [];
   process.stderr.write(question);
-  process.stderr.write(`\nEnd with a single ${JSON.stringify(endMarker)} on its own line.\n`);
+  process.stderr.write(
+    `\nEnd with a single ${JSON.stringify(endMarker)} on its own line.\n`,
+  );
   return new Promise((resolve) => {
     rl.on("line", (line) => {
       if (line === endMarker) {
@@ -475,7 +623,10 @@ export function askMultiline(question: string, opts: { endMarker?: string } = {}
   });
 }
 
-export async function confirm(question: string, defaultYes = false): Promise<boolean> {
+export async function confirm(
+  question: string,
+  defaultYes = false,
+): Promise<boolean> {
   const suffix = defaultYes ? " [Y/n] " : " [y/N] ";
   const answer = (await ask(question + suffix)).toLowerCase();
   if (!answer) return defaultYes;
@@ -483,11 +634,19 @@ export async function confirm(question: string, defaultYes = false): Promise<boo
 }
 
 /** Numbered single-choice selection from a list. Returns the chosen index. */
-export async function select<T>(ctx: Context, title: string, items: T[], render: (item: T) => string): Promise<number> {
-  if (items.length === 0) throw new CliError("Nothing to select.", { exitCode: EXIT.USAGE });
+export async function select<T>(
+  ctx: Context,
+  title: string,
+  items: T[],
+  render: (item: T) => string,
+): Promise<number> {
+  if (items.length === 0)
+    throw new CliError("Nothing to select.", { exitCode: EXIT.USAGE });
   ctx.out.diag("");
   ctx.out.diag(ctx.out.bold(title));
-  items.forEach((item, i) => ctx.out.diag(`  ${ctx.out.cyan(String(i + 1))}. ${render(item)}`));
+  items.forEach((item, i) =>
+    ctx.out.diag(`  ${ctx.out.cyan(String(i + 1))}. ${render(item)}`),
+  );
   while (true) {
     const answer = await ask(`Select 1-${items.length}: `);
     const n = Number(answer);

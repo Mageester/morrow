@@ -6,13 +6,22 @@ const ENTER = "\r";
 const DOWN = "\u001b[B";
 
 function plain(frame: string | undefined): string {
-  return (frame ?? "").replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[a-zA-Z]`, "g"), "");
+  return (frame ?? "").replace(
+    new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[a-zA-Z]`, "g"),
+    "",
+  );
 }
 
 describe("Ink onboarding launchpad", () => {
   it("shows value and makes provider connection the one primary setup action", () => {
     const onChoose = vi.fn();
-    const view = render(<OnboardingLaunchpad providerConfigured={false} unicode={false} onChoose={onChoose} />);
+    const view = render(
+      <OnboardingLaunchpad
+        providerConfigured={false}
+        unicode={false}
+        onChoose={onChoose}
+      />,
+    );
     const frame = plain(view.lastFrame());
     expect(frame).toContain("Private intelligence, ready on your machine");
     expect(frame).toContain('morrow "Summarize this repository"');
@@ -25,7 +34,13 @@ describe("Ink onboarding launchpad", () => {
 
   it("is keyboard navigable and lets setup be skipped", () => {
     const onChoose = vi.fn();
-    const view = render(<OnboardingLaunchpad providerConfigured={false} unicode onChoose={onChoose} />);
+    const view = render(
+      <OnboardingLaunchpad
+        providerConfigured={false}
+        unicode
+        onChoose={onChoose}
+      />,
+    );
     view.stdin.write(DOWN);
     view.stdin.write(ENTER);
     expect(onChoose).toHaveBeenCalledWith("explore");
@@ -33,7 +48,13 @@ describe("Ink onboarding launchpad", () => {
 
   it("shows a ready launch state when a provider is already connected", () => {
     const onChoose = vi.fn();
-    const view = render(<OnboardingLaunchpad providerConfigured unicode={false} onChoose={onChoose} />);
+    const view = render(
+      <OnboardingLaunchpad
+        providerConfigured
+        unicode={false}
+        onChoose={onChoose}
+      />,
+    );
     const frame = plain(view.lastFrame());
     expect(frame).toContain("A model is connected");
     expect(frame).toContain("Open Morrow");
@@ -72,7 +93,9 @@ describe("launchpad stdin handoff", () => {
       const actual = await vi.importActual<typeof import("ink")>("ink");
       return {
         ...actual,
-        render: (element: { props: { onChoose: (choice: string) => void } }) => {
+        render: (element: {
+          props: { onChoose: (choice: string) => void };
+        }) => {
           choose = element.props.onChoose;
           return { unmount, waitUntilExit };
         },
@@ -80,7 +103,10 @@ describe("launchpad stdin handoff", () => {
     });
 
     const mod = await import("../src/commands/onboard-ink.js");
-    const pending = mod.runOnboardingLaunchpad({ providerConfigured: true, unicode: false });
+    const pending = mod.runOnboardingLaunchpad({
+      providerConfigured: true,
+      unicode: false,
+    });
 
     let settled = false;
     void pending.then(() => {

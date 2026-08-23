@@ -5,12 +5,21 @@ import { Context } from "../cli/context.js";
 import { flagBool } from "../cli/args.js";
 import { EXIT, CliError } from "../cli/errors.js";
 import { ensureRunning, isRunning } from "../service/lifecycle.js";
-import { ask, askMultiline, confirm, select, validateDirectory } from "./common.js";
+import {
+  ask,
+  askMultiline,
+  confirm,
+  select,
+  validateDirectory,
+} from "./common.js";
 import { pickProvider, setupProvider } from "./provider-setup.js";
 import { discoverSkills, isSafeDefaultSkill } from "../skills/registry.js";
 import { localSkillsRoot } from "./skills.js";
 import { chatCommand } from "./chat.js";
-import { shouldUseInteractive, resolveUnicodeFlag } from "../terminal/capabilities.js";
+import {
+  shouldUseInteractive,
+  resolveUnicodeFlag,
+} from "../terminal/capabilities.js";
 import { runOnboardingLaunchpad } from "./onboard-ink.js";
 
 const STEPS = [
@@ -24,7 +33,11 @@ const STEPS = [
   "mission",
 ];
 
-export async function onboardCommand(ctx: Context, sub: string, args: string[]): Promise<number> {
+export async function onboardCommand(
+  ctx: Context,
+  sub: string,
+  args: string[],
+): Promise<number> {
   if (sub === "reset") {
     ctx.config.unset("user.onboarded", "user");
     ctx.config.unset("user.onboardingStep", "user");
@@ -80,12 +93,15 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
   // A capable terminal gets the fast, value-first Ink path. The legacy flow
   // remains an explicit escape hatch (`morrow onboard classic`) and the safe
   // fallback for redirected/non-interactive terminals.
-  if (sub !== "classic" && shouldUseInteractive({
-    json: flagBool(ctx.flags, "json"),
-    isTTY: Boolean(process.stdout.isTTY),
-    stdinIsTTY: Boolean(process.stdin.isTTY),
-    env: process.env,
-  })) {
+  if (
+    sub !== "classic" &&
+    shouldUseInteractive({
+      json: flagBool(ctx.flags, "json"),
+      isTTY: Boolean(process.stdout.isTTY),
+      stdinIsTTY: Boolean(process.stdin.isTTY),
+      env: process.env,
+    })
+  ) {
     const result = await runInkOnboarding(ctx);
     if (result !== "classic") return result;
   }
@@ -97,7 +113,7 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
     ctx.out.print();
     const resume = await confirm(
       `Onboarding was interrupted at step '${savedStep}'. Would you like to resume?`,
-      true
+      true,
     );
     if (resume) {
       currentStepIdx = STEPS.indexOf(savedStep);
@@ -116,11 +132,21 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
       // ignore
     }
 
-    ctx.out.print(ctx.out.gray(`─────────────────────────────────────────────────────────────`));
     ctx.out.print(
-      ctx.out.bold(`Step ${currentStepIdx + 1} of ${STEPS.length}: ${step.toUpperCase()}`)
+      ctx.out.gray(
+        `─────────────────────────────────────────────────────────────`,
+      ),
     );
-    ctx.out.print(ctx.out.gray(`─────────────────────────────────────────────────────────────`));
+    ctx.out.print(
+      ctx.out.bold(
+        `Step ${currentStepIdx + 1} of ${STEPS.length}: ${step.toUpperCase()}`,
+      ),
+    );
+    ctx.out.print(
+      ctx.out.gray(
+        `─────────────────────────────────────────────────────────────`,
+      ),
+    );
     ctx.out.print();
 
     let success = false;
@@ -130,7 +156,9 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
       ctx.out.error(`Error in step '${step}': ${e.message}`);
       const retry = await confirm("Would you like to retry this step?", true);
       if (!retry) {
-        ctx.out.warn("Onboarding interrupted. Resume later by running `morrow onboard`.");
+        ctx.out.warn(
+          "Onboarding interrupted. Resume later by running `morrow onboard`.",
+        );
         return EXIT.ERROR;
       }
       continue;
@@ -149,20 +177,35 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
   ctx.out.print();
   ctx.out.success("Morrow setup complete! Welcome aboard.");
   ctx.out.print();
-  ctx.out.print(ctx.out.bold("Start utilizing your companion with these commands:"));
+  ctx.out.print(
+    ctx.out.bold("Start utilizing your companion with these commands:"),
+  );
   ctx.out.print("  Launch interactive chat:       " + ctx.out.cyan("morrow"));
-  ctx.out.print("  Build a new project from zero: " + ctx.out.cyan('morrow build "<what you want>"'));
-  ctx.out.print("  Start with project autonomy:   " + ctx.out.cyan("morrow yolo"));
-  ctx.out.print("  Check setup status:            " + ctx.out.cyan("morrow onboard status"));
-  ctx.out.print("  Reset and rerun onboarding:    " + ctx.out.cyan("morrow onboard reset"));
+  ctx.out.print(
+    "  Build a new project from zero: " +
+      ctx.out.cyan('morrow build "<what you want>"'),
+  );
+  ctx.out.print(
+    "  Start with project autonomy:   " + ctx.out.cyan("morrow yolo"),
+  );
+  ctx.out.print(
+    "  Check setup status:            " + ctx.out.cyan("morrow onboard status"),
+  );
+  ctx.out.print(
+    "  Reset and rerun onboarding:    " + ctx.out.cyan("morrow onboard reset"),
+  );
   ctx.out.print();
   return EXIT.OK;
 }
 
-async function persistOnboardingStep(ctx: Context, step: string): Promise<void> {
+async function persistOnboardingStep(
+  ctx: Context,
+  step: string,
+): Promise<void> {
   ctx.config.set("user.onboardingStep", step, "user");
   try {
-    if (await isRunning(ctx)) await ctx.api().saveOnboardingState({ onboardingStep: step });
+    if (await isRunning(ctx))
+      await ctx.api().saveOnboardingState({ onboardingStep: step });
   } catch {
     // Local config remains the resumable source when the service is unavailable.
   }
@@ -171,25 +214,40 @@ async function persistOnboardingStep(ctx: Context, step: string): Promise<void> 
 async function completeOnboarding(ctx: Context): Promise<void> {
   // Collaborative agent mode is the safe useful default: workspace reads are
   // automatic; writes and commands still retain their approval boundary.
-  if (!ctx.config.get("defaults.mode")) ctx.config.set("defaults.mode", "agent", "user");
-  if (ctx.config.get("defaults.autoApprove") === undefined) ctx.config.set("defaults.autoApprove", "false", "user");
+  if (!ctx.config.get("defaults.mode"))
+    ctx.config.set("defaults.mode", "agent", "user");
+  if (ctx.config.get("defaults.autoApprove") === undefined)
+    ctx.config.set("defaults.autoApprove", "false", "user");
   ctx.config.set("user.onboarded", "true", "user");
   ctx.config.unset("user.onboardingStep", "user");
   try {
-    if (await isRunning(ctx)) await ctx.api().saveOnboardingState({ onboarded: true, onboardingStep: null });
+    if (await isRunning(ctx))
+      await ctx
+        .api()
+        .saveOnboardingState({ onboarded: true, onboardingStep: null });
   } catch {
     // Completion is durable locally and will reconcile when the service starts.
   }
 }
 
-export async function runInkOnboarding(ctx: Context): Promise<number | "classic"> {
+export async function runInkOnboarding(
+  ctx: Context,
+): Promise<number | "classic"> {
   await ensureRunning(ctx);
   const api = ctx.api();
-  const unicode = resolveUnicodeFlag(ctx.config.get("ui.unicode") as boolean | undefined, process.env);
-  let configured = (await api.listProviders()).some((provider) => provider.configured);
+  const unicode = resolveUnicodeFlag(
+    ctx.config.get("ui.unicode") as boolean | undefined,
+    process.env,
+  );
+  let configured = (await api.listProviders()).some(
+    (provider) => provider.configured,
+  );
   await persistOnboardingStep(ctx, configured ? "launch" : "provider");
 
-  let choice = await runOnboardingLaunchpad({ providerConfigured: configured, unicode });
+  let choice = await runOnboardingLaunchpad({
+    providerConfigured: configured,
+    unicode,
+  });
   if (choice === "classic") return "classic";
   if (choice === "cancel") {
     ctx.out.info("Setup paused. Run `morrow onboard` to resume.");
@@ -198,27 +256,40 @@ export async function runInkOnboarding(ctx: Context): Promise<number | "classic"
   if (choice === "explore") {
     await completeOnboarding(ctx);
     ctx.out.success("Morrow is ready to explore.");
-    ctx.out.info("Connect a model when you want to run a task: `morrow providers configure`.");
+    ctx.out.info(
+      "Connect a model when you want to run a task: `morrow providers configure`.",
+    );
     return EXIT.OK;
   }
 
   if (choice === "connect") {
     const target = await pickProvider(ctx, api);
     if (target) {
-      const result = await setupProvider(ctx, api, target, { interactive: true });
+      const result = await setupProvider(ctx, api, target, {
+        interactive: true,
+      });
       if (!result.ok && result.detail) ctx.out.warn(result.detail);
     }
-    configured = (await api.listProviders()).some((provider) => provider.configured);
+    configured = (await api.listProviders()).some(
+      (provider) => provider.configured,
+    );
     if (!configured) {
       ctx.out.warn("No model is connected yet. Setup is saved at this step.");
-      ctx.out.info("Run `morrow onboard` to resume, or `morrow providers configure` directly.");
+      ctx.out.info(
+        "Run `morrow onboard` to resume, or `morrow providers configure` directly.",
+      );
       return EXIT.OK;
     }
     await persistOnboardingStep(ctx, "launch");
-    choice = await runOnboardingLaunchpad({ providerConfigured: true, unicode });
+    choice = await runOnboardingLaunchpad({
+      providerConfigured: true,
+      unicode,
+    });
     if (choice === "classic") return "classic";
     if (choice === "cancel") {
-      ctx.out.info("Your model connection is saved. Run `morrow onboard` to finish.");
+      ctx.out.info(
+        "Your model connection is saved. Run `morrow onboard` to finish.",
+      );
       return EXIT.OK;
     }
   }
@@ -226,7 +297,9 @@ export async function runInkOnboarding(ctx: Context): Promise<number | "classic"
   await completeOnboarding(ctx);
   if (choice === "start") return chatCommand(ctx);
   ctx.out.success("Morrow setup is complete.");
-  ctx.out.print("Run `morrow` to open the terminal, or `morrow config` for optional customization.");
+  ctx.out.print(
+    "Run `morrow` to open the terminal, or `morrow config` for optional customization.",
+  );
   return EXIT.OK;
 }
 
@@ -238,18 +311,20 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       // bolted together. The figlet block that used to sit here was also
       // malformed -- its glyph columns did not line up and the final row was
       // short -- so it is replaced by the same wordmark the launchpad uses.
-      ctx.out.print(`${ctx.out.bold(ctx.out.cyan("MORROW"))}${ctx.out.gray("  private · local-first · yours")}`);
+      ctx.out.print(
+        `${ctx.out.bold(ctx.out.cyan("MORROW"))}${ctx.out.gray("  private · local-first · yours")}`,
+      );
       ctx.out.print();
       ctx.out.print(ctx.out.bold("Private intelligence, built around you."));
       ctx.out.print();
       ctx.out.print(
-        "Morrow is your private intelligence companion. Designed to run completely"
+        "Morrow is your private intelligence companion. Designed to run completely",
       );
       ctx.out.print(
-        "on your local hardware, it keeps your code, indices, and memories strictly"
+        "on your local hardware, it keeps your code, indices, and memories strictly",
       );
       ctx.out.print(
-        "confidential. Bring your own keys to access models directly, without intermediation."
+        "confidential. Bring your own keys to access models directly, without intermediation.",
       );
       ctx.out.print();
       ctx.out.print(ctx.out.gray("Estimated setup time: ~3 minutes"));
@@ -259,7 +334,9 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
     }
 
     case "profile": {
-      ctx.out.print("Please tell us your name so Morrow can personalize interactions.");
+      ctx.out.print(
+        "Please tell us your name so Morrow can personalize interactions.",
+      );
       ctx.out.print();
       let name = "";
       while (!name) {
@@ -278,7 +355,9 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
     }
 
     case "usecase": {
-      ctx.out.print("Select your primary use case to help tailor prompt responses.");
+      ctx.out.print(
+        "Select your primary use case to help tailor prompt responses.",
+      );
       ctx.out.print();
       const options = [
         "Software Development",
@@ -287,7 +366,12 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
         "General Productivity",
         "Custom / Personal",
       ];
-      const idx = await select(ctx, "Primary Use Case", options, (item) => item);
+      const idx = await select(
+        ctx,
+        "Primary Use Case",
+        options,
+        (item) => item,
+      );
       const chosen = options[idx]!;
       ctx.config.set("user.useCase", chosen, "user");
       try {
@@ -304,15 +388,23 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       await ensureRunning(ctx);
       const api = ctx.api();
 
-      ctx.out.print("Morrow talks directly to model providers using your own credentials.");
-      ctx.out.print("Pick as many as you like — you can switch between them at any time.");
+      ctx.out.print(
+        "Morrow talks directly to model providers using your own credentials.",
+      );
+      ctx.out.print(
+        "Pick as many as you like — you can switch between them at any time.",
+      );
       ctx.out.print();
       ctx.out.print(
         ctx.out.gray(
-          "Some providers let you sign in with a subscription you already pay for; the rest use an API key from their console."
-        )
+          "Some providers let you sign in with a subscription you already pay for; the rest use an API key from their console.",
+        ),
       );
-      ctx.out.print(ctx.out.gray(`Credentials are stored locally at ${ctx.paths.secretsFile} and never sent anywhere but the provider you chose.`));
+      ctx.out.print(
+        ctx.out.gray(
+          `Credentials are stored locally at ${ctx.paths.secretsFile} and never sent anywhere but the provider you chose.`,
+        ),
+      );
 
       // The whole flow — sign-in or key, persistence through the running
       // service, verification, and model discovery — is shared with
@@ -324,7 +416,9 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
         try {
           // `onboard` is a guided, human-driven flow by definition, so it may
           // always prompt regardless of TTY detection.
-          const result = await setupProvider(ctx, api, target, { interactive: true });
+          const result = await setupProvider(ctx, api, target, {
+            interactive: true,
+          });
           if (!result.ok && result.detail) ctx.out.warn(result.detail);
         } catch (e: any) {
           // A failure on one provider must not abandon the whole setup step.
@@ -335,14 +429,20 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
         if (!(await confirm("Set up another provider?", false))) break;
       }
 
-      const configured = (await api.listProviders()).filter((p) => p.configured);
+      const configured = (await api.listProviders()).filter(
+        (p) => p.configured,
+      );
       if (configured.length === 0) {
         ctx.out.print();
-        ctx.out.warn("No provider is configured yet — Morrow cannot run a model until one is.");
+        ctx.out.warn(
+          "No provider is configured yet — Morrow cannot run a model until one is.",
+        );
         ctx.out.info("Add one any time with `morrow providers configure`.");
       } else {
         ctx.out.print();
-        ctx.out.success(`${configured.length} provider${configured.length === 1 ? "" : "s"} ready: ${configured.map((p) => p.label).join(", ")}.`);
+        ctx.out.success(
+          `${configured.length} provider${configured.length === 1 ? "" : "s"} ready: ${configured.map((p) => p.label).join(", ")}.`,
+        );
       }
       return true;
     }
@@ -374,16 +474,25 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
         },
       ];
 
-      const idx = await select(ctx, "Autonomy Level", options, (item) => `${item.title} - ${item.desc}`);
+      const idx = await select(
+        ctx,
+        "Autonomy Level",
+        options,
+        (item) => `${item.title} - ${item.desc}`,
+      );
       const choice = options[idx]!;
       const mappedMode = choice.id === "yolo" ? "agent" : choice.id;
       ctx.config.set("defaults.mode", mappedMode, "user");
-      ctx.config.set("defaults.autoApprove", String(choice.id === "yolo"), "user");
+      ctx.config.set(
+        "defaults.autoApprove",
+        String(choice.id === "yolo"),
+        "user",
+      );
 
       if (choice.id === "yolo") {
         ctx.out.print();
         ctx.out.info(
-          "YOLO mode enabled. Morrow is workspace-autonomous: it edits, runs, and verifies inside the workspace without prompting — not unlimited system access. Hard safety denials protect your secrets and system, while full audit logs, diffs, and undo commands remain active."
+          "YOLO mode enabled. Morrow is workspace-autonomous: it edits, runs, and verifies inside the workspace without prompting — not unlimited system access. Hard safety denials protect your secrets and system, while full audit logs, diffs, and undo commands remain active.",
         );
       }
       return true;
@@ -391,28 +500,48 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
 
     case "skills": {
       const skills = discoverSkills(localSkillsRoot());
-      const safe = skills.filter((s) => isSafeDefaultSkill(s.id, s.manifest.riskClass));
-      const highRisk = skills.filter((s) => !isSafeDefaultSkill(s.id, s.manifest.riskClass));
+      const safe = skills.filter((s) =>
+        isSafeDefaultSkill(s.id, s.manifest.riskClass),
+      );
+      const highRisk = skills.filter(
+        (s) => !isSafeDefaultSkill(s.id, s.manifest.riskClass),
+      );
 
-      ctx.out.print("Skills are local scripts carrying out task operations on your files.");
-      ctx.out.print("All skills run 100% locally. Morrow does not support remote skills or hosted marketplaces.");
+      ctx.out.print(
+        "Skills are local scripts carrying out task operations on your files.",
+      );
+      ctx.out.print(
+        "All skills run 100% locally. Morrow does not support remote skills or hosted marketplaces.",
+      );
       ctx.out.print();
 
       ctx.out.print(ctx.out.bold("Safe default skills:"));
       for (const skill of safe) {
-        ctx.out.print(`  ${ctx.out.cyan(skill.id)} ${ctx.out.gray(`(${skill.manifest.riskClass} risk)`)}`);
+        ctx.out.print(
+          `  ${ctx.out.cyan(skill.id)} ${ctx.out.gray(`(${skill.manifest.riskClass} risk)`)}`,
+        );
         ctx.out.print(`    ${ctx.out.gray(skill.manifest.description)}`);
       }
       ctx.out.print();
 
       if (highRisk.length > 0) {
-        ctx.out.print(ctx.out.bold(ctx.out.yellow("High-risk / red-team skills (disabled by default):")));
+        ctx.out.print(
+          ctx.out.bold(
+            ctx.out.yellow(
+              "High-risk / red-team skills (disabled by default):",
+            ),
+          ),
+        );
         ctx.out.print(
           ctx.out.gray(
-            "  These probe or bypass model safety and can send data to external providers."
-          )
+            "  These probe or bypass model safety and can send data to external providers.",
+          ),
         );
-        ctx.out.print(ctx.out.gray("  They are never enabled by a blanket recommendation and must be approved one by one."));
+        ctx.out.print(
+          ctx.out.gray(
+            "  They are never enabled by a blanket recommendation and must be approved one by one.",
+          ),
+        );
         ctx.out.print();
       }
 
@@ -421,35 +550,56 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
         "Review and select skills individually",
         "Skip / Leave current setup",
       ];
-      const actionIdx = await select(ctx, "Choose Skill Setup Action:", actions, (item) => item);
+      const actionIdx = await select(
+        ctx,
+        "Choose Skill Setup Action:",
+        actions,
+        (item) => item,
+      );
 
       if (actionIdx === 0) {
         // Recommended path enables ONLY vetted safe-default skills; every
         // high-risk skill is explicitly left disabled.
-        for (const skill of safe) ctx.config.set(`skills.${skill.id}.enabled`, "true", "user");
-        for (const skill of highRisk) ctx.config.set(`skills.${skill.id}.enabled`, "false", "user");
-        ctx.out.success(`Enabled ${safe.length} safe default skill${safe.length === 1 ? "" : "s"}.`);
+        for (const skill of safe)
+          ctx.config.set(`skills.${skill.id}.enabled`, "true", "user");
+        for (const skill of highRisk)
+          ctx.config.set(`skills.${skill.id}.enabled`, "false", "user");
+        ctx.out.success(
+          `Enabled ${safe.length} safe default skill${safe.length === 1 ? "" : "s"}.`,
+        );
         if (highRisk.length > 0) {
           ctx.out.info(
-            `Left ${highRisk.length} high-risk skill${highRisk.length === 1 ? "" : "s"} disabled. Enable individually later with \`morrow skills enable <id>\`.`
+            `Left ${highRisk.length} high-risk skill${highRisk.length === 1 ? "" : "s"} disabled. Enable individually later with \`morrow skills enable <id>\`.`,
           );
         }
       } else if (actionIdx === 1) {
         // Safe skills default to on; high-risk skills default to off and show
         // their risk and requested permissions before the individual prompt.
         for (const skill of safe) {
-          const enable = await confirm(`Enable safe skill '${skill.manifest.name}'?`, true);
+          const enable = await confirm(
+            `Enable safe skill '${skill.manifest.name}'?`,
+            true,
+          );
           ctx.config.set(`skills.${skill.id}.enabled`, String(enable), "user");
         }
         for (const skill of highRisk) {
           ctx.out.print();
-          ctx.out.warn(`${skill.manifest.name} — ${skill.manifest.riskClass} risk`);
+          ctx.out.warn(
+            `${skill.manifest.name} — ${skill.manifest.riskClass} risk`,
+          );
           ctx.out.print(`    ${ctx.out.gray(skill.manifest.description)}`);
-          ctx.out.print(`    ${ctx.out.gray("Requested permissions:")} ${skill.manifest.requestedTools.join(", ")}`);
+          ctx.out.print(
+            `    ${ctx.out.gray("Requested permissions:")} ${skill.manifest.requestedTools.join(", ")}`,
+          );
           if (skill.manifest.requestedNetworkDomains.length > 0) {
-            ctx.out.print(`    ${ctx.out.gray("Network:")} ${skill.manifest.requestedNetworkDomains.join(", ")}`);
+            ctx.out.print(
+              `    ${ctx.out.gray("Network:")} ${skill.manifest.requestedNetworkDomains.join(", ")}`,
+            );
           }
-          const enable = await confirm(`Enable HIGH-RISK skill '${skill.manifest.name}'?`, false);
+          const enable = await confirm(
+            `Enable HIGH-RISK skill '${skill.manifest.name}'?`,
+            false,
+          );
           ctx.config.set(`skills.${skill.id}.enabled`, String(enable), "user");
         }
       }
@@ -463,25 +613,40 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       const cwdPath = resolve(process.cwd());
       const cwdName = basename(cwdPath) || "current-directory";
 
-      ctx.out.print("Scanning home directory for projects and Git repositories…");
-      const repos = discoverLocalGitRepos().filter((r) => resolve(r.path) !== cwdPath);
+      ctx.out.print(
+        "Scanning home directory for projects and Git repositories…",
+      );
+      const repos = discoverLocalGitRepos().filter(
+        (r) => resolve(r.path) !== cwdPath,
+      );
 
       ctx.out.print();
       ctx.out.print(ctx.out.bold("Discovered Local Repositories:"));
       ctx.out.print(`  1. [Current Directory] ${cwdName} - ${cwdPath}`);
       repos.forEach((r, i) => {
-        ctx.out.print(`  ${ctx.out.cyan(String(i + 2))}. [Git] ${r.name} - ${r.path}`);
+        ctx.out.print(
+          `  ${ctx.out.cyan(String(i + 2))}. [Git] ${r.name} - ${r.path}`,
+        );
       });
       ctx.out.print();
 
       const options = [
         { type: "cwd", name: `${cwdName} (Current Directory)`, path: cwdPath },
-        ...repos.map((r) => ({ type: "discovered", name: r.name, path: r.path })),
+        ...repos.map((r) => ({
+          type: "discovered",
+          name: r.name,
+          path: r.path,
+        })),
         { type: "custom", name: "Add a custom workspace path…", path: "" },
         { type: "skip", name: "Skip project registration", path: "" },
       ];
 
-      const idx = await select(ctx, "Select a default project workspace:", options, (item) => item.name);
+      const idx = await select(
+        ctx,
+        "Select a default project workspace:",
+        options,
+        (item) => item.name,
+      );
       const choice = options[idx]!;
 
       if (choice.type === "skip") {
@@ -509,7 +674,9 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       ctx.out.info(`Registering project: ${name}…`);
       const project = await api.createProject(name, workspacePath);
       ctx.config.set("defaults.project", project.id, "user");
-      ctx.out.success(`Registered successfully! Scoped to: ${project.workspacePath}`);
+      ctx.out.success(
+        `Registered successfully! Scoped to: ${project.workspacePath}`,
+      );
       return true;
     }
 
@@ -530,7 +697,12 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
           "Exit onboarding",
         ];
 
-        const actionIdx = await select(ctx, "How would you like to proceed?", noProjectOptions, (item) => item);
+        const actionIdx = await select(
+          ctx,
+          "How would you like to proceed?",
+          noProjectOptions,
+          (item) => item,
+        );
 
         if (actionIdx === 0) {
           const cwdPath = resolve(process.cwd());
@@ -538,7 +710,9 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
           ctx.out.info(`Registering project: ${name}…`);
           const project = await api.createProject(name, cwdPath);
           ctx.config.set("defaults.project", project.id, "user");
-          ctx.out.success(`Registered successfully! Scoped to: ${project.workspacePath}`);
+          ctx.out.success(
+            `Registered successfully! Scoped to: ${project.workspacePath}`,
+          );
           defaultProjId = project.id;
         } else if (actionIdx === 1) {
           let workspacePath = "";
@@ -555,7 +729,9 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
           ctx.out.info(`Registering project: ${name}…`);
           const project = await api.createProject(name, workspacePath);
           ctx.config.set("defaults.project", project.id, "user");
-          ctx.out.success(`Registered successfully! Scoped to: ${project.workspacePath}`);
+          ctx.out.success(
+            `Registered successfully! Scoped to: ${project.workspacePath}`,
+          );
           defaultProjId = project.id;
         } else if (actionIdx === 2) {
           ctx.out.info("Starting without a project workspace scope.");
@@ -568,7 +744,9 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       let project: any = null;
       if (defaultProjId) {
         project = await api.getProject(defaultProjId);
-        ctx.out.print(`Morrow is ready to begin a mission inside: ${project.name}`);
+        ctx.out.print(
+          `Morrow is ready to begin a mission inside: ${project.name}`,
+        );
       } else {
         ctx.out.print("Morrow is ready to begin a mission.");
       }
@@ -579,14 +757,28 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       // the selected index against hardcoded 3 and 4, so inserting or
       // reordering an option silently changed which branch ran.
       const examples = [
-        { id: "explain", label: "Explain the project entry point and structure." },
-        { id: "document", label: "Scan this workspace for files and document them." },
-        { id: "check", label: "Locate configuration scripts and check for errors." },
+        {
+          id: "explain",
+          label: "Explain the project entry point and structure.",
+        },
+        {
+          id: "document",
+          label: "Scan this workspace for files and document them.",
+        },
+        {
+          id: "check",
+          label: "Locate configuration scripts and check for errors.",
+        },
         { id: "custom", label: "Enter a custom mission prompt…" },
         { id: "finish", label: "Finish setup without launching a mission" },
       ];
 
-      const idx = await select(ctx, "Select initial mission:", examples, (item) => item.label);
+      const idx = await select(
+        ctx,
+        "Select initial mission:",
+        examples,
+        (item) => item.label,
+      );
       const selected = examples[idx]!;
       if (selected.id === "finish") {
         return true;
@@ -596,7 +788,9 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       if (selected.id === "custom") {
         missionText = "";
         while (!missionText) {
-          missionText = await askMultiline("What would you like Morrow to help you with?");
+          missionText = await askMultiline(
+            "What would you like Morrow to help you with?",
+          );
           if (!missionText.trim()) {
             ctx.out.warn("Mission prompt cannot be empty.");
             missionText = "";
@@ -607,7 +801,9 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       if (!project) {
         const cwdPath = resolve(process.cwd());
         const name = basename(cwdPath) || "Current Directory";
-        ctx.out.info(`Auto-registering current directory: ${name} to launch mission…`);
+        ctx.out.info(
+          `Auto-registering current directory: ${name} to launch mission…`,
+        );
         project = await api.createProject(name, cwdPath);
         ctx.config.set("defaults.project", project.id, "user");
       }
@@ -625,7 +821,9 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
           message: missionText,
           resume: conv.id,
           project: project.id,
-          ...(ctx.config.get("defaults.autoApprove") === true ? { yolo: true } : {}),
+          ...(ctx.config.get("defaults.autoApprove") === true
+            ? { yolo: true }
+            : {}),
         },
       });
 

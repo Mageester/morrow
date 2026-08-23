@@ -6,7 +6,13 @@ import { createDispatcher } from "./command-dispatch.js";
 import { OverlayStore } from "./overlay-store.js";
 import { TerminalStore } from "./store.js";
 import { mapTaskEvent } from "../task-event-adapter.js";
-import { builtinRegistry, skillCommands, type CommandContext, type CommandRegistry, type SessionInfo } from "../commands/index.js";
+import {
+  builtinRegistry,
+  skillCommands,
+  type CommandContext,
+  type CommandRegistry,
+  type SessionInfo,
+} from "../commands/index.js";
 import { errorText } from "../commands/format.js";
 import { editExternally } from "../external-editor.js";
 import type { SendOptions, SessionBackend } from "../session-types.js";
@@ -41,7 +47,11 @@ export interface ShellOptions {
   /** Streams for the renderer. Injected only by tests — the same seam the
    *  previous session exposed as `TermIO`, and the reason the runtime loop can
    *  be exercised without a terminal. */
-  io?: { stdout?: NodeJS.WriteStream; stdin?: NodeJS.ReadStream; stderr?: NodeJS.WriteStream };
+  io?: {
+    stdout?: NodeJS.WriteStream;
+    stdin?: NodeJS.ReadStream;
+    stderr?: NodeJS.WriteStream;
+  };
 }
 
 export interface ShellHandle {
@@ -71,7 +81,53 @@ export function startShell(options: ShellOptions): ShellHandle {
     terminalOutput.write(LEAVE_APPLICATION_SCREEN);
     applicationScreenActive = false;
   };
+
+  /**
+   * Restore the terminal even when this process does not exit cleanly.
+   *
+   * The alternate buffer used to be left behind by anything that was not an
+   * ordinary stop -- a crash, an unhandled rejection, a signal. A terminal
+   * stranded in the alternate buffer has no scrollback, and its wheel sends
+   * arrow keys to the foreground program, so scrolling up walks the user's
+   * shell history instead of scrolling. That outlives Morrow: the damage is to
+   * the invoking shell, and only `reset` or a manual `ESC[?1049l` clears it.
+   *
+   * `exit` covers ordinary and error exits and must stay synchronous, which a
+   * TTY write is. Signals do not fire `exit` on their own, so they restore the
+   * screen and then re-raise with the default disposition so exit codes stay
+   * truthful. Errors are re-thrown rather than swallowed -- restoring the
+   * screen must not turn a crash into a silent success.
+   */
+  const restoreScreenOnAbnormalExit = () => {
+    if (terminalOutput.isTTY !== true) return () => {};
+    const onExit = () => leaveApplicationScreen();
+    const onSignal = (signal: NodeJS.Signals) => {
+      leaveApplicationScreen();
+      process.removeListener(signal, onSignal);
+      process.kill(process.pid, signal);
+    };
+    const onFatal = (error: unknown) => {
+      leaveApplicationScreen();
+      throw error;
+    };
+    process.on("exit", onExit);
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
+    process.on("SIGHUP", onSignal);
+    process.on("uncaughtException", onFatal);
+    process.on("unhandledRejection", onFatal);
+    return () => {
+      process.removeListener("exit", onExit);
+      process.removeListener("SIGINT", onSignal);
+      process.removeListener("SIGTERM", onSignal);
+      process.removeListener("SIGHUP", onSignal);
+      process.removeListener("uncaughtException", onFatal);
+      process.removeListener("unhandledRejection", onFatal);
+    };
+  };
+
   enterApplicationScreen();
+  const releaseScreenGuards = restoreScreenOnAbnormalExit();
 
   const store = new TerminalStore();
   const approvals = new ApprovalStore();
@@ -99,14 +155,19 @@ export function startShell(options: ShellOptions): ShellHandle {
           // floor: the prompt never appeared, the keystroke answering it went
           // into the composer, and the task waited for a decision nobody could
           // see. `id` stays as a fallback rather than an assumption.
-          const payload = raw.payload as { approvalId?: unknown; id?: unknown } | undefined;
+          const payload = raw.payload as
+            { approvalId?: unknown; id?: unknown } | undefined;
           const raw_id = payload?.approvalId ?? payload?.id;
           const id = typeof raw_id === "string" ? raw_id : null;
           if (id) {
             try {
               approvals.set(await options.backend.getApproval(id));
             } catch (error) {
-              emit({ type: "notice", level: "error", text: `An approval could not be loaded: ${errorText(error)}` });
+              emit({
+                type: "notice",
+                level: "error",
+                text: `An approval could not be loaded: ${errorText(error)}`,
+              });
             }
           } else {
             // Better a visible complaint than a session that hangs in silence.
@@ -122,7 +183,11 @@ export function startShell(options: ShellOptions): ShellHandle {
           // The first token of the answer is what ends "thinking" for a reader.
           // The runtime has no view on that — it only knows it emitted text —
           // so the boundary is drawn here, once, rather than by every surface.
-          if (event.type === "assistant.delta" && store.state.reasoning && store.state.reasoningMs === undefined) {
+          if (
+            event.type === "assistant.delta" &&
+            store.state.reasoning &&
+            store.state.reasoningMs === undefined
+          ) {
             store.apply({ type: "reasoning.settled" });
           }
           store.apply(event);
@@ -132,7 +197,11 @@ export function startShell(options: ShellOptions): ShellHandle {
       // A dropped stream is reported rather than thrown away: the reducer
       // already models this, and silently ending a turn is the failure mode
       // that made the old shell feel broken.
-      emit({ type: "notice", level: "error", text: `The response stream ended unexpectedly: ${errorText(error)}` });
+      emit({
+        type: "notice",
+        level: "error",
+        text: `The response stream ended unexpectedly: ${errorText(error)}`,
+      });
     } finally {
       if (activeTask?.id === taskId) activeTask = null;
       // A message typed while the task ran is sent now, in order. It is a
@@ -159,7 +228,11 @@ export function startShell(options: ShellOptions): ShellHandle {
         return runTask(result.taskId);
       })
       .catch((error: unknown) => {
-        emit({ type: "notice", level: "error", text: `Morrow could not accept that message: ${errorText(error)}` });
+        emit({
+          type: "notice",
+          level: "error",
+          text: `Morrow could not accept that message: ${errorText(error)}`,
+        });
       });
 
   const interrupt = (): boolean => {
@@ -247,7 +320,8 @@ export function startShell(options: ShellOptions): ShellHandle {
     // is a bare decision.
     const details = pending.details as { pattern?: unknown };
     const trust =
-      (decision === "trust_session" || decision === "trust_project") && pending.kind === "command"
+      (decision === "trust_session" || decision === "trust_project") &&
+      pending.kind === "command"
         ? String(details.pattern ?? "")
         : undefined;
     emit({
@@ -255,9 +329,15 @@ export function startShell(options: ShellOptions): ShellHandle {
       level: decision === "deny" ? "warn" : "info",
       text: `${pending.kind === "command" ? "Command" : "Patch"} ${approvalDecisionLabel(decision)}.`,
     });
-    void options.backend.resolveApproval(pending.id, decision, trust).catch((error: unknown) => {
-      emit({ type: "notice", level: "error", text: `Approval failed: ${errorText(error)}` });
-    });
+    void options.backend
+      .resolveApproval(pending.id, decision, trust)
+      .catch((error: unknown) => {
+        emit({
+          type: "notice",
+          level: "error",
+          text: `Approval failed: ${errorText(error)}`,
+        });
+      });
   };
 
   /**
@@ -275,17 +355,23 @@ export function startShell(options: ShellOptions): ShellHandle {
     const wasRaw = stdin.isRaw === true;
     try {
       leaveApplicationScreen();
-      if (wasRaw && typeof stdin.setRawMode === "function") stdin.setRawMode(false);
+      if (wasRaw && typeof stdin.setRawMode === "function")
+        stdin.setRawMode(false);
       stdin.pause();
       const result = editExternally(text);
       if (result.error) {
-        emit({ type: "notice", level: "warn", text: `Could not edit that here: ${result.error}.` });
+        emit({
+          type: "notice",
+          level: "warn",
+          text: `Could not edit that here: ${result.error}.`,
+        });
         return null;
       }
       return result.text;
     } finally {
       stdin.resume();
-      if (wasRaw && typeof stdin.setRawMode === "function") stdin.setRawMode(true);
+      if (wasRaw && typeof stdin.setRawMode === "function")
+        stdin.setRawMode(true);
       enterApplicationScreen();
       // The editor drew over the frame Ink believes is on screen, so the next
       // render has to start from a clean one rather than patching a screen
@@ -328,6 +414,7 @@ export function startShell(options: ShellOptions): ShellHandle {
     activeTask?.abort.abort();
     instance.unmount();
     leaveApplicationScreen();
+    releaseScreenGuards();
   };
   stopShell = stop;
   clearTerminal = () => instance.clear();
@@ -346,7 +433,8 @@ export function startShell(options: ShellOptions): ShellHandle {
       .getTask(candidate)
       .then((aggregate) => {
         const status = aggregate.task.status;
-        if (status === "running" || status === "queued") void runTask(candidate);
+        if (status === "running" || status === "queued")
+          void runTask(candidate);
       })
       .catch(() => {
         // An unreadable task is not a reason to fail the session; it just means
