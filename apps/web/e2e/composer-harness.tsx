@@ -1,12 +1,95 @@
 import type { ChatComposerSubmission } from "../src/features/chat/chat-composer.js";
 import { ChatComposer } from "../src/features/chat/chat-composer.js";
+import type { ModelStatus, PresetStatus } from "@morrow/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@morrow/ui/styles.css";
 import "../src/styles/app.css";
+// The premium layer retunes the production composer (chip bar metrics,
+// overflow behavior, popover surfaces). The harness must load the same
+// cascade as the app or it verifies a composer that no user ever sees.
+import "../src/styles/premium/index.css";
 
 type Outcome = "accept" | "reject" | "throw" | "delay-accept" | "delay-reject";
+
+const harnessModelCatalogue: { models: ReadonlyArray<ModelStatus>; presets: ReadonlyArray<PresetStatus> } = {
+  models: [
+    {
+      model: {
+        version: 1,
+        id: "vendor/model-a",
+        canonicalId: "model-a",
+        aliases: [],
+        providerId: "openrouter",
+        label: "Harness Model A",
+        contextWindow: 128_000,
+        maxOutputTokens: 8_192,
+        pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, source: "provider-reported" },
+        tokenUsage: true,
+        streamingUsage: true,
+        capabilities: { streaming: true, toolCalls: true, vision: false },
+        speedClass: "balanced",
+        costClass: "free",
+        privacy: "remote",
+        builtIn: false,
+        lifecycle: "current",
+      },
+      available: true,
+      availabilityReason: null,
+    },
+    {
+      model: {
+        version: 1,
+        id: "vendor/model-b",
+        canonicalId: "model-b",
+        aliases: [],
+        providerId: "openrouter",
+        label: "Harness Model B",
+        contextWindow: 64_000,
+        maxOutputTokens: 4_096,
+        pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, source: "provider-reported" },
+        tokenUsage: true,
+        streamingUsage: true,
+        capabilities: { streaming: true, toolCalls: true, vision: false },
+        speedClass: "fast",
+        costClass: "free",
+        privacy: "local",
+        builtIn: false,
+        lifecycle: "current",
+      },
+      available: true,
+      availabilityReason: null,
+    },
+  ],
+  presets: [
+    {
+      preset: {
+        version: 1,
+        id: "balanced",
+        label: "Balanced route",
+        description: "Harness balanced preset",
+        providerOrder: ["openrouter"],
+        modelPreferences: {},
+        temperature: null,
+        reasoningEffort: null,
+        toolProfile: "agent",
+        contextBudgetBytes: 200_000,
+        outputBudgetTokens: 4_096,
+        timeoutMs: 120_000,
+        maxAttempts: 2,
+        maxToolIterations: 8,
+        privacy: "cloud",
+        privacyDescription: "Harness",
+        costDescription: "Harness",
+        requiresLocal: false,
+      },
+      available: true,
+      unavailableReason: null,
+      resolved: { providerId: "openrouter", model: "vendor/model-a" },
+    },
+  ],
+};
 
 function ComposerHarness() {
   const [activeTaskId, setActiveTaskId] = useState<string | undefined>();
@@ -71,12 +154,15 @@ function ComposerHarness() {
         activeTaskId={activeTaskId}
         autoFocus
         draftScope={{ projectId, conversationId }}
+        modelCatalogue={harnessModelCatalogue}
         modelRoutes={[
           { id: "balanced", label: "Balanced route", preset: "balanced" },
           { id: "direct", label: "Direct model", providerId: "openrouter", model: "vendor/model-a" },
         ]}
         onProjectChange={setProjectId}
         onStop={async () => { setActiveTaskId(undefined); }}
+        onReasoningConfigChange={() => {}}
+        onShowReasoningChange={() => {}}
         onSubmit={submit}
         projectId={projectId}
         projects={[

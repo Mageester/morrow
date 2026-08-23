@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
+import type { MemoryScope } from "@morrow/contracts";
 import { openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
@@ -9,6 +10,7 @@ import { delegationsRepository } from "../src/repositories/delegations.js";
 import { handoffsRepository } from "../src/repositories/handoffs.js";
 import { assistantProfileRepository } from "../src/repositories/assistant-profile.js";
 import { memoryRepository } from "../src/repositories/memory.js";
+import { buildAgentExecutionPolicy } from "../src/security/agent-execution-policy.js";
 
 function ts() { return new Date().toISOString(); }
 
@@ -200,6 +202,55 @@ describe("agentsRepository — team delegation fields", () => {
     expect(agent.teamId).toBeNull();
     expect(agent.memoryReadScopes).toEqual([]);
     expect(agent.maxProviderCalls).toBeNull();
+  });
+});
+
+describe("buildAgentExecutionPolicy — delegation memory scopes", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDatabase(":memory:");
+    projectRepository(db).createProject({ id: "p1", name: "P1", workspacePath: process.cwd(), createdAt: ts() });
+  });
+  afterEach(() => db.close());
+
+  it("keeps delegated writes narrower than delegated reads instead of mirroring them", () => {
+    const agent = agentsRepository(db).create({
+      id: "agent-policy", projectId: "p1", name: "Member", role: "tester",
+      memoryReadScopes: ["project", "team"], memoryWriteScopes: ["agent"],
+    });
+    const delegation = {
+      allowedTools: ["read_file"],
+      allowedMemoryScopes: ["project", "team"] as MemoryScope[],
+      allowedWriteMemoryScopes: ["agent"] as MemoryScope[],
+      approvalRequired: true,
+      budget: { maxProviderCalls: 4, maxTokenBudget: 4000, maxWallClockMs: 60000 },
+    };
+    const policy = buildAgentExecutionPolicy(agent, [], delegation);
+    expect(policy.canReadMemory("team")).toBe(true);
+    expect(policy.canReadMemory("project")).toBe(true);
+    // The delegation grants no team-scope writes even though reads include it.
+    expect(policy.canWriteMemory("team")).toBe(false);
+    expect(policy.canWriteMemory("agent")).toBe(true);
+  });
+
+  it("treats a delegation with no explicit allow rows as unrestricted-minus-denies, not zero tools", () => {
+    const agent = agentsRepository(db).create({ id: "agent-deny-only", projectId: "p1", name: "Legacy", role: "custom" });
+    // A legacy deny-only profile: no allow rows, so the standing policy is
+    // unrestricted except for the named denials.
+    const permissions = [
+      { version: 1 as const, id: "perm-1", agentId: agent.id, toolName: "run_command", effect: "deny" as const, priority: 10, createdAt: ts() },
+    ];
+    const delegation = {
+      allowedTools: [] as string[],
+      allowedMemoryScopes: [] as MemoryScope[],
+      allowedWriteMemoryScopes: [] as MemoryScope[],
+      approvalRequired: true,
+      budget: { maxProviderCalls: null, maxTokenBudget: null, maxWallClockMs: null },
+    };
+    const policy = buildAgentExecutionPolicy(agent, permissions, delegation);
+    expect(policy.canUseTool("search_text")).toBe(true);
+    expect(policy.canUseTool("read_file")).toBe(true);
+    expect(policy.canUseTool("run_command")).toBe(false);
   });
 });
 

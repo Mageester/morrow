@@ -2,6 +2,8 @@ import { normalizeReasoningForRoute, reasoningModesForRoute, type AgentMode, typ
 import { Send, SlidersHorizontal, Square } from "lucide-react";
 import { CapabilityStatus } from "./capability-status.js";
 import { ModelPicker } from "./model-picker.js";
+import { createPortal } from "react-dom";
+import { useAnchoredPanel } from "./use-anchored-panel.js";
 import {
   useEffect,
   useId,
@@ -324,49 +326,32 @@ function ComposerPopover({
   label?: string | undefined;
   title: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onPointerDown(event: PointerEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    }
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown as unknown as EventListener);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown as unknown as EventListener);
-    };
-  }, [open]);
+  const panel = useAnchoredPanel<HTMLButtonElement>();
+  const open = panel.open;
 
   return (
-    <div className="morrow-composer-popover" ref={rootRef}>
+    <div className="morrow-composer-popover">
       <button
         aria-expanded={open}
         aria-haspopup="dialog"
         className="morrow-composer-popover__trigger"
         disabled={disabled}
-        onClick={() => setOpen((value) => !value)}
-        ref={triggerRef}
+        onClick={panel.toggle}
+        ref={panel.anchorRef}
         title={title}
         type="button"
       >
         {icon}
         {label ? <span>{label}</span> : null}
       </button>
-      {open ? (
-        <div aria-label={title} className="morrow-composer-popover__panel" role="dialog">
-          {children}
-        </div>
-      ) : null}
+      {open && typeof document !== "undefined"
+        ? createPortal(
+            <div aria-label={title} className="morrow-composer-popover__panel" ref={panel.panelRef} role="dialog" style={panel.style}>
+              {children}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

@@ -240,4 +240,38 @@ describe("model-initiated ask_teammate", () => {
     expect(taskRepository(db).getTaskById("parent")?.status).toBe("cancelled");
     expect(taskRepository(db).listChildren("parent")).toHaveLength(0);
   });
+
+  it("leaves one consistent interrupted state when the approved profile changed before execution", async () => {
+    const agents = agentsRepository(db);
+    const target = agents.create({ id: "stale-target", projectId: "p1", name: "Research", role: "researcher" });
+    const conversations = conversationsRepository(db);
+    conversations.createConversation({ id: "c-stale", projectId: "p1", title: "Delegated: Research", agentId: target.id, createdAt: now(), updatedAt: now() });
+    taskRepository(db).createTask({ id: "child-stale", projectId: "p1", kind: "agent_chat", status: "queued", agentId: target.id, createdAt: now() });
+    const userMessage = conversations.appendMessage({ id: "u-stale", conversationId: "c-stale", role: "user", content: "Do the bounded thing.", taskId: "child-stale", createdAt: now(), updatedAt: now() });
+    taskRoutingRepository(db).upsert({
+      taskId: "child-stale",
+      presetId: "best-quality",
+      providerId: "mock",
+      model: "mock-model",
+      useMemory: false,
+      decision: {
+        version: 1, presetId: "best-quality", providerId: "mock", model: "mock-model",
+        reason: "test", fallbackUsed: false, overridden: false, privacy: "cloud", candidates: [],
+        mode: "agent", autoApprove: false,
+      },
+      createdAt: now(),
+    });
+    // Approve-time binding that no longer matches the live profile.
+    db.prepare("UPDATE tasks SET expected_agent_profile_hash='stale-hash' WHERE id='child-stale'").run();
+
+    const provider = new MockProvider({ chunks: [[{ type: "text", text: "should never run" }, done]] });
+    await executeAgentChatTask({ db, taskId: "child-stale", provider, maxTurns: 2 } as any);
+
+    expect(taskRepository(db).getTaskById("child-stale")?.status).toBe("cancelled");
+    const agentState = taskRecordsRepository(db).getAgentState("child-stale");
+    expect(agentState?.state).toBe("interrupted");
+    expect(agentState?.details?.reason).toBe("agent_profile_changed");
+    const message = conversations.listMessages("c-stale").find((m) => m.id === userMessage.id);
+    expect(message?.streamingState).toBe("interrupted");
+  });
 });

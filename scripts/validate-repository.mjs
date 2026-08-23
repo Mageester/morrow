@@ -1,7 +1,9 @@
 import { access, readFile } from "node:fs/promises";
 import process from "node:process";
-import { installerSafetyFailures } from "./lib/installer-safety.mjs";
+import { installerSafetyFailures, posixInstallerSafetyFailures } from "./lib/installer-safety.mjs";
 import { versionDriftFailures } from "./lib/version-consistency.mjs";
+import { apiReachabilityFailures } from "./lib/api-reachability.mjs";
+import { execFileSync } from "node:child_process";
 
 const requiredFiles = [
   "README.md",
@@ -29,10 +31,16 @@ const forbiddenPatterns = [
 // page, turning UTF-8 punctuation/box-drawing into mojibake (e.g. "â–ˆ"). These
 // scripts must also force UTF-8 console output so any child-process text renders
 // cleanly. Both are asserted here so the mojibake class can never regress.
-const asciiOnlyShellScripts = [
+const powerShellScripts = [
   "installer/install.ps1",
   "installer/templates/uninstall.ps1",
 ];
+
+// install.sh is piped straight into `sh` by users whose locale may be anything
+// at all (LANG=C in a minimal container is common). Pure ASCII means the output
+// reads identically everywhere, for the same reason the PowerShell scripts are
+// held to it.
+const asciiOnlyShellScripts = [...powerShellScripts, "installer/install.sh"];
 
 const failures = [];
 
@@ -52,7 +60,7 @@ for (const path of asciiOnlyShellScripts) {
       failures.push(`${path} contains a non-ASCII byte (0x${bytes[offending].toString(16)} at offset ${offending}); PowerShell 5.1 will render it as mojibake.`);
     }
     const text = bytes.toString("utf8");
-    if (!/\[Console\]::OutputEncoding\s*=\s*\[Text\.Encoding\]::UTF8/.test(text)) {
+    if (powerShellScripts.includes(path) && !/\[Console\]::OutputEncoding\s*=\s*\[Text\.Encoding\]::UTF8/.test(text)) {
       failures.push(`${path} must force UTF-8 console output ([Console]::OutputEncoding = [Text.Encoding]::UTF8) for PowerShell 5.1 compatibility.`);
     }
   } catch {
@@ -71,6 +79,17 @@ try {
   failures.push("Missing or unreadable installer script: installer/install.ps1");
 }
 
+// The macOS/Linux installer carries the same data-safety and verification
+// guarantees, expressed against the POSIX layout.
+try {
+  const installer = await readFile("installer/install.sh", "utf8");
+  for (const failure of posixInstallerSafetyFailures(installer)) {
+    failures.push(`installer/install.sh: ${failure}`);
+  }
+} catch {
+  failures.push("Missing or unreadable installer script: installer/install.sh");
+}
+
 // Release-facing versions must all match the canonical root package.json version.
 try {
   const [rootPackageJson, cliUpdateTs, readme, changelog] = await Promise.all([
@@ -84,6 +103,21 @@ try {
   }
 } catch {
   failures.push("Could not read one of the version-bearing files (package.json, apps/cli/src/service/update.ts, README.md, CHANGELOG.md)");
+}
+
+// Capability with no way in is Morrow's most expensive recurring defect, so a
+// route that no client calls fails the build unless it is acknowledged.
+try {
+  const serverSource = await readFile("services/orchestrator/src/server.ts", "utf8");
+  const clientFiles = execFileSync("bash", ["-c",
+    "find apps/web/src apps/cli/src apps/dashboard/src -type f \\( -name '*.ts' -o -name '*.tsx' \\) ! -name '*.test.*' 2>/dev/null",
+  ]).toString().split("\n").filter(Boolean);
+  const clientSource = (await Promise.all(clientFiles.map((file) => readFile(file, "utf8")))).join("\n");
+  for (const failure of apiReachabilityFailures({ serverSource, clientSource })) {
+    failures.push(`Unreachable API: ${failure}`);
+  }
+} catch (error) {
+  failures.push(`Could not run the API reachability check: ${error.message}`);
 }
 
 for (const path of requiredFiles) {

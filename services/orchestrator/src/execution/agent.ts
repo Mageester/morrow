@@ -11,6 +11,7 @@ import { gitDiff, gitLog, gitStatus, GitInspectionError } from "../tools/git.js"
 import { projectRepository } from "../repositories/projects.js";
 import { agentsRepository } from "../repositories/agents.js";
 import { delegationsRepository } from "../repositories/delegations.js";
+import { teammateTrustRepository } from "../repositories/teammate-trust.js";
 import { teamsRepository } from "../repositories/teams.js";
 import { intelligenceRepository } from "../repositories/intelligence.js";
 import { taskRepository } from "../repositories/tasks.js";
@@ -871,6 +872,7 @@ export async function executeAgentChatTask({
   const assignedAgentId = (task as { agentId?: string | null }).agentId ?? null;
   const agentRepo = agentsRepository(db);
   const delegationRepo = delegationsRepository(db);
+  const teammateTrust = teammateTrustRepository(db);
   const assignedAgent = assignedAgentId ? agentRepo.get(assignedAgentId) : undefined;
   if (assignedAgentId && (!assignedAgent || assignedAgent.projectId !== projectId)) {
     throw new Error("Assigned agent is not available in this project");
@@ -889,12 +891,33 @@ export async function executeAgentChatTask({
   const expectedAgentProfileHash = tasks.getExpectedAgentProfileHash(taskId);
   if (expectedAgentProfileHash && assignedAgent
     && expectedAgentProfileHash !== teammateProfileFingerprint(assignedAgent, agentRepo.listToolPermissions(assignedAgent.id))) {
+    // One coherent terminal story: the task is cancelled, the agent state is
+    // interrupted with the reason, and the thread message says why. Throwing
+    // here made the runner stamp a contradictory "failed" state over a
+    // deliberate cancellation.
+    const timestamp = now();
     records.transitionTask(taskId, "cancelled", {
       id: randomUUID(),
-      createdAt: now(),
+      createdAt: timestamp,
       payload: { reason: "agent_profile_changed" },
     });
-    throw new Error("Teammate profile changed before execution; request approval again");
+    if (!records.getAgentState(taskId)) {
+      records.transitionAgentState(taskId, { id: randomUUID(), state: "idle", details: {}, createdAt: timestamp });
+    }
+    records.transitionAgentState(taskId, { id: randomUUID(), state: "interrupted", details: { reason: "agent_profile_changed" }, createdAt: timestamp });
+    const firstMessage = db.prepare(
+      "SELECT id FROM conversation_messages WHERE task_id=? ORDER BY rowid ASC LIMIT 1",
+    ).get(taskId) as { id?: string } | undefined;
+    if (firstMessage?.id) {
+      db.prepare("UPDATE conversation_messages SET content=?, streaming_state=?, updated_at=? WHERE id=?").run(
+        "[Paused: The teammate's profile changed after approval. Review the change and approve again.]",
+        "interrupted",
+        timestamp,
+        firstMessage.id,
+      );
+      db.prepare("UPDATE conversations SET updated_at=? WHERE id IN (SELECT DISTINCT conversation_id FROM conversation_messages WHERE task_id=?)").run(timestamp, taskId);
+    }
+    return;
   }
   // Memory ownership is derived from the durable task assignment. The
   // built-in/default teammate has no private owner and therefore cannot recall
@@ -995,18 +1018,9 @@ export async function executeAgentChatTask({
       // The same check runs again in the server spawner after approval, so a
       // target disabled or moved while the prompt is waiting fails closed.
       const target = resolveStandaloneTeammateTarget(task, agentRepo.get(parsed.data.agentId), parsed.data.agentId);
-      const groupConversation = db.prepare(
-        `SELECT c.mode, c.id AS conversation_id
-         FROM conversations c
-         INNER JOIN conversation_messages m ON m.conversation_id = c.id
-         WHERE m.task_id = ? LIMIT 1`,
-      ).get(task.id) as { mode?: string; conversation_id?: string } | undefined;
-      if (groupConversation?.mode === "group" && groupConversation.conversation_id) {
-        const participant = db.prepare(
-          `SELECT 1 FROM conversation_participants
-           WHERE conversation_id = ? AND agent_id = ? AND role = 'participant' AND status = 'active'`,
-        ).get(groupConversation.conversation_id, target.id);
-        if (!participant) {
+      const groupConversation = convs.groupContextForTask(task.id);
+      if (groupConversation?.mode === "group") {
+        if (!convs.isActiveGroupParticipant(groupConversation.conversationId, target.id)) {
           throw new TeammateTargetError("AGENT_NOT_PARTICIPANT", "Invite this teammate to the shared thread before asking them.");
         }
       }
@@ -1024,6 +1038,34 @@ export async function executeAgentChatTask({
         "tool_failed",
       );
     }
+  };
+  /**
+   * Whether a standing grant lets this delegation proceed without stopping for
+   * a fresh decision.
+   *
+   * Every "no" here falls back to the one-shot approval prompt rather than
+   * failing the call: a missing, drifted, or exhausted grant means the user
+   * has not answered *this* question yet, which is a reason to ask, not a
+   * reason to refuse. The grant removes the prompt and nothing else â€” target
+   * resolution, profile binding, and the child's own policy intersection have
+   * all already run by the time this is consulted.
+   */
+  const standingTrustFor = (ask: { agentId: string; profileHash: string }): { granted: boolean; reason: string } => {
+    if (!assignedAgent) return { granted: false, reason: "no_agent_profile" };
+    const grant = teammateTrust.find(projectId, assignedAgent.id, ask.agentId);
+    if (!grant) return { granted: false, reason: "no_grant" };
+    if (grant.targetProfileHash !== ask.profileHash) return { granted: false, reason: "profile_drift" };
+    // Depth is measured over the durable task chain, not anything the model
+    // said, so a teammate cannot talk its way past its own ceiling.
+    let depth = 0;
+    let cursor = task.parentTaskId;
+    while (cursor && depth <= grant.maxDepth) {
+      depth += 1;
+      cursor = tasks.getTaskById(cursor)?.parentTaskId ?? null;
+    }
+    if (depth >= grant.maxDepth) return { granted: false, reason: "depth_exhausted" };
+    if (tasks.listChildren(task.id).length >= grant.maxChildren) return { granted: false, reason: "fanout_exhausted" };
+    return { granted: true, reason: "granted" };
   };
   const spawnAskedTeammate = (toolCallId: string, raw: Record<string, unknown>): string => {
     const input = parseAskTeammateInput(raw);
@@ -1961,9 +2003,8 @@ export async function executeAgentChatTask({
     ...(requiredOptimizationTools.length > 0 ? { requiredTools: requiredOptimizationTools } : {}),
   });
   const groupParticipantIds = (() => {
-    const conversation = db.prepare("SELECT mode FROM conversations WHERE id=? AND project_id=?")
-      .get(conversationId, projectId) as { mode?: string } | undefined;
-    if (conversation?.mode !== "group") return undefined;
+    const conversation = convs.getConversation(conversationId);
+    if (!conversation || conversation.projectId !== projectId || conversation.mode !== "group") return undefined;
     const rows = db.prepare(
       "SELECT agent_id FROM conversation_participants WHERE conversation_id=? AND role='participant' AND status='active'",
     ).all(conversationId) as Array<{ agent_id?: unknown }>;
@@ -5896,8 +5937,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             event("workspace.inspected", { kind: "stop_process", processId, ok: outcome.ok });
           } else if (tc.name === ASK_TEAMMATE_TOOL_NAME) {
             // This is deliberately not part of the ordinary auto-approval
-            // branch: every model-authored delegation needs a fresh,
-            // one-shot human decision, even in trusted-workspace mode.
+            // branch: trusted-workspace mode and project trust never reach
+            // here. A model-authored delegation proceeds unprompted only
+            // under a standing teammate grant the user made for this pair,
+            // and otherwise still needs a fresh one-shot human decision.
             const ask = parseAskTeammateInput(args);
             let approvalRecord = approvals.listByTask(taskId).find((approval) =>
               approval.kind === "command"
@@ -5905,6 +5948,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               && approval.details.toolCallId === tc.id,
             );
             let isApproved = false;
+            if (!approvalRecord) {
+              const trust = standingTrustFor(ask);
+              event("delegation.trust_evaluated", {
+                targetAgentId: ask.agentId,
+                granted: trust.granted,
+                reason: trust.reason,
+              });
+              if (trust.granted) isApproved = true;
+            }
             if (approvalRecord) {
               const requestMatchesApproval = approvalRecord.details.targetAgentId === ask.agentId
                 && approvalRecord.details.objectiveHash === askObjectiveHash(ask.objective)

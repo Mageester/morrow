@@ -12,6 +12,28 @@ import {
   type UpsertSkillAccessInput,
 } from "@morrow/contracts";
 
+/** Deleting the only explicit allow rule would silently restore the
+ * unrestricted legacy policy — a widening, so it is refused at the single
+ * write boundary rather than per call site. An explicit confirm bypasses. */
+export class SoleExplicitAllowRuleError extends Error {
+  readonly code = "SOLE_EXPLICIT_ALLOW_RULE";
+  constructor() {
+    super("This is the only explicit allow rule; clearing it would restore unrestricted tools");
+    this.name = "SoleExplicitAllowRuleError";
+  }
+}
+
+/** Deleting a teammate that owns a live delegation or unfinished task would
+ * strand both: the child fails with a confusing missing-agent error and the
+ * delegation row stays running forever. Refused at the write boundary. */
+export class AgentInFlightError extends Error {
+  readonly code = "AGENT_IN_FLIGHT";
+  constructor() {
+    super("This teammate has a live delegation or unfinished task; cancel those first");
+    this.name = "AgentInFlightError";
+  }
+}
+
 function mapAgent(row: Record<string, unknown>): Agent {
   return AgentSchema.parse({
     version: row.schema_version,
@@ -132,6 +154,10 @@ export function agentsRepository(db: Database.Database) {
       return db.transaction(() => {
         const binding = db.prepare("SELECT 1 FROM conversations WHERE project_id=? AND agent_id=? AND mode='group' LIMIT 1").get(projectId, id);
         if (binding) return false;
+        const inFlight =
+          db.prepare("SELECT 1 FROM delegations WHERE agent_id=? AND status IN ('pending_approval','running') LIMIT 1").get(id)
+          || db.prepare("SELECT 1 FROM tasks WHERE agent_id=? AND status IN ('queued','running') LIMIT 1").get(id);
+        if (inFlight) throw new AgentInFlightError();
         // CASCADE handles permissions and skill access rows.
         return db.prepare("DELETE FROM agents WHERE id=? AND project_id=?").run(id, projectId).changes > 0;
       })();
@@ -155,8 +181,16 @@ export function agentsRepository(db: Database.Database) {
       return mapToolPerm(row);
     },
 
-    deleteToolPermission(agentId: string, toolName: string): boolean {
-      return db.prepare("DELETE FROM agent_tool_permissions WHERE agent_id=? AND tool_name=?").run(agentId, toolName).changes > 0;
+    deleteToolPermission(agentId: string, toolName: string, options: { permitDefaultRestore?: boolean } = {}): boolean {
+      return db.transaction(() => {
+        const current = db.prepare("SELECT effect FROM agent_tool_permissions WHERE agent_id=? AND tool_name=?").get(agentId, toolName) as { effect: string } | undefined;
+        if (!current) return false;
+        if (!options.permitDefaultRestore && toolName === "ask_teammate" && current.effect === "allow") {
+          const row = db.prepare("SELECT COUNT(*) AS n FROM agent_tool_permissions WHERE agent_id=? AND effect='allow'").get(agentId) as { n: number };
+          if (row.n === 1) throw new SoleExplicitAllowRuleError();
+        }
+        return db.prepare("DELETE FROM agent_tool_permissions WHERE agent_id=? AND tool_name=?").run(agentId, toolName).changes > 0;
+      })();
     },
 
     // ── Skill Access ──────────────────────────────────────────────────────────

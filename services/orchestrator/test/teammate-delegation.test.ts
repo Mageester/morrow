@@ -6,6 +6,7 @@ import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { teamsRepository } from "../src/repositories/teams.js";
+import { delegationsRepository } from "../src/repositories/delegations.js";
 import {
   spawnAgentChatSubagent,
 } from "../src/mission/task-dispatcher.js";
@@ -100,6 +101,58 @@ describe("model-authored teammate dispatch boundary", () => {
     expect(taskRepository(db).listChildren("parent")).toHaveLength(0);
   });
 
+  it("stores the approved profile hash on delegation-bound children", () => {
+    seedParent();
+    teamsRepository(db).create({ id: "team-1", projectId: "p1", name: "Team", createdAt: now() });
+    const target = agentsRepository(db).create({ id: "team-target", projectId: "p1", name: "Verifier", role: "tester", teamId: "team-1" });
+    delegationsRepository(db).create({
+      id: "del-1", parentTaskId: "parent", teamId: "team-1", agentId: target.id,
+      objective: "Verify the findings", acceptanceCriteria: [], contextSnapshotRef: "task:parent",
+      allowedTools: [], allowedMemoryScopes: [], allowedWriteMemoryScopes: [],
+      providerId: null, model: null,
+      budget: { maxProviderCalls: null, maxTokenBudget: null, maxWallClockMs: null },
+      approvalRequired: true, deadlineAt: null, correlationId: "corr-del-1", createdAt: now(),
+    });
+
+    const result = spawnAgentChatSubagent(
+      { db, runner: { run }, env: process.env },
+      { id: "parent", projectId: "p1" },
+      target.id,
+      "Verify the findings",
+      { deferRun: true, delegationId: "del-1", targetProfileHash: "approved-hash" },
+    );
+    // The approve-time fingerprint rides on the task row so execution start
+    // can refuse a profile that changed after the user said yes — the same
+    // binding ask_teammate already carries.
+    expect(taskRepository(db).getExpectedAgentProfileHash(result.task.id)).toBe("approved-hash");
+    expect(run).not.toHaveBeenCalled(); // deferRun
+  });
+
+  it("reuses the durable child when a delegation spawn replays instead of forking a second", () => {
+    seedParent();
+    teamsRepository(db).create({ id: "team-1", projectId: "p1", name: "Team", createdAt: now() });
+    const target = agentsRepository(db).create({ id: "team-target-2", projectId: "p1", name: "Verifier", role: "tester", teamId: "team-1" });
+    delegationsRepository(db).create({
+      id: "del-9", parentTaskId: "parent", teamId: "team-1", agentId: target.id,
+      objective: "Verify the findings", acceptanceCriteria: [], contextSnapshotRef: "task:parent",
+      allowedTools: [], allowedMemoryScopes: [], allowedWriteMemoryScopes: [],
+      providerId: null, model: null,
+      budget: { maxProviderCalls: null, maxTokenBudget: null, maxWallClockMs: null },
+      approvalRequired: true, deadlineAt: null, correlationId: "corr-del-9", createdAt: now(),
+    });
+
+    const deps = { db, runner: { run }, env: process.env };
+    const parent = { id: "parent", projectId: "p1" };
+    const options = { deferRun: true as const, delegationId: "del-9" };
+    // Simulates a crash (or client retry) between the first spawn and the
+    // durable approveAndStart: the retry must land on the same deferred
+    // child, not fork a second orphaned bundle.
+    const first = spawnAgentChatSubagent(deps, parent, target.id, "Verify the findings", options);
+    const second = spawnAgentChatSubagent(deps, parent, target.id, "Verify the findings", options);
+    expect(second.task.id).toBe(first.task.id);
+    expect(taskRepository(db).listChildren("parent")).toHaveLength(1);
+  });
+
   it("suppresses duplicate in-process and post-restart spawns, while binding the child to its own profile", () => {
     const caller = seedParent();
     const target = agentsRepository(db).create({
@@ -132,7 +185,11 @@ describe("model-authored teammate dispatch boundary", () => {
       registry,
     });
 
-    expect(duplicate).toBe(first);
+    // With registry eviction, the duplicate resolves through the durable
+    // idempotency key rather than the process-local cache: same committed
+    // child, runner still called exactly once.
+    expect(duplicate.replayed).toBe(true);
+    expect(duplicate.task.id).toBe(first.task.id);
     expect(run).toHaveBeenCalledTimes(1);
     expect(taskRepository(db).listChildren("parent")).toHaveLength(1);
     expect(first.task.parentTaskId).toBe("parent");
@@ -159,6 +216,10 @@ describe("model-authored teammate dispatch boundary", () => {
     expect(restarted.replayed).toBe(true);
     expect(restarted.task.id).toBe(first.task.id);
     expect(run).toHaveBeenCalledTimes(1);
+
+    // Entries only need to live until the durable child exists; the registry
+    // must not accumulate them for the life of the process.
+    expect(registry.size()).toBe(0);
 
     const childPolicy = buildAgentExecutionPolicy(target, agentsRepository(db).listToolPermissions(target.id));
     expect(childPolicy.agentId).toBe(target.id);

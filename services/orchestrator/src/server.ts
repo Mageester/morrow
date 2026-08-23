@@ -22,6 +22,7 @@ import {
   CreateAgentSchema,
   UpdateAgentSchema,
   UpsertToolPermissionSchema,
+  CreateTeammateTrustGrantSchema,
   UpsertSkillAccessSchema,
   CreateProjectRuleSchema,
   PatchConventionSchema,
@@ -56,7 +57,7 @@ import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { projectRepository } from "./repositories/projects.js";
-import { agentsRepository } from "./repositories/agents.js";
+import { agentsRepository, AgentInFlightError, SoleExplicitAllowRuleError } from "./repositories/agents.js";
 import { teamsRepository } from "./repositories/teams.js";
 import { delegationsRepository } from "./repositories/delegations.js";
 import { handoffsRepository } from "./repositories/handoffs.js";
@@ -260,8 +261,9 @@ import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guar
 import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
 import { boundCompletedToolArguments, buildProviderProjection } from "./execution/provider-projection.js";
 import { resolveModelBudget } from "./routing/model-budget.js";
-import { AgentTaskDispatchError, dispatchAgentTask, spawnAgentChatSubagent as dispatchAgentChatSubagent } from "./mission/task-dispatcher.js";
-import { TeammateSpawnRegistry } from "./tools/teammate-delegation.js";
+import { AgentTaskDispatchError, cleanupUnstartedChild, dispatchAgentTask, spawnAgentChatSubagent as dispatchAgentChatSubagent } from "./mission/task-dispatcher.js";
+import { TeammateSpawnRegistry, teammateProfileFingerprint } from "./tools/teammate-delegation.js";
+import { teammateTrustRepository } from "./repositories/teammate-trust.js";
 import { createResearchAndVerifyTeam } from "./mission/research-and-verify-preset.js";
 import { runReadmeSummarySample, ReadmeSummarySampleError } from "./mission/readme-summary-sample.js";
 import { registerWebMissionRoutes } from "./web/mission-routes.js";
@@ -379,6 +381,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   const projects = projectRepository(deps.db);
   const agents = agentsRepository(deps.db);
+  const teammateTrust = teammateTrustRepository(deps.db);
   const teams = teamsRepository(deps.db);
   const delegations = delegationsRepository(deps.db);
   const handoffs = handoffsRepository(deps.db);
@@ -836,10 +839,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (conductorBinding) {
       throw new ApiError(409, "This teammate is the immutable conductor of a conversation and cannot be deleted", "AGENT_CONVERSATION_CONDUCTOR");
     }
-    if (!agents.delete(agentId, body.projectId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    try {
+      if (!agents.delete(agentId, body.projectId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    } catch (error) {
+      if (error instanceof AgentInFlightError) throw new ApiError(409, error.message, error.code);
+      throw error;
+    }
     reply.status(204).send();
   });
-
   // ── Agent Tool Permissions ─────────────────────────────────────────────────
 
   const scopedToolPermissionAgent = (request: { params: unknown; query: unknown }) => {
@@ -849,6 +856,55 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found", "NOT_FOUND");
     return agent;
   };
+
+  // ── Teammate trust grants ──────────────────────────────────────────────────
+  //
+  // The durable record of "yes, these two may work together without asking me
+  // each time". Granting resolves the target's current profile fingerprint
+  // server-side and stores it, so a grant always describes the teammate the
+  // user was actually looking at; a later profile change re-prompts instead of
+  // riding the old decision.
+
+  app.get("/api/projects/:projectId/teammate-trust", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return { version: 1 as const, projectId, grants: teammateTrust.listForProject(projectId) };
+  });
+
+  app.post("/api/projects/:projectId/teammate-trust", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = CreateTeammateTrustGrantSchema.parse(request.body);
+    const target = agents.get(body.targetAgentId);
+    if (!target || target.projectId !== projectId) throw new ApiError(404, "Teammate not found", "NOT_FOUND");
+    if (!target.enabled) throw new ApiError(409, "A disabled teammate cannot be trusted", "AGENT_DISABLED");
+    if (target.teamId) throw new ApiError(409, "Team teammates coordinate through the team delegation flow", "TEAM_AGENT_REQUIRES_DELEGATION");
+    if (body.callerAgentId !== null) {
+      const caller = agents.get(body.callerAgentId);
+      if (!caller || caller.projectId !== projectId) throw new ApiError(404, "Teammate not found", "NOT_FOUND");
+      if (caller.id === target.id) throw new ApiError(409, "A teammate cannot be trusted to ask itself", "SELF_DELEGATION");
+    }
+    reply.status(201);
+    return teammateTrust.grant({
+      id: crypto.randomUUID(),
+      projectId,
+      callerAgentId: body.callerAgentId,
+      targetAgentId: target.id,
+      targetProfileHash: teammateProfileFingerprint(target, agents.listToolPermissions(target.id)),
+      maxDepth: body.maxDepth,
+      maxChildren: body.maxChildren,
+      createdAt: new Date().toISOString(),
+    });
+  });
+
+  app.delete("/api/projects/:projectId/teammate-trust/:grantId", async (request, reply) => {
+    const { projectId, grantId } = request.params as { projectId: string; grantId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    if (!teammateTrust.revoke(projectId, grantId, new Date().toISOString())) {
+      throw new ApiError(404, "Trust grant not found", "NOT_FOUND");
+    }
+    reply.status(204).send();
+  });
 
   app.get("/api/agents/:agentId/tool-permissions", async (request) => {
     return agents.listToolPermissions(scopedToolPermissionAgent(request).id);
@@ -864,36 +920,36 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.delete("/api/agents/:agentId/tool-permissions/:toolName", async (request, reply) => {
     const { agentId, toolName } = request.params as { agentId: string; toolName: string };
     const agent = scopedToolPermissionAgent(request);
-    const permissions = agents.listToolPermissions(agent.id);
-    const current = permissions.find((permission) => permission.toolName === toolName);
-    if (toolName === "ask_teammate" && current?.effect === "allow"
-      && permissions.filter((permission) => permission.effect === "allow").length === 1) {
-      throw new ApiError(409, "This is the only explicit allow rule; clearing it would restore unrestricted tools", "SOLE_EXPLICIT_ALLOW_RULE");
+    const { confirmDefault } = z.object({ confirmDefault: z.string().optional() }).parse(request.query);
+    try {
+      const deleted = agents.deleteToolPermission(agent.id, toolName, { permitDefaultRestore: confirmDefault === "true" });
+      if (!deleted) throw new ApiError(404, "Tool permission not found", "NOT_FOUND");
+    } catch (error) {
+      if (error instanceof SoleExplicitAllowRuleError) {
+        throw new ApiError(409, error.message, error.code);
+      }
+      throw error;
     }
-    if (!agents.deleteToolPermission(agent.id, toolName)) throw new ApiError(404, "Tool permission not found", "NOT_FOUND");
     reply.status(204).send();
   });
 
   // ── Agent Skill Access ─────────────────────────────────────────────────────
 
   app.get("/api/agents/:agentId/skill-access", async (request) => {
-    const { agentId } = request.params as { agentId: string };
-    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
-    return agents.listSkillAccess(agentId);
+    return agents.listSkillAccess(scopedToolPermissionAgent(request).id);
   });
 
   app.put("/api/agents/:agentId/skill-access", async (request, reply) => {
-    const { agentId } = request.params as { agentId: string };
-    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    const agent = scopedToolPermissionAgent(request);
     const body = UpsertSkillAccessSchema.parse(request.body);
     reply.status(200);
-    return agents.upsertSkillAccess(agentId, body);
+    return agents.upsertSkillAccess(agent.id, body);
   });
 
   app.delete("/api/agents/:agentId/skill-access/:skillId", async (request, reply) => {
-    const { agentId, skillId } = request.params as { agentId: string; skillId: string };
-    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
-    if (!agents.deleteSkillAccess(agentId, skillId)) throw new ApiError(404, "Skill access not found", "NOT_FOUND");
+    const { skillId } = request.params as { skillId: string };
+    const agent = scopedToolPermissionAgent(request);
+    if (!agents.deleteSkillAccess(agent.id, skillId)) throw new ApiError(404, "Skill access not found", "NOT_FOUND");
     reply.status(204).send();
   });
 
@@ -966,9 +1022,16 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     // side", not "unlimited" (the other side's bound still applies).
     const tighter = (a: number | null, b: number | null) =>
       a === null ? b : b === null ? a : Math.min(a, b);
+    // Reads and writes are intersected separately. "none" shares nothing;
+    // "read" shares read access only — team memory never becomes writable
+    // through delegation, whatever the member's standing write scopes say.
+    const withoutTeam = <T>(scopes: readonly T[]): T[] => scopes.filter((s) => s !== "team");
     const allowedMemoryScopes = team.sharedMemoryPolicy === "none"
-      ? agent.memoryReadScopes.filter((s) => s !== "team")
-      : agent.memoryReadScopes;
+      ? withoutTeam(agent.memoryReadScopes)
+      : [...agent.memoryReadScopes];
+    const allowedWriteMemoryScopes = team.sharedMemoryPolicy === "none" || team.sharedMemoryPolicy === "read"
+      ? withoutTeam(agent.memoryWriteScopes)
+      : [...agent.memoryWriteScopes];
     const allowedTools = agents.listToolPermissions(agent.id).filter((p) => p.effect === "allow").map((p) => p.toolName);
 
     const now = new Date().toISOString();
@@ -982,6 +1045,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       contextSnapshotRef: `task:${parent.id}`,
       allowedTools,
       allowedMemoryScopes,
+      allowedWriteMemoryScopes,
       providerId: agent.providerOverride ?? null,
       model: agent.modelOverride ?? null,
       budget: {
@@ -1014,7 +1078,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.post("/api/delegations/:delegationId/resolve", async (request, reply) => {
     const { delegationId } = request.params as { delegationId: string };
     const body = ResolveDelegationSchema.parse(request.body);
-    const { delegation, parent } = requireDelegationContext(delegationId, body.parentTaskId);
+    const { delegation, parent, team } = requireDelegationContext(delegationId, body.parentTaskId);
     // Idempotency guard: a replayed/duplicate resolve (e.g. after a crash and
     // restart retrying the same request) must never spawn a second child or
     // silently re-resolve an already-decided delegation.
@@ -1026,19 +1090,55 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (body.decision === "reject") {
       return delegations.reject(delegationId, now);
     }
+    // The team's defaultConcurrencyLimit is a real invariant: starts beyond
+    // the limit are refused with a named rule rather than silently
+    // interleaving members whose ownership was never proven concurrent-safe.
+    const concurrencyLimit = Math.max(1, team.defaultConcurrencyLimit ?? 1);
+    const runningRow = deps.db.prepare(
+      "SELECT COUNT(*) AS n FROM delegations WHERE team_id=? AND status='running'",
+    ).get(delegation.teamId) as { n: number };
+    if (runningRow.n >= concurrencyLimit) {
+      throw new ApiError(409, `Team already has ${runningRow.n} running delegation${runningRow.n === 1 ? "" : "s"}; cancel one before starting another`, "TEAM_CONCURRENCY_LIMIT");
+    }
     // Persist the running delegation before starting the child. This closes the
     // race where execution could observe an unscoped team agent between spawn
     // and approval, and makes restart/recovery resolve the same policy row.
-    const result = spawnAgentChatSubagent(parent, delegation.agentId, delegation.objective, {
-      deferRun: true,
-      delegationId,
-    });
-    const started = delegations.approveAndStart(delegationId, result.task.id, now);
-    if (!started || started.status !== "running" || started.childTaskId !== result.task.id) {
-      throw new ApiError(409, "Delegation could not be started", "START_CONFLICT");
+    // The approve-time target fingerprint binds the child the same way
+    // ask_teammate binds its spawns: a profile that changes after the user
+    // approves is cancelled at execution start instead of silently running.
+    const approvedFor = agents.get(delegation.agentId);
+    const targetProfileHash = approvedFor
+      ? teammateProfileFingerprint(approvedFor, agents.listToolPermissions(approvedFor.id))
+      : undefined;
+    // A failure between "child spawned (deferred)" and "delegation marked
+    // running" must not strand an orphaned bundle: remove the unstarted child
+    // and its shell conversation before surfacing the error. The delegation
+    // idempotency key makes a crash-retry land on the same child instead of
+    // forking a second one.
+    let spawned: ReturnType<typeof spawnAgentChatSubagent> | undefined;
+    try {
+      spawned = spawnAgentChatSubagent(parent, delegation.agentId, delegation.objective, {
+        deferRun: true,
+        delegationId,
+        ...(targetProfileHash ? { targetProfileHash } : {}),
+      });
+      const started = delegations.approveAndStart(delegationId, spawned.task.id, now);
+      if (!started || started.status !== "running" || started.childTaskId !== spawned.task.id) {
+        throw new ApiError(409, "Delegation could not be started", "START_CONFLICT");
+      }
+    } catch (error) {
+      if (spawned && !spawned.replayed) {
+        const shell = deps.db.prepare(
+          "SELECT conversation_id FROM conversation_messages WHERE task_id=? ORDER BY rowid ASC LIMIT 1",
+        ).get(spawned.task.id) as { conversation_id?: string } | undefined;
+        if (shell?.conversation_id) {
+          cleanupUnstartedChild(deps.db, parent.projectId, spawned.task.id, shell.conversation_id);
+        }
+      }
+      throw error;
     }
-    deps.runner.run(result.task.id);
-    return started;
+    deps.runner.run(spawned.task.id);
+    return delegations.get(delegationId);
   });
 
   // Parent cancellation propagates to the actual child task, not just the
@@ -2112,7 +2212,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     parent: { id: string; projectId: string; agentId?: string | null | undefined },
     agentId: string,
     label: string | undefined,
-    options: { deferRun?: boolean; delegationId?: string; toolCallId?: string; modelInitiated?: boolean; contextRefs?: Array<{ kind: "artifact" | "evidence"; id: string }> } = {},
+    options: { deferRun?: boolean; delegationId?: string; toolCallId?: string; modelInitiated?: boolean; targetProfileHash?: string; contextRefs?: Array<{ kind: "artifact" | "evidence"; id: string }> } = {},
   ) {
     try {
       return dispatchAgentChatSubagent(

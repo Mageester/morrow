@@ -1,4 +1,5 @@
 import type { Agent, AgentRole, AgentToolPermission, MemoryScope } from "@morrow/contracts";
+import { TeammateTrustSection } from "./teammate-trust-section.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -334,8 +335,11 @@ export function NewTeammatePanel({ projectId, onClose, onCreated, agent, onUpdat
                     type="checkbox"
                   />
                   <span>Ask other teammates</span>
-                  <small>Lets this named teammate request one bounded task from another enabled standalone teammate. Every request pauses for one-shot approval; it never grants project-wide trust.</small>
+                  <small>Lets this named teammate hand one bounded task to another enabled standalone teammate. Each request pauses for your approval unless you allow the pair below.</small>
                 </label>
+              ) : null}
+              {editing && agent && !agent.teamId && askTeammateAllowed && !toolPermissions.isPending && !toolPermissions.isError ? (
+                <TeammateTrustSection agentId={agent.id} agentName={agent.name} projectId={projectId} />
               ) : null}
               {!agent?.teamId && (!editing || (!toolPermissions.isPending && !toolPermissions.isError)) ? (
                 <small>Profiles with no explicit tool allow-list retain the existing default unless you clear this box; adding it to an allow-list changes only this capability.</small>
