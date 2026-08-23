@@ -45,9 +45,9 @@ claim.
 - Time-to-first-token is represented locally by time to the first scripted
   provider chunk. It is a proxy, not live provider TTFT.
 - An earlier append-only benchmark row set exposed a fixture ordering mistake in
-  the long-context scenario. Those rows remain in
-  `benchmarks/harness-economics/deterministic-evidence-2026-08-11.jsonl`; the
-  corrected derived report uses rows tagged
+  the long-context scenario. The accumulated raw rows were removed after 0.4.0
+  repository cleanup (they remain in Git history); the retained reference
+  summary contains only rows tagged
   `benchmarkRun=corrected-fixture-2026-08-11`.
 
 Runtime checks found no Morrow orchestrator listening on port 4317. The only
@@ -57,12 +57,12 @@ orchestrator. The checked-out worktree was the requested path and was two commit
 ahead of `main` with no merge-base divergence (`main...HEAD = 0 2`).
 
 Hermes was available as `Hermes Agent v0.18.2 (2026.7.7.2)`; `pi` was not on PATH.
-The comparison is therefore explicitly deferred. A historical, already-present
-Morrow live snapshot records two failed DeepSeek rows, not a fresh comparison:
+The comparison was therefore deferred at the time. A historical Morrow live
+snapshot (removed from the working tree after 0.4.0; retained in Git history)
+recorded two failed DeepSeek rows, not a fresh comparison:
 V4 Flash had 2 provider calls, 1 tool call, 7,285 input tokens, 804 output tokens,
 and 8,828 ms; V4 Pro had 3 provider calls, 2 tool calls, 10,236 input tokens,
-496 output tokens, and 13,628 ms. See
-`benchmarks/harness-economics/morrow-live-deepseek-snapshot.json`.
+496 output tokens, and 13,628 ms.
 
 ## Deterministic baseline
 

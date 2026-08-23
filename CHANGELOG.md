@@ -1411,9 +1411,9 @@ This release is not stable, final, or fully verified until that gate runs.
 
 ### Security
 
-- Codex Security diff scan completed with preflight ready, 12/12 discovery rows
-  reviewed, and 0 reportable findings. Evidence is preserved under
-  `docs/security/beta26-scan/`.
+- The beta.26 security diff review completed with 0 reportable findings. Its
+  generated scan bundle was removed from the live tree after 0.4.0 repository
+  cleanup and remains available in Git history.
 
 ## [0.1.0-beta.25] - 2026-07-07
 

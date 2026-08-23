@@ -1,6 +1,6 @@
-# Beta.31 controlled browser and vision
+# Controlled browser and vision
 
-Beta.31 connects Morrow's hardened Playwright controller to the durable agent runtime. Browser tools are exposed progressively for browser and frontend requests, so unrelated coding turns do not pay the context cost of browser schemas.
+Morrow connects its hardened Playwright controller to the durable agent runtime. Browser tools are exposed progressively for browser and frontend requests, so unrelated coding turns do not pay the context cost of browser schemas.
 
 ## Runtime behavior
 

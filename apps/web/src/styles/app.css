@@ -2025,24 +2025,6 @@ a {
   background: var(--morrow-warning);
 }
 
-.morrow-mission-milestone-state {
-  padding: var(--morrow-space-1) var(--morrow-space-2);
-  color: var(--morrow-text);
-  background: var(--morrow-surface-subtle);
-  border: 1px solid var(--morrow-border);
-  border-radius: 999px;
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-
-.morrow-mission-milestone-state[data-state="completed"] {
-  color: var(--morrow-success);
-}
-
-.morrow-mission-milestone-state[data-state="failed"] {
-  color: var(--morrow-warning);
-}
-
 /* ── Recovery surface ───────────────────────────────────────────────────── */
 .morrow-mission-recovery {
   display: flex;
@@ -2733,15 +2715,6 @@ a {
   font-size: 1rem;
 }
 
-.morrow-mission-overview {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--morrow-space-4);
-}
-
-.morrow-mission-overview__objective,
-.morrow-mission-overview__attention,
-.morrow-mission-milestone-count,
 .morrow-mission-operational-state {
   grid-column: 1 / -1;
 }
@@ -2751,15 +2724,6 @@ a {
   gap: var(--morrow-space-4);
 }
 
-.morrow-mission-milestone-count {
-  margin: 0;
-  color: var(--morrow-text-muted);
-  font-size: 0.875rem;
-  font-weight: 650;
-}
-
-.morrow-mission-milestones,
-.morrow-mission-attention-list,
 .morrow-mission-activity,
 .morrow-mission-technical-details ul {
   padding: 0;
@@ -2767,22 +2731,9 @@ a {
   list-style: none;
 }
 
-.morrow-mission-milestones,
-.morrow-mission-attention-list,
 .morrow-mission-activity {
   display: grid;
   gap: var(--morrow-space-3);
-}
-
-.morrow-mission-milestones li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--morrow-space-3);
-}
-
-.morrow-mission-attention-list li {
-  min-width: 0;
 }
 
 .morrow-attention-card {
@@ -2910,10 +2861,6 @@ a {
   width: min(100% - 2 * var(--morrow-space-4), 48rem);
   padding-block: var(--morrow-space-7);
   margin-inline: auto;
-}
-
-.morrow-mission-secondary-copy {
-  font-size: 0.875rem;
 }
 
 .morrow-mission-activity details {

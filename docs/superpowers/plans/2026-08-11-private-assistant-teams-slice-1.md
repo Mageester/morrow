@@ -44,7 +44,7 @@
 
 **RED:** `services/orchestrator/test/readme-summary-sample.test.ts` (6 cases: determinism, bounded excerpt, no-heading fallback, full end-to-end proof, refuses on missing README, reusability).
 
-**GREEN:** `mission/readme-summary-sample.ts` — pure `summarizeReadme` (first heading + first paragraph, bounded, no model call) plus `runReadmeSummarySample`, which runs the Researcher → Verifier → handoff loop directly against the durable repositories (not through the live agent-execution loop — see ADR-0012's alternatives-rejected). `POST /api/projects/:id/sample-tasks/readme-summary` exposes it. New `benchmarks/harness-economics/delegation-scenario.ts` (separate file from the existing `deterministic.ts`/`run.ts`, which are untracked owner files this session did not touch) appends `delegation-evidence-2026-08-11.jsonl` — 3 runs, 3 passed, 0 provider calls (exact, not estimated).
+**GREEN:** `mission/readme-summary-sample.ts` — pure `summarizeReadme` (first heading + first paragraph, bounded, no model call) plus `runReadmeSummarySample`, which runs the Researcher → Verifier → handoff loop directly against the durable repositories (not through the live agent-execution loop — see ADR-0012's alternatives-rejected). `POST /api/projects/:id/sample-tasks/readme-summary` exposes it. New `benchmarks/harness-economics/delegation-scenario.ts` writes regenerated evidence under the ignored `results/` directory — 3 runs, 3 passed, 0 provider calls (exact, not estimated).
 
 **Verify:** 6/6 new tests; 183 files / 2010 tests full suite; benchmark script run confirmed real JSONL/summary/SVG output.
 

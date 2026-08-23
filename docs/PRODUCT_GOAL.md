@@ -1,17 +1,11 @@
-# Beta.30 Product Goal
+# Morrow Product Goal
 
-> Authoritative product-goal map for the beta.30 program. This document
-> defines *what Morrow must become*; [`docs/BETA30_CLI_ACCEPTANCE.md`](BETA30_CLI_ACCEPTANCE.md)
-> defines *what the terminal must look and behave like* to satisfy it.
-> Written 2026-07-11. Distinguishes current, verified behavior (cited from
-> [`docs/KNOWN_ISSUES.md`](KNOWN_ISSUES.md), [`docs/CURRENT_STATE.md`](CURRENT_STATE.md),
-> and direct code inspection) from desired future behavior. No production code
-> was changed to produce this document.
->
-> Corrected 2026-07-11 after PR #44 (terminal presentation cleanup) merged to
-> `main`. §12's Milestone 2 status and the recovery-messaging evidence it
-> depended on are updated accordingly; see `docs/BETA30_CLI_ACCEPTANCE.md`
-> §11–§12 for the full evidence trail.
+> Durable product direction, first written for the beta.30 program on
+> 2026-07-11. The north star and design principles remain current; milestone
+> status and gap descriptions are historical snapshots, not the current
+> backlog. Use [`docs/TERMINAL.md`](TERMINAL.md) for the shipped terminal,
+> [`docs/KNOWN_ISSUES.md`](KNOWN_ISSUES.md) for current defects, and
+> [`docs/CURRENT_STATE.md`](CURRENT_STATE.md) for verified repository status.
 
 ## 1. Product North Star
 
@@ -115,7 +109,7 @@ or personality alias for entering Build·Auto, but the interface communicates
 only the effective mode/approval pair above. Forbidden combinations
 (`Plan · YOLO`, `Ask · auto-approved`, a header/footer disagreement about
 approval state) are enumerated as acceptance criteria in
-`docs/BETA30_CLI_ACCEPTANCE.md` §7.
+`docs/TERMINAL.md` §7.
 
 Every permission-bearing command must set a **complete, explicit** state
 instead of only the flags that differ from default — the confirmed cause of
@@ -364,13 +358,13 @@ Major capability → priority mapping:
   operation (per `docs/privacy-model.md`) is not renegotiated by this
   program.
 - No copying Claude branding, assets, or proprietary implementation — see
-  `docs/BETA30_CLI_ACCEPTANCE.md` §2 for the explicit boundary on using
+  `docs/TERMINAL.md` §2 for the explicit boundary on using
   Claude Code only as a quality reference.
 
 ## 12. Development Milestones
 
 1. **Product contract and benchmark** *(this milestone)* — this document and
-   `docs/BETA30_CLI_ACCEPTANCE.md`. **Gate:** both documents merged, backlog
+   `docs/TERMINAL.md`. **Gate:** both documents merged, backlog
    aligned, no production code changed.
 2. **Terminal foundation** — information hierarchy, activity grammar,
    deduplicated event persistence (KNOWN_ISSUES #4, #11, #12, #14). This
@@ -401,14 +395,14 @@ Major capability → priority mapping:
      cycle on one file collapsing to a single **Changing** line);
      clean handling of retries against the same file or operation; report
      growth proportional to distinct events rather than repeated rendering
-     passes. Full scope and completion gate: `docs/BETA30_CLI_ACCEPTANCE.md`
+     passes. Full scope and completion gate: `docs/TERMINAL.md`
      §12. Explicitly deferred out of this slice: permission dispatch-layer
      semantics, task-plan grading/duration accuracy, header/footer redesign,
      further resume wording, help discoverability, Mission Guardian,
      Cortex, provider migration, and package/version/release work.
    - **2c. Bounded activity feed and progress architecture — following
      slice.** The bounded-scroll activity feed and progress-summary layout
-     in `docs/BETA30_CLI_ACCEPTANCE.md` §5, built on the event-identity
+     in `docs/TERMINAL.md` §5, built on the event-identity
      guarantees 2b establishes.
    **Gate (milestone-level):** zero duplicate activity lines for one source
    event; one authoritative final answer; `/output full` scales with
@@ -444,5 +438,5 @@ Major capability → priority mapping:
    demonstration alone.
 8. **Cross-platform productization** — Windows/Linux parity verification,
    macOS groundwork. **Gate:** the acceptance journeys in
-   `docs/BETA30_CLI_ACCEPTANCE.md` §9 pass on both shipped platforms
+   `docs/TERMINAL.md` §9 pass on both shipped platforms
    (Windows, Linux) with no platform-specific default behavior undocumented.

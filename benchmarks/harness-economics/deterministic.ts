@@ -29,6 +29,7 @@ const ROOT_BENCHMARK_DIR = resolve(process.cwd(), "benchmarks", "harness-economi
 const BENCHMARK_DIR = existsSync(ROOT_BENCHMARK_DIR)
   ? ROOT_BENCHMARK_DIR
   : resolve(process.cwd(), "..", "..", "benchmarks", "harness-economics");
+const RESULTS_DIR = resolve(BENCHMARK_DIR, "results");
 
 type ReasoningMode = "off" | "low" | "high";
 
@@ -536,7 +537,8 @@ async function collectReasoningWireEvidence(): Promise<Array<Record<string, unkn
 
 async function main(): Promise<void> {
   const records: Array<BenchmarkRecord & Record<string, unknown>> = [];
-  const evidencePath = resolve(BENCHMARK_DIR, "deterministic-evidence-2026-08-11.jsonl");
+  mkdirSync(RESULTS_DIR, { recursive: true });
+  const evidencePath = resolve(RESULTS_DIR, "deterministic-evidence.jsonl");
   for (const scenario of createScenarios()) {
     const record = await runScenario(scenario);
     records.push(record);
@@ -547,8 +549,8 @@ async function main(): Promise<void> {
   const wireEvidence = await collectReasoningWireEvidence();
   for (const row of wireEvidence) appendFileSync(evidencePath, `${JSON.stringify(row)}\n`, "utf8");
 
-  const reportPath = resolve(BENCHMARK_DIR, "deterministic-report-2026-08-11.svg");
-  const summaryPath = resolve(BENCHMARK_DIR, "deterministic-summary-2026-08-11.json");
+  const reportPath = resolve(RESULTS_DIR, "deterministic-report.svg");
+  const summaryPath = resolve(RESULTS_DIR, "deterministic-summary.json");
   writeFileSync(reportPath, renderBenchmarkSvg(summarizeBenchmarkRecords(records), { title: "Morrow deterministic harness economics · 2026-08-11" }), "utf8");
   writeFileSync(summaryPath, JSON.stringify({ evidenceClass: EVIDENCE_CLASS, records, wireEvidence, summaries: summarizeBenchmarkRecords(records) }, null, 2) + "\n", "utf8");
   console.log(`Append-only evidence: ${evidencePath}`);

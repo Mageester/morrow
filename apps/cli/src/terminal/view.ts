@@ -69,7 +69,7 @@ export function morrowAvatar(state: MorrowAvatarState, opts: { unicode: boolean;
  * Every activity kind renders through the closed, beta.30 activity grammar —
  * Inspecting / Planning / Changing / Running / Verifying / Recovering /
  * Waiting / Blocked / Complete — so the default feed reads as meaningful
- * verbs, never raw tool-call telemetry (BETA30_CLI_ACCEPTANCE.md §6).
+ * verbs, never raw tool-call telemetry (TERMINAL.md §6).
  */
 const ACTIVITY_LABEL: Record<ActivityKind, string> = {
   inspecting: "Inspecting",
@@ -614,7 +614,7 @@ export function patchLines(patch: PatchEntry, out: Output, unicode: boolean, wor
 
 /** Present/past verbs per tool, so live output reads as actions, not narration.
  *  The present tense (index 0) is one of the closed activity-grammar verbs
- *  (BETA30_CLI_ACCEPTANCE.md §6); the past tense stays tool-specific for the
+ *  (TERMINAL.md §6); the past tense stays tool-specific for the
  *  completed-action log, which is a historical record, not a live verb. */
 const TOOL_VERBS: Record<string, [present: string, past: string]> = {
   read_file: ["Inspecting", "Read"],
@@ -685,7 +685,7 @@ export function runningActionLine(card: ToolCard, out: Output, unicode: boolean,
  *     Switched to full-file rewrite — succeeded
  *
  * "Recovering" is the closed-grammar verb for this event kind
- * (BETA30_CLI_ACCEPTANCE.md §6); warning styling while recoverable, red only
+ * (TERMINAL.md §6); warning styling while recoverable, red only
  * when the task itself ultimately failed.
  */
 export function recoveryEntryLines(entry: RecoveryEntry, out: Output, unicode: boolean, taskFailed: boolean): string[] {

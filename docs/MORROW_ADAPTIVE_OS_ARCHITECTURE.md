@@ -5,7 +5,7 @@
 > pre-merge) after independent review found the initial slice did not yet
 > satisfy the mission's usage-accounting requirements. Every claim below is
 > grounded in code read during this session or in `docs/CURRENT_STATE.md` /
-> `docs/MORROW_STATUS.md` / `docs/BETA30_PRODUCT_GOAL.md` / `docs/CORTEX.md`,
+> `docs/MORROW_STATUS.md` / `docs/PRODUCT_GOAL.md` / `docs/CORTEX.md`,
 > which are themselves first-hand, dated inspection notes rather than
 > aspirational descriptions. Where this document and an older doc disagree,
 > the code (verified this session) wins, and the older doc should be treated
@@ -46,7 +46,7 @@ system" framing legible to the user.
 - **Source of truth:** `apps/cli/src/terminal/*`, `apps/cli/src/main.ts`,
   `apps/cli/src/commands/*`.
 - **What's implemented:** interactive TUI session with mode display
-  (Ask/Plan/Build/Build·Auto per `docs/BETA30_PRODUCT_GOAL.md` §4), slash
+  (Ask/Plan/Build/Build·Auto per `docs/PRODUCT_GOAL.md` §4), slash
   command palette, tool-call cards, `/output`, `/diff`, `/undo`, `/context`,
   `/model`, persisted cross-session history, activity grammar
   (Inspecting/Planning/Changing/Running/Verifying/Recovering/Waiting/Complete,
@@ -76,7 +76,7 @@ system" framing legible to the user.
   a stale result from double-applying (`mission-review-race.test.ts`).
 - **What's partial:** Mission Guardian (active requirement-vs-action
   enforcement *during* execution, not just at finalization) is documented as
-  a target in `BETA30_PRODUCT_GOAL.md` §6 but its "no requirement-tracking
+  a target in `PRODUCT_GOAL.md` §6 but its "no requirement-tracking
   subsystem exists in the agent loop" gap is called out there as still open;
   this session did not find a scope-drift/dependency-addition monitor wired
   into `execution/agent.ts`'s tool-call path.
@@ -198,13 +198,13 @@ system" framing legible to the user.
 - **What's partial beyond the fixed contradiction:** provider-specific
   continuation state (DeepSeek `reasoning_content`) is persisted and
   round-tripped, but "detect unresumable provider state before issuing a
-  doomed request" (per `BETA30_PRODUCT_GOAL.md` §7) is only partially built.
+  doomed request" (per `PRODUCT_GOAL.md` §7) is only partially built.
 
 ### 2.7 Evolution Lab
 
 - **Status: does not exist.** No code in this repository benchmarks,
   mutates, or promotes candidate skills, prompts, workflows, or routing
-  decisions. `docs/MORROW_BACKLOG.md` and `BETA30_PRODUCT_GOAL.md` do not
+  decisions. `docs/MORROW_BACKLOG.md` and `PRODUCT_GOAL.md` do not
   describe one either. This is consistent with this PR's explicit
   instruction not to build it. The roadmap (separate document) explains why
   it should remain last, and — given §2.4's flagged skill set — why any
@@ -395,7 +395,7 @@ never the other way around.
 ## 5. Product experience contract (current vs. required)
 
 The public model Morrow should present is already correctly specified in
-`docs/BETA30_PRODUCT_GOAL.md` §4 (Ask/Plan/Build/Build·Auto, one effective
+`docs/PRODUCT_GOAL.md` §4 (Ask/Plan/Build/Build·Auto, one effective
 mode+approval pair, never a separate "YOLO" indicator) and §3 (pillar
 ordering: terminal experience → simple permission model → mission
 reliability → Cortex → memory → advanced features → cross-platform). This
@@ -407,7 +407,7 @@ must present capacity numbers derived from exactly one `ModelBudget`
 resolution and usage/cost numbers derived from exactly one usage-snapshot
 accumulation — not because the user needs to know either word, but because
 if two internal numbers can disagree, the user-visible ones eventually will
-too. The interactive model picker described in `BETA30_PRODUCT_GOAL.md` §3
+too. The interactive model picker described in `PRODUCT_GOAL.md` §3
 as part of the terminal-experience pillar is the next milestone that
 consumes both of these; it is **not** built by this PR (see the roadmap).
 

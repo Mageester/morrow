@@ -179,7 +179,7 @@
 - Modify: `apps/cli/test/terminal-startup-view.test.ts`
 - Modify: `apps/cli/test/terminal-beta29-rendering.test.ts` only where it asserts superseded chrome.
 - Modify: `apps/cli/test/terminal-status-usage.test.ts` only where the status ownership moved visually.
-- Modify: `docs/BETA30_CLI_ACCEPTANCE.md` with the approved Mission Deck states and any changed width threshold.
+- Modify: `docs/TERMINAL.md` with the approved Mission Deck states and any changed width threshold.
 - Modify: `apps/cli/README.md` only if the interactive first-run guidance changes.
 
 **Interfaces:**
