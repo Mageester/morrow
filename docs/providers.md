@@ -63,39 +63,86 @@ authenticated provider `/models` response proves that a model is available to
 that account; it does not supply context or output limits when that endpoint
 omits them. On startup Morrow loads a local cache. An operator can explicitly
 refresh normalized capability metadata from `https://models.dev/api.json` over
-HTTPS through `POST /api/models/refresh`; redirects are rejected. Bundled
-metadata remains offline seed data only. Cached catalog data is atomically
-updated and retained when refresh fails.
+HTTPS through `POST /api/models/refresh`; redirects are rejected. That snapshot
+covers every provider Morrow can route to, so a model Morrow's own catalog has
+never heard of still resolves real capabilities. Bundled metadata remains
+offline seed data plus a small set of Morrow-verified corrections. Cached
+catalog data is atomically updated and retained when refresh fails, and Morrow
+never reaches the network during capability resolution — an unreachable
+models.dev degrades to "no external layer", never to a broken route.
 
 ### Capability resolution order
 
-Every capability is resolved for one **exact route** — provider + model +
-endpoint — through four layers, strongest first:
+The organising rule is **model identity and capability are data; provider wire
+behaviour is code**. Every capability is resolved for one **exact route** —
+provider + model + endpoint — by merging layers, strongest first:
 
-1. **Live provider/runtime discovery.** The model listing when it reports the
-   fact, plus anything the endpoint states about itself at runtime. Notably, a
-   provider that rejects an oversized request usually names its real ceiling
-   ("This model's maximum context length is 202749 tokens"); Morrow records
-   that against the exact route and uses it from then on.
-2. **Provider-owned declarative catalog.** Advisory metadata shipped beside the
-   provider adapter (`src/provider/model-catalogs/`) for facts no listing
-   discloses. It is metadata, not routing permission: an uncatalogued model id
-   is still executable.
-3. **Explicit route or user override.** An operator statement about this exact
-   route — an endpoint context limit, a configured window.
-4. **Unknown.** A real, representable state. Morrow does not substitute a
+1. **Adapter-native protocol facts.** What the wire format itself guarantees,
+   contributed by the adapter serving the route.
+2. **Exact deployment facts.** What this endpoint has stated about itself,
+   including a capacity named in its own over-limit rejection ("This model's
+   maximum context length is 202749 tokens"), recorded against the exact route
+   and used from then on.
+3. **Live provider-reported metadata.** The account's own model listing where it
+   reports a fact — OpenRouter's `supported_parameters`,
+   `architecture.input_modalities`, `context_length`, `pricing`; Gemini's
+   `inputTokenLimit`.
+4. **Explicit route or operator configuration.** A statement about this exact
+   route — an endpoint context limit, a configured window. It outranks every
+   catalog, so a smaller local or gateway deployment of a well-known model name
+   is never handed requests it cannot accept.
+5. **Morrow-verified compatibility corrections.** The small set of facts in
+   `src/provider/model-catalogs/` that Morrow measured against a live API and no
+   generic database carries — a reasoning wire dialect, a per-model
+   `thinkingLevel` set.
+6. **External model metadata.** A comprehensive third-party model database
+   (models.dev), normalized in `src/provider/external-catalog/`. This is where
+   most models get their context window, output ceiling, modalities, vision,
+   tool calling, and reasoning support.
+7. **Bundled seed metadata.** The rest of `src/provider/model-catalogs/`, so an
+   offline start still knows something.
+8. **Unknown.** A real, representable state. Morrow does not substitute a
    generic fallback window for a capability it has not established.
 
-Layers merge field by field, so a discovery response that omits a field is
-treated as silence rather than a retraction of what the catalog knows. Every
-resolved fact carries its `source`, `authority`, `confidence`, and `fetchedAt`,
-and those survive into the model budget and the context meter.
+None of these is a routing whitelist: a model id no catalog has ever heard of
+is still executable, and simply resolves to unknown facts.
 
-What is actually discoverable varies sharply by provider. Gemini's
+Layers merge field by field, so a source that omits a field is treated as
+silence rather than a retraction of what another layer knows. Every resolved
+fact carries its `source`, `authority`, `confidence`, and `fetchedAt`, and those
+survive into the model budget and the context meter.
+
+### Gateways and underlying models
+
+A gateway model id such as `anthropic/claude-…` on OpenRouter names two
+different things: the **model** (Anthropic's) and the **endpoint** (OpenRouter's).
+Morrow resolves the model's metadata from the database — including from the
+underlying vendor's row when the gateway itself is not listed — but the request
+is always built by the gateway's own adapter. Facts that describe a vendor's
+native API (its reasoning wire dialect, its reasoning off-switch, which
+output-token field it names, whether it accepts `response_format`) never cross
+that hop. An OpenRouter request is never built in Anthropic's native wire
+format merely because the underlying model is Anthropic's.
+
+### What each provider actually discloses
+
+What is discoverable varies sharply by provider. Gemini's
 `GET /v1beta/models` reports `inputTokenLimit`, `outputTokenLimit`, and a
 `thinking` flag, so its capacity needs no catalog entry at all. DeepSeek,
 NVIDIA NIM, TokenRouter, and OpenCode Zen return only model ids, so their
-capacity comes from the catalog, from a runtime rejection, or stays unknown.
+capacity comes from the external database, from the bundled catalog, from a
+runtime rejection, or stays unknown.
+
+### Reasoning
+
+Six states are distinguished, and none of them is guessed: no reasoning; fixed
+reasoning; reasoning supported with controls unknown; selectable effort with an
+explicit level list; a token budget; and any active mode that can additionally
+be switched off. A source that reports only "this model reasons" produces the
+third state, never an invented low/medium/high ladder — a route advertising a
+`reasoning_effort` field says nothing about which values it accepts. Selectable
+levels come only from a source that enumerated them, and the adapter owns the
+spelling they travel under.
 
 ### Route limits versus native model limits
 

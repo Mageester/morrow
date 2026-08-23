@@ -245,7 +245,8 @@ import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
 import { BUILT_IN_MODELS, installModelCatalog, listModels, listConfiguredCustomModels, mergeModelCatalog, resolveModelMetadata, resolveModelStatuses } from "./routing/models.js";
-import { ModelCatalog } from "./routing/model-catalog.js";
+import { ModelCatalog, externalCatalogFromSnapshot } from "./routing/model-catalog.js";
+import { installExternalModelCatalog } from "./provider/external-catalog/index.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
@@ -480,14 +481,35 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     remoteUrl: process.env.MORROW_MODEL_CATALOG_URL?.trim() || "https://models.dev/api.json",
     bundledModels: BUILT_IN_MODELS,
   });
-  installModelCatalog(mergeModelCatalog(BUILT_IN_MODELS, modelCatalog.current().models));
-  // Catalog refresh is operator-triggered. Starting a Private Local session
-  // must not make an outbound metadata request before any routing choice.
-  const refreshModelCatalog = async () => {
-    const snapshot = await modelCatalog.refresh();
-    installModelCatalog(mergeModelCatalog(BUILT_IN_MODELS, snapshot.models));
+  /**
+   * One snapshot feeds both capability paths: the flat compatibility catalog
+   * every legacy consumer reads, and the indexed external metadata source the
+   * exact-route capability resolver consults. Installing them together is what
+   * stops the UI and the request builder from resolving against different
+   * vintages of the same data.
+   */
+  const applyModelCatalogSnapshot = (snapshot: ReturnType<ModelCatalog["current"]>) => {
+    try {
+      installModelCatalog(mergeModelCatalog(BUILT_IN_MODELS, snapshot.models));
+      installExternalModelCatalog(externalCatalogFromSnapshot(snapshot));
+    } catch (error) {
+      // A third-party database can publish an identity Morrow's catalog graph
+      // rejects. That is a reason to fall back to bundled metadata, never a
+      // reason for the server not to start: public model metadata is an
+      // enhancement, and a cached snapshot must not be able to brick a local
+      // install. Both views retreat together — a state where the picker shows
+      // bundled facts while the request builder uses external ones is worse
+      // than one where neither does.
+      installModelCatalog([...BUILT_IN_MODELS]);
+      installExternalModelCatalog(null);
+      console.error(`Model catalog snapshot rejected (${snapshot.catalogVersion}); using bundled metadata`, error);
+    }
     return snapshot;
   };
+  applyModelCatalogSnapshot(modelCatalog.current());
+  // Catalog refresh is operator-triggered. Starting a Private Local session
+  // must not make an outbound metadata request before any routing choice.
+  const refreshModelCatalog = async () => applyModelCatalogSnapshot(await modelCatalog.refresh());
   const intelligenceRepo = intelligenceRepository(deps.db);
   const cortexService = new CortexService({
     repo: intelligenceRepo,

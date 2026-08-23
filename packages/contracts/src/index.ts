@@ -252,7 +252,7 @@ export const ReasoningEffortSchema=z.string().trim().min(1).max(200);
  */
 export const ReasoningControlSchema=z.enum(["none","effort","budget","fixed","unknown"]);
 /** Where a reasoning fact came from — parallels ContextLimitSource provenance. */
-export const ReasoningSourceSchema=z.enum(["provider-metadata","capability-probe","registry","adapter-native","deployment","provider-catalog","route-config","unknown"]);
+export const ReasoningSourceSchema=z.enum(["provider-metadata","capability-probe","registry","adapter-native","deployment","provider-catalog","external-catalog","route-config","unknown"]);
 /**
  * Provider-defined reasoning wire dialects. The protocol alone does not
  * determine how a reasoning selection is spelled on the wire: two providers
@@ -307,6 +307,15 @@ export const RouteReasoningCapabilitySchema=z.object({
   supportsOff:z.boolean().optional(),
   /** Provider-specific wire variant when the protocol alone is insufficient. */
   wire:ReasoningWireSchema.optional(),
+  /**
+   * Whether this route interleaves reasoning with its ordinary output rather
+   * than emitting it as one block up front.
+   *
+   * A capability, not a wire contract: the field name that carries interleaved
+   * content stays with the adapter, so knowing a model interleaves never
+   * implies knowing how to read it on some other provider's API.
+   */
+  interleaved:z.boolean().optional(),
 }).strict();
 /**
  * The normalized reasoning selection carried by a route. Every provider adapter

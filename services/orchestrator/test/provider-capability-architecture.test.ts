@@ -70,6 +70,10 @@ describe("no fabricated context fallback survives anywhere", () => {
       "routing/model-budget.ts",
       "routing/models.ts",
       "provider/model-capabilities.ts",
+      "provider/capability-facts.ts",
+      "provider/model-catalogs/capability-layers.ts",
+      "provider/external-catalog/index.ts",
+      "provider/external-catalog/models-dev.ts",
     ];
     for (const relative of guarded) {
       const source = readFileSync(join(SRC, relative), "utf8");
@@ -442,7 +446,15 @@ describe("provider-specific behavior stays out of generic routing", () => {
   it("keeps model-name and provider-family branches out of the generic modules", () => {
     // The failure this guards against is a `model === "..."` or
     // `providerId === "gemini"` branch creeping back into shared routing.
-    const generic = ["routing/effective-context.ts", "routing/model-budget.ts", "provider/model-capabilities.ts"];
+    const generic = [
+      "routing/effective-context.ts",
+      "routing/model-budget.ts",
+      "provider/model-capabilities.ts",
+      "provider/capability-facts.ts",
+      "provider/model-catalogs/capability-layers.ts",
+      "provider/external-catalog/index.ts",
+      "provider/external-catalog/models-dev.ts",
+    ];
     for (const relative of generic) {
       const source = readFileSync(join(SRC, relative), "utf8");
       const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -471,6 +483,19 @@ describe("provider-specific behavior stays out of generic routing", () => {
     const translator = readFileSync(join(SRC, "provider", "reasoning.ts"), "utf8");
     for (const field of ["reasoning_effort", "thinkingLevel", "budget_tokens"]) {
       expect(translator, `translator must own the ${field} spelling`).toContain(field);
+    }
+  });
+
+  it("never lets external model metadata declare a reasoning wire dialect", () => {
+    // A database describes models; how a selection is SPELLED belongs to the
+    // adapter serving the route. If ingestion ever set a dialect, an
+    // OpenRouter request for an Anthropic model could be built with
+    // Anthropic's native thinking budget.
+    const ingestion = readFileSync(join(SRC, "provider", "external-catalog", "models-dev.ts"), "utf8");
+    const code = ingestion.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    expect(code, "ingestion must not assign a reasoning wire dialect").not.toMatch(/wire\s*:/);
+    for (const dialect of ["deepseek-thinking", "gemini-thinking-level", "openai-reasoning-effort", "anthropic-thinking-budget"]) {
+      expect(code, `ingestion must not name the ${dialect} dialect`).not.toContain(dialect);
     }
   });
 

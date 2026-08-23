@@ -218,8 +218,10 @@ credential reference, honest OAuth findings, and manual verification steps.
 ## Current alpha limitations
 - Live provider discovery determines account availability. Morrow loads public
   model capabilities from a local cache and refreshes models.dev only through
-  explicit operator action; bundled metadata remains an offline seed. Unknown
-  route limits stay explicitly unverified.
+  explicit operator action; bundled metadata remains an offline seed plus a
+  small set of Morrow-verified corrections. Until a refresh has run, models
+  outside that seed resolve to unknown capabilities rather than guessed ones,
+  and unknown route limits stay explicitly unverified.
 - Write and terminal tools are intentionally not enabled (architecture and UI
   are sketched but gated until their full safety boundaries are implemented).
 - Subscription sign-in is implemented for Claude (Anthropic) and Codex/ChatGPT

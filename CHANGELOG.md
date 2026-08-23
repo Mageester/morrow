@@ -6,6 +6,45 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+### Added
+
+- Comprehensive external model metadata (models.dev) as a first-class
+  capability source. Morrow no longer needs a developer to hand-teach it every
+  model: connecting a provider and refreshing metadata now yields real context
+  windows, output ceilings, modalities, vision, tool calling, structured
+  output, temperature support, reasoning support and — where the source
+  actually enumerates them — the exact reasoning depths a model accepts.
+  Ingestion covers every provider Morrow can route to rather than six.
+- Gateway model resolution: an id such as `anthropic/…` reached through
+  OpenRouter, Vercel or TokenRouter resolves the underlying model's facts while
+  the gateway's own adapter keeps ownership of the request format. A vendor's
+  wire dialect, reasoning off-switch and sampling support never cross that hop.
+- `interleaved` reasoning is represented as a capability, and reasoning now
+  distinguishes all six states a route can be in, including "reasons, controls
+  unknown" — which is what stops a level list being invented for a route that
+  merely advertises an effort field.
+
+### Changed
+
+- Capability precedence is explicit end to end: adapter-native > deployment >
+  live provider discovery > operator route configuration > Morrow-verified
+  corrections > external catalog > bundled seed > unknown. The bundled catalogs
+  are now Morrow's *corrections and offline seed* rather than its only
+  knowledge, and the flat model catalog and the exact-route resolver share one
+  merge policy, asserted by a conformance test.
+
+### Fixed
+
+- Public metadata refresh could not succeed at all: the response cap was 4 MiB
+  against a 4.1 MiB document, and a strict ingestion schema discarded an entire
+  provider over one unusual row — `anthropic`, `openai`, `groq`, `xai`,
+  `mistral` and `nvidia` all yielded nothing.
+- A cached metadata snapshot could stop Morrow starting. Upstream publishes
+  both `claude-haiku-4-5` and the dated id Morrow declares it an alias of, and
+  the resulting ambiguous identity threw inside server construction. Such a
+  snapshot now folds correctly, and any snapshot Morrow cannot install falls
+  back to bundled metadata instead of failing the boot.
+
 ## [0.4.0] - 2026-08-22
 
 Teammates stop asking permission for every step. A delegation used to pause for

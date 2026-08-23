@@ -120,6 +120,29 @@ export function unverifiedReasoning(): RouteReasoningCapability {
   return { control: "unknown", efforts: [], budgets: [], source: "unknown" };
 }
 
+/**
+ * Whether a bundled entry's reasoning declaration is a Morrow-verified
+ * compatibility correction rather than generic seed metadata.
+ *
+ * The bundled catalog declares a reasoning control ONLY where Morrow verified
+ * one against the live provider, and it is the only source that knows Morrow's
+ * wire dialect for it — a comprehensive external database describes models, not
+ * one harness's translation layer. Those declarations therefore outrank
+ * external metadata, while every other bundled fact stays seed data the
+ * external catalog is free to supersede.
+ *
+ * `noReasoning()` is the default every entry gets for saying nothing, so it is
+ * deliberately NOT a correction: silence must not outrank a database that
+ * actually knows.
+ */
+export function isVerifiedReasoningDeclaration(model: ModelInfo): boolean {
+  const reasoning = model.reasoning;
+  return reasoning !== undefined
+    && reasoning.source !== "unknown"
+    && reasoning.control !== "unknown"
+    && reasoning.control !== "none";
+}
+
 export function model(
   providerId: ProviderId,
   id: string,

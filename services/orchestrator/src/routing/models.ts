@@ -2,12 +2,14 @@ import type { ModelInfo, ModelStatus, ProviderId, ProviderStatus, RouteReasoning
 import type { ProviderModelDiscovery } from "../repositories/provider-model-discovery.js";
 import type { ProviderProtocol } from "../provider/base.js";
 import { BUILT_IN_MODELS, BUNDLED_MODEL_CATALOG_VERSION, UNKNOWN_REASONING } from "../provider/model-catalogs/index.js";
+import { isVerifiedReasoningDeclaration } from "../provider/model-catalogs/common.js";
 import {
   mergeRequestCapabilities,
   protocolRequestCapabilities,
   UNKNOWN_REQUEST_CAPABILITIES,
 } from "./request-capabilities.js";
 import { findDiscoveredModel } from "../provider/registry.js";
+import { externalModelDeclaration } from "../provider/external-catalog/index.js";
 
 export interface CanonicalModelTarget {
   providerId: ProviderId;
@@ -20,8 +22,43 @@ export { BUILT_IN_MODELS, BUNDLED_MODEL_CATALOG_VERSION, UNKNOWN_REASONING };
 
 let activeCatalogModels: ModelInfo[] = BUILT_IN_MODELS;
 
+/**
+ * Lookup indexes over the active catalog.
+ *
+ * A comprehensive external source contributes thousands of rows, and metadata
+ * resolution runs on the request path, so identity lookup is a map read rather
+ * than a linear scan. The maps are rebuilt whenever the catalog is installed;
+ * there is exactly one place that can change what "active" means.
+ */
+let exactIndex = new Map<string, ModelInfo>();
+let aliasIndex = new Map<string, ModelInfo>();
+let providerIndex = new Map<string, ModelInfo[]>();
+
 function catalogKey(providerId: string, modelId: string): string {
   return `${providerId}\u0000${modelId}`;
+}
+
+function foldedKey(providerId: string, modelId: string): string {
+  return catalogKey(providerId, modelId.toLowerCase());
+}
+
+function reindexActiveCatalog(): void {
+  exactIndex = new Map();
+  aliasIndex = new Map();
+  providerIndex = new Map();
+  for (const model of activeCatalogModels) {
+    exactIndex.set(catalogKey(model.providerId, model.id), model);
+    const folded = foldedKey(model.providerId, model.id);
+    if (!exactIndex.has(folded)) exactIndex.set(folded, model);
+    for (const alias of model.aliases) {
+      const key = catalogKey(model.providerId, alias);
+      if (!aliasIndex.has(key)) aliasIndex.set(key, model);
+      const foldedAlias = foldedKey(model.providerId, alias);
+      if (!aliasIndex.has(foldedAlias)) aliasIndex.set(foldedAlias, model);
+    }
+    const forProvider = providerIndex.get(model.providerId);
+    if (forProvider) forProvider.push(model); else providerIndex.set(model.providerId, [model]);
+  }
 }
 
 function hasCompleteIndependentMetadata(model: ModelInfo): boolean {
@@ -91,6 +128,7 @@ export function validateCanonicalModelCatalog(models: readonly ModelInfo[]): voi
 }
 
 validateCanonicalModelCatalog(BUILT_IN_MODELS);
+reindexActiveCatalog();
 
 export function installModelCatalog(models: ModelInfo[]): void {
   const normalizedModels = models.map((model) => model.reasoning
@@ -104,45 +142,117 @@ export function installModelCatalog(models: ModelInfo[]): void {
     seen.add(key);
     return true;
   });
+  reindexActiveCatalog();
 }
 
 /**
- * Remote catalog rows override same-route bundled seed rows. Seed rows remain
- * available for offline startup and for provider routes that catalog does not
- * cover, but never replace verified remote metadata.
+ * Combine Morrow's bundled seed rows with an external catalog snapshot into the
+ * flat compatibility catalog every legacy consumer reads.
+ *
+ * The per-field policy here MIRRORS the capability layer priorities in
+ * `provider/capability-facts.ts` — bundled seed < external catalog < Morrow
+ * verified correction — so the flat row and the exact-route resolver cannot
+ * disagree about the same model. A conformance test asserts that agreement
+ * rather than leaving it to inspection.
+ *
+ * The recurring rule is: the external row wins a field only where it actually
+ * STATES that field. Silence from a database that covers thousands of models
+ * is still silence, and must never retract something Morrow already knew.
  */
 export function mergeModelCatalog(seed: ModelInfo[], remote: ModelInfo[]): ModelInfo[] {
   const merged = new Map<string, ModelInfo>();
-  for (const model of seed) merged.set(catalogKey(model.providerId, model.canonicalId), model);
+  // Morrow's own alias graph decides identity. models.dev publishes both
+  // `claude-haiku-4-5` and Morrow's dated `claude-haiku-4-5-20251001`, and
+  // adding the shorter id as a SECOND anthropic model makes that selection
+  // ambiguous — which the catalog validator rejects outright, taking startup
+  // with it. Resolving the external id through the seed's aliases folds the two
+  // into the one model they actually are.
+  const aliasTargets = new Map<string, string>();
+  for (const model of seed) {
+    merged.set(catalogKey(model.providerId, model.canonicalId), model);
+    for (const alias of model.aliases) aliasTargets.set(catalogKey(model.providerId, alias), model.canonicalId);
+  }
   for (const model of remote) {
-    const key = catalogKey(model.providerId, model.canonicalId);
+    const canonicalId = aliasTargets.get(catalogKey(model.providerId, model.canonicalId)) ?? model.canonicalId;
+    const key = catalogKey(model.providerId, canonicalId);
     const bundled = merged.get(key);
-    if (!bundled) {
-      merged.set(key, model);
-      continue;
-    }
-
-    // Remote catalogues commonly omit pricing and normalized reasoning even
-    // when the bundled provider contract knows them. Preserve those facts when
-    // the remote row is silent or explicitly marks its reasoning as unknown;
-    // remote context/capability metadata still wins when it is present.
-    const remoteReasoning = model.reasoning;
-    const reasoning = remoteReasoning && remoteReasoning.source !== "unknown"
-      ? remoteReasoning
-      : bundled.reasoning;
-    merged.set(key, {
-      ...bundled,
-      ...model,
-      pricing: model.pricing ?? bundled.pricing,
-      contextWindow: model.contextWindow ?? bundled.contextWindow,
-      maxOutputTokens: model.maxOutputTokens ?? bundled.maxOutputTokens,
-      ...(reasoning ? { reasoning } : {}),
-      ...(bundled.requestCapabilities || model.requestCapabilities
-        ? { requestCapabilities: mergeRequestCapabilities(bundled.requestCapabilities ?? UNKNOWN_REQUEST_CAPABILITIES, model.requestCapabilities) }
-        : {}),
-    });
+    merged.set(key, bundled ? mergeCatalogRow(bundled, model) : model);
   }
   return [...merged.values()];
+}
+
+function mergeCatalogRow(bundled: ModelInfo, external: ModelInfo): ModelInfo {
+  const statesModalities = (external.inputModalities?.length ?? 0) > 0 || (external.outputModalities?.length ?? 0) > 0;
+  const statesTools = external.requestCapabilities !== undefined && external.requestCapabilities.tools !== "unknown";
+  const statesVision = statesModalities || external.capabilities.vision === true;
+  const statesReasoning = external.reasoning !== undefined && external.reasoning.source !== "unknown";
+  // A Morrow-verified reasoning declaration carries the wire dialect and the
+  // level set probed against the live API. No generic database has either, so
+  // it outranks the external row rather than being replaced by it.
+  const reasoning = isVerifiedReasoningDeclaration(bundled)
+    ? bundled.reasoning
+    : statesReasoning
+      ? external.reasoning
+      : bundled.reasoning;
+  return {
+    ...bundled,
+    ...external,
+    // Identity stays Morrow's: an external row reached through an alias must
+    // not rename the model it was folded into.
+    id: bundled.id,
+    providerModelId: bundled.providerModelId,
+    canonicalId: bundled.canonicalId,
+    aliases: [...new Set([...bundled.aliases, ...external.aliases])],
+    // Alias→canonical identity is Morrow's own graph; an external row has no
+    // notion of it and must not break a declared redirect.
+    ...(bundled.canonicalTarget ? { canonicalTarget: bundled.canonicalTarget } : {}),
+    contextWindow: external.contextWindow ?? bundled.contextWindow,
+    maxOutputTokens: external.maxOutputTokens ?? bundled.maxOutputTokens,
+    ...(statesModalities
+      ? {}
+      : {
+          ...(bundled.inputModalities ? { inputModalities: bundled.inputModalities } : {}),
+          ...(bundled.outputModalities ? { outputModalities: bundled.outputModalities } : {}),
+        }),
+    // An authoritative price is a provider billing fact; a published aggregate
+    // must not overwrite it, but it is better than nothing where none exists.
+    pricing: bundled.pricing?.source === "authoritative" ? bundled.pricing : external.pricing ?? bundled.pricing,
+    // Usage/streaming behaviour describes the adapter and the deployment, not
+    // the model, so the bundled provider contract keeps it.
+    tokenUsage: bundled.tokenUsage,
+    streamingUsage: bundled.streamingUsage,
+    privacy: bundled.privacy,
+    speedClass: external.speedClass === "unknown" ? bundled.speedClass : external.speedClass,
+    costClass: external.costClass === "unknown" ? bundled.costClass : external.costClass,
+    capabilities: {
+      streaming: bundled.capabilities.streaming,
+      toolCalls: statesTools ? external.capabilities.toolCalls : bundled.capabilities.toolCalls,
+      vision: statesVision ? external.capabilities.vision : bundled.capabilities.vision,
+      ...(external.capabilities.reasoning === undefined || external.capabilities.reasoning === null
+        ? (bundled.capabilities.reasoning === undefined ? {} : { reasoning: bundled.capabilities.reasoning })
+        : { reasoning: external.capabilities.reasoning }),
+    },
+    ...(bundled.requestCapabilities || external.requestCapabilities
+      ? { requestCapabilities: mergeRequestCapabilities(bundled.requestCapabilities ?? UNKNOWN_REQUEST_CAPABILITIES, statedRequestCapabilities(external.requestCapabilities)) }
+      : {}),
+    ...(reasoning ? { reasoning } : {}),
+  };
+}
+
+/**
+ * Reduce a request-capability profile to the fields it actually states.
+ *
+ * "unknown" from a catalogue that never claimed to enumerate a route's
+ * accepted arguments is silence, not a retraction — dropping it lets the
+ * protocol baseline (which the adapter owns) stand. A provider that DID
+ * enumerate its parameters reports "unsupported" for the ones it omits, so
+ * this never softens a real negative.
+ */
+export function statedRequestCapabilities(profile: ModelRequestCapabilities | undefined): Partial<ModelRequestCapabilities> {
+  if (!profile) return {};
+  return Object.fromEntries(
+    Object.entries(profile).filter(([, value]) => value !== "unknown"),
+  ) as Partial<ModelRequestCapabilities>;
 }
 
 export function unknownModel(providerId: string, id: string): ModelInfo {
@@ -182,9 +292,20 @@ export function listModels(): ModelInfo[] {
   return activeCatalogModels;
 }
 
+/**
+ * The catalog row for one provider/model pair.
+ *
+ * The installed external database is consulted after the flat catalog, not
+ * instead of it: its rows already flow into the flat catalog for every model id
+ * it publishes verbatim, and this fallback covers the case the flat catalog
+ * cannot represent — a gateway id whose metadata lives under the underlying
+ * vendor. That lookup applies the same gateway restriction the capability layer
+ * does, so neither path claims the vendor's wire contract for the gateway.
+ */
 function catalogDeclaration(providerId: string, selectedId: string): ModelInfo | undefined {
-  return activeCatalogModels.find((model) => model.providerId === providerId && model.id === selectedId)
-    ?? activeCatalogModels.find((model) => model.providerId === providerId && model.aliases.includes(selectedId));
+  return exactIndex.get(catalogKey(providerId, selectedId))
+    ?? aliasIndex.get(catalogKey(providerId, selectedId))
+    ?? externalModelDeclaration(providerId, selectedId);
 }
 
 function resolveSelectedDeclaration(providerId: string, selectedId: string): { model: ModelInfo; selectedId: string } | undefined {
@@ -241,9 +362,9 @@ function resolveSelectedDeclaration(providerId: string, selectedId: string): { m
     return { model: synthesized, selectedId };
   }
 
-  const exact = activeCatalogModels.find((model) => model.providerId === providerId && model.id === selectedId);
+  const exact = exactIndex.get(catalogKey(providerId, selectedId));
   if (exact) return { model: exact, selectedId };
-  const alias = activeCatalogModels.find((model) => model.providerId === providerId && model.aliases.includes(selectedId));
+  const alias = aliasIndex.get(catalogKey(providerId, selectedId));
   if (alias) return { model: alias, selectedId };
 
   // Model ids are case-insensitive identities but case-sensitive payloads. A
@@ -252,10 +373,9 @@ function resolveSelectedDeclaration(providerId: string, selectedId: string): { m
   // contract — otherwise the route silently falls back to the conservative
   // 32k ceiling and compacts constantly. The caller still sends the id exactly
   // as supplied; only metadata lookup is case-insensitive.
-  const folded = selectedId.toLowerCase();
-  const insensitive = activeCatalogModels.find((model) =>
-    model.providerId === providerId
-    && (model.id.toLowerCase() === folded || model.aliases.some((entry) => entry.toLowerCase() === folded)));
+  const insensitive = exactIndex.get(foldedKey(providerId, selectedId))
+    ?? aliasIndex.get(foldedKey(providerId, selectedId))
+    ?? externalModelDeclaration(providerId, selectedId);
   return insensitive ? { model: insensitive, selectedId } : undefined;
 }
 
@@ -266,7 +386,7 @@ function resolveCanonicalDeclaration(model: ModelInfo): ModelInfo {
     const key = catalogKey(current.providerId, current.id);
     if (seen.has(key)) throw new Error(`Canonical target cycle detected at ${current.providerId}/${current.id}`);
     seen.add(key);
-    const next = activeCatalogModels.find((candidate) => candidate.providerId === current.canonicalTarget!.providerId && candidate.id === current.canonicalTarget!.modelId);
+    const next = exactIndex.get(catalogKey(current.canonicalTarget.providerId, current.canonicalTarget.modelId));
     if (!next) throw new Error(`Canonical target for ${current.providerId}/${current.id} is missing: ${current.canonicalTarget.providerId}/${current.canonicalTarget.modelId}`);
     current = next;
   }
@@ -312,7 +432,7 @@ export function resolveModelRequestCapabilities(
     : metadata.capabilities.toolCalls === false && knownMetadata
       ? { ...baseline, tools: "unsupported" as const }
       : baseline;
-  return mergeRequestCapabilities(derived, metadata.requestCapabilities);
+  return mergeRequestCapabilities(derived, statedRequestCapabilities(metadata.requestCapabilities));
 }
 
 export function resolveModelMetadata(providerId: string, id: string): ModelInfo {
@@ -336,7 +456,7 @@ export function getModel(id: string): ModelInfo | undefined {
 }
 
 export function listModelsForProvider(providerId: ProviderId): ModelInfo[] {
-  return activeCatalogModels.filter((m) => m.providerId === providerId);
+  return [...(providerIndex.get(providerId) ?? [])];
 }
 
 /**

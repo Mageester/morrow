@@ -1,11 +1,22 @@
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ModelInfoSchema, type ModelInfo, type ProviderId } from "@morrow/contracts";
+import { ModelInfoSchema, type ModelInfo } from "@morrow/contracts";
 import { z } from "zod";
 import { BUNDLED_MODEL_CATALOG_VERSION, validateCanonicalModelCatalog } from "./models.js";
+import { normalizeModelsDevDocument } from "../provider/external-catalog/models-dev.js";
+import { IndexedExternalModelCatalog } from "../provider/external-catalog/index.js";
+import type { ExternalModelCatalog } from "../provider/external-catalog/types.js";
 
-/** models.dev's signed-free public catalog is currently a little over 3 MiB. */
-const MAX_CATALOG_BYTES = 4 * 1_024 * 1_024;
+/**
+ * Upper bound on one catalog response.
+ *
+ * models.dev's public document was 4.1 MiB when this was last measured
+ * (2026-08-23) and grows with the field. The bound exists to keep a hostile or
+ * broken endpoint from exhausting memory, not to predict the document's size,
+ * so it sits well clear of the real figure — a cap that trails upstream growth
+ * silently disables metadata refresh instead of protecting anything.
+ */
+const MAX_CATALOG_BYTES = 24 * 1_024 * 1_024;
 const DEFAULT_TIMEOUT_MS = 3_000;
 
 async function readBoundedText(response: Response): Promise<string> {
@@ -41,9 +52,10 @@ const CatalogDocumentSchema = z.object({
   schemaVersion: z.literal(1),
   catalogVersion: z.string().min(1).max(120),
   generatedAt: z.string().datetime(),
-  // models.dev currently yields more than 500 normalized rows across Morrow's
-  // supported providers. Raw response remains bounded independently.
-  models: ModelInfoSchema.array().max(2_000),
+  // models.dev yields thousands of normalized rows once every provider Morrow
+  // can route to is ingested, and a gateway alone contributes hundreds. The
+  // raw response remains bounded independently by MAX_CATALOG_BYTES.
+  models: ModelInfoSchema.array().max(20_000),
 }).strict().superRefine((document, context) => {
   const seen = new Set<string>();
   for (const [index, model] of document.models.entries()) {
@@ -74,88 +86,23 @@ const CacheSchema = z.object({
 
 type CatalogDocument = z.infer<typeof CatalogDocumentSchema>;
 
-const ModelsDevModelSchema = z.object({
-  id: z.string().trim().min(1).max(300),
-  name: z.string().trim().min(1).max(300),
-  family: z.string().trim().max(300).optional(),
-  limit: z.object({
-    context: z.number().int().positive().optional(),
-    output: z.number().int().positive().optional(),
-  }).passthrough().optional(),
-  tool_call: z.boolean().optional(),
-  attachment: z.boolean().optional(),
-  modalities: z.object({ input: z.array(z.string()).optional() }).passthrough().optional(),
-}).passthrough();
-
-const ModelsDevProviderSchema = z.object({
-  id: z.string().trim().min(1).max(120),
-  models: z.record(z.string(), ModelsDevModelSchema),
-}).passthrough();
-
-const ModelsDevDocumentSchema = z.record(z.string(), z.unknown());
-
-const MODELS_DEV_PROVIDER_IDS: Record<string, ProviderId> = {
-  openai: "openai",
-  anthropic: "anthropic",
-  google: "gemini",
-  openrouter: "openrouter",
-  deepseek: "deepseek",
-  "opencode-go": "opencode-go",
-};
-
 function sourceVersion(response: Response, fetchedAt: string): string {
   return `models.dev:${response.headers.get("etag") ?? response.headers.get("last-modified") ?? fetchedAt}`.slice(0, 120);
 }
 
+/**
+ * Ingest a raw models.dev document.
+ *
+ * Normalization (which providers Morrow can route to, which fields the
+ * database actually knows, what must stay unknown) lives in
+ * `provider/external-catalog/models-dev.ts` so there is exactly one place that
+ * understands the upstream shape. This function only decides whether the
+ * result is usable as a catalog document.
+ */
 function normalizeModelsDev(raw: unknown, response: Response): CatalogDocument | null {
-  const parsed = ModelsDevDocumentSchema.safeParse(raw);
-  if (!parsed.success) return null;
-  if (Object.keys(parsed.data).length > 400) return null;
   const fetchedAt = new Date().toISOString();
   const metadataVersion = sourceVersion(response, fetchedAt);
-  const models: ModelInfo[] = [];
-  for (const [sourceProviderId, rawProvider] of Object.entries(parsed.data)) {
-    const providerId = MODELS_DEV_PROVIDER_IDS[sourceProviderId];
-    if (!providerId) continue;
-    const providerResult = ModelsDevProviderSchema.safeParse(rawProvider);
-    // One malformed upstream provider must not discard safe metadata from every
-    // other supported provider. Each accepted provider is still schema-checked.
-    if (!providerResult.success || Object.keys(providerResult.data.models).length > 2_000) continue;
-    const provider = providerResult.data;
-    for (const source of Object.values(provider.models)) {
-      const supportsVision = source.attachment === true || source.modalities?.input?.includes("image") === true;
-      models.push({
-        version: 1,
-        id: source.id,
-        providerModelId: source.id,
-        canonicalId: source.id,
-        aliases: [],
-        providerId,
-        label: source.name,
-        family: source.family ?? null,
-        generation: null,
-        lifecycle: "current",
-        contextWindow: source.limit?.context ?? null,
-        maxOutputTokens: source.limit?.output ?? null,
-        pricing: null,
-        tokenUsage: true,
-        streamingUsage: true,
-        capabilities: { streaming: true, toolCalls: source.tool_call ?? false, vision: supportsVision },
-        capabilitySource: "remote-catalog",
-        speedClass: "unknown",
-        costClass: "unknown",
-        privacy: "remote",
-        builtIn: false,
-        metadataSource: "remote-catalog",
-        metadataVersion,
-        fetchedAt,
-        confidence: "verified",
-        // models.dev reports whether a model reasons, but not a stable Morrow
-        // request-control contract. Do not invent one from that boolean.
-        reasoning: { control: "none", efforts: [], budgets: [], source: "unknown" },
-      });
-    }
-  }
+  const models = normalizeModelsDevDocument(raw, { metadataVersion, fetchedAt });
   if (models.length === 0) return null;
   const normalized = CatalogDocumentSchema.safeParse({
     schemaVersion: 1,
@@ -180,6 +127,26 @@ export interface ModelCatalogSnapshot {
   catalogVersion: string;
   generatedAt: string;
   models: ModelInfo[];
+}
+
+/**
+ * Project a snapshot into the indexed external metadata source the exact-route
+ * capability resolver consults.
+ *
+ * A bundled snapshot yields null: Morrow's own seed rows are already the
+ * bundled catalog layer, and re-entering them as "external" metadata would
+ * promote seed data above the corrections it is supposed to sit beneath.
+ */
+export function externalCatalogFromSnapshot(snapshot: ModelCatalogSnapshot): ExternalModelCatalog | null {
+  if (snapshot.source !== "remote-cache") return null;
+  const rows = snapshot.models.filter((model) => model.metadataSource === "remote-catalog");
+  if (rows.length === 0) return null;
+  return new IndexedExternalModelCatalog({
+    sourceId: "models.dev",
+    version: snapshot.catalogVersion,
+    fetchedAt: snapshot.generatedAt,
+    models: rows,
+  });
 }
 
 export interface ModelCatalogOptions {

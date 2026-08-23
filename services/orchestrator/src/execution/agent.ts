@@ -57,7 +57,7 @@ import { globalRateGuard } from "../provider/rate-guard.js";
 import { suppressReasoningForEchoContinuity, translateReasoning } from "../provider/reasoning.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { resolveModelMetadata, resolveModelRequestCapabilities } from "../routing/models.js";
-import { buildExactProviderRoute, resolveProviderModelCapabilities } from "../provider/model-capabilities.js";
+import { buildExactProviderRoute, resolveProviderModelCapabilities, routeConfigCapabilityLayer } from "../provider/model-capabilities.js";
 import { MockProvider } from "../provider/mock.js";
 import { redactSecrets } from "../provider/credentials.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint } from "./adaptive-budget.js";
@@ -4921,7 +4921,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           endpointIdentityHash: route.endpointIdentityHash,
         });
         const routeFingerprint = exactRoute.routeFingerprint;
-        const exactCapabilities = resolveProviderModelCapabilities(exactRoute);
+        // An operator-configured endpoint ceiling is a statement about THIS
+        // deployment, so it outranks any name-keyed catalog. Handing it to the
+        // resolver is what keeps the exact-route capability view and the
+        // budget resolution describing the same route.
+        const operatorRouteLayer = routeConfigCapabilityLayer({ contextWindowTokens: route.endpointLimitTokens });
+        const exactCapabilities = resolveProviderModelCapabilities(exactRoute, operatorRouteLayer ? [operatorRouteLayer] : []);
         const candidateMessages = preparedContext.messages.map((message) => {
           if (!message.providerContinuation) return message;
           if (message.providerContinuationRouteFingerprint === routeFingerprint) return message;
