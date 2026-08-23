@@ -45,17 +45,18 @@ test("Connections keeps the OpenRouter key out of the rendered page and supports
   await expect(apiKeyInput).toBeFocused();
   await apiKeyInput.fill(key);
   await page.getByRole("button", { name: "Save connection" }).click();
-  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
-  await expect(page.getByText("2 available models")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Replace key" })).toBeFocused();
+  await expect(page.getByText("Healthy", { exact: true })).toBeVisible();
+  await expect(page.getByText("2 models available")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Replace credential" })).toBeFocused();
   await expect(page.locator("body")).not.toContainText(key);
   expect(bodies.some((body) => body.includes(key))).toBe(true);
 
   await page.reload();
-  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(page.getByText("Healthy", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Manage" }).click();
   await expect(page.getByText(/Last successful health check:.*2026/i)).toBeVisible();
 
-  const disconnect = page.getByRole("button", { name: "Disconnect OpenRouter" });
+  const disconnect = page.getByRole("button", { name: "Disconnect", exact: true });
   await disconnect.click();
   const dialog = page.getByRole("alertdialog", { name: "Disconnect OpenRouter?" });
   await expect(dialog).toBeVisible();

@@ -16,7 +16,8 @@ pnpm --filter @morrow/orchestrator exec tsx benchmark/explain-hot-queries.ts
 trimming, secret redaction, and durable writes against a realistic 361-message /
 24-tool context. `explain-hot-queries.ts` runs `EXPLAIN QUERY PLAN` over the
 statements Morrow issues most often and exits non-zero if any of them falls back
-to a table scan — it is meant to be cheap enough to run in CI.
+to a table scan, or if a chronological conversation/tool-call list needs a
+temporary sort. It is meant to be cheap enough to run in CI.
 
 ## Measured baseline (2026-08-19, 361-message context, SSD)
 
@@ -108,3 +109,12 @@ test: the faster agent simply lands more writes inside one millisecond.
 overlapping them buys nothing; the tools that are actually slow (`run_command`,
 browser actions) mutate state and cannot be reordered safely. The sequential
 tool loop is not where the time goes.
+
+## 2026-08-23 follow-up
+
+Migration 65 replaced the single-column conversation and tool-call lookup
+indexes with `(foreign_key, created_at)` indexes. This preserved the filtering
+prefix and removed three temporary chronological sorts. The repeatable
+8,000-row benchmark measured 9.6% to 23.7% lower list latency; see
+[`performance-report-2026-08-23.md`](performance-report-2026-08-23.md) for the
+numbers, environment, commands, startup budgets, and deterministic pi comparison.

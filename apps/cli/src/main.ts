@@ -82,6 +82,16 @@ export function resolveInvocation(positionals: string[]): Invocation {
   return { kind: "prompt", prompt: positionals.join(" ") };
 }
 
+/** Complete permission intent for the four task-bearing root commands. */
+export function rootPermissionFlags(root: "ask" | "fix" | "plan" | "yolo"): Record<string, boolean> {
+  switch (root) {
+    case "ask": return { "read-only": true, yolo: false };
+    case "fix": return { yolo: false };
+    case "plan": return { plan: true, yolo: false };
+    case "yolo": return { build: true, yolo: true };
+  }
+}
+
 function looksLifecycleCommand(root: string): boolean {
   const normalized = root.toLowerCase();
   return LIFECYCLE_COMMANDS.some((command) => normalized === command || normalized.startsWith(`${command}-`) || normalized.startsWith(`${command}:`));
@@ -152,10 +162,10 @@ export async function run(argv: string[]): Promise<number> {
     const chatWith = async (extra: Record<string, string | boolean>) =>
       (await load.chatCommand())(new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, ...extra } }));
     switch (root) {
-      case "ask": { const p = promptOf(); return await chatWith({ "read-only": true, ...(p ? { message: p } : {}) }); }
-      case "fix": { const p = promptOf(); return await chatWith({ ...(p ? { message: p } : {}) }); }
-      case "yolo": { const p = promptOf(); return await chatWith({ build: true, yolo: true, ...(p ? { message: p } : {}) }); }
-      case "plan": { const p = promptOf(); return await chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
+      case "ask": { const p = promptOf(); return await chatWith({ ...rootPermissionFlags("ask"), ...(p ? { message: p } : {}) }); }
+      case "fix": { const p = promptOf(); return await chatWith({ ...rootPermissionFlags("fix"), ...(p ? { message: p } : {}) }); }
+      case "yolo": { const p = promptOf(); return await chatWith({ ...rootPermissionFlags("yolo"), ...(p ? { message: p } : {}) }); }
+      case "plan": { const p = promptOf(); return await chatWith({ ...rootPermissionFlags("plan"), ...(p ? { message: p } : {}) }); }
       case "new": return await chatWith({ new: true });
       case "cortex": return await (await load.cortexCommand())(ctx, sub, args);
       case "acceptance": return await (await load.acceptanceCommand())(ctx, sub, args);

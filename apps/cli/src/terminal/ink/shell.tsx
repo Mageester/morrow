@@ -52,7 +52,27 @@ export interface ShellHandle {
   registry: CommandRegistry;
 }
 
+/** Keep Morrow's full-screen UI separate from the invoking shell's scrollback.
+ * The alternate buffer is restored on every ordinary exit and around an
+ * external editor, so clearing Morrow never destroys the user's shell history. */
+export const ENTER_APPLICATION_SCREEN = "\x1b[?1049h\x1b[2J\x1b[H";
+export const LEAVE_APPLICATION_SCREEN = "\x1b[?1049l";
+
 export function startShell(options: ShellOptions): ShellHandle {
+  const terminalOutput = options.io?.stdout ?? process.stdout;
+  let applicationScreenActive = false;
+  const enterApplicationScreen = () => {
+    if (terminalOutput.isTTY !== true || applicationScreenActive) return;
+    terminalOutput.write(ENTER_APPLICATION_SCREEN);
+    applicationScreenActive = true;
+  };
+  const leaveApplicationScreen = () => {
+    if (!applicationScreenActive) return;
+    terminalOutput.write(LEAVE_APPLICATION_SCREEN);
+    applicationScreenActive = false;
+  };
+  enterApplicationScreen();
+
   const store = new TerminalStore();
   const approvals = new ApprovalStore();
   const overlays = new OverlayStore();
@@ -254,6 +274,7 @@ export function startShell(options: ShellOptions): ShellHandle {
     const stdin = process.stdin;
     const wasRaw = stdin.isRaw === true;
     try {
+      leaveApplicationScreen();
       if (wasRaw && typeof stdin.setRawMode === "function") stdin.setRawMode(false);
       stdin.pause();
       const result = editExternally(text);
@@ -265,6 +286,7 @@ export function startShell(options: ShellOptions): ShellHandle {
     } finally {
       stdin.resume();
       if (wasRaw && typeof stdin.setRawMode === "function") stdin.setRawMode(true);
+      enterApplicationScreen();
       // The editor drew over the frame Ink believes is on screen, so the next
       // render has to start from a clean one rather than patching a screen
       // that is no longer there.
@@ -305,6 +327,7 @@ export function startShell(options: ShellOptions): ShellHandle {
   const stop = () => {
     activeTask?.abort.abort();
     instance.unmount();
+    leaveApplicationScreen();
   };
   stopShell = stop;
   clearTerminal = () => instance.clear();

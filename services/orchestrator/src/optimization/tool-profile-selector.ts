@@ -7,7 +7,7 @@ import {
 } from "../tools/catalog.js";
 
 export type ToolProfileName = (typeof TOOL_PROFILE_NAMES)[number];
-export type ToolTaskClassification = "workspace_read" | "research" | "coding" | "browser" | "full_agent";
+export type ToolTaskClassification = "workspace_read" | "research" | "coding_focused" | "coding" | "browser" | "full_agent";
 
 export interface ToolProfileRequest {
   classification: ToolTaskClassification;
@@ -37,10 +37,18 @@ const RESEARCH = [
   "browser_open", "browser_snapshot", "browser_console", "browser_close",
 ] as const;
 
+// Bounded file work that names its targets does not need background-process,
+// skill-authoring, team, or broad repository-history schemas. It retains every
+// tool needed to inspect, edit, run verification, and retrieve large results.
+const CODING_FOCUSED = [
+  "inspect_workspace", "list_files", "read_file", "search_text", "search_files",
+  "git_diff", "run_command", "propose_patch", "create_file", "append_file", "read_artifact", "record_decision",
+] as const;
+
 const CODING = [
   ...READ_ONLY_WORKSPACE,
   "run_command", "read_process_output", "stop_process", "propose_patch", "create_file",
-  "append_file", "create_directory", "create_skill",
+  "append_file", "create_directory", "create_skill", "record_decision",
 ] as const;
 
 const BROWSER = [
@@ -52,6 +60,7 @@ const BROWSER = [
 const PROFILE_TOOLS: Record<ToolProfileName, readonly string[]> = {
   "read-only-workspace": READ_ONLY_WORKSPACE,
   research: RESEARCH,
+  "coding-focused": CODING_FOCUSED,
   coding: CODING,
   browser: BROWSER,
   "full-agent": IMPLEMENTED_TOOL_NAMES,
@@ -60,6 +69,7 @@ const PROFILE_TOOLS: Record<ToolProfileName, readonly string[]> = {
 const REQUIRED_SAFETY_TOOLS: Record<ToolTaskClassification, readonly string[]> = {
   workspace_read: TOOL_PROFILE_SAFETY_TOOLS,
   research: TOOL_PROFILE_SAFETY_TOOLS,
+  coding_focused: [...TOOL_PROFILE_SAFETY_TOOLS, "propose_patch"],
   coding: [...TOOL_PROFILE_SAFETY_TOOLS, "propose_patch"],
   browser: TOOL_PROFILE_SAFETY_TOOLS,
   full_agent: TOOL_PROFILE_SAFETY_TOOLS,
@@ -69,10 +79,31 @@ function profileForClassification(classification: ToolTaskClassification): ToolP
   switch (classification) {
     case "workspace_read": return "read-only-workspace";
     case "research": return "research";
+    case "coding_focused": return "coding-focused";
     case "coding": return "coding";
     case "browser": return "browser";
     case "full_agent": return "full-agent";
   }
+}
+
+/**
+ * Classify only when the prompt supplies enough evidence to retain the needed
+ * escape hatches. A focused coding profile requires at least one explicit file
+ * target and no signal for browser, skill, team, process, or repository-wide
+ * work; everything ambiguous stays on the broader profile.
+ */
+export function classifyToolTask(prompt: string, mode: "agent" | string): ToolTaskClassification {
+  if (mode !== "agent") return "workspace_read";
+  if (/\b(?:browser|webpage|web\s+page|website|dom|screenshot|viewport|console\s+error|url|visually)\b/i.test(prompt)) return "browser";
+  const coding = /\b(?:build|implement|code|write|edit|patch|create|fix|refactor|test|develop)\b/i.test(prompt);
+  if (coding) {
+    const namesFile = /(?:^|[\s`'"(])(?:[\w@.-]+\/)*[\w@.-]+\.[a-z0-9]{1,10}\b/i.test(prompt);
+    const needsBroadCapability = /\b(?:repository|repo|codebase|architecture|refactor|redesign|migrate|skill|teammate|team|mission|plan|background|server|watcher|process|directory|research|sources?|citations?)\b/i.test(prompt);
+    return namesFile && !needsBroadCapability ? "coding_focused" : "coding";
+  }
+  if (/\b(?:research|sources?|citations?|current|latest|news|web\s+search)\b/i.test(prompt)) return "research";
+  if (/\b(?:inspect|list|read|search|review|analy[sz]e)\b/i.test(prompt)) return "workspace_read";
+  return "full_agent";
 }
 
 export class ToolProfileSelector {

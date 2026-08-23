@@ -1,8 +1,8 @@
 # Morrow installation
 
-Morrow v0.1.0-beta.33 is an unsigned Windows 10/11 x64 Early Access release.
-The installed product is terminal-only and includes its own Node.js runtime;
-Git, Node.js, and pnpm are not required for the Windows install.
+Morrow v0.4.0 is an unsigned Early Access release. Native release packages
+include their own Node.js runtime; Git, Node.js, and pnpm are not required when
+a package is published for the current platform.
 
 ## Windows quick install
 
@@ -23,9 +23,14 @@ Open a new PowerShell window after installation:
 morrow
 ```
 
-Use `morrow onboard` for guided provider setup. Provider credentials are saved
-in Morrow's local owner-readable secrets file and are not written to task
-events, reports, diagnostic exports, or browser storage.
+Use `morrow onboard` for the value-first terminal setup. Its primary path asks
+only for the one requirement needed to run a task: a model connection. Profile,
+skills, autonomy, and project choices are optional and remain available through
+`morrow config` or `morrow onboard classic`. Setup can be paused, resumed,
+skipped with **Explore first**, inspected with `morrow onboard status`, or reset
+with `morrow onboard reset`. Provider credentials are saved in Morrow's local
+owner-readable secrets file and are not written to task events, reports,
+diagnostic exports, or browser storage.
 
 ## Verify or troubleshoot
 
@@ -72,11 +77,20 @@ morrow uninstall --yes --purge-data
 configuration, provider credentials, backups, logs, and cache. It cannot be
 undone.
 
-## Linux source build
+## Linux and macOS quick install
 
-Linux remains source-build only. macOS is not supported in beta.31.
+The POSIX installer selects the checksum-verified native tarball for Linux or
+macOS and the detected x64/arm64 architecture, verifies it, validates the app
+tree, and activates it atomically.
 
-Requirements: Node.js 22 or newer and pnpm 10.x.
+```bash
+curl -fsSL https://morrowproject.getaxiom.ca/install.sh | sh
+```
+
+If a native package is unavailable for a release, the same installer falls back
+to a source build whose commit is checked against the release manifest. That
+fallback requires Node.js 22 or newer and pnpm 10.x. Use `--source` to request
+it explicitly.
 
 ```bash
 git clone https://github.com/Mageester/morrow.git
@@ -88,6 +102,7 @@ pnpm build
 pnpm --filter @morrow/cli morrow
 ```
 
-Source checkouts use `~/.morrow` by default. The Windows package uses
+POSIX installs keep application files under `~/.local/share/morrow` and user
+data under `~/.morrow` by default. The Windows package uses
 `%LOCALAPPDATA%\Morrow\data`. See [privacy-model.md](privacy-model.md) for the
 local data-flow and provider boundaries.

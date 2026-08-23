@@ -70,7 +70,7 @@ See `CONTINUATION.md` for the exact next step.
   console, interaction, desktop/tablet/mobile screenshot and vision evidence.
   `browser-injection.test.ts` and `agent-browser.test.ts` launch local controlled
   pages through real Chromium; managed/cloud browsers and general desktop UIA
-  remain unsupported. See `BETA31_BROWSER_VISION.md`.
+  remain unsupported. See `CONTROLLED_BROWSER_AND_VISION.md`.
 
 - **Tamper-evident audit store (B22b)** — `audit/log.ts` hash-chains each entry
   (`hash = sha256(prevHash + canonical(entry))`); `repositories/audit-log.ts` is

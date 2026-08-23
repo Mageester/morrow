@@ -12,11 +12,15 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   REQUIRED_PACKAGE_FILES,
-  listZipEntries,
+  requiredPackageFiles,
+  listArtifactEntries,
+  inferArtifactPlatform,
   resolvePackageRoot,
   assertArtifactLayout,
   forbiddenOwnFileViolations,
@@ -27,7 +31,7 @@ function locateArtifact() {
   const dist = join(process.cwd(), "dist");
   if (!existsSync(dist)) return null;
   const zips = readdirSync(dist)
-    .filter((f) => /^Morrow-v.*-windows-x64\.zip$/.test(f))
+    .filter((f) => /^Morrow-v.*-(?:windows|linux|darwin)-(?:x64|arm64)\.(?:zip|tar\.gz)$/.test(f))
     .map((f) => join(dist, f))
     .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
   return zips[0] ?? null;
@@ -40,13 +44,15 @@ test("release archive satisfies the Morrow package contract", { skip: artifact ?
   const { root, entryCount } = assertArtifactLayout(artifact);
   assert.ok(entryCount > 0, "archive has entries");
 
-  const entries = new Set(listZipEntries(artifact).map((e) => e.replace(/\\/g, "/")));
+  const platform = inferArtifactPlatform(artifact);
+  const required = requiredPackageFiles(platform);
+  const entries = new Set(listArtifactEntries(artifact).map((e) => e.replace(/\\/g, "/")));
   // Exactly one predictable top-level directory.
   const topDirs = new Set([...entries].map((e) => e.split("/")[0]).filter(Boolean));
   assert.equal(topDirs.size, 1, `expected one top-level dir, got: ${[...topDirs].join(", ")}`);
 
   // Every required runtime file is present under the resolved root.
-  for (const rel of REQUIRED_PACKAGE_FILES) {
+  for (const rel of required) {
     assert.ok(entries.has(root + rel), `missing required file: ${rel}`);
   }
 
@@ -55,6 +61,39 @@ test("release archive satisfies the Morrow package contract", { skip: artifact ?
     !entries.has(root + "orchestrator/node_modules/@morrow/contracts/src/index.ts"),
     "bundled @morrow/contracts must not ship TypeScript source (exports must resolve to dist/index.js)",
   );
+});
+
+test("a POSIX release archive activates through the real installer contract", {
+  skip: !artifact || process.platform === "win32" || !artifact.endsWith(".tar.gz")
+    ? "requires a POSIX tarball"
+    : false,
+}, () => {
+  const work = mkdtempSync(join(tmpdir(), "morrow-posix-package-"));
+  try {
+    const extract = join(work, "extract");
+    const unpack = spawnSync("tar", ["-xzf", artifact, "-C", work], { encoding: "utf8" });
+    assert.equal(unpack.status, 0, unpack.stderr);
+    const top = readdirSync(work).find((entry) => entry.startsWith("Morrow-v"));
+    assert.ok(top, "archive must extract one Morrow package directory");
+    const staged = join(work, top);
+    writeFileSync(join(staged, "INSTALL_KIND"), "prebuilt");
+    const prefix = join(work, "prefix");
+    const activate = spawnSync("sh", [join(process.cwd(), "installer", "install.sh")], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        MORROW_HOME: join(work, "data-home"),
+        MORROW_TEST_HOOK: "activate",
+        MORROW_ACTIVATE_FROM: staged,
+        MORROW_ACTIVATE_ROOT: prefix,
+        MORROW_ACTIVATE_BIN: join(work, "bin"),
+      },
+    });
+    assert.equal(activate.status, 0, activate.stderr);
+    assert.equal(readFileSync(join(prefix, "app", "INSTALL_KIND"), "utf8"), "prebuilt");
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
 });
 
 test("forbidden-content contract rejects dev/acceptance cruft in Morrow's own files", () => {
@@ -105,4 +144,15 @@ test("package layout resolver handles root-level and single-top-dir shapes", () 
     null,
     "an index without a JavaScript asset is not a usable web bundle",
   );
+});
+
+test("package layout resolver supports every POSIX prebuilt contract", () => {
+  for (const platform of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]) {
+    const required = requiredPackageFiles(platform);
+    assert.ok(required.includes("runtime/bin/node"));
+    assert.ok(!required.includes("morrow.cmd"));
+    const root = `Morrow-v9.9.9-${platform}/`;
+    const entries = [...required, "web/assets/app.js"].map((entry) => root + entry);
+    assert.equal(resolvePackageRoot(entries, platform), root);
+  }
 });

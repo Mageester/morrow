@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { startShell } from "../src/terminal/ink/shell.js";
+import { ENTER_APPLICATION_SCREEN, LEAVE_APPLICATION_SCREEN, startShell } from "../src/terminal/ink/shell.js";
 import type { RawTaskEvent } from "../src/terminal/task-event-adapter.js";
 import type { SessionBackend } from "../src/terminal/session-types.js";
 
@@ -50,11 +50,11 @@ function backendEmitting(events: RawTaskEvent[], getApproval: SessionBackend["ge
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 
 /** Streams good enough for Ink, with no terminal behind them. */
-function fakeIo() {
+function fakeIo(writes: string[] = []) {
   const stdout = Object.assign(new EventEmitter(), {
     columns: 100,
     rows: 40,
-    write: () => true,
+    write: (value: unknown) => { writes.push(String(value)); return true; },
     isTTY: true,
   });
   const stdin = Object.assign(new EventEmitter(), {
@@ -71,6 +71,22 @@ function fakeIo() {
 }
 
 describe("approval requests reach the surface", () => {
+  it("isolates the UI from shell scrollback and restores the invoking screen on exit", async () => {
+    const writes: string[] = [];
+    const shell = startShell({
+      backend: backendEmitting([], async () => { throw new Error("unused"); }),
+      sendOptions: { mode: "agent", autoApprove: false, preset: "balanced", useMemory: true },
+      session,
+      cwdLabel: "morrow",
+      unicode: false,
+      io: fakeIo(writes),
+    });
+    expect(writes[0]).toBe(ENTER_APPLICATION_SCREEN);
+    shell.stop();
+    await shell.done;
+    expect(writes.at(-1)).toBe(LEAVE_APPLICATION_SCREEN);
+  });
+
   it("loads the approval named by `approvalId`", async () => {
     const getApproval = vi.fn(async (id: string) => ({
       id,

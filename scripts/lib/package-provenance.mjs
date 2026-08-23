@@ -13,7 +13,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, readdirSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
 export const PROVENANCE_SCHEMA_VERSION = 1;
@@ -33,8 +33,13 @@ export function computePackageManifestHash(pkgDir, excludeRelPaths = []) {
       const abs = join(dir, name);
       const rel = relative(pkgDir, abs).replace(/\\/g, "/");
       if (excluded.has(rel)) continue;
-      const st = statSync(abs);
+      const st = lstatSync(abs);
       if (st.isDirectory()) { walk(abs); continue; }
+      if (st.isSymbolicLink()) {
+        const digest = createHash("sha256").update(`symlink:${readlinkSync(abs)}`).digest("hex");
+        entries.push(`${rel}:${digest}`);
+        continue;
+      }
       if (!st.isFile()) continue;
       const digest = createHash("sha256").update(readFileSync(abs)).digest("hex");
       entries.push(`${rel}:${digest}`);

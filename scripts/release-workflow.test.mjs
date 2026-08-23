@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,18 +23,36 @@ test("release publication remains gated by package and install integration", asy
   assert.match(workflow, /softprops\/action-gh-release/);
 });
 
-test("release publication dispatches the existing site deployment with the published version", async () => {
+test("release builds native prebuilts for Linux and macOS on both supported architectures", async () => {
   const workflow = await readFile(join(root, ".github", "workflows", "release.yml"), "utf8");
-  assert.match(workflow, /release-published/);
-  assert.match(workflow, /client_payload/);
-  assert.match(workflow, /inputs\.version/);
+  for (const runner of ["ubuntu-latest", "ubuntu-24.04-arm", "macos-15-intel", "macos-latest"]) {
+    assert.match(workflow, new RegExp(runner.replaceAll(".", "\\.")));
+  }
+  for (const platform of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]) {
+    assert.match(workflow, new RegExp(platform));
+  }
+  assert.match(workflow, /assemble-release\.mjs/);
+  assert.match(workflow, /Morrow-\*\.(?:zip|tar\.gz)/);
 });
 
-test("landing deployment stages the installer and release metadata at the public contract paths", async () => {
-  const workflow = await readFile(join(root, ".github", "workflows", "deploy-landing.yml"), "utf8");
-  assert.match(workflow, /installer\/install\.ps1/);
-  assert.match(workflow, /apps\/landing\/public\/install\.ps1/);
-  assert.match(workflow, /apps\/landing\/public\/releases\/latest\.json/);
-  assert.match(workflow, /apps\/landing\/public\/release-manifest\.json/);
-  assert.match(workflow, /github\.event\.client_payload\.version/);
+test("only the final publish job receives release write permission", async () => {
+  const workflow = await readFile(join(root, ".github", "workflows", "release.yml"), "utf8");
+  assert.match(workflow, /permissions:\s*\n\s*contents:\s*read/);
+  assert.match(workflow, /publish:\s*[\s\S]*?permissions:\s*\n\s*contents:\s*write/);
+});
+
+test("release publication is bound to the exact main commit and existing version tag", async () => {
+  const workflow = await readFile(join(root, ".github", "workflows", "release.yml"), "utf8");
+  assert.match(workflow, /fetch-depth:\s*0/);
+  assert.match(workflow, /release-tag-integrity\.mjs/);
+  assert.match(workflow, /github\.sha/);
+  assert.match(workflow, /origin\/main/);
+});
+
+test("the obsolete GitHub Pages deployment is not a second production pipeline", () => {
+  assert.equal(
+    existsSync(join(root, ".github", "workflows", "deploy-landing.yml")),
+    false,
+    "morrow-axiom-site is the only production website pipeline",
+  );
 });

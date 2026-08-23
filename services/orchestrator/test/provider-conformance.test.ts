@@ -198,7 +198,6 @@ const ADAPTERS: WireAdapter[] = [
  */
 const NOT_A_WIRE_ADAPTER: Record<string, string> = {
   MockProvider: "test double; replays caller-supplied ProviderChunks and speaks no wire protocol",
-  OpenAiProvider: "thin environment-credential wrapper that delegates every stream to OpenAiCompatibleProvider",
 };
 
 const realFetch = globalThis.fetch;

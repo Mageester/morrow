@@ -82,6 +82,23 @@ Flags: `--tasks a,b` to select, `--repeats n` for repeated sampling,
 Runs stream to JSONL as they land, so a run that dies halfway still leaves
 usable evidence.
 
+### Deterministic local overhead comparison
+
+Use the loopback scripted model when the question is harness overhead rather
+than model quality. It drives Morrow and pi through the same hidden-check-graded
+file tasks with equivalent native tool calls, records tokens, wall time, calls,
+and estimated cost, and needs no provider credential:
+
+```bash
+PI_BINARY="$(command -v pi)" pnpm --filter @morrow/orchestrator exec tsx \
+  ../../benchmarks/harness-comparison/deterministic.ts --repeats 3
+```
+
+The output also includes `morrow-broad`, an ablation of focused tool selection,
+so schema changes have a repeatable before/after under identical prompts. This
+fixture measures orchestration overhead and capability retention only; use the
+live runner above for model-in-the-loop success claims.
+
 ## Baselines
 
 **pi** (`@earendil-works/pi-coding-agent`) is driven as a black box, one

@@ -18,7 +18,7 @@ items under **Beta.30 P0/P1** below should be read against that document's
 milestone is M1 (interactive model picker on the canonical truth) — see the
 roadmap for its gate. Terminal/mission-reliability sequencing (Terminal Event
 Integrity, Control Contract, Mission Guardian, durable mission execution)
-remains owned by `docs/BETA30_PRODUCT_GOAL.md` §12, unchanged by this note.
+remains owned by `docs/PRODUCT_GOAL.md` §12, unchanged by this note.
 
 ## Capability roadmap (local autonomy + verification)
 
@@ -50,10 +50,10 @@ of the same document.
 
 **Product contract:** the authoritative goal map and CLI acceptance
 standard for this milestone now live in
-[`docs/BETA30_PRODUCT_GOAL.md`](BETA30_PRODUCT_GOAL.md) (product pillars,
+[`docs/PRODUCT_GOAL.md`](PRODUCT_GOAL.md) (product pillars,
 the four-mode Ask/Plan/Build/Build·Auto model, mission contract, Mission
 Guardian, durable mission ownership, Cortex memory layers, priority system)
-and [`docs/BETA30_CLI_ACCEPTANCE.md`](BETA30_CLI_ACCEPTANCE.md) (design
+and [`docs/TERMINAL.md`](TERMINAL.md) (design
 principles, required terminal states, activity grammar, permission
 presentation rules, benchmark journeys, current gap matrix). The checklist
 below is not duplicated there; read those documents for the "why" and
@@ -68,9 +68,9 @@ complete the terminal foundation: the permission *dispatch*-layer bug
 (issue 3), event-identity/deduplication across reconnect and replay
 (issues 11, 12), and task grading (issue 13) remain open. **Terminal Event
 Integrity** (below) is now the active next slice; full scope and completion
-gate live in `BETA30_CLI_ACCEPTANCE.md` §12 and are not duplicated here.
+gate live in `TERMINAL.md` §12 and are not duplicated here.
 Mission Guardian foundation (issue 5) follows it, then Control Contract's
-remaining dispatch/grading fixes — see `BETA30_PRODUCT_GOAL.md` §12 for the
+remaining dispatch/grading fixes — see `PRODUCT_GOAL.md` §12 for the
 authoritative milestone order. The old **[Slice 1/2/3]** markers below are
 removed since PR #44 partially fulfilled them; see the per-item notes for
 what's done vs. open.
@@ -125,7 +125,7 @@ what's done vs. open.
       action (a create-then-patch-recovery cycle on one file collapsing to
       a single Changing line); clean handling of retries against the same
       file or operation; report growth proportional to distinct events.
-      Full scope and the 8-point completion gate: `BETA30_CLI_ACCEPTANCE.md`
+      Full scope and the 8-point completion gate: `TERMINAL.md`
       §12. Supersedes the old "Deduplicated event persistence" item this
       entry replaces. Addresses issues 4 (report-side correlation only —
       the live-feed half is DONE, see below), 11, 12.
@@ -150,7 +150,7 @@ what's done vs. open.
       checked before each write/dependency-adding tool call so violations are
       caught during execution, not discovered after the fact. Follows
       Terminal Event Integrity and Control Contract per
-      `BETA30_PRODUCT_GOAL.md` §12. Addresses issue 5.
+      `PRODUCT_GOAL.md` §12. Addresses issue 5.
   - [ ] Structured hard-requirement checklist (extraction + storage).
   - [ ] Requirement coverage view (which requirement each major
         implementation satisfies).

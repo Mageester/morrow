@@ -65,6 +65,22 @@ describe("database", () => {
     db.close();
   });
 
+  it("serves ordered conversation and tool-call projections without temporary sorts", () => {
+    const db = openDatabase(":memory:");
+    for (const [sql, parameter] of [
+      ["SELECT * FROM conversation_messages WHERE conversation_id=? ORDER BY created_at,rowid", "c"],
+      ["SELECT * FROM message_tool_calls WHERE message_id=? ORDER BY created_at,rowid", "m"],
+      ["SELECT * FROM message_tool_calls WHERE task_id=? ORDER BY created_at,rowid", "t"],
+    ] as const) {
+      const detail = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(parameter) as Array<{ detail: string }>)
+        .map((row) => row.detail)
+        .join(" | ");
+      expect(detail).toMatch(/USING INDEX/);
+      expect(detail).not.toMatch(/USE TEMP B-TREE/);
+    }
+    db.close();
+  });
+
   it("adds recovery lease columns when upgrading a database already at migrations 54 and 55", () => {
     const directory = mkdtempSync(join(tmpdir(), "morrow-schedule-recovery-"));
     const file = join(directory, "morrow.db");

@@ -26,7 +26,7 @@
  *   services/orchestrator/test/{teams-and-delegation,teams-api,
  *   security-acceptance,readme-summary-sample}.test.ts, not by this script.
  */
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -41,6 +41,7 @@ const ROOT_BENCHMARK_DIR = resolve(process.cwd(), "benchmarks", "harness-economi
 const BENCHMARK_DIR = existsSync(ROOT_BENCHMARK_DIR)
   ? ROOT_BENCHMARK_DIR
   : resolve(process.cwd(), "..", "..", "benchmarks", "harness-economics");
+const RESULTS_DIR = join(BENCHMARK_DIR, "results");
 
 function runOnce(seed: number): BenchmarkRecord {
   const db = openDatabase(":memory:");
@@ -97,14 +98,15 @@ function main() {
   // existing deterministic-evidence-*.jsonl file's rows.
   const records = [runOnce(1), runOnce(2), runOnce(3)];
 
-  const evidencePath = join(BENCHMARK_DIR, `delegation-evidence-${DATE_STAMP}.jsonl`);
+  mkdirSync(RESULTS_DIR, { recursive: true });
+  const evidencePath = join(RESULTS_DIR, `delegation-evidence-${DATE_STAMP}.jsonl`);
   for (const record of records) appendFileSync(evidencePath, `${JSON.stringify(record)}\n`, "utf8");
 
   const summary = summarizeBenchmarkRecords(records);
-  const summaryPath = join(BENCHMARK_DIR, `delegation-summary-${DATE_STAMP}.json`);
+  const summaryPath = join(RESULTS_DIR, `delegation-summary-${DATE_STAMP}.json`);
   writeFileSync(summaryPath, JSON.stringify({ evidenceClass: "deterministic-local", benchmarkRun: BENCHMARK_RUN, records, summaries: summary }, null, 2) + "\n", "utf8");
 
-  const reportPath = join(BENCHMARK_DIR, `delegation-report-${DATE_STAMP}.svg`);
+  const reportPath = join(RESULTS_DIR, `delegation-report-${DATE_STAMP}.svg`);
   writeFileSync(reportPath, renderBenchmarkSvg(summary, { title: "Morrow delegation-slice efficiency · 2026-08-11" }), "utf8");
 
   const allPassed = records.every((r) => r.passed);

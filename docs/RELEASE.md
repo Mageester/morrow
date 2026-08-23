@@ -32,22 +32,26 @@ package versions are independent by design and are not checked.
 |----------|------|--------|---------------|
 | Windows 11 | x64 | **Beta** | Portable zip + PowerShell setup |
 | Windows 10 | x64 | **Beta** | Portable zip + PowerShell setup |
-| Linux | x64 | **Build from Source** | `git clone` + `pnpm build` |
-| macOS | arm64/x64 | **Not Available** | — |
+| Linux | x64/arm64 | **Beta** | Native tarball + POSIX installer |
+| macOS | x64/arm64 | **Beta** | Native tarball + POSIX installer |
 | Docker | — | **Planned** | — |
 
 ## Artifact Naming
 
 ```
 Morrow-vVERSION-windows-x64.zip
+Morrow-vVERSION-linux-x64.tar.gz
+Morrow-vVERSION-linux-arm64.tar.gz
+Morrow-vVERSION-darwin-x64.tar.gz
+Morrow-vVERSION-darwin-arm64.tar.gz
 morrow-vVERSION-checksums.txt
 release-manifest.json
 ```
 
 ## Runtime Requirements
 
-- Windows 10+ (x64) or Windows Server 2019+
-- Node.js 22+ (bundled in portable package)
+- Windows 10+ (x64) or Windows Server 2019+, current Linux x64/arm64, or current macOS x64/arm64
+- Node.js is bundled in every release package; source fallback requires Node.js 22+
 - No admin privileges required for default install
 - ~200 MB disk space for application + data
 - Network access only for provider API calls (user-configured)
@@ -100,25 +104,34 @@ morrow uninstall — Remove application, prompt about user data
 0. Bump the canonical version and the three surfaces that must match it, then
    run `pnpm check` — the drift guard is what stops a release going out
    describing the version before it. Dry-run the packaging locally with
-   `node scripts/package-release.mjs VERSION --skip-build`: this is the step
+   `node scripts/package-release.mjs VERSION --skip-build` on the target OS and
+   architecture: this is the step
    that caught the hardcoded export surface which broke the first 0.1.1
    attempt.
 1. Merge the release PR after required CI and independent security review.
 2. Dispatch `.github/workflows/release.yml` with `VERSION`. The workflow
    rejects an input that does not equal the root `package.json` version, and
    composes the release notes from that version's CHANGELOG section — a
-   missing section fails the run rather than publishing empty notes.
-3. Confirm the GitHub prerelease contains the ZIP, checksum, `latest.json`, and
-   `release-manifest.json`, and that their version/checksum values agree.
-4. Publish `installer/install.ps1` and `dist/latest.json` to the website/CDN
-   origin used by `https://morrowproject.getaxiom.ca`.
+   missing section fails the run rather than publishing empty notes. It also
+   requires the dispatch revision to be the exact `main` tip and rejects an
+   existing `vVERSION` tag that points anywhere else.
+3. Confirm the GitHub prerelease contains the Windows ZIP, all four Linux/macOS
+   tarballs, checksum file, `latest.json`, and `release-manifest.json`, and that
+   their version/checksum values agree. Publication cannot start unless every
+   native package job passed its package contract.
+4. The scheduled sync in `Mageester/morrow-axiom-site` copies both installers,
+   publishes `install.sh.sha256`, enriches `latest.json` with the resolved tag
+   commit, runs its build and browser contract tests, and pushes only those
+   verified assets. Cloudflare Pages deploys that repository's `main` branch.
+   Run `node scripts/verify-public-install.mjs` to prove the live bytes match
+   the latest released tag before treating publication as complete.
 5. Install from the public one-line command on a clean Windows account and
    verify `morrow --version`, `morrow doctor --json`, onboarding, one task,
    restart/resume, upgrade preservation, and uninstall preservation.
 
-GitHub Release publication does not itself update the external website/CDN
-manifest. Public installation is not complete until step 4 is performed by an
-operator with that deployment authority and step 5 passes.
+The install-site sync is automatic but asynchronous. Public installation is
+not complete until the live verification in step 4 and the clean-install proof
+in step 5 pass. See [the install-site pipeline](install-site-pipeline.md).
 
 ## Integrity
 
@@ -133,18 +146,19 @@ operator with that deployment authority and step 5 passes.
 {
   "version": "VERSION",
   "channel": "beta",
-  "releasedAt": "2026-01-01T00:00:00Z",
+  "publishedAt": "2026-01-01T00:00:00Z",
+  "unsignedBeta": true,
+  "bundledNodeVersion": "24.13.1",
+  "minimumWindowsVersion": "10",
   "artifacts": [
     {
       "platform": "windows-x64",
-      "type": "portable",
       "filename": "Morrow-vVERSION-windows-x64.zip",
       "size": 0,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "url": "https://github.com/Mageester/morrow/releases/download/vVERSION/Morrow-vVERSION-windows-x64.zip"
     }
   ],
-  "releaseNotes": "https://github.com/Mageester/morrow/releases/tag/vVERSION",
-  "minimumNodeVersion": "22.0.0"
+  "releaseNotes": "https://github.com/Mageester/morrow/releases/tag/vVERSION"
 }
 ```

@@ -2,6 +2,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, basename } from "node:path";
 import { homedir } from "node:os";
 import { Context } from "../cli/context.js";
+import { flagBool } from "../cli/args.js";
 import { EXIT, CliError } from "../cli/errors.js";
 import { ensureRunning, isRunning } from "../service/lifecycle.js";
 import { ask, askMultiline, confirm, select, validateDirectory } from "./common.js";
@@ -9,6 +10,8 @@ import { pickProvider, setupProvider } from "./provider-setup.js";
 import { discoverSkills, isSafeDefaultSkill } from "../skills/registry.js";
 import { localSkillsRoot } from "./skills.js";
 import { chatCommand } from "./chat.js";
+import { shouldUseInteractive, resolveUnicodeFlag } from "../terminal/capabilities.js";
+import { runOnboardingLaunchpad } from "./onboard-ink.js";
 
 const STEPS = [
   "welcome",
@@ -74,6 +77,19 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
     return EXIT.OK;
   }
 
+  // A capable terminal gets the fast, value-first Ink path. The legacy flow
+  // remains an explicit escape hatch (`morrow onboard classic`) and the safe
+  // fallback for redirected/non-interactive terminals.
+  if (sub !== "classic" && shouldUseInteractive({
+    json: flagBool(ctx.flags, "json"),
+    isTTY: Boolean(process.stdout.isTTY),
+    stdinIsTTY: Boolean(process.stdin.isTTY),
+    env: process.env,
+  })) {
+    const result = await runInkOnboarding(ctx);
+    if (result !== "classic") return result;
+  }
+
   // Guided Flow
   let currentStepIdx = 0;
   const savedStep = ctx.config.get("user.onboardingStep") as string;
@@ -128,16 +144,7 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
     }
   }
 
-  // Completed Onboarding
-  ctx.config.set("user.onboarded", "true", "user");
-  ctx.config.unset("user.onboardingStep", "user");
-  try {
-    if (await isRunning(ctx)) {
-      await ctx.api().saveOnboardingState({ onboarded: true, onboardingStep: null });
-    }
-  } catch {
-    // ignore
-  }
+  await completeOnboarding(ctx);
 
   ctx.out.print();
   ctx.out.success("Morrow setup complete! Welcome aboard.");
@@ -149,6 +156,77 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
   ctx.out.print("  Check setup status:            " + ctx.out.cyan("morrow onboard status"));
   ctx.out.print("  Reset and rerun onboarding:    " + ctx.out.cyan("morrow onboard reset"));
   ctx.out.print();
+  return EXIT.OK;
+}
+
+async function persistOnboardingStep(ctx: Context, step: string): Promise<void> {
+  ctx.config.set("user.onboardingStep", step, "user");
+  try {
+    if (await isRunning(ctx)) await ctx.api().saveOnboardingState({ onboardingStep: step });
+  } catch {
+    // Local config remains the resumable source when the service is unavailable.
+  }
+}
+
+async function completeOnboarding(ctx: Context): Promise<void> {
+  // Collaborative agent mode is the safe useful default: workspace reads are
+  // automatic; writes and commands still retain their approval boundary.
+  if (!ctx.config.get("defaults.mode")) ctx.config.set("defaults.mode", "agent", "user");
+  if (ctx.config.get("defaults.autoApprove") === undefined) ctx.config.set("defaults.autoApprove", "false", "user");
+  ctx.config.set("user.onboarded", "true", "user");
+  ctx.config.unset("user.onboardingStep", "user");
+  try {
+    if (await isRunning(ctx)) await ctx.api().saveOnboardingState({ onboarded: true, onboardingStep: null });
+  } catch {
+    // Completion is durable locally and will reconcile when the service starts.
+  }
+}
+
+export async function runInkOnboarding(ctx: Context): Promise<number | "classic"> {
+  await ensureRunning(ctx);
+  const api = ctx.api();
+  const unicode = resolveUnicodeFlag(ctx.config.get("ui.unicode") as boolean | undefined, process.env);
+  let configured = (await api.listProviders()).some((provider) => provider.configured);
+  await persistOnboardingStep(ctx, configured ? "launch" : "provider");
+
+  let choice = await runOnboardingLaunchpad({ providerConfigured: configured, unicode });
+  if (choice === "classic") return "classic";
+  if (choice === "cancel") {
+    ctx.out.info("Setup paused. Run `morrow onboard` to resume.");
+    return EXIT.OK;
+  }
+  if (choice === "explore") {
+    await completeOnboarding(ctx);
+    ctx.out.success("Morrow is ready to explore.");
+    ctx.out.info("Connect a model when you want to run a task: `morrow providers configure`.");
+    return EXIT.OK;
+  }
+
+  if (choice === "connect") {
+    const target = await pickProvider(ctx, api);
+    if (target) {
+      const result = await setupProvider(ctx, api, target, { interactive: true });
+      if (!result.ok && result.detail) ctx.out.warn(result.detail);
+    }
+    configured = (await api.listProviders()).some((provider) => provider.configured);
+    if (!configured) {
+      ctx.out.warn("No model is connected yet. Setup is saved at this step.");
+      ctx.out.info("Run `morrow onboard` to resume, or `morrow providers configure` directly.");
+      return EXIT.OK;
+    }
+    await persistOnboardingStep(ctx, "launch");
+    choice = await runOnboardingLaunchpad({ providerConfigured: true, unicode });
+    if (choice === "classic") return "classic";
+    if (choice === "cancel") {
+      ctx.out.info("Your model connection is saved. Run `morrow onboard` to finish.");
+      return EXIT.OK;
+    }
+  }
+
+  await completeOnboarding(ctx);
+  if (choice === "start") return chatCommand(ctx);
+  ctx.out.success("Morrow setup is complete.");
+  ctx.out.print("Run `morrow` to open the terminal, or `morrow config` for optional customization.");
   return EXIT.OK;
 }
 

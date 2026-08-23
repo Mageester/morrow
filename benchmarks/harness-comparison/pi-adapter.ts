@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { HarnessAdapter, HarnessRunResult } from "./harness.js";
 
 /**
@@ -32,16 +34,19 @@ export function createPiAdapter(options: { binary: string; apiKey: string }): Ha
     async run({ taskId, category, prompt, workspace, model, timeoutMs }) {
       const started = Date.now();
       const args = ["-p", "--mode", "json", "--no-session", "-na", "-nc", "--model", `deepseek/${model}`, prompt];
+      const agentDir = mkdtempSync(join(tmpdir(), "morrow-pi-agent-"));
 
       const outcome = await new Promise<{ stdout: string; stderr: string; timedOut: boolean; code: number | null }>((resolve) => {
         const child = spawn(options.binary, args, {
           cwd: workspace,
           env: {
             PATH: process.env.PATH ?? "",
-            HOME: process.env.HOME ?? "",
             DEEPSEEK_API_KEY: options.apiKey,
-            // pi writes its own config under this; keep it out of the user's home.
-            PI_CONFIG_DIR: process.env.PI_CONFIG_DIR ?? "",
+            // pi reads and writes auth, models, settings, and sessions beneath
+            // this directory. Keep benchmark state out of the user's real pi
+            // configuration even when --no-session is in effect.
+            PI_CODING_AGENT_DIR: agentDir,
+            PI_TELEMETRY: "0",
           },
           stdio: ["ignore", "pipe", "pipe"],
         });
@@ -62,7 +67,7 @@ export function createPiAdapter(options: { binary: string; apiKey: string }): Ha
           clearTimeout(timer);
           resolve({ stdout, stderr: `${stderr}\n${error.message}`, timedOut, code: null });
         });
-      });
+      }).finally(() => rmSync(agentDir, { recursive: true, force: true }));
 
       const measured = projectPiUsage(outcome.stdout);
       const harnessError = outcome.timedOut

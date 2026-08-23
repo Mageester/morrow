@@ -40,19 +40,20 @@ test.describe("durable conversation workspace", () => {
     const conversationId = await createConversation(request, "Desktop conversation proof");
     await openConversation(page, conversationId);
 
-    await expect(page.getByRole("heading", { name: "Desktop conversation proof" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Conversation: Desktop conversation proof" })).toBeVisible();
     const composer = page.getByRole("textbox", { name: "Message Morrow" });
     await composer.fill("Is the local mock runtime operational?");
     await composer.press("Enter");
 
     await expect(page.getByText("Is the local mock runtime operational?")).toBeVisible();
-    await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
+    await expect(page.getByTestId("conversation-message-assistant").getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
     await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
     await expect(page.getByText(/Build .* mock-model via mock/i)).toBeVisible();
     await expect(page.getByTestId("conversation-message-assistant").getByRole("listitem").first()).toBeVisible();
     expect(reasoningRequests).toBe(0);
 
-    const reasoningToggle = page.getByRole("checkbox", { name: "Reasoning" });
+    await page.getByRole("button", { name: /^Thinking · / }).click();
+    const reasoningToggle = page.getByRole("checkbox", { name: "Show thinking" });
     await expect(reasoningToggle).not.toBeChecked();
     await reasoningToggle.check();
     await expect(page.getByRole("region", { name: "Model reasoning" })).toContainText("Inspect the durable state before answering.");
@@ -60,10 +61,11 @@ test.describe("durable conversation workspace", () => {
 
     await page.reload();
     await expect(page.getByText("Is the local mock runtime operational?")).toBeVisible();
-    await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
+    await expect(page.getByTestId("conversation-message-assistant").getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
     await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
     await expect(page.getByTestId("conversation-message-assistant").getByRole("listitem").first()).toBeVisible();
-    await expect(page.getByRole("checkbox", { name: "Reasoning" })).toBeChecked();
+    await page.getByRole("button", { name: /^Thinking · / }).click();
+    await expect(page.getByRole("checkbox", { name: "Show thinking" })).toBeChecked();
     await expect(page.getByRole("region", { name: "Model reasoning" })).toContainText("Provider-supplied");
   });
 
@@ -79,7 +81,7 @@ test.describe("durable conversation workspace", () => {
     });
 
     await openConversation(page, conversationId);
-    await expect(page.getByRole("heading", { name: "Active reconnect proof" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Conversation: Active reconnect proof" })).toBeVisible();
     await expect(page.getByText("Morrow is responding…")).toBeVisible();
     await expect.poll(async () => page.evaluate((key) => {
       const raw = sessionStorage.getItem(key);
@@ -116,9 +118,9 @@ test.describe("durable conversation workspace", () => {
       };
       page.on("request", observe);
       await openConversation(page, scenario.conversationId);
-      await expect(page.getByRole("heading", { name: scenario.title })).toBeVisible();
-      await page.getByRole("button", { name: "Retry response" }).click();
-      await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
+      await expect(page.getByRole("region", { name: `Conversation: ${scenario.title}` })).toBeVisible();
+      await page.getByRole("button", { name: "Retry", exact: true }).click();
+      await expect(page.getByTestId("conversation-message-assistant").getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
       await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
       await expect(page.getByTestId("conversation-message-assistant").getByRole("listitem").first()).toBeVisible();
       await expect.poll(() => streamAfters.some((cursor) => cursor > 0)).toBe(true);
@@ -137,13 +139,13 @@ test.describe("durable conversation workspace", () => {
     const page = await context.newPage();
     try {
       await openConversation(page, conversationId);
-      await expect(page.getByRole("heading", { name: "Mobile conversation proof" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "Conversation: Mobile conversation proof" })).toBeVisible();
       await page.getByRole("button", { name: "Chat", exact: true }).click();
       await page.getByRole("textbox", { name: "Message Morrow" }).fill("Explain how to check the local runtime.");
       await page.getByRole("button", { name: "Send message" }).click();
 
       await expect(page.getByText("Explain how to check the local runtime.")).toBeVisible();
-      await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
+      await expect(page.getByTestId("conversation-message-assistant").getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
       await expect(page.getByText(/Ask · mock-model via mock/i)).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
@@ -156,7 +158,7 @@ test.describe("durable conversation workspace", () => {
       await expect(titleInput).toBeFocused();
       await titleInput.fill("Mobile renamed proof");
       await page.getByRole("button", { name: "Save name" }).click();
-      await expect(page.getByRole("heading", { name: "Mobile renamed proof" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "Conversation: Mobile renamed proof" })).toBeVisible();
 
       await page.getByRole("button", { name: "Archive conversation" }).click();
       await expect(page.getByText("Conversation archived.", { exact: true })).toBeVisible();

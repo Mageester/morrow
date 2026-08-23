@@ -1879,6 +1879,22 @@ export const migrations:Migration[]=[
       ON teammate_trust_grants(project_id, target_agent_id)
       WHERE caller_agent_id IS NULL AND revoked_at IS NULL;
   `}
+  ,{id:65,name:"ordered_conversation_reads",sql:`
+    -- These three lists are rebuilt throughout chat streaming. The original
+    -- single-column indexes found the right rows but forced SQLite to build a
+    -- temporary B-tree for every chronological projection. Adding created_at
+    -- preserves the lookup prefix and lets the index's implicit rowid tie-break
+    -- satisfy ORDER BY created_at, rowid directly.
+    DROP INDEX conversation_messages_conversation_id_idx;
+    CREATE INDEX conversation_messages_conversation_id_idx
+      ON conversation_messages(conversation_id, created_at);
+    DROP INDEX message_tool_calls_message_id_idx;
+    CREATE INDEX message_tool_calls_message_id_idx
+      ON message_tool_calls(message_id, created_at);
+    DROP INDEX message_tool_calls_task_id_idx;
+    CREATE INDEX message_tool_calls_task_id_idx
+      ON message_tool_calls(task_id, created_at);
+  `}
 ];
 /**
  * Durability mode for committed writes.

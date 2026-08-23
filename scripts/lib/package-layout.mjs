@@ -11,14 +11,11 @@
  * release packager and the test suite on a clean checkout.
  */
 
+import { execFileSync } from "node:child_process";
 import { openSync, readSync, fstatSync, closeSync } from "node:fs";
 
 /** Files that MUST exist, relative to the package root, for the package to be valid. */
-export const REQUIRED_PACKAGE_FILES = [
-  "morrow.cmd",
-  "morrow.mjs",
-  "dispatch.mjs",
-  "runtime/node.exe",
+const COMMON_PACKAGE_FILES = [
   "orchestrator/dist/src/index.js",
   "orchestrator/node_modules/@morrow/contracts/dist/index.js",
   "orchestrator/node_modules/@morrow/orchestrator/dist/src/lib.js",
@@ -33,6 +30,17 @@ export const REQUIRED_PACKAGE_FILES = [
   "VERSION",
   "PROVENANCE.json",
 ];
+
+export function requiredPackageFiles(platform = "windows-x64") {
+  const runtime = platform.startsWith("windows-") ? "runtime/node.exe" : "runtime/bin/node";
+  const launchers = platform.startsWith("windows-")
+    ? ["morrow.cmd", "morrow.mjs", "dispatch.mjs"]
+    : [];
+  return [...launchers, runtime, ...COMMON_PACKAGE_FILES];
+}
+
+/** Backward-compatible name for the existing Windows contract. */
+export const REQUIRED_PACKAGE_FILES = requiredPackageFiles("windows-x64");
 
 /**
  * List entry names of a zip file by parsing its central directory.
@@ -81,21 +89,40 @@ export function listZipEntries(zipPath) {
  * single top-level directory. Returns the root prefix ("" for archive root, or
  * "Dir/") or null if the contract is not satisfied.
  */
-export function resolvePackageRoot(entries) {
+export function resolvePackageRoot(entries, platform = "windows-x64") {
   const set = new Set(entries.map((e) => e.replace(/\\/g, "/")));
+  const required = requiredPackageFiles(platform);
   const candidates = new Set([""]);
   for (const e of set) {
     const top = e.split("/")[0];
     if (top) candidates.add(top + "/");
   }
   for (const prefix of candidates) {
-    const hasRequiredFiles = REQUIRED_PACKAGE_FILES.every((rel) => set.has(prefix + rel));
+    const hasRequiredFiles = required.every((rel) => set.has(prefix + rel));
     const hasWebJavaScript = [...set].some(
       (entry) => entry.startsWith(prefix + "web/assets/") && /\.js$/i.test(entry),
     );
     if (hasRequiredFiles && hasWebJavaScript) return prefix;
   }
   return null;
+}
+
+/** List a gzip-compressed tar archive without extracting it. */
+export function listTarEntries(tarPath) {
+  return execFileSync("tar", ["-tzf", tarPath], { encoding: "utf8" })
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((entry) => entry.replace(/^\.\//, "").replace(/\\/g, "/"));
+}
+
+export function inferArtifactPlatform(artifactPath) {
+  const match = artifactPath.replace(/\\/g, "/").match(/-(windows|linux|darwin)-(x64|arm64)\.(?:zip|tar\.gz)$/);
+  if (!match) throw new Error(`Cannot infer release platform from artifact name: ${artifactPath}`);
+  return `${match[1]}-${match[2]}`;
+}
+
+export function listArtifactEntries(artifactPath) {
+  return artifactPath.endsWith(".tar.gz") ? listTarEntries(artifactPath) : listZipEntries(artifactPath);
 }
 
 /**
@@ -158,8 +185,10 @@ export function forbiddenOwnFileViolations(entries, root = "") {
  * Assert that a built artifact satisfies the package contract.
  * Throws with a descriptive message on the first violation.
  */
-export function assertArtifactLayout(zipPath) {
-  const entries = listZipEntries(zipPath);
+export function assertArtifactLayout(artifactPath, platform = inferArtifactPlatform(artifactPath)) {
+  const entries = listArtifactEntries(artifactPath);
+  const unsafe = entries.find((entry) => entry.startsWith("/") || entry === ".." || entry.startsWith("../") || entry.includes("/../"));
+  if (unsafe) throw new Error(`Archive contains an unsafe path: ${unsafe}`);
   const topDirs = new Set(
     entries.map((e) => e.split("/")[0]).filter(Boolean),
   );
@@ -168,11 +197,12 @@ export function assertArtifactLayout(zipPath) {
       `Archive must contain exactly one top-level directory; found: ${[...topDirs].join(", ")}`,
     );
   }
-  const root = resolvePackageRoot(entries);
+  const required = requiredPackageFiles(platform);
+  const root = resolvePackageRoot(entries, platform);
   if (root === null) {
     const set = new Set(entries.map((e) => e.replace(/\\/g, "/")));
     const prefix = [...topDirs][0] + "/";
-    const missing = REQUIRED_PACKAGE_FILES.filter((rel) => !set.has(prefix + rel));
+    const missing = required.filter((rel) => !set.has(prefix + rel));
     if (![...set].some((entry) => entry.startsWith(prefix + "web/assets/") && /\.js$/i.test(entry))) {
       missing.push("web/assets/*.js");
     }

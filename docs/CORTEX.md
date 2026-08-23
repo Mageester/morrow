@@ -86,6 +86,13 @@ The decision ledger records proposed, accepted, rejected, superseded, and
 obsolete architecture decisions with evidence, consequences, and mission linkage.
 Accepted relevant decisions are included in later impact analysis.
 
+During Build tasks, the agent records a decision only for a non-obvious
+architecture, dependency, or tooling choice. The record contains a concise
+choice, reason, alternatives, trade-offs, affected components, and task/mission
+reference. It explicitly excludes raw reasoning and conversation transcripts,
+and repeated delivery of the same tool call is idempotent. `/decisions` exposes
+the resulting local ledger.
+
 Risks record scope, evidence, confidence, severity, and freshness. They help
 missions plan verification and regression checks.
 

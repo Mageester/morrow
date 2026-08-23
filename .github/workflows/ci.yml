@@ -21,6 +21,8 @@ jobs:
       - run: pnpm check
       - run: pnpm test
       - run: pnpm build
+      - run: pnpm --filter @morrow/orchestrator benchmark:startup --check
+      - run: pnpm --filter @morrow/orchestrator benchmark:query-plans
       # Repository-level guards (installer data-safety, version drift, installer
       # ASCII/UTF-8). pnpm check runs the validator on the real files; this also
       # exercises the negative cases so the guards can't silently rot.
@@ -29,7 +31,7 @@ jobs:
       # install-sh does the same for the macOS/Linux installer, plus its health
       # gate — the check that decides whether an install is kept or rolled back.
       # It runs here rather than only on Windows because the runner is Linux.
-      - run: node --test scripts/validate-repository.test.mjs scripts/installer-cli-only.test.mjs scripts/install-activation.test.mjs scripts/install-sh.test.mjs scripts/lib/package-provenance.test.mjs scripts/acceptance-foundation-smoke.test.mjs scripts/check-branch-freshness.test.mjs
+      - run: node --test scripts/validate-repository.test.mjs scripts/installer-cli-only.test.mjs scripts/install-activation.test.mjs scripts/install-sh.test.mjs scripts/lib/package-provenance.test.mjs scripts/package-release.test.mjs scripts/release-artifacts.test.mjs scripts/acceptance-foundation-smoke.test.mjs scripts/check-branch-freshness.test.mjs scripts/release-tag-integrity.test.mjs scripts/public-install-verifier.test.mjs scripts/release-workflow.test.mjs
       # Where the one claim that matters actually stands, printed on every
       # build: "give Morrow a real task and it finishes correctly, every time."
       # Reporting, not enforcing, until the first real-provider runs are

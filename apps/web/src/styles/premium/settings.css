@@ -248,16 +248,28 @@
 }
 
 @media (max-width: 700px) {
-  /* Chapters become a horizontally scrollable tab list. */
+  /* Wrap chapters inside the viewport. A horizontal tab strip let its buttons
+     extend past the page edge at 390px, so keyboard focus could move to a
+     control that was physically off-screen. */
   .morrow-settings-book {
-    display: flex;
-    overflow: auto;
-    scrollbar-width: thin;
+    display: grid;
+    overflow: visible;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .morrow-settings-chapter {
-    min-width: max-content;
+    min-width: 0;
     min-height: 44px;
+  }
+
+  .morrow-settings-chapter > span:last-child {
+    min-width: 0;
+  }
+
+  .morrow-settings-chapter b {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .morrow-settings-chapter small {

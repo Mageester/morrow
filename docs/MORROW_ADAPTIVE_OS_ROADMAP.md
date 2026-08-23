@@ -3,11 +3,11 @@
 > Companion to `docs/MORROW_ADAPTIVE_OS_ARCHITECTURE.md`. Scores the gaps
 > that document identifies and sequences them into at most five milestones,
 > per the sprint's hard cap. This does not replace
-> `docs/BETA30_PRODUCT_GOAL.md` §12's terminal-focused milestones or
+> `docs/PRODUCT_GOAL.md` §12's terminal-focused milestones or
 > `docs/MORROW_BACKLOG.md`'s item-level backlog — it sits one level up,
 > ordering *architectural* foundation work (shared truth, picker, memory,
 > skill measurement) against the *product* milestones already defined there.
-> Where the two overlap, `BETA30_PRODUCT_GOAL.md` §12 remains authoritative
+> Where the two overlap, `PRODUCT_GOAL.md` §12 remains authoritative
 > for terminal/mission-reliability sequencing; this document is authoritative
 > for the routing/model-metadata/skill-evolution track this PR opened.
 
@@ -35,7 +35,7 @@ Each candidate is scored 1 (low) – 5 (high) on:
 | Controlled skill/workflow evolution (Evolution Lab, minimal) | 1 | 2 | 5 | 5 | 5 |
 | Visible "Morrow improves with use" evidence surface | 3 | 2 | 5 | 4 | 2 |
 | Mission Guardian (requirement/scope-drift enforcement) | 4 | 5 | 3 | 3 | 4 |
-| Terminal Event Integrity (already active per `BETA30_PRODUCT_GOAL.md` §12) | 5 | 4 | 1 | 2 | 3 |
+| Terminal Event Integrity (already active per `PRODUCT_GOAL.md` §12) | 5 | 4 | 1 | 2 | 3 |
 
 Two items are explicitly *not* scored for near-term sequencing:
 **full Evolution Lab** (excluded by this PR's constraints; only "controlled,
@@ -210,7 +210,7 @@ with every number traceable to a specific mission/skill/learning record.
 
 **M1 (interactive model picker on the canonical truth).** It is the smallest
 next step that both delivers direct consumer value (pillar 1 in
-`BETA30_PRODUCT_GOAL.md` §3: excellent terminal experience) and finishes
+`PRODUCT_GOAL.md` §3: excellent terminal experience) and finishes
 what M0 started (deleting the now-redundant defensive field-name merge in
 the CLI) rather than leaving the canonical-truth migration half-done at the
 orchestrator boundary.

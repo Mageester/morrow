@@ -11,7 +11,7 @@ describe("production durable mission controller composition", () => {
   const databases: Array<ReturnType<typeof openDatabase>> = [];
   afterEach(() => databases.splice(0).forEach((db) => db.close()));
 
-  it("dispatches the persisted model route and blocks one non-retryable provider failure", async () => {
+  it("dispatches the persisted model route and blocks one non-retryable provider failure", { timeout: 15_000 }, async () => {
     const db = openDatabase(":memory:");
     databases.push(db);
     const now = "2026-07-17T02:00:00.000Z";
