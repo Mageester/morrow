@@ -11,9 +11,9 @@ jobs:
     name: Check & Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: 'pnpm'
@@ -46,7 +46,7 @@ jobs:
     # beta.34 fix was lost in a later merge. Neither was visible in a diff.
     # fetch-depth: 0 because the guard needs the merge-base and both tips.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - run: node scripts/check-branch-freshness.mjs
