@@ -107,18 +107,24 @@ morrow uninstall — Remove application, prompt about user data
 2. Dispatch `.github/workflows/release.yml` with `VERSION`. The workflow
    rejects an input that does not equal the root `package.json` version, and
    composes the release notes from that version's CHANGELOG section — a
-   missing section fails the run rather than publishing empty notes.
+   missing section fails the run rather than publishing empty notes. It also
+   requires the dispatch revision to be the exact `main` tip and rejects an
+   existing `vVERSION` tag that points anywhere else.
 3. Confirm the GitHub prerelease contains the ZIP, checksum, `latest.json`, and
    `release-manifest.json`, and that their version/checksum values agree.
-4. Publish `installer/install.ps1` and `dist/latest.json` to the website/CDN
-   origin used by `https://morrowproject.getaxiom.ca`.
+4. The scheduled sync in `Mageester/morrow-axiom-site` copies both installers,
+   publishes `install.sh.sha256`, enriches `latest.json` with the resolved tag
+   commit, runs its build and browser contract tests, and pushes only those
+   verified assets. Cloudflare Pages deploys that repository's `main` branch.
+   Run `node scripts/verify-public-install.mjs` to prove the live bytes match
+   the latest released tag before treating publication as complete.
 5. Install from the public one-line command on a clean Windows account and
    verify `morrow --version`, `morrow doctor --json`, onboarding, one task,
    restart/resume, upgrade preservation, and uninstall preservation.
 
-GitHub Release publication does not itself update the external website/CDN
-manifest. Public installation is not complete until step 4 is performed by an
-operator with that deployment authority and step 5 passes.
+The install-site sync is automatic but asynchronous. Public installation is
+not complete until the live verification in step 4 and the clean-install proof
+in step 5 pass. See [the install-site pipeline](install-site-pipeline.md).
 
 ## Integrity
 

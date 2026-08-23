@@ -1,8 +1,7 @@
 # Morrow installation
 
-Morrow v0.1.0-beta.33 is an unsigned Windows 10/11 x64 Early Access release.
-The installed product is terminal-only and includes its own Node.js runtime;
-Git, Node.js, and pnpm are not required for the Windows install.
+Morrow v0.4.0 is an unsigned Early Access release. The Windows package includes
+its own Node.js runtime; Git, Node.js, and pnpm are not required.
 
 ## Windows quick install
 
@@ -74,7 +73,13 @@ undone.
 
 ## Linux source build
 
-Linux remains source-build only. macOS is not supported in beta.31.
+Linux and macOS currently install from the public POSIX installer. Until native
+prebuilt archives are published, it verifies the released source commit and
+builds locally.
+
+```bash
+curl -fsSL https://morrowproject.getaxiom.ca/install.sh | sh
+```
 
 Requirements: Node.js 22 or newer and pnpm 10.x.
 
@@ -88,6 +93,7 @@ pnpm build
 pnpm --filter @morrow/cli morrow
 ```
 
-Source checkouts use `~/.morrow` by default. The Windows package uses
+POSIX installs keep application files under `~/.local/share/morrow` and user
+data under `~/.morrow` by default. The Windows package uses
 `%LOCALAPPDATA%\Morrow\data`. See [privacy-model.md](privacy-model.md) for the
 local data-flow and provider boundaries.
