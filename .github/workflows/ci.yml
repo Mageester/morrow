@@ -21,6 +21,8 @@ jobs:
       - run: pnpm check
       - run: pnpm test
       - run: pnpm build
+      - run: pnpm --filter @morrow/orchestrator benchmark:startup --check
+      - run: pnpm --filter @morrow/orchestrator benchmark:query-plans
       # Repository-level guards (installer data-safety, version drift, installer
       # ASCII/UTF-8). pnpm check runs the validator on the real files; this also
       # exercises the negative cases so the guards can't silently rot.

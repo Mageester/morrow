@@ -315,7 +315,7 @@ export const IMPLEMENTED_TOOL_NAMES = [
 export const TOOL_PROFILE_SAFETY_TOOLS = ["inspect_workspace", "read_file", "git_diff"] as const;
 
 /** Stable labels used by the optimization selector and browser-safe review UI. */
-export const TOOL_PROFILE_NAMES = ["read-only-workspace", "research", "coding", "browser", "full-agent"] as const;
+export const TOOL_PROFILE_NAMES = ["read-only-workspace", "research", "coding-focused", "coding", "browser", "full-agent"] as const;
 
 export function getTool(name: string): ToolSpec | undefined {
   return TOOL_CATALOG.find((t) => t.name === name);

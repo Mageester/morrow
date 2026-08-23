@@ -36,6 +36,8 @@ export const ABLATABLE_SUBSYSTEMS = [
   "command-dialect",
   /** Recovery of XML-shaped tool calls emitted as assistant text. */
   "legacy-tool-calls",
+  /** Focused schema selection for bounded coding tasks; restores broad coding schemas. */
+  "focused-tool-profile",
 ] as const;
 
 export type AblatableSubsystem = typeof ABLATABLE_SUBSYSTEMS[number];

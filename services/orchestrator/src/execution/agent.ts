@@ -99,7 +99,7 @@ import { isSafeSkillInstructionDirectory, verifySkillDirectory, SKILL_MATCH_STOP
 import { createExecutionPolicy, type ExecutionPolicy } from "./execution-policy.js";
 import { buildAgentExecutionPolicy, type AgentExecutionPolicy } from "../security/agent-execution-policy.js";
 import { buildTeammateBrief, buildTeammateIdentity, buildTeammateRoster } from "./teammate-identity.js";
-import { ToolProfileSelector, type ToolTaskClassification } from "../optimization/tool-profile-selector.js";
+import { classifyToolTask, ToolProfileSelector, type ToolTaskClassification } from "../optimization/tool-profile-selector.js";
 import { loadMcpConfig } from "../mcp/config.js";
 import { McpPool } from "../mcp/pool.js";
 import { isMcpTool, getReadMcpResourceToolDefinition, buildMcpToolDefinitions, executeMcpTool } from "../mcp/tool-bridge.js";
@@ -531,12 +531,7 @@ export const READ_ONLY_TOOL_NAMES = new Set([
  * complete catalog so efficiency controls can never become a hidden safety or
  * capability regression. */
 export function classifyOptimizationTask(prompt: string, agentMode: AgentMode): ToolTaskClassification {
-  if (agentMode !== "agent") return "workspace_read";
-  if (/\b(?:build|implement|code|write|edit|patch|create|fix|refactor|test|develop)\b/i.test(prompt)) return "coding";
-  if (/\b(?:research|sources?|citations?|current|latest|news|web\s+search)\b/i.test(prompt)) return "research";
-  if (/\b(?:browser|webpage|web\s+page|dom|screenshot|viewport|console\s+error|url)\b/i.test(prompt)) return "browser";
-  if (/\b(?:inspect|list|read|search|review|analy[sz]e)\b/i.test(prompt)) return "workspace_read";
-  return "full_agent";
+  return classifyToolTask(prompt, agentMode);
 }
 
 function capToolResult(toolName: string, result: string, externalizer?: (text: string, kind: string) => string): string {
@@ -1994,7 +1989,10 @@ export async function executeAgentChatTask({
   // only narrows the exposed schema list; it never narrows what the execution
   // policy or approval boundary permits, and any ambiguous or unrecognized
   // capability need falls back to the complete catalog.
-  const optimizationClassification = classifyOptimizationTask(taskIntentPrompt, agentMode);
+  const classifiedOptimizationTask = classifyOptimizationTask(taskIntentPrompt, agentMode);
+  const optimizationClassification = classifiedOptimizationTask === "coding_focused" && ablations.has("focused-tool-profile")
+    ? "coding"
+    : classifiedOptimizationTask;
   const requiredOptimizationTools = [
     ...(browserToolsRequested ? ["browser_open"] : []),
   ];
