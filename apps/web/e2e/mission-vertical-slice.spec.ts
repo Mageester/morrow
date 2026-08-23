@@ -8,12 +8,13 @@ test.describe.configure({ mode: "serial" });
 test.describe("Morrow web vertical slice", () => {
   test("Home renders the chat-first start and the reordered navigation", async ({ page }) => {
     await page.goto("/app/");
-    await page.getByRole("button", { name: "Explore first" }).click();
+    const explore = page.getByRole("button", { name: "Explore first" });
+    if (await explore.isVisible().catch(() => false)) await explore.click();
     await expect(page.getByRole("dialog", { name: "Welcome to Morrow" })).toBeHidden();
-    await expect(page.getByRole("heading", { name: /Good (morning|afternoon|evening)\./ })).toBeVisible();
-    await expect(page.getByText("What should we work on?")).toBeVisible();
-    const home = page.getByRole("region", { name: /Good (morning|afternoon|evening)\./ });
-    await expect(home.getByRole("button", { name: "New chat" })).toBeEnabled();
+    await expect(page.getByText(/Good (morning|afternoon|evening)\./)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "What should we move forward?" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "What should we move forward?" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "New chat" })).toBeEnabled();
     const nav = page.getByRole("navigation", { name: "Primary" });
     for (const label of ["Home", "Projects", "Skills", "Memory", "History", "Connections", "Settings"]) {
       await expect(nav.getByRole("link", { name: new RegExp(`^${label}`) })).toBeVisible();
@@ -25,15 +26,14 @@ test.describe("Morrow web vertical slice", () => {
 
   test("creates a conversation from Home and lands on its durable workspace", async ({ page }) => {
     await page.goto("/app/");
-    const home = page.getByRole("region", { name: /Good (morning|afternoon|evening)\./ });
-    await home.getByRole("button", { name: "New chat" }).click();
+    await page.getByRole("button", { name: "New chat" }).click();
     await expect(page).toHaveURL(/\/app\/chats\/[^/?]+/);
     const composer = page.getByRole("textbox", { name: "Message Morrow" });
     await expect(composer).toBeFocused();
     await composer.fill("Compare three note-taking apps and recommend one.");
     await page.getByRole("button", { name: "Send message" }).click();
 
-    await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
+    await expect(page.getByTestId("conversation-message-assistant").getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
     await page.reload();
     await expect(page.getByText("Compare three note-taking apps and recommend one.")).toBeVisible();
   });

@@ -23,7 +23,9 @@ function describeViolation(violation: Awaited<ReturnType<typeof seriousViolation
 
 test("Home has no serious or critical accessibility violations", async ({ page }) => {
   await page.goto("/app/");
-  await expect(page.getByRole("heading", { name: /Good (morning|afternoon|evening)\./ })).toBeVisible();
+  const explore = page.getByRole("button", { name: "Explore first" });
+  if (await explore.isVisible().catch(() => false)) await explore.click();
+  await expect(page.getByRole("heading", { name: "What should we move forward?" })).toBeVisible();
   const violations = await seriousViolations(page);
   expect(violations.map(describeViolation)).toEqual([]);
 });

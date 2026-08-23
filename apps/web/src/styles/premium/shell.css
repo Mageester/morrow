@@ -244,7 +244,7 @@
 }
 
 .morrow-shell-runtime small {
-  color: #73766d;
+  color: var(--morrow-product-copy-quiet);
 }
 
 /*
