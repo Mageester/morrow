@@ -23,6 +23,24 @@ test("release publication remains gated by package and install integration", asy
   assert.match(workflow, /softprops\/action-gh-release/);
 });
 
+test("release builds native prebuilts for Linux and macOS on both supported architectures", async () => {
+  const workflow = await readFile(join(root, ".github", "workflows", "release.yml"), "utf8");
+  for (const runner of ["ubuntu-latest", "ubuntu-24.04-arm", "macos-15-intel", "macos-latest"]) {
+    assert.match(workflow, new RegExp(runner.replaceAll(".", "\\.")));
+  }
+  for (const platform of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]) {
+    assert.match(workflow, new RegExp(platform));
+  }
+  assert.match(workflow, /assemble-release\.mjs/);
+  assert.match(workflow, /Morrow-\*\.(?:zip|tar\.gz)/);
+});
+
+test("only the final publish job receives release write permission", async () => {
+  const workflow = await readFile(join(root, ".github", "workflows", "release.yml"), "utf8");
+  assert.match(workflow, /permissions:\s*\n\s*contents:\s*read/);
+  assert.match(workflow, /publish:\s*[\s\S]*?permissions:\s*\n\s*contents:\s*write/);
+});
+
 test("release publication is bound to the exact main commit and existing version tag", async () => {
   const workflow = await readFile(join(root, ".github", "workflows", "release.yml"), "utf8");
   assert.match(workflow, /fetch-depth:\s*0/);

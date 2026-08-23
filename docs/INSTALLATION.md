@@ -1,7 +1,8 @@
 # Morrow installation
 
-Morrow v0.4.0 is an unsigned Early Access release. The Windows package includes
-its own Node.js runtime; Git, Node.js, and pnpm are not required.
+Morrow v0.4.0 is an unsigned Early Access release. Native release packages
+include their own Node.js runtime; Git, Node.js, and pnpm are not required when
+a package is published for the current platform.
 
 ## Windows quick install
 
@@ -71,17 +72,20 @@ morrow uninstall --yes --purge-data
 configuration, provider credentials, backups, logs, and cache. It cannot be
 undone.
 
-## Linux source build
+## Linux and macOS quick install
 
-Linux and macOS currently install from the public POSIX installer. Until native
-prebuilt archives are published, it verifies the released source commit and
-builds locally.
+The POSIX installer selects the checksum-verified native tarball for Linux or
+macOS and the detected x64/arm64 architecture, verifies it, validates the app
+tree, and activates it atomically.
 
 ```bash
 curl -fsSL https://morrowproject.getaxiom.ca/install.sh | sh
 ```
 
-Requirements: Node.js 22 or newer and pnpm 10.x.
+If a native package is unavailable for a release, the same installer falls back
+to a source build whose commit is checked against the release manifest. That
+fallback requires Node.js 22 or newer and pnpm 10.x. Use `--source` to request
+it explicitly.
 
 ```bash
 git clone https://github.com/Mageester/morrow.git
