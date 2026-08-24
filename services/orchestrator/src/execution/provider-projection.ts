@@ -5,6 +5,7 @@ import type { ExecutionCheckpointSnapshot } from "../repositories/execution-cont
 import { redactJsonText, redactSecrets, redactSecretsDeep } from "../provider/credentials.js";
 import {
   admitProviderRequest,
+  admitMeasuredProviderRequest,
   measureProviderRequest,
   validateProviderMessageOrdering,
   type ProviderAdmission,
@@ -387,7 +388,13 @@ export function projectProviderRequest(input: {
   const shouldCompact = input.forceCompaction === true || (thresholdTokens !== null && originalMeasurement.inputTokens >= thresholdTokens);
 
   if (!shouldCompact) {
-    const admission = admitProviderRequest(input.envelope, input.resolution);
+    // Reuse the measurement taken above rather than measuring the very same
+    // envelope a second time. `measureProviderRequest` is pure, so admitting
+    // the measurement is identical to admitting the envelope — and this is the
+    // common path: every turn that does not need compaction ran the full token
+    // count twice, which on a 361-message context is the single most expensive
+    // thing the projection does.
+    const admission = admitMeasuredProviderRequest(originalMeasurement, input.resolution);
     return {
       envelope: input.envelope,
       admission,

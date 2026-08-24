@@ -110,6 +110,24 @@ overlapping them buys nothing; the tools that are actually slow (`run_command`,
 browser actions) mutate state and cannot be reordered safely. The sequential
 tool loop is not where the time goes.
 
+## 2026-08-24 follow-up
+
+**The no-compaction path measured the same envelope twice.** `projectProviderRequest`
+measures the envelope to decide whether compaction is needed, and then — when it
+is not — called `admitProviderRequest`, which measures that identical envelope
+again. Compaction is the uncommon case, so the common path paid for two full
+token counts of the whole history every turn. It now admits the measurement it
+already holds via `admitMeasuredProviderRequest`, which exists for exactly this.
+`measureProviderRequest` is pure, so the admission is unchanged;
+`provider-projection-measurement-reuse.test.ts` pins that equivalence rather
+than the shortcut.
+
+| Path | Before | After |
+| --- | ---: | ---: |
+| `projectProviderRequest` (fast path, 361-message context) | 5.95 ms | 4.02 ms |
+
+Re-measure with `pnpm --filter @morrow/orchestrator exec tsx benchmark/hot-paths.ts`.
+
 ## 2026-08-23 follow-up
 
 Migration 65 replaced the single-column conversation and tool-call lookup
