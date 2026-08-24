@@ -161,3 +161,79 @@ describe("state reducer: assistant turn boundaries", () => {
     expect(second.conversation).toEqual(first.conversation);
   });
 });
+
+/**
+ * Regression coverage for the unbounded thinking block.
+ *
+ * A reasoning-heavy model can run a whole task without emitting a single token
+ * of assistant text between tool calls. Reasoning settled only on the first
+ * token of an answer, so every one of those turns left its thinking in the live
+ * buffer and the next turn appended to it: one block that grew for the entire
+ * run, never collapsed, and never attached to the turn that produced it.
+ */
+describe("reasoning is bounded to the turn that produced it", () => {
+  it("a turn that ends in a tool call still settles its thinking", () => {
+    const state = fold([
+      { type: "assistant.turn_start", turnId: "t1" },
+      { type: "reasoning.delta", text: "I should read the config first" },
+      { type: "assistant.turn_end", turnId: "t1", final: false },
+    ]);
+    // Settled onto the turn, and out of the live buffer.
+    expect(state.reasoning).toBe("");
+    expect(assistantEntries(state)[0]).toMatchObject({
+      reasoning: "I should read the config first",
+    });
+    expect(assistantEntries(state)[0]?.reasoningMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("thinking never accumulates across turns, even with no assistant text at all", () => {
+    const state = fold([
+      { type: "assistant.turn_start", turnId: "t1" },
+      { type: "reasoning.delta", text: "first thought" },
+      { type: "assistant.turn_end", turnId: "t1", final: false },
+      { type: "assistant.turn_start", turnId: "t2" },
+      { type: "reasoning.delta", text: "second thought" },
+      { type: "assistant.turn_end", turnId: "t2", final: false },
+      { type: "assistant.turn_start", turnId: "t3" },
+      { type: "reasoning.delta", text: "third thought" },
+      { type: "assistant.turn_end", turnId: "t3", final: true },
+    ]);
+    const entries = assistantEntries(state);
+    expect(entries).toHaveLength(3);
+    expect(entries[0]?.reasoning).toBe("first thought");
+    expect(entries[1]?.reasoning).toBe("second thought");
+    expect(entries[2]?.reasoning).toBe("third thought");
+    // The specific defect: no entry holds another turn's thinking.
+    expect(entries[2]?.reasoning).not.toContain("first thought");
+    expect(state.reasoning).toBe("");
+  });
+
+  it("a settled segment is not appended to by the next delta, with no open turn to attach to", () => {
+    // No turn_start: settling has no entry to attach to, so it stamps a
+    // duration and leaves the text live. The next delta must still begin a new
+    // segment rather than continuing a thought already marked finished.
+    const settled = fold([
+      { type: "reasoning.delta", text: "old" },
+      { type: "reasoning.settled" },
+    ]);
+    expect(settled.reasoningMs).toBeDefined();
+    const next = reduce(settled, { type: "reasoning.delta", text: "new" });
+    expect(next.reasoning).toBe("new");
+    expect(next.reasoningMs).toBeUndefined();
+  });
+
+  it("a turn that thinks, answers, then thinks again keeps both segments", () => {
+    const state = fold([
+      { type: "assistant.turn_start", turnId: "t1" },
+      { type: "reasoning.delta", text: "before" },
+      { type: "reasoning.settled" },
+      { type: "assistant.delta", turnId: "t1", text: "working on it" },
+      { type: "reasoning.delta", text: "after" },
+      { type: "assistant.turn_end", turnId: "t1", final: true },
+    ]);
+    const entry = assistantEntries(state)[0];
+    expect(entry?.reasoning).toContain("before");
+    expect(entry?.reasoning).toContain("after");
+    expect(entry?.text).toBe("working on it");
+  });
+});

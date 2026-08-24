@@ -217,6 +217,26 @@ function findActiveTurnIndex(conversation: ConversationEntry[], turnId: string):
 }
 
 /** Fold one event into a new state. Pure: no mutation of `state`, no I/O. */
+/**
+ * Attach a finished thinking segment to a turn that may already hold one.
+ *
+ * A single turn can settle more than once — it answers, calls a tool, and
+ * thinks again — and replacing the entry's reasoning would drop everything it
+ * thought before the tool call. Segments are joined in order and their
+ * durations summed, so "Thought for 12s" stays the turn's total.
+ */
+function mergeReasoning(
+  entry: ConversationEntry,
+  segment: string,
+  elapsedMs: number,
+): ConversationEntry {
+  return {
+    ...entry,
+    reasoning: entry.reasoning ? `${entry.reasoning}\n\n${segment}` : segment,
+    reasoningMs: (entry.reasoningMs ?? 0) + elapsedMs,
+  };
+}
+
 export function reduce(state: TerminalState, event: TerminalEvent, now: () => number = Date.now): TerminalState {
   if (isTerminalStatus(state.status) && isTerminalTaskEvent(event.type)) return state;
   switch (event.type) {
@@ -307,12 +327,21 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         ),
       };
 
-    case "reasoning.delta":
+    case "reasoning.delta": {
+      // A settled segment is finished thinking. The next delta belongs to the
+      // next thought, not to the one already stamped with a duration — without
+      // this, a reasoning-heavy model that never emits text between tool calls
+      // grows one unbounded block for the whole run.
+      if (state.reasoningMs !== undefined) {
+        const { reasoningMs: _settled, ...rest } = state;
+        return { ...rest, reasoning: event.text, reasoningStartedAt: now() };
+      }
       return {
         ...state,
         reasoning: state.reasoning + event.text,
         reasoningStartedAt: state.reasoningStartedAt ?? now(),
       };
+    }
 
     case "reasoning.settled": {
       // The turn has started answering: move the thinking onto the turn that
@@ -328,7 +357,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         return state.reasoningMs !== undefined ? state : { ...state, reasoningMs: elapsed };
       }
       const conversation = [...state.conversation];
-      conversation[index] = { ...conversation[index]!, reasoning: state.reasoning, reasoningMs: elapsed };
+      conversation[index] = mergeReasoning(conversation[index]!, state.reasoning, elapsed);
       const { reasoningStartedAt: _startedAt, reasoningMs: _ms, ...rest } = state;
       return {
         ...rest,
@@ -425,7 +454,22 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         final: event.final,
         ...(event.aborted ? { aborted: true } : {}),
       };
-      return { ...state, conversation: updated };
+      // A turn's thinking belongs to that turn. Settling only on the first
+      // token of an answer left every turn that ended in a tool call — which
+      // is most of an agentic run — with its reasoning still in the live
+      // buffer, so the next turn appended to it and the view never collapsed.
+      // A turn that produced no text still owns what it thought.
+      if (!state.reasoning) return { ...state, conversation: updated };
+      const elapsed = now() - (state.reasoningStartedAt ?? now());
+      updated[idx] = mergeReasoning(updated[idx]!, state.reasoning, state.reasoningMs ?? elapsed);
+      const { reasoningStartedAt: _startedAt, reasoningMs: _ms, ...rest } = state;
+      return {
+        ...rest,
+        conversation: updated,
+        reasoning: "",
+        lastReasoning: state.reasoning,
+        lastReasoningMs: state.reasoningMs ?? elapsed,
+      };
     }
 
     case "assistant.end": {

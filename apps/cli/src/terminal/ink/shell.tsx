@@ -180,11 +180,17 @@ export function startShell(options: ShellOptions): ShellHandle {
           continue;
         }
         for (const event of mapTaskEvent(raw)) {
-          // The first token of the answer is what ends "thinking" for a reader.
-          // The runtime has no view on that — it only knows it emitted text —
+          // What ends "thinking" for a reader is the turn producing something:
+          // the first token of an answer, or the tool call it decided to make.
+          // The runtime has no view on that — it only knows what it emitted —
           // so the boundary is drawn here, once, rather than by every surface.
+          //
+          // Tool calls count. A reasoning-heavy model can run a whole task
+          // without emitting a single token of text between calls, and settling
+          // only on text left all of it accumulating in one live block that
+          // never collapsed and never attached to the turn that thought it.
           if (
-            event.type === "assistant.delta" &&
+            (event.type === "assistant.delta" || event.type === "tool.start") &&
             store.state.reasoning &&
             store.state.reasoningMs === undefined
           ) {

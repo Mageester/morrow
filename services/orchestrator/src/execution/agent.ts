@@ -2077,6 +2077,16 @@ Build mode: you may change this project. On a multi-file build, call create_file
 When you make a non-obvious architecture, dependency, or tooling choice, call record_decision once with the choice, concise reason, serious alternatives, and trade-offs. This is a user-visible summary, never raw reasoning. Do not record routine implementation details.
 ${writeToolInstructions}`;
 
+  // Every mode, not just Build. Reasoning is streamed to a separate view and is
+  // never the answer, so a turn that only thinks and calls tools reports
+  // nothing — a reasoning-heavy route can work through a whole session while
+  // the user watches a silent screen. Ask and Plan call read tools for minutes
+  // at a time and were just as capable of going dark, so this ships once for
+  // both branches rather than living inside the Build-mode block.
+  const narrationInstructions = `
+Say what you are doing in ordinary text as you work: one short line before a group of tool calls, and one after a step is done. Your thinking is shown separately and is not your answer, so a turn that only thinks and calls tools tells the user nothing about what happened.
+`;
+
   const teammateIdentity = buildTeammateIdentity(assignedAgent ?? null);
 
   chatMessages.push({
@@ -2091,7 +2101,7 @@ When the work has more than a couple of distinct steps, call write_plan with the
 You MUST choose relevant files, do NOT automatically ingest the entire repository.
 If you need to explore, call inspect_workspace once for bounded root facts, prefer search_symbols before broad search, then use list_files/search_files/search_text/read_file only for paths relevant to the user's request.
 ${allowedWriteFiles ? `The user explicitly constrained deliverable files to ONLY: ${[...allowedWriteFiles].join(", ")}. Treat this as a hard write contract: do not create or modify auxiliary files, test files, temp files, logs, package files, or directories outside that list. For calculations or checks, use run_command with node -e or existing files; do not write scratch verification files.` : ""}
-${activeToolProfile === "agent" ? agentModeInstructions : readOnlyModeInstructions}
+${activeToolProfile === "agent" ? agentModeInstructions : readOnlyModeInstructions}${narrationInstructions}
 Morrow ships installed skills (reusable expert workflows). They ARE available — never tell the user skills are unavailable. When a relevant active skill is listed below or found via find_skill, call load_skill for it and follow its workflow. Cortex observes evidence-backed repeated procedures automatically; do not call create_skill unless the user explicitly asked to create a skill.`
   });
 
