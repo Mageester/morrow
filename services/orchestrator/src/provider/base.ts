@@ -291,3 +291,26 @@ export function classifyThrownError(e: any, aborted: boolean): ProviderErrorPayl
     retryable: true,
   };
 }
+
+/**
+ * Bridge the caller's abort signal into one request's controller, returning the
+ * detach function the caller must run once that request settles.
+ *
+ * The caller's signal outlives the request. `execution/agent.ts` builds one
+ * signal per task and hands the same instance to every turn, so a listener
+ * added per `streamChat` call and never removed accumulates on that one signal
+ * for the life of the task — each closure pinning its own AbortController.
+ * A long run leaked a listener per provider call and tripped Node's
+ * max-listeners warning; detaching on settle keeps the count at one per
+ * in-flight request.
+ */
+export function linkAbortSignal(source: AbortSignal | undefined, controller: AbortController): () => void {
+  if (!source) return () => {};
+  if (source.aborted) {
+    controller.abort();
+    return () => {};
+  }
+  const onAbort = () => controller.abort();
+  source.addEventListener("abort", onAbort, { once: true });
+  return () => source.removeEventListener("abort", onAbort);
+}

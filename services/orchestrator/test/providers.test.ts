@@ -808,3 +808,115 @@ describe("Gemini provider normalization", () => {
     expect(chunks.at(-1)?.error?.kind).toBe("auth");
   });
 });
+
+/**
+ * An agent turn re-sends the system prompt, every tool schema, and the whole
+ * transcript. Uncached, that is billed at full input price on every turn and
+ * the cost of a task grows quadratically in its own length. Morrow already
+ * priced cache reads end to end — the adapter parsed `cache_read_input_tokens`
+ * and `routing/usage-snapshot.ts` split fresh from cached — but nothing ever
+ * sent a `cache_control` breakpoint, so that split reported zero forever.
+ */
+describe("Anthropic prompt caching", () => {
+  const BIG_SYSTEM = "You are Morrow. ".repeat(400); // ~6.4 KB, over the floor
+  const bigConversation: ChatMessage[] = [
+    { role: "system", content: BIG_SYSTEM },
+    { role: "user", content: "Read a file" },
+    { role: "assistant", content: "", toolCalls: [{ id: "tu_1", type: "function", function: { name: "read_file", arguments: '{"path":"a"}' } }] },
+    { role: "tool", toolCallId: "tu_1", content: "x".repeat(5000) },
+  ];
+
+  function doneStream(usage: string): Response {
+    return sseResponse([
+      `data: {"type":"message_start","message":{"usage":${usage}}}\n\n`,
+      `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}\n\n`,
+      `data: {"type":"message_stop"}\n\n`,
+    ]);
+  }
+
+  it("marks the stable tools+system prefix and the end of the conversation", async () => {
+    const ref = mockFetch(doneStream(`{"input_tokens":10}`));
+    const provider = new AnthropicProvider({ apiKey: "k", baseUrl: "https://api.anthropic.com", defaultModel: "m" });
+    await collect(provider, bigConversation, {
+      tools: [{ name: "read_file", description: "d", parameters: { type: "object", properties: {} } }],
+    });
+
+    const body = JSON.parse(ref.captured!.init.body);
+    // Tools render before system, so one marker on the last system block
+    // covers every tool schema and the whole system prompt.
+    expect(body.system).toEqual([{ type: "text", text: BIG_SYSTEM, cache_control: { type: "ephemeral" } }]);
+    // The next turn appends to exactly this prefix and reads all of it back.
+    const lastMessage = body.messages[body.messages.length - 1];
+    expect(lastMessage.content[lastMessage.content.length - 1].cache_control).toEqual({ type: "ephemeral" });
+    // Well inside the API's limit of four.
+    expect(JSON.stringify(body).split('"cache_control"').length - 1).toBeLessThanOrEqual(4);
+  });
+
+  it("leaves a prompt below the minimum cacheable size unmarked", async () => {
+    // Under the API's ~1024-token floor nothing is ever stored, so a marker
+    // could only ever cost the cache-write premium for a read that cannot happen.
+    const ref = mockFetch(doneStream(`{"input_tokens":10}`));
+    const provider = new AnthropicProvider({ apiKey: "k", baseUrl: "https://api.anthropic.com", defaultModel: "m" });
+    await collect(provider, userMessages);
+
+    const body = JSON.parse(ref.captured!.init.body);
+    expect(body.system).toBe("You are Morrow.");
+    expect(JSON.stringify(body)).not.toContain("cache_control");
+  });
+
+  it("falls back to the last tool when there is no system prompt to mark", async () => {
+    const ref = mockFetch(doneStream(`{"input_tokens":10}`));
+    const provider = new AnthropicProvider({ apiKey: "k", baseUrl: "https://api.anthropic.com", defaultModel: "m" });
+    await collect(provider, [{ role: "user", content: "hi" }], {
+      tools: [
+        { name: "a", description: "d".repeat(3000), parameters: { type: "object", properties: {} } },
+        { name: "b", description: "d".repeat(3000), parameters: { type: "object", properties: {} } },
+      ],
+    });
+
+    const body = JSON.parse(ref.captured!.init.body);
+    expect(body.system).toBeUndefined();
+    expect(body.tools[0].cache_control).toBeUndefined();
+    expect(body.tools[1].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("sends no breakpoint when prompt caching is disabled for the endpoint", async () => {
+    const ref = mockFetch(doneStream(`{"input_tokens":10}`));
+    const provider = new AnthropicProvider({ apiKey: "k", baseUrl: "https://proxy.internal", defaultModel: "m", promptCache: false });
+    await collect(provider, bigConversation, {
+      tools: [{ name: "read_file", description: "d", parameters: { type: "object", properties: {} } }],
+    });
+
+    const body = JSON.parse(ref.captured!.init.body);
+    expect(body.system).toBe(BIG_SYSTEM);
+    expect(JSON.stringify(body)).not.toContain("cache_control");
+  });
+
+  /**
+   * Anthropic splits input three ways and `input_tokens` counts only the part
+   * that neither hit nor filled the cache. Every consumer downstream treats
+   * promptTokens as the whole input with cachedPromptTokens as a subset of it
+   * (`calculateUsageCost` derives uncached input by subtracting one from the
+   * other), so passing `input_tokens` through unchanged would under-report the
+   * context size and the bill the moment caching started hitting — and drive
+   * the fresh/cached split to zero or negative.
+   */
+  it("reports total input tokens with the cached read as a subset", async () => {
+    mockFetch(doneStream(`{"input_tokens":200,"cache_read_input_tokens":9000,"cache_creation_input_tokens":800}`));
+    const provider = new AnthropicProvider({ apiKey: "k", baseUrl: "https://api.anthropic.com", defaultModel: "m" });
+    const chunks = await collect(provider, bigConversation);
+
+    const usage = chunks.find((c) => c.type === "done")?.usage;
+    expect(usage?.promptTokens).toBe(10_000);
+    expect(usage?.cachedPromptTokens).toBe(9_000);
+    // What the shared cost model will bill as fresh: uncached + cache writes.
+    expect(usage!.promptTokens - usage!.cachedPromptTokens!).toBe(1_000);
+  });
+
+  it("still reports a plain uncached response unchanged", async () => {
+    mockFetch(doneStream(`{"input_tokens":12}`));
+    const provider = new AnthropicProvider({ apiKey: "k", baseUrl: "https://api.anthropic.com", defaultModel: "m" });
+    const chunks = await collect(provider, userMessages);
+    expect(chunks.find((c) => c.type === "done")?.usage).toEqual({ promptTokens: 12, completionTokens: 5 });
+  });
+});

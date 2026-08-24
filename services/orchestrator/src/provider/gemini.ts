@@ -6,6 +6,7 @@ import {
   StreamOptions,
   classifyHttpStatus,
   classifyThrownError,
+  linkAbortSignal,
   validateChatImages,
   type ProviderRouteMetadata,
 } from "./base.js";
@@ -208,10 +209,7 @@ export class GeminiProvider implements AiProvider {
 
     const controller = new AbortController();
     let timedOut = false;
-    if (options.abortSignal) {
-      if (options.abortSignal.aborted) controller.abort();
-      else options.abortSignal.addEventListener("abort", () => controller.abort());
-    }
+    const detachAbort = linkAbortSignal(options.abortSignal, controller);
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     if (limits.timeoutMs) {
       timeoutId = setTimeout(() => {
@@ -219,6 +217,13 @@ export class GeminiProvider implements AiProvider {
         controller.abort();
       }, limits.timeoutMs);
     }
+
+    /** Release everything this one request holds: the timeout, and the
+     * listener on the caller's longer-lived abort signal. */
+    const releaseRequest = (): void => {
+      detachAbort();
+      if (timeoutId) clearTimeout(timeoutId);
+    };
 
     const url = `${baseUrl}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
     let response: Response;
@@ -230,7 +235,7 @@ export class GeminiProvider implements AiProvider {
         signal: controller.signal,
       });
     } catch (e: any) {
-      if (timeoutId) clearTimeout(timeoutId);
+      releaseRequest();
       if (timedOut) {
         yield { type: "error", error: { type: "timeout", kind: "timeout", message: "Provider request timed out", retryable: true } };
         return;
@@ -240,7 +245,7 @@ export class GeminiProvider implements AiProvider {
     }
 
     if (!response.ok) {
-      if (timeoutId) clearTimeout(timeoutId);
+      releaseRequest();
       const errText = await response.text().catch(() => "");
       let errMsg = errText || `Request failed with status ${response.status}`;
       try {
@@ -258,7 +263,7 @@ export class GeminiProvider implements AiProvider {
     }
 
     if (!response.body) {
-      if (timeoutId) clearTimeout(timeoutId);
+      releaseRequest();
       yield { type: "error", error: { type: "provider_error", kind: "provider", message: "Empty stream response body", retryable: false } };
       return;
     }
@@ -401,7 +406,7 @@ export class GeminiProvider implements AiProvider {
       yield { type: "error", error: classifyThrownError(e, options.abortSignal?.aborted ?? false) };
       return;
     } finally {
-      if (timeoutId) clearTimeout(timeoutId);
+      releaseRequest();
     }
   }
 }

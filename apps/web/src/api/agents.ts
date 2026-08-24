@@ -52,11 +52,29 @@ export const agentQueries = {
       queryKey: agentKeys.roster(projectId),
       queryFn: () => api.get(`${projectPath(projectId)}/roster`, RosterSchema),
       enabled: Boolean(projectId),
-      refetchInterval: ROSTER_POLL_MS,
-      // Status is the whole point of this rail; a stale one is worse than a
-      // brief spinner, so keep polling while the window is in the background
-      // too — a run that finishes while the user is elsewhere should be
-      // visible the moment they look back.
+      // Status is the whole point of this rail, so while the tab is visible
+      // this polls at full rate unconditionally — sending a message does not
+      // invalidate the roster, and an interval that waited for a teammate to
+      // already look busy would leave the rail reading "idle" through the first
+      // seconds of the run the user just started.
+      //
+      // Backgrounded is the case worth narrowing. Polling continues there so a
+      // run that finishes while the user is elsewhere is current the moment
+      // they look back — but only while there is a run to finish. With every
+      // teammate idle, nothing changes without an action the user has to come
+      // back to the tab to take, so a hidden tab stops asking rather than
+      // spending a request every three seconds indefinitely. Returning to the
+      // tab resumes the full-rate poll within one interval, which matters
+      // because refetchOnWindowFocus is off globally.
+      refetchInterval: (query) => {
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+          const active = (query.state.data?.entries ?? []).some(
+            (entry) => entry.status === "working" || entry.status === "waiting",
+          );
+          return active ? ROSTER_POLL_MS : false;
+        }
+        return ROSTER_POLL_MS;
+      },
       refetchIntervalInBackground: true,
     });
   },

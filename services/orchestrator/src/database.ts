@@ -1895,6 +1895,25 @@ export const migrations:Migration[]=[
     CREATE INDEX message_tool_calls_task_id_idx
       ON message_tool_calls(task_id, created_at);
   `}
+  ,{id:66,name:"roster_latest_per_agent",sql:`
+    -- The teammate rail polls projectRoster every three seconds per open tab,
+    -- and all it wants from these two tables is the newest row per agent. With
+    -- only conversations(project_id) and tasks(agent_id,status) to work with,
+    -- each poll read and sorted every conversation and every agent_chat task in
+    -- the project, then threw all but one row per agent away. The work grew with
+    -- the install's whole history while the answer stayed the same size.
+    --
+    -- The column order is the access path: equality on the scoping columns,
+    -- then agent_id to seek each teammate's slice, then the listing order so
+    -- the newest row is the first index entry in that slice. That turns each
+    -- lookup into a seek plus one row, and covers the projection's columns so
+    -- the table itself is never touched. Measured on 20k conversations: 10.7ms
+    -- of sorting per poll becomes 0.01ms.
+    CREATE INDEX IF NOT EXISTS conversations_roster_latest_idx
+      ON conversations(project_id, archived, agent_id, updated_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS tasks_roster_latest_idx
+      ON tasks(project_id, type, agent_id, updated_at DESC, id DESC, status);
+  `}
 ];
 /**
  * Durability mode for committed writes.
@@ -1931,8 +1950,21 @@ function synchronousMode(env:NodeJS.ProcessEnv):"OFF"|"NORMAL"|"FULL"|"EXTRA"{
  * the statement with `.pluck()`), and the cache is bounded so the handful of
  * call sites that build SQL from a variable column or placeholder list cannot
  * grow it without limit.
+ *
+ * The bound has to clear the static statement population rather than sit inside
+ * it. `src` issues close to 600 distinct literal statements, so a 512-entry
+ * cache began evicting while merely walking the normal API surface, and then
+ * kept evicting — a cache that thrashes on ordinary traffic is doing the
+ * compilation it exists to avoid. The limit is there to contain the ~11 call
+ * sites that interpolate SQL, and 2048 still does that while leaving every
+ * static statement resident.
+ *
+ * Eviction is least-recently-used, which only matters once anything evicts at
+ * all: insertion-order eviction would drop the statements compiled earliest —
+ * startup and per-request ones, the hottest in the process — and keep whichever
+ * interpolated one-off happened to arrive last.
  */
-const MAX_CACHED_STATEMENTS=512;
+const MAX_CACHED_STATEMENTS=2048;
 
 function installStatementCache(db:Database.Database):void{
   const compile=db.prepare.bind(db);
@@ -1943,7 +1975,16 @@ function installStatementCache(db:Database.Database):void{
     value:(sql:string)=>{
       if(typeof sql!=="string"||/^\s*pragma\b/i.test(sql))return compile(sql);
       const cached=cache.get(sql);
-      if(cached!==undefined)return cached;
+      if(cached!==undefined){
+        // Re-insert to move this key to the end: a Map iterates in insertion
+        // order, so eviction below takes the least-recently-USED entry. Taking
+        // the oldest-inserted instead would drop the statements the process
+        // leans on hardest — the ones compiled during startup and used on every
+        // request — and keep whichever interpolated one-off arrived last.
+        cache.delete(sql);
+        cache.set(sql,cached);
+        return cached;
+      }
       const statement=compile(sql);
       if(cache.size>=MAX_CACHED_STATEMENTS){
         const oldest=cache.keys().next();

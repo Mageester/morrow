@@ -6,6 +6,7 @@ import {
   chatImageDataUrl,
   classifyHttpStatus,
   classifyThrownError,
+  linkAbortSignal,
   validateChatImages,
   type ProviderRouteMetadata,
 } from "./base.js";
@@ -164,10 +165,7 @@ export class OpenAiCompatibleProvider implements AiProvider {
 
     const controller = new AbortController();
     let timedOut = false;
-    if (options.abortSignal) {
-      if (options.abortSignal.aborted) controller.abort();
-      else options.abortSignal.addEventListener("abort", () => controller.abort());
-    }
+    const detachAbort = linkAbortSignal(options.abortSignal, controller);
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     if (limits.timeoutMs) {
       timeoutId = setTimeout(() => {
@@ -175,6 +173,13 @@ export class OpenAiCompatibleProvider implements AiProvider {
         controller.abort();
       }, limits.timeoutMs);
     }
+
+    /** Release everything this one request holds: the timeout, and the
+     * listener on the caller's longer-lived abort signal. */
+    const releaseRequest = (): void => {
+      detachAbort();
+      if (timeoutId) clearTimeout(timeoutId);
+    };
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -193,7 +198,7 @@ export class OpenAiCompatibleProvider implements AiProvider {
           signal: controller.signal,
         });
       } catch (e: any) {
-        if (timeoutId) clearTimeout(timeoutId);
+        releaseRequest();
         if (timedOut) {
           yield { type: "error", error: { type: "timeout", kind: "timeout", message: "Provider request timed out", retryable: true } };
           return;
@@ -227,19 +232,19 @@ export class OpenAiCompatibleProvider implements AiProvider {
       // it before surfacing the error, so the next budget resolution for this
       // exact route is based on the provider's own number.
       learnContextLimitFromProviderError(this.route, baseUrl, model, errMsg);
-      if (timeoutId) clearTimeout(timeoutId);
+      releaseRequest();
       yield { type: "error", error: classifyHttpStatus(response.status, errMsg, parseRetryAfter(response.headers.get("retry-after"))) };
       return;
     }
 
     if (!response) {
-      if (timeoutId) clearTimeout(timeoutId);
+      releaseRequest();
       yield { type: "error", error: { type: "provider_error", kind: "provider", message: "Provider request did not return a response", retryable: true } };
       return;
     }
 
     if (!response.body) {
-      if (timeoutId) clearTimeout(timeoutId);
+      releaseRequest();
       yield { type: "error", error: { type: "provider_error", kind: "provider", message: "Empty stream response body", retryable: false } };
       return;
     }
@@ -345,7 +350,7 @@ export class OpenAiCompatibleProvider implements AiProvider {
       yield { type: "error", error: classifyThrownError(e, options.abortSignal?.aborted ?? false) };
       return;
     } finally {
-      if (timeoutId) clearTimeout(timeoutId);
+      releaseRequest();
     }
   }
 }

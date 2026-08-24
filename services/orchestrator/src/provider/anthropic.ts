@@ -5,6 +5,7 @@ import {
   StreamOptions,
   classifyHttpStatus,
   classifyThrownError,
+  linkAbortSignal,
   validateChatImages,
   type ProviderRouteMetadata,
 } from "./base.js";
@@ -23,14 +24,27 @@ export interface AnthropicConfig {
    * matching the official subscription-login transport.
    */
   oauthToken?: string;
+  /**
+   * Request prompt caching (default on). Only reason to disable it is a
+   * non-Anthropic endpoint behind `baseUrl` that rejects `cache_control`
+   * rather than ignoring it.
+   */
+  promptCache?: boolean;
   route?: ProviderRouteMetadata;
 }
 
-type AnthropicBlock =
-  | { type: "text"; text: string }
-  | { type: "image"; source: { type: "base64"; media_type: "image/png" | "image/jpeg" | "image/webp"; data: string } }
-  | { type: "tool_use"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; tool_use_id: string; content: string };
+/** Marks the end of a cacheable prefix. `ephemeral` is the only type the
+ * Messages API defines; its default TTL is five minutes, refreshed on every
+ * read, which outlives the gap between turns of an agent loop. */
+type CacheControl = { cache_control?: { type: "ephemeral" } };
+
+type AnthropicBlock = CacheControl &
+  (
+    | { type: "text"; text: string }
+    | { type: "image"; source: { type: "base64"; media_type: "image/png" | "image/jpeg" | "image/webp"; data: string } }
+    | { type: "tool_use"; id: string; name: string; input: unknown }
+    | { type: "tool_result"; tool_use_id: string; content: string }
+  );
 
 interface AnthropicMessage {
   role: "user" | "assistant";
@@ -66,6 +80,64 @@ function normalizeStopReason(raw: unknown): NonNullable<ProviderChunk["finishRea
     case undefined: case null: return undefined;
     default: return "other";
   }
+}
+
+/**
+ * Prompt caching, and why the breakpoints sit where they do.
+ *
+ * An agent turn re-sends the entire conversation: the system prompt, every
+ * tool schema, and every prior message. Without a `cache_control` breakpoint
+ * all of it is re-read and billed at full input price on every turn, so the
+ * cost of a task grows quadratically in its own length. The Messages API
+ * caches by exact-prefix match in render order — `tools`, then `system`, then
+ * `messages` — and a marker makes everything up to it re-readable at a
+ * fraction of the input price for five minutes, refreshed on each read.
+ *
+ * Morrow already carried the whole downstream half of this: the adapter reads
+ * `cache_read_input_tokens`, `routing/usage-snapshot.ts` splits fresh from
+ * cached tokens, and the cost model prices cache reads separately. Nothing
+ * ever asked for the cache, so that split reported zero forever.
+ *
+ * Two rolling breakpoints, well inside the limit of four:
+ *
+ *   1. The last system block. Tools render before system, so one marker there
+ *      covers the two largest stable spans — every tool schema and the whole
+ *      system prompt — for the life of the task.
+ *   2. The last block of the final message. Next turn appends to this exact
+ *      prefix, so the entire conversation so far reads from cache. The marker
+ *      the previous turn left behind stays a valid read point, which is what
+ *      makes the saving accrue as the conversation grows.
+ *
+ * Both are gated on {@link MIN_CACHEABLE_BYTES}. A prefix under the API's
+ * ~1024-token floor never becomes a cache entry, and marking one would risk
+ * paying the cache-write premium for a read that cannot happen.
+ */
+const CACHE_BREAKPOINT = { cache_control: { type: "ephemeral" } } as const;
+
+/**
+ * Conservative byte floor standing in for the API's ~1024-token minimum
+ * cacheable prefix. English prose and JSON schemas run about four bytes per
+ * token, so 4 KB is roughly that floor; erring high only forgoes caching on
+ * prompts too small for the saving to matter.
+ */
+const MIN_CACHEABLE_BYTES = 4096;
+
+function blockBytes(blocks: AnthropicBlock[]): number {
+  let total = 0;
+  for (const block of blocks) {
+    if (block.type === "text") total += Buffer.byteLength(block.text, "utf8");
+    else if (block.type === "tool_result") total += Buffer.byteLength(block.content, "utf8");
+    else if (block.type === "tool_use") total += Buffer.byteLength(JSON.stringify(block.input ?? {}), "utf8");
+    // An image is already a cache-sized payload on its own.
+    else if (block.type === "image") total += block.source.data.length;
+  }
+  return total;
+}
+
+/** Mark the final block of `blocks` as the end of a cacheable prefix. */
+function markCacheBreakpoint(blocks: AnthropicBlock[]): void {
+  const last = blocks[blocks.length - 1];
+  if (last) Object.assign(last, CACHE_BREAKPOINT);
 }
 
 /**
@@ -139,17 +211,41 @@ export class AnthropicProvider implements AiProvider {
     }
 
     const { system, messages: anthropicMessages } = this.buildMessages(messages);
+    const cacheEnabled = this.config.promptCache !== false;
     const body: Record<string, any> = {
       model: options.model || this.config.defaultModel,
       messages: anthropicMessages,
       stream: true,
-      ...(system ? { system } : {}),
     };
     if (options.tools && options.tools.length > 0 && options.requestCapabilities?.tools !== "unsupported") {
       body.tools = options.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
       if (options.toolChoice === "required" && (!options.requestCapabilities || options.requestCapabilities.toolChoice === "supported")) {
         body.tool_choice = { type: "any" };
       }
+    }
+
+    // Breakpoint 1: the end of tools+system, the span that is byte-identical
+    // for every turn of a task. Sized against the whole stable prefix, since
+    // that is what the one marker covers.
+    const toolBytes = body.tools ? Buffer.byteLength(JSON.stringify(body.tools), "utf8") : 0;
+    const systemBytes = system ? Buffer.byteLength(system, "utf8") : 0;
+    const cacheStablePrefix = cacheEnabled && toolBytes + systemBytes >= MIN_CACHEABLE_BYTES;
+    if (system) {
+      body.system = cacheStablePrefix
+        ? [{ type: "text", text: system, ...CACHE_BREAKPOINT }]
+        : system;
+    } else if (cacheStablePrefix && body.tools?.length) {
+      // No system prompt: the tool schemas are the stable prefix, so the
+      // marker goes on the last tool instead.
+      Object.assign(body.tools[body.tools.length - 1], CACHE_BREAKPOINT);
+    }
+
+    // Breakpoint 2: the end of the conversation as it stands. The next turn
+    // appends to exactly this prefix and reads all of it back.
+    if (cacheEnabled) {
+      const conversation = anthropicMessages.reduce((total, message) => total + blockBytes(message.content), 0);
+      const lastMessage = anthropicMessages[anthropicMessages.length - 1];
+      if (lastMessage && conversation >= MIN_CACHEABLE_BYTES) markCacheBreakpoint(lastMessage.content);
     }
 
     if (options.reasoning) {
@@ -189,10 +285,7 @@ export class AnthropicProvider implements AiProvider {
 
     const controller = new AbortController();
     let timedOut = false;
-    if (options.abortSignal) {
-      if (options.abortSignal.aborted) controller.abort();
-      else options.abortSignal.addEventListener("abort", () => controller.abort());
-    }
+    const detachAbort = linkAbortSignal(options.abortSignal, controller);
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     if (limits.timeoutMs) {
       timeoutId = setTimeout(() => {
@@ -200,6 +293,13 @@ export class AnthropicProvider implements AiProvider {
         controller.abort();
       }, limits.timeoutMs);
     }
+
+    /** Release everything this one request holds: the timeout, and the
+     * listener on the caller's longer-lived abort signal. */
+    const releaseRequest = (): void => {
+      detachAbort();
+      if (timeoutId) clearTimeout(timeoutId);
+    };
 
     let response: Response;
     try {
@@ -222,7 +322,7 @@ export class AnthropicProvider implements AiProvider {
         signal: controller.signal,
       });
     } catch (e: any) {
-      if (timeoutId) clearTimeout(timeoutId);
+      releaseRequest();
       if (timedOut) {
         yield { type: "error", error: { type: "timeout", kind: "timeout", message: "Provider request timed out", retryable: true } };
         return;
@@ -232,7 +332,7 @@ export class AnthropicProvider implements AiProvider {
     }
 
     if (!response.ok) {
-      if (timeoutId) clearTimeout(timeoutId);
+      releaseRequest();
       const errText = await response.text().catch(() => "");
       let errMsg = errText || `Request failed with status ${response.status}`;
       try {
@@ -246,7 +346,7 @@ export class AnthropicProvider implements AiProvider {
     }
 
     if (!response.body) {
-      if (timeoutId) clearTimeout(timeoutId);
+      releaseRequest();
       yield { type: "error", error: { type: "provider_error", kind: "provider", message: "Empty stream response body", retryable: false } };
       return;
     }
@@ -282,10 +382,25 @@ export class AnthropicProvider implements AiProvider {
           }
 
           switch (evt.type) {
-            case "message_start":
-              promptTokens = evt.message?.usage?.input_tokens ?? 0;
-              cachedPromptTokens = evt.message?.usage?.cache_read_input_tokens ?? 0;
+            case "message_start": {
+              // Anthropic splits input three ways and `input_tokens` counts
+              // only the part that neither hit nor filled the cache; the total
+              // read is the sum of all three. Every consumer downstream —
+              // `routing/usage-snapshot.ts`, `calculateUsageCost` — defines
+              // promptTokens as the whole input with `cachedPromptTokens` as a
+              // subset of it, so the sum is what gets reported. Passing
+              // Anthropic's `input_tokens` through unchanged would, the moment
+              // caching started hitting, under-report both the context size and
+              // the bill, and drive the fresh/cached split to zero.
+              const usage = evt.message?.usage;
+              const uncached = usage?.input_tokens ?? 0;
+              cachedPromptTokens = usage?.cache_read_input_tokens ?? 0;
+              // A cache write is fresh input the model read for the first time;
+              // it is billed at a premium over ordinary input, which the shared
+              // cost model has no separate rate for, so it counts as fresh.
+              promptTokens = uncached + cachedPromptTokens + (usage?.cache_creation_input_tokens ?? 0);
               break;
+            }
             case "content_block_start": {
               const block = evt.content_block;
               if (block?.type === "tool_use") {
@@ -347,7 +462,7 @@ export class AnthropicProvider implements AiProvider {
       yield { type: "error", error: classifyThrownError(e, options.abortSignal?.aborted ?? false) };
       return;
     } finally {
-      if (timeoutId) clearTimeout(timeoutId);
+      releaseRequest();
     }
   }
 }
