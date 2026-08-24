@@ -154,8 +154,20 @@ const orchPkg = JSON.parse(readFileSync(join(orchSrc, "package.json"), "utf8"));
 // ── 4. Production dependencies (flat npm install, matched ABI) ────────────
 console.log("\n[4/8] Installing production dependencies with the bundled runtime...");
 // External (non-workspace) production deps only; workspace deps are injected compiled.
+//
+// The CLI's externals are merged in, not just the orchestrator's. The compiled
+// CLI is placed under orchestrator/ and resolves everything from this one flat
+// node_modules, so a dependency the CLI declares and the orchestrator does not
+// is simply absent at runtime. That is not hypothetical: once the terminal was
+// rebuilt on Ink, `ink` and `react` were declared by @morrow/cli alone, so
+// 0.5.0 shipped without them and every Ink surface — `morrow onboard`, the
+// shell, the launchpad — died with "Cannot find package 'react'". Merging the
+// whole declared set keeps this correct as either package's dependencies move,
+// rather than relying on someone remembering to add the next one here.
+const cliPkgForDeps = JSON.parse(readFileSync(join(ROOT, "apps", "cli", "package.json"), "utf8"));
 const externalDeps = Object.fromEntries(
-  Object.entries(orchPkg.dependencies || {}).filter(([name]) => !name.startsWith("@morrow/")),
+  Object.entries({ ...(cliPkgForDeps.dependencies || {}), ...(orchPkg.dependencies || {}) })
+    .filter(([name]) => !name.startsWith("@morrow/")),
 );
 writeFileSync(join(orchDst, "package.json"), JSON.stringify({
   name: orchPkg.name, version: VERSION, private: true, type: "module", dependencies: orchPkg.dependencies,
@@ -320,6 +332,34 @@ try {
   execFileSync(BUNDLED_NODE, [join(cliDst, "bin", "morrow.mjs"), "--help"], { cwd: orchDst, stdio: "ignore", env: { ...process.env, MORROW_NO_AUTOSTART: "1" } });
 } catch {
   throw new Error("The bundled CLI failed to run under the bundled runtime.");
+}
+
+// `--help` never reaches the terminal UI: every Ink module is imported lazily,
+// only once a shell actually starts. So the gate above happily passed a 0.5.0
+// bundle that contained no `react` and no `ink`, and the first thing a real
+// user ran — `morrow onboard` — threw "Cannot find package 'react'". Import the
+// Ink entry points directly, under the bundled runtime, from the packaged
+// layout. Importing is enough: it resolves the whole dependency graph without
+// needing a TTY or starting a shell that would never exit.
+console.log("  Verifying the bundled terminal UI resolves its dependencies...");
+const uiEntryPoints = [
+  join(cliDst, "src", "terminal", "ink", "app.js"),
+  join(cliDst, "src", "terminal", "ink", "shell.js"),
+  join(cliDst, "src", "terminal", "ink", "palette.js"),
+  join(cliDst, "src", "commands", "onboard-ink.js"),
+];
+for (const entry of uiEntryPoints) {
+  if (!existsSync(entry)) throw new Error(`The bundled CLI is missing a terminal UI entry point: ${entry}`);
+}
+try {
+  execFileSync(
+    BUNDLED_NODE,
+    ["--input-type=module", "-e", uiEntryPoints.map((entry) => `await import(${JSON.stringify(pathToFileURL(entry).href)});`).join("\n")],
+    { cwd: orchDst, stdio: "pipe", env: { ...process.env, MORROW_NO_AUTOSTART: "1" } },
+  );
+} catch (error) {
+  const detail = (error.stderr?.toString() || error.message || "").trim().split("\n").slice(0, 4).join(" | ");
+  throw new Error(`The bundled terminal UI could not resolve its dependencies: ${detail}`);
 }
 
 // ── 4c. Bundled web app (served locally by the orchestrator at /app) ──────

@@ -15,7 +15,8 @@ import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   REQUIRED_PACKAGE_FILES,
   requiredPackageFiles,
@@ -154,5 +155,35 @@ test("package layout resolver supports every POSIX prebuilt contract", () => {
     const root = `Morrow-v9.9.9-${platform}/`;
     const entries = [...required, "web/assets/app.js"].map((entry) => root + entry);
     assert.equal(resolvePackageRoot(entries, platform), root);
+  }
+});
+
+// ── Regression: the packaged dependency set must satisfy the CLI too ───────
+//
+// 0.5.0 shipped a bundle whose node_modules was built from the ORCHESTRATOR's
+// dependencies alone. The compiled CLI sits under orchestrator/ and resolves
+// from that one flat tree, so `ink` and `react` — declared by @morrow/cli and
+// by nobody else — were simply absent, and `morrow onboard` died on first run
+// with "Cannot find package 'react'". The build gate missed it because it only
+// ran `--help`, which never imports an Ink module.
+test("packaged externals cover every CLI runtime dependency", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const read = (p) => JSON.parse(readFileSync(join(root, p), "utf8"));
+  const cliDeps = read("apps/cli/package.json").dependencies ?? {};
+  const orchDeps = read("services/orchestrator/package.json").dependencies ?? {};
+
+  // Mirrors the merge in package-release.mjs.
+  const packaged = new Set(
+    Object.keys({ ...cliDeps, ...orchDeps }).filter((name) => !name.startsWith("@morrow/")),
+  );
+
+  const missing = Object.keys(cliDeps)
+    .filter((name) => !name.startsWith("@morrow/"))
+    .filter((name) => !packaged.has(name));
+
+  assert.deepEqual(missing, [], `CLI runtime dependencies absent from the packaged bundle: ${missing.join(", ")}`);
+  // Guard the specific regression: these are CLI-only and must survive.
+  for (const name of ["ink", "react"]) {
+    assert.ok(packaged.has(name), `${name} must be packaged; the terminal UI cannot start without it`);
   }
 });

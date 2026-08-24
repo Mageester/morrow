@@ -109,7 +109,12 @@ export function resolvePackageRoot(entries, platform = "windows-x64") {
 
 /** List a gzip-compressed tar archive without extracting it. */
 export function listTarEntries(tarPath) {
-  return execFileSync("tar", ["-tzf", tarPath], { encoding: "utf8" })
+  // A release archive lists well over a hundred thousand paths — the bundled
+  // Node runtime's headers alone are thousands of files — so this comfortably
+  // exceeds execFileSync's 1 MB default and fails with ENOBUFS. The listing
+  // grows with every dependency added to the package, which makes the default
+  // a size-dependent time bomb: it passed at 101 packages and blew up at 156.
+  return execFileSync("tar", ["-tzf", tarPath], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 })
     .split(/\r?\n/)
     .filter(Boolean)
     .map((entry) => entry.replace(/^\.\//, "").replace(/\\/g, "/"));

@@ -6,6 +6,32 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-24
+
+A packaging fix. 0.5.0's bundle was assembled from the orchestrator's
+dependencies alone, so the terminal never started; 0.5.1 is 0.5.0 with a
+package that contains what the CLI actually needs.
+
+### Fixed
+
+- The released package shipped without `react` and `ink`, so every terminal
+  surface — `morrow onboard`, the shell, the launchpad — failed immediately
+  with "Cannot find package 'react'". The compiled CLI is placed under
+  `orchestrator/` and resolves from that one flat `node_modules`, which was
+  installed from the orchestrator's dependencies only. Once the terminal was
+  rebuilt on Ink, `ink` and `react` were declared by `@morrow/cli` and by
+  nobody else, and silently stopped being packaged. The packaged dependency
+  set is now the union of both manifests, so it stays correct as either
+  package's dependencies move.
+- The build gate that was supposed to catch exactly this only ran `morrow
+  --help`, which never imports an Ink module — a bundle with no terminal UI
+  passed it cleanly. The gate now imports the Ink entry points directly under
+  the bundled runtime, and packaging fails if they cannot resolve.
+- `tar -tzf` read the archive listing through `execFileSync`'s 1 MB default
+  buffer. A release archive lists ~16,000 entries, so the listing grew with
+  every added dependency and the packaging step began failing with `ENOBUFS`
+  once the bundle was complete.
+
 ## [0.5.0] - 2026-08-24
 
 Morrow runs where you are, and its teammates are reachable from the chat you
