@@ -5,7 +5,7 @@ import { LearnedSkillSchema } from "@morrow/contracts";
 
 export interface SkillManifest {
   id: string; name: string; version: string; description: string; publisher: string; license: string;
-  checksum: string; entrypoint: string; supportedPlatforms: string[]; requestedTools: string[];
+  checksum: string; entrypoint?: string; supportedPlatforms: string[]; requestedTools: string[];
   requestedFilesystemScopes: string[]; requestedNetworkDomains: string[]; requiredSecrets: string[]; riskClass: string;
 }
 export interface LocalSkill { id: string; directory: string; manifest: SkillManifest; }
@@ -13,7 +13,12 @@ export interface LocalSkill { id: string; directory: string; manifest: SkillMani
 function readManifest(directory: string): SkillManifest | null {
   try {
     const value = JSON.parse(readFileSync(join(directory, "manifest.json"), "utf8")) as SkillManifest;
-    if (!value.id || !value.name || !value.version || !value.entrypoint) return null;
+    // `entrypoint` is optional on purpose. A skill is a workflow written in
+    // SKILL.md; load_skill reads that file and nothing else, and the
+    // orchestrator's registry has always treated an entrypoint as an optional
+    // extra. Requiring one here made every instruction-only skill invisible to
+    // the CLI while the agent could still load it — two registries, two answers.
+    if (!value.id || !value.name || !value.version) return null;
     return value;
   } catch { return null; }
 }
@@ -72,7 +77,8 @@ export function verifySkill(directory: string): { ok: boolean; issues: string[] 
   const manifest = readManifest(directory);
   const issues: string[] = [];
   if (!manifest) return { ok: false, issues: ["manifest.json is invalid"] };
-  for (const required of ["SKILL.md", "permissions.json", manifest.entrypoint]) if (!existsSync(join(directory, required))) issues.push(`missing ${required}`);
+  const required = ["SKILL.md", "permissions.json", ...(manifest.entrypoint ? [manifest.entrypoint] : [])];
+  for (const file of required) if (!existsSync(join(directory, file))) issues.push(`missing ${file}`);
   try { JSON.parse(readFileSync(join(directory, "permissions.json"), "utf8")); } catch { issues.push("permissions.json is invalid"); }
   if (!manifest.checksum) issues.push("manifest checksum is missing");
   else {
