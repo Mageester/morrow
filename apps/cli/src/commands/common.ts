@@ -12,7 +12,6 @@ import {
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   realpathSync,
   statSync,
   writeFileSync,
@@ -32,13 +31,17 @@ export function isInteractive(ctx: Context): boolean {
  * Resolve the active project with a strict, safety-first precedence:
  *
  *   1. Explicit `--project <id|name|path>` (an intentional override).
- *   2. A registered project whose workspace IS the current directory. This comes
- *      BEFORE the configured default so a command launched inside project B can
- *      never silently operate on project A just because A is the saved default.
- *   3. The configured default project.
- *   4. Interactive selection or an actionable error.
+ *   2. A registered project whose workspace contains the current directory.
+ *      This comes BEFORE the configured default so a command launched inside
+ *      project B can never silently operate on project A just because A is the
+ *      saved default.
+ *   3. A registered project at the nearest parent Git root.
+ *   4. The current directory itself, adopted as its own project.
+ *   5. Interactive selection or an actionable error — only when cwd is too
+ *      broad to adopt (a drive root or $HOME).
  *
- * Throws a clear error when none can be resolved and `required` is set.
+ * The configured default is never a fallback for an unrelated directory. It
+ * applies only at step 2, where cwd is inside the default's own workspace.
  */
 export async function resolveProject(
   ctx: Context,
@@ -113,43 +116,31 @@ export async function resolveProject(
       );
   }
 
-  // 4. The configured default project (only when cwd is not itself a workspace).
-  // This directory has no registered project of its own, so falling back to
-  // the default is reasonable — but it must never be a *silent* switch. If
-  // the default happens to be some unrelated project from days ago, the user
-  // should find out from the terminal, not by noticing later that changes
-  // landed somewhere unexpected.
-  if (configured) {
-    // Standing inside a Git repository is an unambiguous statement about where
-    // the work is. Falling back to an unrelated default from here is the
-    // dangerous case, not the convenient one: it silently pointed sessions at
-    // another checkout while the user was plainly working in this one. A
-    // repository with no registered project gets the explicit choice below
-    // (init here, or pick deliberately) instead of a warning nobody reads.
-    //
-    // The fallback survives only where there is no "here" to speak of — an
-    // ordinary directory outside any repository, where a remembered default is
-    // genuinely the most useful answer.
-    if (configuredProject && !gitRoot) {
-      if (!ctx.out.json) {
-        ctx.out.warn(
-          `This directory isn't a registered Morrow project — resuming "${configuredProject.name}" instead. Run \`morrow init\` here to start fresh in this directory.`,
-        );
-      }
-      return configuredProject;
-    }
-    // A stale default (project since removed) should not hard-fail resolution;
-    // fall through to explicit interactive selection or a clear refusal below.
-  }
+  // 4. Nothing registered owns this directory. Adopt the directory itself.
+  //
+  //    Morrow used to resume `defaults.project` here, which is how a terminal
+  //    opened in ~/Downloads ended up operating on a checkout from days ago:
+  //    the saved default is a memory, and a memory is never a better answer to
+  //    "where am I" than the directory the user is standing in. A default now
+  //    only applies inside its own workspace (step 2); outside it, cwd wins.
+  //
+  //    Adoption is not a silent filesystem grab: it registers exactly this
+  //    directory as its own project, announces it, and leaves the previously
+  //    configured default untouched. Every later command run here resolves to
+  //    it through step 2, so the adoption happens once.
+  const cwdSafety = isSafeProjectRoot(cwd);
+  if (opts.required && cwdSafety.safe)
+    return autoCreateProjectForPath(ctx, api, cwd);
 
-  // 5. Interactive users get an explicit choice instead of silent filesystem
-  //    access. Non-interactive commands fail with a clear refusal.
+  // 5. cwd is too broad to adopt (a drive root or $HOME). Interactive users get
+  //    an explicit choice instead of silent filesystem access; non-interactive
+  //    commands fail with a clear refusal.
   if (isInteractive(ctx))
     return interactiveProjectSelection(ctx, api, projects);
   if (!opts.required) return null;
   throw usageError(
-    "No safe project selected.",
-    "Run `morrow init` inside a Git repository, pass --project <id|path>, or use the interactive `morrow` shell to choose a project.",
+    `No safe project selected: ${cwdSafety.reason ?? "this directory is too broad to use as a workspace"}.`,
+    "cd into the directory you want to work in, pass --project <id|path>, or use the interactive `morrow` shell to choose a project.",
   );
 }
 
@@ -232,7 +223,7 @@ function matchProjectByPath(
  * names the directory a build should happen *in* — and that directory is
  * usually brand new. So the directory is created when missing, then held to
  * exactly the same safety bar as every other workspace: `isSafeProjectRoot`
- * still refuses drive roots, home, and broad user folders, and `--force` is
+ * still refuses drive roots and home, and `--force` is
  * still the only way past it. Creating the directory never widens the scope a
  * mission can touch; it only makes an explicitly named empty scope usable.
  *
@@ -288,6 +279,37 @@ export async function resolveWorkspaceScope(
   return project;
 }
 
+/**
+ * Make a workspace reviewable, initializing a repository if it has none.
+ * Existing repositories are left completely alone.
+ */
+/**
+ * True when `canonical` is already covered by a repository — either because it
+ * is a repository root or because an ancestor is one. `existsSync(".git")`
+ * only answers the first, which is how Morrow came to `git init` a package
+ * directory inside an existing checkout: `apps/cli` has no `.git` of its own,
+ * so it looked fresh. A nested repository silently shadows the real one for
+ * every Git operation beneath it, which breaks exactly the change tracking
+ * this setup exists to provide.
+ */
+function insideExistingRepository(canonical: string): boolean {
+  if (existsSync(join(canonical, ".git"))) return true;
+  const probe = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
+    cwd: canonical,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  return probe.status === 0 && probe.stdout.trim() === "true";
+}
+
+export function ensureWorkspaceRepository(
+  ctx: Context,
+  canonical: string,
+): void {
+  if (insideExistingRepository(canonical)) return;
+  prepareFreshWorkspace(ctx, canonical);
+}
+
 /** Ignore rules a generated project needs before its first dependency install. */
 const STARTER_GITIGNORE = [
   "# Created by Morrow when this workspace was scoped for a build.",
@@ -321,6 +343,10 @@ const STARTER_GITIGNORE = [
  * existing `.gitignore`.
  */
 function prepareFreshWorkspace(ctx: Context, canonical: string): void {
+  // An existing checkout already has its own ignore rules; dropping a starter
+  // file into one of its subdirectories is an unrequested edit to someone
+  // else's repository, and it shows up in their `git status` as a stray file.
+  if (insideExistingRepository(canonical)) return;
   const gitignore = join(canonical, ".gitignore");
   if (!existsSync(gitignore)) {
     try {
@@ -331,7 +357,7 @@ function prepareFreshWorkspace(ctx: Context, canonical: string): void {
       );
     }
   }
-  if (existsSync(join(canonical, ".git"))) return;
+  if (insideExistingRepository(canonical)) return;
   const init = spawnSync("git", ["init"], {
     cwd: canonical,
     encoding: "utf8",
@@ -344,6 +370,15 @@ function prepareFreshWorkspace(ctx: Context, canonical: string): void {
   }
 }
 
+/**
+ * Register a directory as a project on the spot.
+ *
+ * A directory that is not yet a repository is initialized as one, exactly as
+ * `--in` does: mission change tracking, checkpoints, and rollback are all
+ * derived from `git status`, so without a repo a mission that wrote an entire
+ * application would be reviewed against an empty change set. An existing
+ * repository — and an existing `.gitignore` — is never touched.
+ */
 async function autoCreateProjectForPath(
   ctx: Context,
   api: MorrowApi,
@@ -352,9 +387,12 @@ async function autoCreateProjectForPath(
   const canonical = validateProjectDirectory(ref, {
     force: flagBool(ctx.flags, "force"),
   });
+  ensureWorkspaceRepository(ctx, canonical);
   const name = basename(canonical) || canonical;
   const project = await api.createProject(name, canonical);
-  ctx.out.info(`Using current workspace as project: ${project.name}`);
+  ctx.out.info(
+    `Working in this directory: ${project.name}  ${ctx.out.gray(canonical)}`,
+  );
   return project;
 }
 
@@ -406,6 +444,17 @@ export function findNearestGitRoot(start: string): string | null {
   return null;
 }
 
+/**
+ * Refuse only the two scopes that are never a workspace: a drive root and the
+ * home directory itself. Everything narrower is the user's call.
+ *
+ * This deliberately does NOT judge a directory by its name. Refusing anything
+ * called Downloads/Desktop/Documents made the common case — opening a terminal
+ * somewhere scratch and asking Morrow to install or try something — impossible
+ * to express, and pushed the caller onto whatever project was configured last.
+ * A named-folder heuristic cannot tell a junk drawer from a workspace; the
+ * directory the user is standing in can.
+ */
 export function isSafeProjectRoot(path: string): {
   safe: boolean;
   reason?: string;
@@ -419,22 +468,6 @@ export function isSafeProjectRoot(path: string): {
   if (home && samePath(canonical, home))
     return { safe: false, reason: "Home directories are too broad" };
 
-  const base = basename(canonical).toLowerCase();
-  if (["documents", "desktop", "downloads"].includes(base))
-    return {
-      safe: false,
-      reason: `${basename(canonical)} is a broad user folder`,
-    };
-  if (base.startsWith("onedrive") && containsManyGitRepos(canonical, 2))
-    return {
-      safe: false,
-      reason: "OneDrive root contains multiple repositories",
-    };
-  if (containsManyGitRepos(canonical, 3))
-    return {
-      safe: false,
-      reason: "Directory contains many unrelated Git repositories",
-    };
   return { safe: true };
 }
 
@@ -490,22 +523,6 @@ function nearestContainingProjects(
     .map((item) => item.project);
 }
 
-function containsManyGitRepos(path: string, threshold: number): boolean {
-  let count = 0;
-  try {
-    for (const child of readdirSync(path, { withFileTypes: true }).slice(
-      0,
-      250,
-    )) {
-      if (!child.isDirectory()) continue;
-      if (existsSync(join(path, child.name, ".git"))) count++;
-      if (count >= threshold) return true;
-    }
-  } catch {
-    return false;
-  }
-  return false;
-}
 
 async function interactiveProjectSelection(
   ctx: Context,
