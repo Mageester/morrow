@@ -1,7 +1,7 @@
 import type { Context } from "../cli/context.js";
 import type { MorrowApi } from "../client/api.js";
 import { ensureRunning } from "../service/lifecycle.js";
-import { findNearestGitRoot, resolveProject, validateProjectDirectory, ask, select, isInteractive, shortId, matchProjectByIdPrefix } from "./common.js";
+import { findNearestGitRoot, resolveProject, validateProjectDirectory, ensureWorkspaceRepository, ask, select, isInteractive, shortId, matchProjectByIdPrefix } from "./common.js";
 import { flagBool, flagString } from "../cli/args.js";
 import { gitSummary, gitSummaryText } from "../cli/gitinfo.js";
 import { usageError, notFound } from "../cli/errors.js";
@@ -160,17 +160,20 @@ export function statusColor(ctx: Context, status: string): string {
  * AND activate it as the default. Without the activation step, a freshly
  * `init`ed workspace would keep resolving to whatever default was configured
  * before, so `morrow ask` in the new repo could inspect the old one.
+ *
+ * A Git repository is not required. When the target is inside one, init still
+ * snaps to the repository root — that is almost always the intended scope, and
+ * registering a subdirectory separately would leave two projects competing for
+ * the same cwd. `--here` opts out and registers exactly the given directory.
  */
 export async function initCommand(ctx: Context, args: string[]): Promise<number> {
   await ensureRunning(ctx);
   const api = ctx.api();
   const path = args[0] ?? process.cwd();
   const requested = validateProjectDirectory(path, { force: flagBool(ctx.flags, "force") });
-  const gitRoot = findNearestGitRoot(requested);
-  if (!gitRoot && !flagBool(ctx.flags, "force")) {
-    throw usageError("morrow init must be run inside a Git repository.", "Use --force to register a non-Git directory intentionally.");
-  }
+  const gitRoot = flagBool(ctx.flags, "here") ? null : findNearestGitRoot(requested);
   const canonical = validateProjectDirectory(gitRoot ?? requested, { force: flagBool(ctx.flags, "force") });
+  ensureWorkspaceRepository(ctx, canonical);
   const name = flagString(ctx.flags, "name") ?? canonical.split(/[\\/]/).filter(Boolean).pop() ?? "Project";
   const project = await api.createProject(name, canonical);
   // Always activate the just-initialized project, overwriting any prior default.

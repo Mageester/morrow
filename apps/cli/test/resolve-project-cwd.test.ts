@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -40,13 +40,28 @@ describe("resolveProject: cwd-first precedence (P1-2)", () => {
     const config = {
       get: (key: string) => (key === "defaults.project" ? opts.defaultProjectId : undefined),
     };
-    const out = { json: opts.json ?? false, warn: (msg: string) => void warnCalls.push(msg) };
+    const out = {
+      json: opts.json ?? false,
+      warn: (msg: string) => void warnCalls.push(msg),
+      info: () => {},
+      diag: () => {},
+      gray: (s: string) => s,
+    };
     const ctx = { flags: opts.flags ?? {}, config, out } as any;
     return { ctx, warnCalls };
   }
 
   function fakeApi(projects: Project[]) {
-    return { listProjects: async () => projects } as any;
+    const created: Project[] = [];
+    return {
+      listProjects: async () => projects,
+      createProject: async (name: string, workspacePath: string) => {
+        const p = project(name, workspacePath);
+        created.push(p);
+        return p;
+      },
+      created,
+    } as any;
   }
 
   it("launching inside project A after previously using project B selects A, not B", async () => {
@@ -113,50 +128,59 @@ describe("resolveProject: cwd-first precedence (P1-2)", () => {
     expect(resolved?.id).toBe("p1");
   });
 
-  it("a genuinely unregistered cwd (no project, no git-root match) falls back to the default — but WARNS, never silently", async () => {
+  it("a genuinely unregistered cwd adopts itself as a project — never the stale default", async () => {
+    // The reported defect: opening a terminal in ~/Downloads and asking Morrow
+    // to do something ran it against whatever project was configured last.
+    // The directory the user is standing in is the answer to "where"; a saved
+    // default is a memory of somewhere else.
     const emptyDir = mkdtempSync(join(tmpdir(), "morrow-unregistered-")); // no git init: no git root either
     tempDirs.push(emptyDir);
     process.chdir(emptyDir);
 
     const stale = project("stale", tempRepo("morrow-stale2-"));
     const { ctx, warnCalls } = fakeCtx({ defaultProjectId: "stale" });
-    const resolved = await resolveProject(ctx, fakeApi([stale]));
+    const api = fakeApi([stale]);
+    const resolved = await resolveProject(ctx, api, { required: true });
 
-    expect(resolved?.id).toBe("stale");
-    expect(warnCalls.length).toBe(1);
-    expect(warnCalls[0]).toContain("isn't a registered Morrow project");
-    expect(warnCalls[0]).toContain("stale");
-  });
-
-  it("an unregistered Git repository never falls back to a default elsewhere", async () => {
-    // The reported defect: running `morrow` inside the Morrow checkout itself
-    // resumed an unrelated project, because the repo has no registered project
-    // of its own and some other project happened to be the saved default.
-    // Standing in a repository is an unambiguous statement about where the work
-    // is, so this now refuses rather than switching.
-    const repo = tempRepo("morrow-unregistered-repo-");
-    process.chdir(repo);
-
-    const stale = project("stale", tempRepo("morrow-stale-elsewhere-"));
-    const { ctx, warnCalls } = fakeCtx({ defaultProjectId: "stale" });
-
-    // Resolves to nothing rather than to somebody else's checkout. A TTY gets
-    // the interactive chooser; a non-interactive caller decides for itself.
-    const resolved = await resolveProject(ctx, fakeApi([stale]));
-
-    expect(resolved).toBeNull();
+    expect(resolved?.id).not.toBe("stale");
+    expect(realpathSync(resolved!.workspacePath)).toBe(realpathSync(emptyDir));
     expect(warnCalls).toEqual([]);
   });
 
-  it("the fallback warning is suppressed in --json mode (never pollutes machine output)", async () => {
-    const emptyDir = mkdtempSync(join(tmpdir(), "morrow-unregistered-json-"));
+  it("adopting a plain directory initializes a repository so change tracking works", async () => {
+    const emptyDir = mkdtempSync(join(tmpdir(), "morrow-adopt-git-"));
+    tempDirs.push(emptyDir);
+    process.chdir(emptyDir);
+
+    const { ctx } = fakeCtx({});
+    await resolveProject(ctx, fakeApi([]), { required: true });
+
+    expect(existsSync(join(emptyDir, ".git"))).toBe(true);
+    expect(existsSync(join(emptyDir, ".gitignore"))).toBe(true);
+  });
+
+  it("a directory named Downloads is an ordinary workspace, not a refusal", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "morrow-downloads-"));
+    tempDirs.push(parent);
+    const downloads = join(parent, "Downloads");
+    mkdirSync(downloads, { recursive: true });
+    process.chdir(downloads);
+
+    const { ctx } = fakeCtx({});
+    const resolved = await resolveProject(ctx, fakeApi([]), { required: true });
+    expect(realpathSync(resolved!.workspacePath)).toBe(realpathSync(downloads));
+  });
+
+  it("an unregistered cwd is not adopted when the caller does not require a project", async () => {
+    const emptyDir = mkdtempSync(join(tmpdir(), "morrow-unregistered-optional-"));
     tempDirs.push(emptyDir);
     process.chdir(emptyDir);
 
     const stale = project("stale", tempRepo("morrow-stale3-"));
-    const { ctx, warnCalls } = fakeCtx({ defaultProjectId: "stale", json: true });
-    await resolveProject(ctx, fakeApi([stale]));
-    expect(warnCalls).toEqual([]);
+    const { ctx } = fakeCtx({ defaultProjectId: "stale", json: true });
+    const api = fakeApi([stale]);
+    expect(await resolveProject(ctx, api)).toBeNull();
+    expect(api.created).toEqual([]);
   });
 
   it("multiple registered projects at the same Git root is ambiguous and refuses rather than guessing", async () => {

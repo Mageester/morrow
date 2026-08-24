@@ -6,8 +6,26 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-24
+
+Morrow runs where you are, and its teammates are reachable from the chat you
+actually use. This release also stops a reasoning-heavy model from turning a
+whole task into one unbroken block of thinking, ships native POSIX packages,
+and replaces first run with a launchpad.
+
 ### Added
 
+- `morrow web` (aliases `gui`, `ui`) opens the local web interface, `morrow
+  status` prints its URL, and `morrow --help` lists it directly under `morrow`.
+  A fully tested web app shipped in 0.4.0 and the CLI never named it once, so
+  the only way to find it was to read the orchestrator's static-app route.
+  `morrow web --json` emits `{ url }` without starting the service; every other
+  form starts it first, because a URL handed over while the service is down is
+  a connection error with extra steps.
+- First run is an Ink launchpad instead of a wall of prompts, sharing the
+  wordmark the rest of the shell uses.
+- Native POSIX release prebuilts, and live install provenance is gated rather
+  than asserted.
 - Comprehensive external model metadata (models.dev) as a first-class
   capability source. Morrow no longer needs a developer to hand-teach it every
   model: connecting a provider and refreshing metadata now yields real context
@@ -26,6 +44,31 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ### Changed
 
+- Morrow runs wherever you are. The current directory is now the workspace: a
+  directory with no registered project is adopted as its own project (and
+  initialized as a Git repository, so change tracking, checkpoints and rollback
+  keep working) instead of silently resuming whatever project was configured
+  last. Opening a terminal in a scratch folder and asking Morrow to install or
+  try something no longer operates on an unrelated checkout.
+- `morrow init` no longer requires a Git repository, and directories are no
+  longer judged by name — `Downloads`, `Desktop` and `Documents` are ordinary
+  workspaces. Only a drive root and `$HOME` itself are still refused as too
+  broad. `morrow init --here` registers exactly the given directory instead of
+  snapping to the enclosing repository root.
+- Startup and per-request overhead are measurably lower, with the deterministic
+  evidence recorded in `docs/performance-report-2026-08-23.md`.
+- One less full token count per turn. `projectProviderRequest` measured the
+  request to decide whether compaction was needed and then, when it was not,
+  measured the identical request again inside admission — so the common path
+  counted the whole history twice. On the benchmark's 361-message context the
+  projection drops from 5.95 ms to 4.02 ms per turn.
+- Build mode is told to say what it is doing as it works. Nothing previously
+  asked for a line of ordinary text between tool calls, so a model that
+  narrates inside its reasoning ran an entire task without reporting a single
+  thing it had done.
+- Generated artifacts and superseded beta documentation are out of the working
+  tree (still in Git history), four orphaned modules are deleted, and the
+  GitHub Actions in CI are on current majors.
 - Capability precedence is explicit end to end: adapter-native > deployment >
   live provider discovery > operator route configuration > Morrow-verified
   corrections > external catalog > bundled seed > unknown. The bundled catalogs
@@ -35,6 +78,52 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ### Fixed
 
+- Thinking no longer grows without bound. Reasoning settled only on the first
+  token of an answer, so every turn that ended in a tool call — which is most
+  of an agentic run — left its thinking in the live buffer for the next turn to
+  append to. A reasoning-heavy model that emits no text between tool calls
+  produced one block that grew for the whole task, never collapsed, and never
+  attached to the turn that produced it. A turn's thinking now settles when the
+  turn does, and a tool call ends "thinking" exactly as the first token of an
+  answer does.
+  Reasoning is streamed to a separate view and is never the answer, so a turn
+  that only thinks and calls tools reports nothing at all. The instruction to
+  say what you are doing between tool calls used to live inside the Build-mode
+  block; Ask and Plan read for minutes at a stretch and were just as free to go
+  dark, so it now ships for every mode.
+- Every bundled skill is loadable. Of 55 skill directories, 18 did not work:
+  fifteen had no `manifest.json` or `permissions.json` and were skipped by
+  discovery in silence, and three carried a checksum that no longer matched
+  their `SKILL.md`, so they could be listed but never enabled. The two skill
+  registries also disagreed — the CLI required a manifest entrypoint the
+  orchestrator has always treated as optional, so instruction-only skills
+  verified for the agent while being invisible to `morrow skills list`. A skill
+  is the workflow in its `SKILL.md`, an entrypoint is optional, and all 55 now
+  verify under both registries.
+- Morrow no longer runs `git init` inside an existing checkout. Adopting the
+  current directory as a workspace tested freshness with `existsSync(".git")`,
+  which only recognises a repository *root*, so any subdirectory of a checkout
+  looked brand new and was given its own nested repository plus a starter
+  `.gitignore`. A nested repository shadows the real one for every Git command
+  beneath it, destroying exactly the change tracking the setup exists to
+  provide. Freshness is now "not inside any work tree".
+- Morrow can talk to the teammates you create. `ask_teammate` was exposed only
+  to a run assigned a named agent profile, and refused outright otherwise, so
+  the main Morrow chat never received the tool and was never told the project's
+  teammates existed. It is now available to the orchestrator itself whenever
+  the project has at least one eligible standalone teammate. Morrow holds no
+  standing trust grant, so each request still stops for a fresh one-shot
+  approval.
+- `morrow onboard` and the project picker no longer die with "Detected
+  unsettled top-level await". Ink's teardown calls `stdin.unref()`, which
+  `resume()` does not undo; readers now re-ref stdin before reading.
+- The terminal is restored when the shell exits abnormally. `startShell` enters
+  the alternate buffer and left it only on an ordinary stop, so a crash or a
+  signal left the invoking shell with no scrollback and a mouse wheel that sent
+  arrow keys.
+- Fix mode stays approval-gated.
+- Mobile layout and contrast invariants are restored in the web interface.
+- Release publication is bound to main and to the version tag.
 - YOLO asked for approval. A mode whose entire purpose is running unattended
   stopped on every shell command, and since an agent runs most of its work
   through `bash -c`, that meant a prompt for nearly every step — in one real

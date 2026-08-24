@@ -74,7 +74,10 @@ describe("model-initiated ask_teammate", () => {
     expect(AskTeammateSchema.safeParse({ agentId: "a", objective: "help", providerId: "openai" }).success).toBe(false);
   });
 
-  it("does not expose ask_teammate to the default assistant", async () => {
+  it("does not expose ask_teammate when the project has no teammates to ask", async () => {
+    // Not a statement about who may delegate — Morrow itself may. There is
+    // simply nobody in this project, and a delegation tool with an empty
+    // roster only invites an invented agentId.
     seedParent();
     const provider = new MockProvider({ chunks: [[{ type: "text", text: "finished" }, done]] });
     await executeAgentChatTask({ db, taskId: "parent", provider, maxTurns: 2 });
@@ -82,6 +85,63 @@ describe("model-initiated ask_teammate", () => {
     expect(JSON.stringify(provider.requests[0] ?? [])).not.toContain("ask_teammate");
     const profileEvent = taskRecordsRepository(db).listEvents("parent").find((event) => event.type === "optimization.tool_profile_selected");
     expect(profileEvent?.payload.tools).not.toContain("ask_teammate");
+  });
+
+  it("exposes ask_teammate to Morrow itself, with the roster of teammates the user created", async () => {
+    // The reported defect: teammates created in a project were unreachable
+    // from the main Morrow chat, which is the surface people actually use.
+    // ask_teammate was gated on the turn running as a named agent profile, so
+    // the orchestrator was never given the tool and was never even told the
+    // teammates existed.
+    const target = agentsRepository(db).create({ id: "target-agent", projectId: "p1", name: "Research", role: "researcher" });
+    seedParent(); // no agentId: this is Morrow, not a named teammate
+
+    const provider = new MockProvider({ chunks: [[{ type: "text", text: "ready" }, done]] });
+    await executeAgentChatTask({ db, taskId: "parent", provider, maxTurns: 2 });
+
+    const profileEvent = taskRecordsRepository(db).listEvents("parent").find((event) => event.type === "optimization.tool_profile_selected");
+    expect(profileEvent?.payload.tools).toContain("ask_teammate");
+    const systemPrompt = provider.requests[0]?.filter((message) => message.role === "system").map((message) => message.content).join("\n") ?? "";
+    expect(systemPrompt).toContain(target.id);
+    expect(systemPrompt).toContain("Research");
+  });
+
+  it("Morrow holds no standing trust, so its delegation still stops for a one-shot approval", async () => {
+    // A standing grant binds a caller teammate to a target. Morrow is not a
+    // teammate and can hold no grant, so it must never inherit auto-approval
+    // from the parent task's autoApprove flag.
+    const target = agentsRepository(db).create({ id: "target-agent", projectId: "p1", name: "Research", role: "researcher" });
+    seedParent(undefined, true); // autoApprove requested by the parent
+
+    const spawned = vi.fn(() => ({ taskId: "child", agentId: target.id, providerId: "mock", model: "mock-model" }));
+    const provider = new MockProvider({ chunks: [[tool("tc1", "ask_teammate", { agentId: target.id, objective: "look into it" }), done], [{ type: "text", text: "asked" }, done]] });
+    const running = executeAgentChatTask({ db, taskId: "parent", provider, maxTurns: 3, teammateSpawner: spawned } as any);
+
+    // The run parks on the approval rather than resolving, exactly as it does
+    // for a named teammate: poll for it instead of awaiting the task.
+    const started = Date.now();
+    let approvalId = "";
+    while (!approvalId && Date.now() - started < 5000) {
+      approvalId = approvalsRepository(db).listByTask("parent").find((approval) => approval.status === "pending")?.id ?? "";
+      if (!approvalId) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(approvalId).not.toBe("");
+    expect(spawned).not.toHaveBeenCalled();
+    expect(approvalsRepository(db).get(approvalId)?.details).toMatchObject({
+      tool: "ask_teammate",
+      targetAgentId: target.id,
+      approvalMode: "allow_once_only",
+    });
+    const trust = taskRecordsRepository(db).listEvents("parent").find((event) => event.type === "delegation.trust_evaluated");
+    expect(trust?.payload.granted).toBe(false);
+    expect(trust?.payload.reason).toBe("no_agent_profile");
+
+    const app = buildServer({ db, runner: new TaskRunner(db, async () => {}) });
+    const allow = await app.inject({ method: "POST", url: `/api/approvals/${approvalId}/resolve`, payload: { projectId: "p1", decision: "allow_once" } });
+    expect(allow.statusCode).toBe(200);
+    await running;
+    expect(spawned).toHaveBeenCalledTimes(1);
+    await app.close();
   });
 
   it("exposes an explicitly allowed ask_teammate to a legacy allow-list with a safe target roster", async () => {

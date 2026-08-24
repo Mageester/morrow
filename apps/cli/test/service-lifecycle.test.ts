@@ -146,7 +146,12 @@ describe("service lifecycle", () => {
     orchestratorMocks.buildServer.mockReturnValue({ listen, close: vi.fn() });
 
     const foreground = serveForeground(makeContext("http://127.0.0.1:0")).catch((error: unknown) => error);
-    await vi.waitFor(() => expect(order).toContain("reconciliation-start"));
+    // The mock factory calls importOriginal(), which loads the whole
+    // orchestrator runtime — the very cost serveForeground's lazy import
+    // exists to avoid. On a cold module graph that outlives waitFor's 1s
+    // default, and the assertion failed on module load time rather than on
+    // anything this test is about.
+    await vi.waitFor(() => expect(order).toContain("reconciliation-start"), { timeout: 15_000 });
     expect(order).toEqual(["reconciliation-start"]);
 
     resolveReconciliation({ missionsResumed: 1, interrupted: 0, requeued: 0, cancelledOrphans: 0 });

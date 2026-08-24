@@ -68,16 +68,26 @@ export function buildTeammateBrief(agent: TeammateBriefInput | null | undefined)
  * child is started. IDs are opaque handles, while names/roles are only there
  * to help the model choose among the already-filtered candidates.
  */
-export function buildTeammateRoster(
-  caller: Pick<TeammateRosterEntryInput, "id" | "projectId">,
+export function eligibleTeammates(
+  /** The orchestrator itself has no agent id; every teammate is then eligible. */
+  caller: Pick<TeammateRosterEntryInput, "projectId"> & { id?: string },
   teammates: readonly TeammateRosterEntryInput[],
   participantIds?: ReadonlySet<string>,
-): string {
-  const entries = teammates
+): TeammateRosterEntryInput[] {
+  return teammates
     .filter((teammate) => teammate.projectId === caller.projectId)
     .filter((teammate) => teammate.enabled && !teammate.teamId)
     .filter((teammate) => teammate.id !== caller.id)
-    .filter((teammate) => !participantIds || participantIds.has(teammate.id))
+    .filter((teammate) => !participantIds || participantIds.has(teammate.id));
+}
+
+export function buildTeammateRoster(
+  /** The orchestrator itself has no agent id; every teammate is then eligible. */
+  caller: Pick<TeammateRosterEntryInput, "projectId"> & { id?: string },
+  teammates: readonly TeammateRosterEntryInput[],
+  participantIds?: ReadonlySet<string>,
+): string {
+  const entries = eligibleTeammates(caller, teammates, participantIds)
     .map(({ id, name, role }) => ({ agentId: id, name, role }))
     .sort((a, b) => a.name.localeCompare(b.name) || a.agentId.localeCompare(b.agentId));
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { resolveProject, validateProjectDirectory, matchProjectByIdPrefix } from "../src/commands/common.js";
@@ -31,7 +31,7 @@ describe("resolveProject", () => {
     const ctx = {
       flags: {},
       config: { get: () => "p1" },
-      out: { info: vi.fn() },
+      out: { info: vi.fn(), warn: vi.fn(), diag: vi.fn(), gray: (s: string) => s },
     } as any;
 
     await expect(resolveProject(ctx, api as any, { required: true, autoCreateMissing: true })).resolves.toEqual(current);
@@ -56,17 +56,34 @@ describe("resolveProject", () => {
     const ctx = {
       flags: {},
       config: { get: (key: string) => key === "defaults.project" ? "child" : undefined },
-      out: { info: vi.fn() },
+      out: { info: vi.fn(), warn: vi.fn(), diag: vi.fn(), gray: (s: string) => s },
     } as any;
 
     await expect(resolveProject(ctx, api as any, { required: true })).resolves.toEqual(childProject);
     expect(api.createProject).not.toHaveBeenCalled();
   });
 
-  it("does not silently auto-register an arbitrary current directory", async () => {
+  it("adopts an arbitrary current directory as its own project, announcing it", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "morrow-cli-project-"));
     tempDirs.push(cwd);
     process.chdir(cwd);
+    const created = { id: "adopted", name: basename(cwd), workspacePath: cwd };
+    const api = {
+      listProjects: vi.fn().mockResolvedValue([]),
+      createProject: vi.fn().mockResolvedValue(created),
+    };
+    const ctx = {
+      flags: {},
+      config: { get: () => undefined },
+      out: { info: vi.fn(), warn: vi.fn(), diag: vi.fn(), gray: (s: string) => s },
+    } as any;
+
+    await expect(resolveProject(ctx, api as any, { required: true })).resolves.toEqual(created);
+    expect(api.createProject).toHaveBeenCalledWith(basename(cwd), realpathSync(cwd));
+    expect(ctx.out.info).toHaveBeenCalled();
+  });
+
+  it("refuses to adopt the home directory, which is too broad to be a workspace", async () => {
     const api = {
       listProjects: vi.fn().mockResolvedValue([]),
       createProject: vi.fn(),
@@ -74,10 +91,11 @@ describe("resolveProject", () => {
     const ctx = {
       flags: {},
       config: { get: () => undefined },
-      out: { info: vi.fn() },
+      out: { info: vi.fn(), warn: vi.fn(), diag: vi.fn(), gray: (s: string) => s },
     } as any;
+    process.chdir(homedir());
 
-    await expect(resolveProject(ctx, api as any, { required: true, autoCreateMissing: true })).rejects.toThrow("No safe project selected");
+    await expect(resolveProject(ctx, api as any, { required: true })).rejects.toThrow("No safe project selected");
     expect(api.createProject).not.toHaveBeenCalled();
   });
 
@@ -94,7 +112,7 @@ describe("resolveProject", () => {
     const ctx = {
       flags: { project: repo },
       config: { get: () => undefined },
-      out: { info: vi.fn() },
+      out: { info: vi.fn(), warn: vi.fn(), diag: vi.fn(), gray: (s: string) => s },
     } as any;
 
     await expect(resolveProject(ctx, api as any, { required: true, autoCreateMissing: true })).resolves.toEqual(created);

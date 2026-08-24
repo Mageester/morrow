@@ -1,6 +1,6 @@
 # Morrow installation
 
-Morrow v0.4.0 is an unsigned Early Access release. Native release packages
+Morrow v0.5.0 is an unsigned Early Access release. Native release packages
 include their own Node.js runtime; Git, Node.js, and pnpm are not required when
 a package is published for the current platform.
 
