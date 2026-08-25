@@ -41,6 +41,9 @@ every turn.
   download a redacted support bundle.
 - Compact mobile composers keep provider/context capability status reachable;
   Teams is present in primary navigation; doctor reports optional PTY support.
+- Missions and New chat are now first-class destinations in the desktop rail
+  and five-slot mobile dock; mobile setup routes New chat to project selection
+  until a project is ready.
 - Bundled high-risk red-team skills are withheld from the default executable
   catalog until an explicit security-review workflow exists.
 
