@@ -61,9 +61,12 @@ const NAVIGATION: NavItem[] = [
   { icon: Settings, label: "Settings", to: "/settings" },
 ];
 
-const MOBILE_NAVIGATION: NavItem[] = [
+const MOBILE_NAVIGATION_BEFORE_NEW: NavItem[] = [
   { icon: Home, label: "Home", to: "/" },
   { icon: Clock3, label: "History", to: "/chats" },
+];
+
+const MOBILE_NAVIGATION_AFTER_NEW: NavItem[] = [
   { icon: ListChecks, label: "Missions", to: "/missions" },
 ];
 
@@ -177,7 +180,7 @@ function MobileNewChat({ onNavigate }: { onNavigate: () => void }) {
         to="/projects"
       >
         <Plus aria-hidden="true" size={18} strokeWidth={1.8} />
-        <span>New</span>
+        <span>New chat</span>
       </Link>
     );
   }
@@ -221,11 +224,11 @@ function GroupParticipantBoundary() {
 function MobileDock({ onMore, onNavigate }: { onMore: () => void; onNavigate: () => void }) {
   return (
     <nav aria-label="Mobile navigation" className="morrow-mobile-dock">
-      {MOBILE_NAVIGATION.slice(0, 2).map((item) => (
+      {MOBILE_NAVIGATION_BEFORE_NEW.map((item) => (
         <MobileNavLink item={item} key={item.label} onNavigate={onNavigate} />
       ))}
       <MobileNewChat onNavigate={onNavigate} />
-      {MOBILE_NAVIGATION.slice(2).map((item) => (
+      {MOBILE_NAVIGATION_AFTER_NEW.map((item) => (
         <MobileNavLink item={item} key={item.label} onNavigate={onNavigate} />
       ))}
       <button aria-label="More navigation" className="morrow-mobile-dock__link" data-nav="More" onClick={onMore} type="button">
