@@ -25,6 +25,7 @@ import { MissionPanel } from "./mission-panel.js";
 import { ActivityPanel } from "./activity-panel.js";
 import { usePublishShellTitle } from "../../app/shell-title.js";
 import { PendingApprovals } from "./pending-approvals.js";
+import { ProcessDock } from "./process-dock.js";
 import { useConversationAutoscroll } from "./use-conversation-autoscroll.js";
 import { ReasoningDisclosure } from "./reasoning-disclosure.js";
 import { projectTurnWork } from "./chat-projection.js";
@@ -792,6 +793,9 @@ export function ConversationPageContent({
       </div>
 
       <div className="morrow-conversation-action-shelf">
+        {/* Above approvals: a dev server that is already up is context for the
+            decision you are about to make, not another thing to decide. */}
+        <ProcessDock projectId={projectId} />
         <PendingApprovals
           active={activeTaskId !== undefined}
           conversationId={conversationId}

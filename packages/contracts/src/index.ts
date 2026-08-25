@@ -32,6 +32,21 @@ export type CreateCheckpointInput=z.infer<typeof CreateCheckpointSchema>;
 export const StartProcessSchema=z.object({command:z.string().trim().min(1).max(500),args:z.array(z.string().max(4096)).max(100).default([]),cwd:z.string().max(1024).optional(),taskId:z.string().optional(),agentId:z.string().optional(),mode:z.enum(["pipe","pty"]).default("pipe"),timeoutMs:z.number().int().positive().max(86400000).optional()}).strict();
 export type StartProcessInput=z.infer<typeof StartProcessSchema>;
 export const ProcessStatusSchema=z.enum(["running","exited","failed","cancelled","lost"]);
+/** An address a background process announced it is listening on, parsed from
+ *  its own captured output. Never a port scan: this is a fact about what the
+ *  process said, attributable to the line it printed. `rewritten` marks a
+ *  wildcard bind (0.0.0.0, ::) that was normalized to loopback so a browser
+ *  can actually open it — the link then differs from the log line, and the
+ *  flag is how a surface can admit that. */
+export const ProcessEndpointSchema=z.object({url:z.string().min(1).max(2048),host:z.string().min(1).max(255),port:z.number().int().positive().max(65535),rewritten:z.boolean()}).strict();
+export type ProcessEndpoint=z.infer<typeof ProcessEndpointSchema>;
+/** A background job as a browser sees it. `endpoints` is derived per request
+ *  from captured output rather than stored, so a server that announces its
+ *  address late still reports it without a second write path. */
+export const WebProcessSchema=z.object({id:z.string().min(1),projectId:z.string().min(1),taskId:z.string().nullable(),agentId:z.string().nullable(),command:z.string(),args:z.array(z.string()),cwd:z.string(),mode:z.enum(["pipe","pty"]),pid:z.number().int().nullable(),status:ProcessStatusSchema,exitCode:z.number().int().nullable(),runId:z.string(),detail:z.string().nullable(),startedAt:z.string(),endedAt:z.string().nullable(),createdAt:z.string(),endpoints:z.array(ProcessEndpointSchema).default([])}).strict();
+export type WebProcess=z.infer<typeof WebProcessSchema>;
+export const ProcessOutputSchema=z.object({processId:z.string().min(1),stream:z.enum(["stdout","stderr"]),data:z.string(),nextOffset:z.number().int().nonnegative(),eof:z.boolean(),truncated:z.boolean()}).strict();
+export type ProcessOutput=z.infer<typeof ProcessOutputSchema>;
 export const CreateWorktreeSchema=z.object({name:z.string().trim().min(1).max(81).optional(),taskId:z.string().optional(),agentId:z.string().optional(),baseRef:z.string().trim().min(1).max(200).optional()}).strict();
 export type CreateWorktreeInput=z.infer<typeof CreateWorktreeSchema>;
 export const CreateTaskSchema=z.object({projectId:z.string().min(1),kind:z.enum(["inspect_workspace","agent_chat"]),conversationId:z.string().optional(),preset:z.string().optional(),agentId:z.string().optional()});

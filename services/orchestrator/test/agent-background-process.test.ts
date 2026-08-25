@@ -7,6 +7,7 @@ import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { processesRepository } from "../src/repositories/processes.js";
+import { detectEndpoints } from "../src/processes/endpoints.js";
 import { ProcessSupervisor } from "../src/processes/supervisor.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
@@ -171,6 +172,10 @@ describe("agent background processes (full-stack dev-server capability)", () => 
           truncated: false,
         };
       },
+      // The supervisor also reports where a job said it is listening. Derived
+      // from the same output this mock serves, so the mock cannot drift into
+      // claiming an address its own log never mentioned.
+      endpoints: () => detectEndpoints(serverOutput),
       terminate: async (id: string) => {
         processRepo.finish(id, "cancelled", null, "deterministic test cleanup");
         return { ok: true };
@@ -258,6 +263,10 @@ describe("agent background processes (full-stack dev-server capability)", () => 
           ? { data: "", nextOffset: outputLength, eof: false, truncated: false }
           : { data: serverOutput, nextOffset: outputLength, eof: false, truncated: false };
       },
+      // The supervisor also reports where a job said it is listening. Derived
+      // from the same output this mock serves, so the mock cannot drift into
+      // claiming an address its own log never mentioned.
+      endpoints: () => detectEndpoints(serverOutput),
       terminate: async (id: string) => {
         processRepo.finish(id, "cancelled", null, "deterministic test cleanup");
         return { ok: true };

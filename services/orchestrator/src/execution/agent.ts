@@ -1693,7 +1693,7 @@ export async function executeAgentChatTask({
     },
     {
       name: "read_process_output",
-      description: "Read captured stdout/stderr from a process started with run_command background:true. Poll this to see readiness output (e.g. 'Local: http://localhost:5173') without blocking.",
+      description: "Read captured stdout/stderr from a process started with run_command background:true. Poll this to see readiness output without blocking; the result also reports `endpoints` — any address the process announced it is listening on, parsed from its own output — so you never have to guess a URL.",
       parameters: {
         type: "object",
         properties: {
@@ -2578,7 +2578,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           processId: record.id,
           pid: record.pid,
           status: record.status,
-          note: "Started in the background. It keeps running after this tool call returns — use read_process_output to check its output and stop_process to end it.",
+          note: "Started in the background. It keeps running after this tool call returns — poll read_process_output for its startup banner (that call reports any address it announced) and use stop_process to end it.",
         });
         records.appendEvidence({
           id: randomUUID(),
@@ -6070,7 +6070,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
             const offset = typeof args.offset === "number" && Number.isFinite(args.offset) && args.offset >= 0 ? Math.floor(args.offset) : 0;
             const slice = procSupervisor.readOutput(processId, stream, offset, 64 * 1024);
             const status = processesRepo.get(processId)?.status ?? owned.status;
-            resultStr = JSON.stringify({ processId, stream, status, ...slice });
+            // The address the server announced, parsed from what it printed.
+            // This is the answer to the question the agent is actually polling
+            // for ("is it up, and where?"), so returning it here saves it from
+            // re-deriving a URL out of a log slice — and from guessing one.
+            const endpoints = procSupervisor.endpoints(processId);
+            resultStr = JSON.stringify({ processId, stream, status, ...slice, endpoints });
             event("workspace.inspected", { kind: "read_process_output", processId, truncated: slice.truncated });
           } else if (tc.name === "stop_process") {
             const processId = args.processId;

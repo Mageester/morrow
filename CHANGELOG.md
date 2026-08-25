@@ -6,6 +6,25 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+### Added
+
+- Background jobs are visible and controllable from the web app. A dev server
+  or watcher the agent started with `run_command background:true` now appears
+  above the composer while it runs, with the address it is listening on as a
+  link, its own stdout/stderr, and a Stop button. The supervisor behind this
+  already existed; nothing in the browser had ever admitted it did.
+- Morrow reports where a background process is listening, parsed from the
+  process's own startup output rather than by scanning ports — so the address
+  is attributable to the line that announced it, and Morrow never claims a
+  server it did not start. Wildcard binds (`0.0.0.0`, `::`) are normalized to
+  loopback so the link is openable, and flagged as rewritten so the surface can
+  say the link differs from the log.
+- `read_process_output` returns those endpoints too, so the agent no longer has
+  to infer a URL from a log slice when it polls a server it just started.
+- `/ps` gained an Address column and `/ps logs <id> [stdout|stderr]`. It could
+  start and stop a dev server long before it could show you why one failed to
+  come up.
+
 ## [0.6.0] - 2026-08-25
 
 Morrow can use skills other people wrote. Installing one is treated as granting
