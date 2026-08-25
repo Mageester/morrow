@@ -131,6 +131,29 @@ describe("ProcessDock", () => {
     expect(requested).toEqual(["stdout", "stderr"]);
   });
 
+  it("renders a coloured server banner as text, not as escape-code garbage", async () => {
+    const esc = String.fromCharCode(27);
+    const banner = `  ${esc}[32m>${esc}[39m  ${esc}[1mLocal${esc}[22m:   ${esc}[36mhttp://localhost:${esc}[1m5173${esc}[22m/${esc}[39m`;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/output")) {
+        return new Response(JSON.stringify({
+          processId: "proc-1", stream: "stdout", data: banner, nextOffset: 1, eof: false, truncated: false,
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify([job()]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const user = userEvent.setup();
+    renderDock();
+
+    await user.click(await screen.findByRole("button", { name: /Logs/ }));
+    const log = await screen.findByTestId("process-log");
+    // Dev servers colour their output. A browser cannot act on those bytes, so
+    // rendering them raw turns a startup banner into what looks like corruption.
+    expect(log.textContent).toContain("Local:   http://localhost:5173/");
+    expect(log.textContent).not.toContain(esc);
+    expect(log.textContent).not.toContain("[32m");
+  });
+
   it("stops a job through the supervisor and reports a refusal honestly", async () => {
     const posts: string[] = [];
     let failNext = true;

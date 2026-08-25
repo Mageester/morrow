@@ -35,6 +35,21 @@ function uptime(startedAt: string, now: number): string {
   return `${hours}h ${minutes % 60}m`;
 }
 
+/**
+ * ANSI colour, removed for display.
+ *
+ * Dev servers colour their output, and a browser renders those escape codes as
+ * literal garbage — a Vite banner arrives as `\u001b[32m➜\u001b[39m` and reads
+ * as corruption rather than as a startup line. Stripping is the honest fix
+ * here: nothing is being interpreted or reformatted, only the terminal control
+ * bytes a browser cannot act on are dropped.
+ */
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`, "g");
+
+function stripAnsi(text: string): string {
+  return text.replace(ANSI, "");
+}
+
 /** `pnpm dev` — what was actually run, short enough to sit on one line. */
 function commandLabel(entry: WebProcess): string {
   const full = [entry.command, ...entry.args].join(" ");
@@ -170,7 +185,7 @@ const ProcessRow = memo(function ProcessRow({
 const ProcessLogs = memo(function ProcessLogs({ processId }: { processId: string }) {
   const [stream, setStream] = useState<"stdout" | "stderr">("stdout");
   const output = useQuery(processQueries.output(processId, stream, true));
-  const text = output.data?.data ?? "";
+  const text = stripAnsi(output.data?.data ?? "");
 
   return (
     <div className="morrow-process__logs">
