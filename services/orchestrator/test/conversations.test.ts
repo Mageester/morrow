@@ -581,6 +581,80 @@ describe("project-scoped conversation API", () => {
     expect(foreign.statusCode).toBe(404);
   });
 
+  it("exports support summaries without raw events, tool payloads, or private reasoning", async () => {
+    const conversation = await create("Support evidence");
+    const tasks = taskRepository(db);
+    const conversations = conversationsRepository(db);
+    const records = taskRecordsRepository(db);
+    const routing = taskRoutingRepository(db);
+    tasks.createTask({ id: "task-support", projectId: "project-a", kind: "agent_chat", status: "completed", createdAt: NOW });
+    conversations.appendMessage({
+      id: "assistant-support",
+      conversationId: conversation.id,
+      role: "assistant",
+      content: "Done",
+      taskId: "task-support",
+      streamingState: "completed",
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    records.appendEvent({
+      id: "support-tool",
+      taskId: "task-support",
+      type: "tool.completed",
+      payload: { id: "tool-support", toolName: "run_command", exitCode: 0, privateReasoning: "do not export" },
+      createdAt: NOW,
+    });
+    records.upsertDisclosure({
+      taskId: "task-support",
+      executionMode: "agent-interactive",
+      provider: "mock",
+      networkAccess: "disabled",
+      filesystemAccess: "workspace-write",
+      shellExecution: true,
+      modelInvocation: true,
+      workspaceScope: "project workspace",
+      estimatedCostUsd: "0",
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    routing.upsert({
+      taskId: "task-support",
+      presetId: "balanced",
+      providerId: "mock",
+      model: "mock-model",
+      useMemory: false,
+      createdAt: NOW,
+      decision: {
+        version: 1,
+        presetId: "balanced",
+        providerId: "mock",
+        model: "mock-model",
+        reason: "support test",
+        fallbackUsed: false,
+        overridden: false,
+        privacy: "local-only",
+        privacyMode: "local_only",
+        candidates: [],
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/projects/project-a/conversations/${conversation.id}/support-bundle`,
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      version: 1,
+      projectId: "project-a",
+      conversationId: conversation.id,
+      tasks: [{ taskId: "task-support", providerId: "mock", model: "mock-model", privacyMode: "local_only", disclosure: { networkAccess: "disabled" } }],
+    });
+    expect(response.body).not.toContain("privateReasoning");
+    expect(response.body).not.toContain("support test");
+  });
+
   it.each(["failed", "interrupted"] as const)("retries a %s response after its prior terminal cursor", async (terminalState) => {
     const conversation = await create(`${terminalState} retry`);
     const tasks = taskRepository(db);

@@ -118,6 +118,50 @@ describe("database", () => {
     db.close();
   });
 
+  /**
+   * `prepare` is memoized per connection because compiling SQL costs several
+   * times more than running the compiled statement, and this codebase issues
+   * the same few hundred statements over and over.
+   *
+   * Both properties below are load-bearing together. The bound has to clear the
+   * static statement population (`src` holds close to 600 distinct literals),
+   * or the cache evicts while merely walking the normal API surface; and once
+   * anything does evict, insertion-order eviction would discard the statements
+   * compiled earliest — the startup and per-request ones the process leans on
+   * hardest — while keeping whichever interpolated one-off arrived last.
+   */
+  it("keeps a hot statement resident under eviction pressure, and reuses compiled statements", () => {
+    const db = openDatabase(":memory:");
+    const HOT = "SELECT count(*) n FROM schema_migrations";
+    const COLD = "SELECT 0 AS n FROM schema_migrations";
+
+    // The same SQL compiles once and is handed back thereafter.
+    const hotBefore = db.prepare(HOT);
+    expect(db.prepare(HOT)).toBe(hotBefore);
+    const coldBefore = db.prepare(COLD);
+
+    // Force eviction with distinct statements, touching the hot one throughout
+    // — exactly the shape of an interpolated call site running alongside the
+    // steady surface. COLD is never touched again.
+    for (let i = 1; i <= 2_600; i++) {
+      db.prepare(`SELECT ${i} AS n FROM schema_migrations`);
+      db.prepare(HOT);
+    }
+
+    // Used on every iteration, so it is still the statement compiled at the top.
+    expect(db.prepare(HOT)).toBe(hotBefore);
+    // Never used again, so it was the one evicted and has to recompile.
+    expect(db.prepare(COLD)).not.toBe(coldBefore);
+    db.close();
+  });
+
+  it("never caches a PRAGMA, which callers reconfigure per use", () => {
+    const db = openDatabase(":memory:");
+    expect(db.prepare("PRAGMA integrity_check")).not.toBe(db.prepare("PRAGMA integrity_check"));
+    expect(db.prepare("PRAGMA integrity_check").pluck().get()).toBe("ok");
+    db.close();
+  });
+
   it("creates parent directories and persists", () => {
     const directory = mkdtempSync(join(tmpdir(), "morrow-"));
     const file = join(directory, ".morrow", "m.db");

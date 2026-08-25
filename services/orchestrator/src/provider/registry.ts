@@ -304,6 +304,10 @@ const BUILTIN_DESCRIPTORS: ProviderDescriptor[] = [
         baseUrl: c.baseUrl,
         defaultModel: resolveModel(env, this.id, model, this.defaultModel),
         ...(oauthToken ? { oauthToken } : {}),
+        // Prompt caching is on unless explicitly disabled: the only endpoint
+        // that should need the escape hatch is a non-Anthropic proxy behind
+        // ANTHROPIC_BASE_URL that rejects `cache_control` instead of ignoring it.
+        promptCache: (env.MORROW_ANTHROPIC_PROMPT_CACHE ?? "").trim().toLowerCase() !== "off",
         route: routeMetadata({ env, id: this.id, protocol: "anthropic-messages", endpointKind: c.endpointType, endpointHost: c.host }),
       });
     },

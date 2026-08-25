@@ -23,9 +23,15 @@ function renderProjects(fetchImpl: (input: RequestInfo | URL, init?: RequestInit
   const root = createRootRoute();
   const projectsRoute = createRoute({ getParentRoute: () => root, path: "/", component: ProjectsPage });
   const chatsRoute = createRoute({ getParentRoute: () => root, path: "/chats", component: () => null });
+  const conversationRoute = createRoute({
+    getParentRoute: () => root,
+    path: "/chats/$conversationId",
+    validateSearch: (search: Record<string, unknown>) => ({ projectId: search.projectId as string }),
+    component: () => null,
+  });
   const router = createRouter({
     history: createMemoryHistory({ initialEntries: ["/"] }),
-    routeTree: root.addChildren([projectsRoute, chatsRoute]),
+    routeTree: root.addChildren([projectsRoute, chatsRoute, conversationRoute]),
   });
   render(
     <QueryClientProvider client={queryClient}>
@@ -75,6 +81,94 @@ describe("ProjectsPage", () => {
 
     expect(await screen.findByRole("region", { name: "Current project: Alpha" })).toBeVisible();
     expect(screen.getByText("Active")).toBeVisible();
+  });
+
+  it("lets the user choose a folder and uses its metadata to create the project", async () => {
+    let createdPayload: unknown;
+    let created = false;
+    renderProjects(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/projects/pick-folder" && init?.method === "POST") {
+        return Response.json({ path: "/home/dread/Code/morrow", name: "morrow" });
+      }
+      if (url === "/api/projects" && init?.method === "POST") {
+        created = true;
+        createdPayload = JSON.parse(String(init.body));
+        return Response.json(projectA);
+      }
+      if (url === "/api/projects") return Response.json(created ? [projectA] : []);
+      if (url === `/api/projects/${projectA.id}/status`) return Response.json(statusFor(projectA));
+      throw new Error(`unexpected ${url}`);
+    });
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /new project/i }));
+    await user.click(screen.getByRole("button", { name: /choose folder/i }));
+
+    expect(screen.getByRole("textbox", { name: /project name/i })).toHaveValue("morrow");
+    expect(screen.getByRole("textbox", { name: /folder path/i })).toHaveValue("/home/dread/Code/morrow");
+
+    await user.click(screen.getByRole("button", { name: /add project/i }));
+
+    await waitFor(() => expect(createdPayload).toEqual({
+      name: "morrow",
+      workspacePath: "/home/dread/Code/morrow",
+    }));
+    expect(await screen.findByRole("region", { name: "Current project: Alpha" })).toBeVisible();
+  });
+
+  it("keeps project history and new chat actions scoped to the active project", async () => {
+    const conversation = {
+      id: "conversation-a",
+      projectId: projectA.id,
+      title: "New conversation",
+      archived: false,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    };
+    let createCalls = 0;
+    renderProjects(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/projects") return Response.json([projectA]);
+      if (url === `/api/projects/${projectA.id}/status`) return Response.json(statusFor(projectA));
+      if (url === `/api/projects/${projectA.id}/conversations` && init?.method === "POST") {
+        createCalls += 1;
+        return Response.json(conversation, { status: 201 });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+
+    const panel = await screen.findByRole("region", { name: "Current project: Alpha" });
+    expect(within(panel).getByRole("link", { name: /open project history/i })).toHaveAttribute(
+      "href",
+      "/chats?projectId=project-a",
+    );
+
+    const user = userEvent.setup();
+    await user.click(within(panel).getByRole("button", { name: "New chat" }));
+    await waitFor(() => expect(createCalls).toBe(1));
+  });
+
+  it("keeps manual path entry available when the native picker is unavailable", async () => {
+    renderProjects(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/projects/pick-folder" && init?.method === "POST") {
+        return Response.json(
+          { version: 1, error: { code: "FOLDER_PICKER_UNAVAILABLE", message: "Use manual entry for this install." } },
+          { status: 503 },
+        );
+      }
+      if (url === "/api/projects") return Response.json([]);
+      throw new Error(`unexpected ${url}`);
+    });
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /new project/i }));
+    await user.click(screen.getByRole("button", { name: /choose folder/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Use manual entry for this install.");
+    expect(screen.getByRole("textbox", { name: /folder path/i })).toBeEnabled();
   });
 
   it("lists existing projects with neither active until the user picks one", async () => {

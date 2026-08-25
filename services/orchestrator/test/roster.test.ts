@@ -227,4 +227,36 @@ describe("A conversation runs as the teammate it belongs to", () => {
     expect(send.statusCode).toBe(202);
     expect(taskRepository(db).getTaskById(send.json().task.id)!.agentId).toBeNull();
   });
+
+  /**
+   * The rail polls this projection every three seconds, per open tab, and all
+   * it needs from these two tables is the newest row per teammate. Both queries
+   * used to read and sort every conversation and every agent_chat task in the
+   * project to get there, so the cost grew with the install's whole history.
+   *
+   * Asserting the plan, not the timing: a covering-index SEARCH is the property
+   * that makes this a seek. A rewritten query or a dropped index shows up here
+   * as a SCAN or a temp B-tree sort, which no behavioural assertion would catch
+   * — the answers stay correct, they just cost the whole table again.
+   */
+  it("answers the latest-per-teammate lookups with an index seek, not a scan", () => {
+    const plan = (sql: string): string =>
+      (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>)
+        .map((row) => row.detail)
+        .join(" | ");
+
+    const conversations = plan(
+      "SELECT agent_id, id, updated_at FROM conversations WHERE project_id='p1' AND archived=0 AND agent_id IS NULL ORDER BY updated_at DESC, id DESC LIMIT 1",
+    );
+    const tasks = plan(
+      "SELECT agent_id, id, updated_at, status FROM tasks WHERE project_id='p1' AND type='agent_chat' AND agent_id IS NULL ORDER BY updated_at DESC, id DESC LIMIT 1",
+    );
+
+    for (const [label, detail] of [["conversations", conversations], ["tasks", tasks]] as const) {
+      expect(detail, `${label} must seek a covering index`).toContain("USING COVERING INDEX");
+      expect(detail, `${label} must not scan the table`).not.toContain("SCAN");
+      // The index supplies the ordering; a temp B-tree here means it stopped doing so.
+      expect(detail, `${label} must not sort`).not.toContain("TEMP B-TREE");
+    }
+  });
 });

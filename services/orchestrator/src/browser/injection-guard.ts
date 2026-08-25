@@ -28,13 +28,26 @@ const PATTERNS: PatternDef[] = [
   { name: "hidden-html-instruction", source: String.raw`<!--[\s\S]*?(?:system|assistant|instruction|prompt)[\s\S]*?-->`, flags: "gi" },
 ];
 
+/**
+ * The patterns above, compiled once.
+ *
+ * Both entry points below ran `new RegExp` per pattern per call, and
+ * `sanitizeForModel` calls `scanForInjection` first, so a single sanitize
+ * compiled twelve regexes. This runs on every console line a page emits, every
+ * page error, and every page-text snapshot, so that cost is paid per line of
+ * browser output rather than once. These are `/g`, so state is shared: the scan
+ * loop zeroes `lastIndex` before it starts, and `String.replace` manages its
+ * own.
+ */
+const COMPILED = PATTERNS.map((def) => ({ name: def.name, re: new RegExp(def.source, def.flags) }));
+
 export function scanForInjection(text: string): InjectionFinding[] {
   const findings: InjectionFinding[] = [];
-  for (const def of PATTERNS) {
-    const re = new RegExp(def.source, def.flags);
+  for (const { name, re } of COMPILED) {
+    re.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = re.exec(text)) !== null) {
-      findings.push({ pattern: def.name, index: match.index, excerpt: text.slice(match.index, match.index + Math.min(120, match[0].length)) });
+      findings.push({ pattern: name, index: match.index, excerpt: text.slice(match.index, match.index + Math.min(120, match[0].length)) });
       if (match.index === re.lastIndex) re.lastIndex++;
     }
   }
@@ -49,9 +62,13 @@ export interface SanitizeResult {
 /** Neutralize injection spans, returning safe text plus what was found. */
 export function sanitizeForModel(text: string): SanitizeResult {
   const findings = scanForInjection(text);
+  // The scan just proved no pattern matches this text, so the replace chain
+  // below could only walk it another six times and return it unchanged. Browser
+  // output is overwhelmingly clean, so this is the path nearly every call takes.
+  if (findings.length === 0) return { text, findings };
   let sanitized = text;
-  for (const def of PATTERNS) {
-    sanitized = sanitized.replace(new RegExp(def.source, def.flags), "[redacted: possible prompt injection]");
+  for (const { re } of COMPILED) {
+    sanitized = sanitized.replace(re, "[redacted: possible prompt injection]");
   }
   return { text: sanitized, findings };
 }

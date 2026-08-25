@@ -3358,6 +3358,19 @@ a {
   outline: 2px solid var(--morrow-focus);
   outline-offset: 0;
 }
+.morrow-projects__path-control {
+  display: flex;
+  align-items: stretch;
+  gap: var(--morrow-space-2);
+}
+.morrow-projects__path-control input {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.morrow-projects__path-control .morrow-button {
+  flex: none;
+  white-space: nowrap;
+}
 .morrow-projects__list {
   display: grid;
   gap: 1px;

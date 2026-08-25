@@ -61,12 +61,25 @@ export class McpPool {
   async getClient(serverId: string, config: McpServerConfig, signal?: AbortSignal): Promise<McpClient> {
     if (this.closed) this.closed = false;
     if (signal?.aborted) throw new Error("AbortError");
-    const forCaller = (promise: Promise<McpClient>): Promise<McpClient> => {
+    // Let the caller's abort win the wait without leaving anything behind on it.
+    // `signal` belongs to the task, not to this connect: the agent builds one
+    // per task and passes the same instance to every tool call. `{ once: true }`
+    // unregisters only on an abort that fires, and on the normal path it never
+    // does, so the listener has to come off explicitly once the wait settles.
+    const forCaller = async (promise: Promise<McpClient>): Promise<McpClient> => {
       if (!signal) return promise;
-      return Promise.race([
-        promise,
-        new Promise<McpClient>((_, reject) => signal.addEventListener("abort", () => reject(new Error("AbortError")), { once: true })),
-      ]);
+      let onAbort: (() => void) | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<McpClient>((_, reject) => {
+            onAbort = () => reject(new Error("AbortError"));
+            signal.addEventListener("abort", onAbort, { once: true });
+          }),
+        ]);
+      } finally {
+        if (onAbort) signal.removeEventListener("abort", onAbort);
+      }
     };
     const existing = this.clients.get(serverId);
     if (existing) {

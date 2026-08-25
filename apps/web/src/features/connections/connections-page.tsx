@@ -209,7 +209,7 @@ function DisconnectDialog({ label, onCancel, onConfirm }: { label: string; onCan
  *
  * This was `OpenRouterConnection`, hardcoded to one provider in both its copy
  * and its API calls. Every provider-specific string now comes from the server's
- * provider status (label, key page, capabilities), so all 30 providers get the
+ * provider status (label, key page, capabilities), so the full provider catalog gets the
  * same verified-before-save flow, focus management, and credential hygiene
  * rather than one provider getting a good experience and the rest getting none.
  */
@@ -357,7 +357,9 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
   const lastCheck = formatCheckTime(provider.lastSuccessAt);
   const modelCount = provider.models.length;
 
-  const connectedAndReady = provider.configured && provider.available;
+  const hasSelectedModel = Boolean(provider.defaultModel?.trim());
+  const connectedAndReady = provider.configured && provider.available && hasSelectedModel;
+  const needsModel = provider.configured && provider.available && !hasSelectedModel;
 
   return (
     <div className="morrow-connection">
@@ -384,9 +386,9 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
               a connected-but-unverified provider is never called healthy. */}
           <span
             className="morrow-provider-health"
-            data-state={connectedAndReady ? "healthy" : provider.configured ? "unverified" : "idle"}
+            data-state={connectedAndReady ? "healthy" : needsModel ? "needs-model" : provider.configured ? "unverified" : "idle"}
           >
-            {connectedAndReady ? "Healthy" : provider.configured ? "Connected" : "Not connected"}
+            {connectedAndReady ? "Healthy" : needsModel ? "Needs a model" : provider.configured ? "Connected" : "Not connected"}
           </span>
           <small>{lastCheck ?? (provider.configured ? "Not checked yet" : "")}</small>
         </div>

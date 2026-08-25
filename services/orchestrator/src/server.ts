@@ -41,6 +41,7 @@ import {
   UpdateAssistantProfileSchema,
   CreateAssistantGoalSchema,
   GlobalSearchResponseSchema,
+  WebConversationSupportBundleSchema,
   CreateScheduleSchema,
   UpdateScheduleSchema,
   ScheduleRunSchema,
@@ -75,6 +76,14 @@ import { learnedSkillsRepository } from "./repositories/learned-skills.js";
 import { AutomaticMemoryService } from "./cortex/automatic-memory.js";
 import { AutomaticSkillService } from "./cortex/automatic-skills.js";
 import { verifySkillDirectory } from "./skills/registry.js";
+import {
+  applySkillInstall,
+  discardSkillInstall,
+  parseSkillSource,
+  planSkillInstall,
+  removeInstalledSkill,
+  SkillInstallError,
+} from "./skills/install.js";
 import { schedulesRepository } from "./repositories/schedules.js";
 import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
@@ -231,14 +240,14 @@ import { createExecutionLeaseOwnerId, executionContinuityRepository, executionLe
 import { symbolIndexRepository } from "./repositories/symbols.js";
 import { IntegrationManager, IntegrationError } from "./workspace/integrations.js";
 import { SymbolIndex } from "./workspace/symbol-index.js";
-import { ProcessSupervisor } from "./processes/supervisor.js";
+import { ProcessSupervisor, terminalCapabilities } from "./processes/supervisor.js";
 
 import { ApprovalContinuationRegistry } from "./execution/continuation.js";
 import { hashString, assertContainedRealPath } from "./tools/diff-applier.js";
 import { canonicalCommandTrustKey, classifyCommand } from "./tools/command-policy.js";
 import { resolveMorrowHome } from "./home.js";
 import { unlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createProvider, installProviderModelDiscoveries, listProviderStatuses, providerCapabilities } from "./provider/registry.js";
 import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
@@ -278,6 +287,7 @@ import { projectRoutineProposal } from "./web/routine-proposal.js";
 import { routinesRepository } from "./repositories/routines.js";
 import { assertRoutineTarget, dispatchRoutineTask } from "./routines/dispatch.js";
 import { registerWebAppRoutes } from "./web/static-app.js";
+import { createNativeFolderPicker, FolderPickerUnavailableError, type FolderPicker } from "./system/folder-picker.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -356,6 +366,8 @@ export type ServerDependencies = {
    * surface exists.
    */
   webRoot?: string;
+  /** Local OS folder chooser used by the web project-registration flow. */
+  folderPicker?: FolderPicker;
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
@@ -381,6 +393,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   });
 
   const projects = projectRepository(deps.db);
+  const folderPicker = deps.folderPicker ?? createNativeFolderPicker();
   const agents = agentsRepository(deps.db);
   const teammateTrust = teammateTrustRepository(deps.db);
   const teams = teamsRepository(deps.db);
@@ -693,6 +706,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     };
   });
 
+  app.get("/api/capabilities/terminal", async () => ({ version: 1, ...terminalCapabilities() }));
+
   app.post("/api/projects", async (request, reply) => {
     const body = CreateProjectSchema.parse(request.body);
     
@@ -721,6 +736,32 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       }
       throw e;
     }
+  });
+
+  app.post("/api/projects/pick-folder", async () => {
+    let selectedPath: string | null;
+    try {
+      selectedPath = await folderPicker();
+    } catch (error) {
+      if (error instanceof FolderPickerUnavailableError) {
+        throw new ApiError(503, "Morrow could not open a native folder picker. Enter the folder path manually instead.", "FOLDER_PICKER_UNAVAILABLE");
+      }
+      throw error;
+    }
+
+    if (!selectedPath) return { path: null, name: null };
+    if (!existsSync(selectedPath) || !lstatSync(selectedPath).isDirectory()) {
+      throw new ApiError(400, "The selected workspace is not an accessible directory", "INVALID_WORKSPACE");
+    }
+
+    let canonicalPath: string;
+    try {
+      canonicalPath = realpathSync(selectedPath);
+    } catch {
+      throw new ApiError(400, "The selected workspace could not be opened", "INVALID_WORKSPACE");
+    }
+
+    return { path: canonicalPath, name: basename(canonicalPath) || "Project" };
   });
 
   app.get("/api/projects", async (request, reply) => {
@@ -1601,6 +1642,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         overridden: decision.overridden,
         mode: decision.mode ?? null,
         autoApprove: decision.autoApprove ?? null,
+        privacyMode: decision.privacyMode ?? null,
       }
     : null;
 
@@ -1719,6 +1761,56 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         taskId: row.taskId,
         events: records.listEvents(row.taskId),
       })),
+    });
+  });
+
+  app.get("/api/projects/:projectId/conversations/:conversationId/support-bundle", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    const taskRows = deps.db.prepare(
+      `SELECT DISTINCT message.task_id AS taskId
+         FROM conversation_messages message
+        WHERE message.conversation_id = ? AND message.task_id IS NOT NULL
+        ORDER BY message.created_at ASC, message.id ASC`,
+    ).all(conversationId) as Array<{ taskId: string }>;
+    const activity = projectConversationActivity({
+      projectId,
+      conversationId,
+      tasks: taskRows.map((row) => ({ taskId: row.taskId, events: records.listEvents(row.taskId) })),
+    });
+    const tasks = taskRows.map(({ taskId }) => {
+      const aggregate = records.getAggregate(taskId);
+      const routing = routingRepo.get(taskId)?.decision ?? null;
+      const disclosure = aggregate.disclosure;
+      return {
+        taskId,
+        status: aggregate.task.status,
+        createdAt: aggregate.task.createdAt,
+        updatedAt: aggregate.task.updatedAt,
+        eventCount: aggregate.events.length,
+        evidenceCount: aggregate.evidence.length,
+        providerId: routing?.providerId ?? disclosure?.provider ?? null,
+        model: routing?.model ?? null,
+        privacyMode: routing?.privacyMode ?? null,
+        fallbackUsed: routing?.fallbackUsed ?? false,
+        verificationStatus: aggregate.verification?.status === "verified" ? "verified" as const : null,
+        disclosure: disclosure ? {
+          provider: disclosure.provider,
+          networkAccess: disclosure.networkAccess,
+          filesystemAccess: disclosure.filesystemAccess,
+          shellExecution: disclosure.shellExecution,
+          modelInvocation: disclosure.modelInvocation,
+        } : null,
+      };
+    });
+    return WebConversationSupportBundleSchema.parse({
+      version: 1,
+      projectId,
+      conversationId,
+      generatedAt: new Date().toISOString(),
+      tasks,
+      entries: activity.entries,
+      privacyNotice: "This bundle contains redacted activity summaries and execution facts. It excludes raw task events, tool arguments and results, prompts, secrets, and private model reasoning.",
     });
   });
 
@@ -2050,6 +2142,35 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     deps.runner.run(taskId);
     reply.status(202);
     return { version: 1, taskId, status: "queued", outcome: "retried", afterCursor };
+  });
+
+  app.post("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/resume", async (request, reply) => {
+    const { projectId, conversationId, taskId } = request.params as { projectId: string; conversationId: string; taskId: string };
+    const task = ownedConversationTask(projectId, conversationId, taskId);
+    if (task.status !== "interrupted") {
+      throw new ApiError(409, "Only interrupted responses can be resumed", "TASK_NOT_RESUMABLE");
+    }
+    const budgetEvents = records.listEventsByType(taskId, "context.budget_calculated");
+    const rejectedBudget = [...budgetEvents].reverse().find((event) => event.payload.admitted === false);
+    const compactedAfterRejection = rejectedBudget
+      ? records.listEventsAfter(taskId, rejectedBudget.sequence).some((event) => event.type === "context.compaction_completed")
+      : true;
+    if (!compactedAfterRejection) {
+      throw new ApiError(
+        409,
+        "The saved provider request still exceeds its verified route limit. Compact this task before continuing; no provider request was made.",
+        "CONTEXT_PREFLIGHT_REJECTED",
+      );
+    }
+    const afterCursor = records.latestEvent(taskId)?.sequence ?? 0;
+    records.resumeInterruptedTask(taskId, {
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      payload: { reason: "user_continue" },
+    });
+    deps.runner.run(taskId);
+    reply.status(202);
+    return { version: 1, taskId, status: "queued", outcome: "resumed", afterCursor };
   });
 
   app.get("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/stream", async (request, reply) => {
@@ -4319,6 +4440,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         const mdName = (lines[0] ?? "").replace(/^#\s*/, "").trim();
         const mdDesc = (lines.slice(1).find((l) => l.trim() && !l.startsWith("#")) ?? "").trim();
         const riskClass: string = manifest.riskClass || fm.riskClass || "";
+        // Bundled high-risk red-team skills are intentionally not executable
+        // through the default catalog. Keep their source available for an
+        // explicit security-review workflow, but do not present them as
+        // ordinary installed capabilities beside trusted skills.
+        if (riskClass === "high") continue;
         out.push({
           id: manifest.id || fm.name || entry,
           name: pretty(manifest.name || fm.name || mdName || entry),
@@ -4336,6 +4462,76 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     }
     (out as any[]).sort((a, b) => String(a.name).localeCompare(String(b.name)));
     return out;
+  });
+
+  /**
+   * Installing a skill, in two steps.
+   *
+   * A skill is instructions the agent will follow, so an install grants a
+   * capability rather than copying a file, and the split below is what lets a
+   * person see what they are agreeing to. `preview` fetches, normalizes and
+   * stages the bundle and reports what it found — provenance, requested
+   * permissions, and which metadata Morrow had to invent because the author
+   * shipped none. `install` promotes that exact staging directory. There is no
+   * second fetch in between, so what was shown is what lands.
+   *
+   * Every surface — CLI, the Skills page, and the agent's own tool — goes
+   * through here, so there is one registry and one answer.
+   */
+  const skillInstallFailure = (error: unknown): never => {
+    if (error instanceof SkillInstallError) {
+      const detail = error.issues.length ? `${error.message}: ${error.issues.join("; ")}` : error.message;
+      throw new ApiError(400, detail, "SKILL_INSTALL_REFUSED");
+    }
+    throw error;
+  };
+
+  app.post("/api/skills/install/preview", async (request) => {
+    const body = z.object({
+      source: z.string().trim().min(1).max(2048),
+      subdir: z.string().trim().max(512).nullish(),
+      overwrite: z.boolean().optional(),
+    }).strict().parse((request.body ?? {}) as unknown);
+    try {
+      return await planSkillInstall(parseSkillSource(body.source), {
+        subdir: body.subdir ?? null,
+        overwrite: body.overwrite ?? false,
+      });
+    } catch (error) {
+      return skillInstallFailure(error);
+    }
+  });
+
+  app.post("/api/skills/install", async (request, reply) => {
+    const body = z.object({ handle: z.string().trim().min(1).max(128) }).strict().parse((request.body ?? {}) as unknown);
+    try {
+      const installed = applySkillInstall(body.handle);
+      reply.status(201);
+      // Installing never enables: the skill is on disk and inert until someone
+      // turns it on, which is a separate and deliberate act.
+      return { ...installed, enabled: false };
+    } catch (error) {
+      return skillInstallFailure(error);
+    }
+  });
+
+  /** Abandon a preview without installing it, so staging does not accumulate. */
+  app.post("/api/skills/install/discard", async (request, reply) => {
+    const body = z.object({ handle: z.string().trim().min(1).max(128) }).strict().parse((request.body ?? {}) as unknown);
+    discardSkillInstall(body.handle);
+    reply.status(204);
+    return null;
+  });
+
+  app.delete("/api/skills/:skillId", async (request, reply) => {
+    const { skillId } = request.params as { skillId: string };
+    try {
+      removeInstalledSkill(skillId);
+      reply.status(204);
+      return null;
+    } catch (error) {
+      return skillInstallFailure(error);
+    }
   });
 
   app.get("/api/projects/:projectId/skills/usage", async (request) => {

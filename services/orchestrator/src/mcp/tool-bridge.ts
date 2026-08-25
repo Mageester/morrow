@@ -79,9 +79,18 @@ export async function executeMcpTool(
   configs: Record<string, McpServerConfig>,
   signal?: AbortSignal,
 ): Promise<{ content: string; isError?: boolean }> {
+  let onAbort: (() => void) | undefined;
   try {
     if (signal?.aborted) throw new Error("AbortError");
-    const abort = new Promise<never>((_, reject) => signal?.addEventListener("abort", () => reject(new Error("AbortError")), { once: true }));
+    // `signal` is the task's, not this call's: the agent builds one per task
+    // and hands the same instance to every tool call it makes. `{ once: true }`
+    // only unregisters on an abort that fires — on the normal path it never
+    // does, so a listener per MCP tool call stayed on that signal for the life
+    // of the task. Detached in the finally below instead.
+    const abort = new Promise<never>((_, reject) => {
+      onAbort = () => reject(new Error("AbortError"));
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
     const run = async () => {
     if (name === "read_mcp_resource") {
       const parsed = (args && typeof args === "object" ? args : {}) as { server?: string; uri?: string };
@@ -110,5 +119,7 @@ export async function executeMcpTool(
       content: `MCP tool error: ${err?.message ?? String(err)}`,
       isError: true,
     };
+  } finally {
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
   }
 }

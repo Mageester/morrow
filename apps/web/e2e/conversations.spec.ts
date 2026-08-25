@@ -185,4 +185,37 @@ test.describe("durable conversation workspace", () => {
       await context.close();
     }
   });
+
+  test("mobile conversation composer clears the fixed navigation dock", async ({ browser, request }) => {
+    const conversationId = await createConversation(request, "Mobile composer clearance proof");
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      baseURL: state.baseURL,
+      colorScheme: "light",
+      reducedMotion: "reduce",
+    });
+    const page = await context.newPage();
+    try {
+      await openConversation(page, conversationId);
+      await expect(page.getByRole("region", { name: "Conversation: Mobile composer clearance proof" })).toBeVisible();
+
+      const clearance = await page.evaluate(() => {
+        const dock = document.querySelector<HTMLElement>(".morrow-mobile-dock")?.getBoundingClientRect();
+        const composer = document.querySelector<HTMLElement>(".morrow-chat-composer")?.getBoundingClientRect();
+        const toolbar = document.querySelector<HTMLElement>(".morrow-chat-composer__toolbar")?.getBoundingClientRect();
+        const send = document.querySelector<HTMLElement>(".morrow-chat-composer__send")?.getBoundingClientRect();
+        if (!dock || !composer || !toolbar || !send) return null;
+        const controlsBottom = Math.max(composer.bottom, toolbar.bottom, send.bottom);
+        return { controlsBottom, dockTop: dock.top, gap: dock.top - controlsBottom };
+      });
+
+      expect(clearance).not.toBeNull();
+      expect(
+        clearance!.gap,
+        `Composer controls are ${Math.abs(clearance!.gap)}px ${clearance!.gap < 0 ? "under" : "from"} the mobile dock.`,
+      ).toBeGreaterThanOrEqual(8);
+    } finally {
+      await context.close();
+    }
+  });
 });

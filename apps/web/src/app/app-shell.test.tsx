@@ -11,20 +11,42 @@ import { createAppRouter } from "./router.js";
 
 const NAV_ORDER = [
   "Home",
+  "Missions",
   "Projects",
   "Skills",
   "Memory",
   "History",
   "Connections",
+  "Teams",
   "Settings",
 ];
 const IMPLEMENTED = NAV_ORDER;
 const UPCOMING: string[] = [];
 
-function stubFetch() {
+const project = {
+  id: "project-1",
+  name: "Alpha",
+  version: 1,
+  workspacePath: "/tmp/alpha",
+  createdAt: "2026-08-25T12:00:00.000Z",
+};
+const createdConversation = {
+  id: "conversation-new",
+  projectId: project.id,
+  title: "New conversation",
+  archived: false,
+  version: 1,
+  createdAt: "2026-08-25T12:00:00.000Z",
+  updatedAt: "2026-08-25T12:00:00.000Z",
+};
+
+function stubFetch(
+  projects: unknown[] = [],
+  newChat: "success" | "failure" = "success",
+) {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/api/health") {
         return new Response(JSON.stringify({ ok: true, service: "morrow-orchestrator" }), {
@@ -48,6 +70,18 @@ function stubFetch() {
             score: -1,
           }],
         });
+      }
+      if (url === "/api/projects") {
+        return Response.json(projects);
+      }
+      if (url === "/api/projects/project-1/conversations" && init?.method === "POST") {
+        if (newChat === "failure") {
+          return Response.json(
+            { error: { code: "OFFLINE", message: "offline" } },
+            { status: 503 },
+          );
+        }
+        return Response.json(createdConversation, { status: 201 });
       }
       // No local project in shell tests: keeps the sidebar recent/new-chat data
       // resilient and avoids inventing conversations.
@@ -140,6 +174,7 @@ describe("Morrow application shell", () => {
 
   it.each([
     ["/app/chats", "History"],
+    ["/app/missions", "Missions"],
     ["/app/projects", "Projects"],
     ["/app/skills", "Skills"],
     ["/app/connections", "Connect a model"],
@@ -170,12 +205,54 @@ describe("Morrow application shell", () => {
     renderAt("/app/");
 
     const dock = await screen.findByRole("navigation", { name: "Mobile navigation" });
+    expect([...dock.querySelectorAll("[data-nav]")].map((element) => element.getAttribute("data-nav"))).toEqual([
+      "Home",
+      "History",
+      "New",
+      "Missions",
+      "More",
+    ]);
     expect(within(dock).getByRole("link", { name: "History" })).toBeVisible();
+    expect(within(dock).getByRole("link", { name: "New chat" })).toBeVisible();
+    expect(within(dock).getByRole("link", { name: "New chat" })).toHaveAttribute(
+      "href",
+      "/app/projects",
+    );
+    expect(within(dock).getByRole("link", { name: "Missions" })).toBeVisible();
     await user.click(within(dock).getByRole("button", { name: "More navigation" }));
     expect(await screen.findByRole("button", { name: "Close navigation" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
+  });
+
+  it("creates a new chat from the selected project in the mobile dock", async () => {
+    const user = userEvent.setup();
+    stubFetch([project]);
+    const router = renderAt("/app/");
+
+    const dock = await screen.findByRole("navigation", { name: "Mobile navigation" });
+    const button = await within(dock).findByRole("button", { name: "New chat" });
+    expect(button).toBeEnabled();
+
+    await user.click(button);
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe("/chats/conversation-new");
+      expect(router.state.location.search).toEqual({ projectId: project.id });
+    });
+  });
+
+  it("keeps mobile New chat recoverable when conversation creation fails", async () => {
+    const user = userEvent.setup();
+    stubFetch([project], "failure");
+    renderAt("/app/");
+
+    const dock = await screen.findByRole("navigation", { name: "Mobile navigation" });
+    await user.click(await within(dock).findByRole("button", { name: "New chat" }));
+
+    expect(await within(dock).findByRole("alert")).toHaveTextContent(/could not create/i);
+    expect(within(dock).getByRole("button", { name: "Try again" })).toBeVisible();
   });
 
   it("mounts a mobile teammate switcher beside the route canvas", async () => {

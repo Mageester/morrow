@@ -4,7 +4,7 @@
 
 Morrow is a self-hosted, deeply customizable personal AI agent. Local-first, provider-neutral, with visible execution, explicit permissions, and persistent memory.
 
-> **Status:** v0.5.1. Windows 10/11 x64 supported. Linux via source build. macOS planned.
+> **Status:** v0.6.0 beta. Windows 10/11 x64, Linux x64/arm64, and macOS x64/arm64 packages are supported.
 
 ## Quick Install (Windows)
 
@@ -30,20 +30,19 @@ live in Morrow's database, so a closed or crashed terminal loses the screen and
 nothing else — `/sessions` and `/resume` pick the work back up. See
 [the terminal reference](docs/TERMINAL.md).
 
-Morrow supports 30 model providers. `morrow providers list` browses them grouped
+Morrow ships a 33-provider model catalog. `morrow providers list` browses them grouped
 by kind; `morrow providers configure` runs a guided setup that offers
 subscription sign-in where one really exists, otherwise opens the provider's key
 page, verifies the credential, and lets you pick a default model from the models
 that key can actually reach. Credentials are stored locally and take effect
 without a restart. See [the provider reference](docs/providers.md).
 
-Beta.30 adds model and reasoning routing: an interactive `/model` picker with
-honest live status/context, and a normalized reasoning-effort control that is
-actually wired through to the provider request. It also hardens mission
-continuity across context-window limits and terminal event/recovery
-integrity. Run `morrow doctor` for consumer-readable checks, `morrow doctor
---json` for automation, or `morrow doctor --export` for a redacted diagnostic
-bundle.
+The 0.6.0 release includes model and reasoning routing, honest context status,
+project-scoped history, resumable interrupted work, redacted support bundles,
+and local-only privacy enforcement that blocks remote routes and network tools
+before they execute. Run `morrow doctor` for consumer-readable checks,
+`morrow doctor --json` for automation, or `morrow doctor --export` for a
+redacted diagnostic bundle.
 
 Morrow binds its service to loopback by default. Conversations, project state,
 memory, provider credentials, logs, and diagnostics remain local unless a tool
@@ -178,6 +177,42 @@ The "Inspect workspace" task is a safe, deterministic execution workflow:
 1. **Data Read**: It reads the file entries within the bounded workspace path.
 2. **Guarantees**: For this specific executor, there is **no network access**, **no model invocation**, and **no shell execution**. It operates entirely locally and predictably.
 3. **Restart-Recovery**: If the orchestrator is restarted while tasks are running, any interrupted tasks are recovered and transitioned to a safe `interrupted` state.
+
+## Installing skills
+
+A skill is a folder with a `SKILL.md` in it — instructions Morrow can follow, plus
+whatever helper files they reference. Morrow ships a set, and you can install more.
+
+```bash
+morrow skills install anthropics/skills            # lists the skills in a repo
+morrow skills install anthropics/skills --subdir skills/pdf
+morrow skills install owner/repo@v1.2              # pin a tag or a commit
+morrow skills install ./my-skill                   # a local folder or a .tar.gz
+morrow skills enable pdf                           # installing does not enable
+morrow skills remove pdf
+```
+
+The same thing is available on the Skills page, and Morrow can install one
+mid-task with your approval.
+
+Installing a skill grants a capability rather than copying a file, so:
+
+- **You see it before it lands.** Morrow fetches, checks and stages the bundle,
+  then shows you where it came from, what it asks for, and which metadata it had
+  to invent because the bundle shipped none. What gets installed is what you were
+  shown — there is no second fetch after you agree.
+- **Installing is not enabling.** A newly installed skill is inert until you turn
+  it on.
+- **A bundle that fails its own checksum is refused,** rather than having the
+  checksum quietly rewritten.
+- **Morrow asks every time.** When Morrow installs a skill mid-task it needs a
+  one-shot approval naming the source and the permissions; no standing "trust
+  this project" grant covers it.
+- **Nothing leaves your machine** except the request that fetches the skill.
+
+Only `github.com` and local paths are accepted as sources. A branch name moves,
+so pin a tag or commit if you want the same bytes next time — Morrow says so when
+you do not.
 
 ## Multi-provider agent (alpha)
 

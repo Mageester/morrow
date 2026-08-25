@@ -6,6 +6,77 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-25
+
+Morrow can use skills other people wrote. Installing one is treated as granting
+a capability rather than copying a file, so you see where it came from and what
+it asks for before it lands. This release also cuts what a task costs to run:
+Anthropic routes stopped re-paying full price for the same conversation on
+every turn.
+
+### Added
+
+- `morrow skills install <source>` installs a skill from GitHub
+  (`owner/repo`, `owner/repo@v1.2`, or a link copied from the address bar), a
+  local folder, or a `.tar.gz`. A source holding several skills lists them
+  rather than guessing, found at any depth — `skills/<name>/SKILL.md` is the
+  common layout. `morrow skills remove <id>` removes one Morrow installed;
+  bundled skills are refused, since an upgrade would put them back.
+- The Skills page installs one too, showing provenance, requested permissions,
+  and which metadata Morrow had to invent because the bundle shipped none.
+- Morrow can install a skill mid-task with `install_skill`, behind a one-shot
+  approval that names the real source and permissions. The task-level
+  auto-approve flag does not reach it: "trust this project" must never become
+  "install whatever you like from the internet".
+- A plain `SKILL.md` folder — the common ecosystem shape — is normalized into a
+  manifest, permissions and a checksum on the way in, and the plan says which of
+  those Morrow wrote rather than read.
+
+### Changed
+
+- Project selection now has an OS folder picker, active-project history/new-chat
+  actions, and an honest provider “Needs a model” readiness state.
+- Local-only privacy is enforced at routing and tool boundaries; interrupted
+  agent work has a project-scoped resume endpoint; Activity / Inspect can
+  download a redacted support bundle.
+- Compact mobile composers keep provider/context capability status reachable;
+  Teams is present in primary navigation; doctor reports optional PTY support.
+- Missions and New chat are now first-class destinations in the desktop rail
+  and five-slot mobile dock; mobile setup routes New chat to project selection
+  until a project is ready.
+- Bundled high-risk red-team skills are withheld from the default executable
+  catalog until an explicit security-review workflow exists.
+
+- Anthropic requests now carry `cache_control` breakpoints on the stable
+  tools+system prefix and the end of the conversation. Morrow already priced
+  cache reads end to end but never asked for the cache, so every turn re-read
+  the system prompt, every tool schema and the whole transcript at full price.
+- The teammate rail stops polling a hidden tab once no run could still finish.
+  Visible tabs are unchanged.
+- The prepared-statement cache is now least-recently-used and sized above the
+  statement population it has to hold, instead of thrashing on ordinary traffic
+  and evicting its hottest entries first.
+
+### Fixed
+
+- Anthropic usage accounting: `input_tokens` counts only the uncached portion,
+  while everything downstream treats prompt tokens as the whole input. Left
+  unchanged it would have under-reported both context size and cost the moment
+  caching started hitting.
+- All four provider adapters subscribed to the caller's abort signal on every
+  request and never unsubscribed. That signal lives as long as the task, so a
+  long run leaked a listener per provider call, each pinning an AbortController.
+  Same leak in the MCP tool bridge and pool.
+- The teammate roster read and sorted every conversation and every agent task in
+  the project on each poll — every three seconds, per open tab — to keep one row
+  per teammate. Covering indexes and one indexed seek per teammate: 10.7ms per
+  poll becomes 0.01ms on 20k conversations.
+- Browser output is sanitized ~6x faster on the clean text that makes up nearly
+  all of it; the guard was recompiling twelve regexes and walking the text twice
+  for every console line a page emits.
+- Three source files carried raw NUL bytes, which made grep and ripgrep treat
+  them as binary and skip them in repo-wide searches.
+
 ## [0.5.1] - 2026-08-24
 
 A packaging fix. 0.5.0's bundle was assembled from the orchestrator's

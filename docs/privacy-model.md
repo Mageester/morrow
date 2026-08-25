@@ -37,6 +37,8 @@ Each category requires an explicit scope and retention rule.
 - No external model providers
 - No external tools or telemetry
 - Network-deny tests must pass
+- Remote provider selection is rejected before dispatch, and browser/MCP tools
+  plus likely network shell commands are blocked at execution time
 
 ### Controlled cloud
 
@@ -108,6 +110,10 @@ as model reasoning.
 - Activity views show only redacted execution facts: phase, tool name, target,
   status, timing, and bounded result metadata. They never expose raw provider
   reasoning, tool arguments, or tool output.
+- A user-triggered support bundle reuses that redacted activity projection and
+  adds bounded task/provider/disclosure/verification summaries. It does not
+  export raw events, tool arguments/results, prompts, secrets, or private
+  reasoning.
 
 Automatic memory retrieval increments a local usage counter so influence remains
 auditable. Retrieval is limited to the current project/conversation scope and

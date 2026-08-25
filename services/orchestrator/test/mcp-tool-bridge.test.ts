@@ -1,3 +1,4 @@
+import { getEventListeners } from "node:events";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { openDatabase } from "../src/database.js";
@@ -110,6 +111,34 @@ describe("MCP Tool Bridge", () => {
     expect(res.isError).toBeFalsy();
     expect(res.content).toContain("Tool result for query");
     expect(res.content).toContain("SELECT 1;");
+  });
+
+  /**
+   * The signal handed to every MCP tool call is the task's, built once in
+   * `execution/agent.ts` and reused for the whole run. `{ once: true }` only
+   * unregisters a listener that actually fires, and on the normal path the
+   * abort never comes — so a listener per tool call stayed on that signal until
+   * the task ended, each pinning its own rejection closure. A task that leans on
+   * an MCP server accumulated one per call.
+   */
+  it("leaves no listener on the caller's abort signal after a tool call settles", async () => {
+    const trust = mcpTrustStore(db);
+    const config: McpServerConfig = { command: "node", args: ["server.js"] };
+    trust.trustServer("sqlite", config);
+
+    const pool = new McpPool({
+      db,
+      transportFactory: () => fakeTransportFactory([{ name: "query" }])(),
+    });
+    const configs = { sqlite: config };
+    const taskSignal = new AbortController().signal;
+
+    for (let call = 0; call < 5; call++) {
+      const res = await executeMcpTool("mcp__sqlite__query", { sql: "SELECT 1;" }, pool, configs, taskSignal);
+      expect(res.isError).toBeFalsy();
+    }
+
+    expect(getEventListeners(taskSignal, "abort")).toHaveLength(0);
   });
 
   it("executes read_mcp_resource and returns formatted resource contents", async () => {

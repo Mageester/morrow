@@ -6,6 +6,7 @@ import { openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { assistantProfileRepository } from "../src/repositories/assistant-profile.js";
 import { dispatchAgentTask } from "../src/mission/task-dispatcher.js";
 import { routePreset } from "../src/routing/router.js";
 import { eligibleFallbackProviderIds } from "../src/routing/fallback-eligibility.js";
@@ -87,6 +88,9 @@ describe("dispatchAgentTask: CLI flags reach the persisted route", () => {
     const ts = new Date().toISOString();
     projectRepository(db).createProject({ id: "p1", name: "RP", workspacePath: tempDir, createdAt: ts });
     conversationsRepository(db).createConversation({ id: "c1", projectId: "p1", title: "RP", createdAt: ts, updatedAt: ts });
+    // These tests exercise explicit remote routing and fallback semantics;
+    // opt the fixture into the policy required for those provider calls.
+    assistantProfileRepository(db).update({ defaultPrivacyMode: "controlled_cloud" }, ts);
   });
   afterEach(() => {
     db.close();

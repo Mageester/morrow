@@ -426,6 +426,35 @@
     text-decoration: none;
   }
 
+  /* Reuse the full NewChatButton in the dock without letting its feedback
+     states change the five-slot navigation geometry. */
+  .morrow-mobile-dock__action {
+    min-width: 0;
+  }
+
+  .morrow-mobile-dock__action .morrow-new-chat,
+  .morrow-mobile-dock__action .morrow-new-chat__button {
+    width: 100%;
+    height: 100%;
+  }
+
+  .morrow-mobile-dock__action .morrow-new-chat__button {
+    min-height: 50px;
+  }
+
+  .morrow-mobile-dock__action .morrow-new-chat__error {
+    position: fixed;
+    right: 10px;
+    bottom: 78px;
+    left: 10px;
+    z-index: 9;
+    padding: 10px 12px;
+    border: 1px solid var(--morrow-product-line-strong);
+    border-radius: 12px;
+    background: var(--morrow-product-field-strong);
+    box-shadow: var(--morrow-product-shadow-float);
+  }
+
   .morrow-mobile-dock__link[aria-current="page"] {
     background: var(--morrow-product-copper-soft);
     color: #ddaa91;

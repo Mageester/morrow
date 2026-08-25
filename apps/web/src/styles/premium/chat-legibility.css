@@ -65,6 +65,12 @@
   /* The conversation scrolls in its history pane. A second scroller on the
      canvas is the nested scrollbar visible beside the transcript. */
   overflow: hidden;
+  /* A transformed route canvas becomes the containing block for fixed
+     drawers. Conversations own fixed overlays (activity, mobile controls),
+     so leave this canvas untransformed to keep those overlays aligned to the
+     actual viewport and mobile dock. */
+  animation: none;
+  transform: none;
 }
 
 .morrow-conversation-page {

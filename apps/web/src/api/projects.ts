@@ -17,6 +17,13 @@ export const ProjectStatusSchema = z.object({
   branch: z.string().nullable(),
 });
 
+export const ProjectFolderSelectionSchema = z.object({
+  path: z.string().nullable(),
+  name: z.string().nullable(),
+});
+
+export type ProjectFolderSelection = z.infer<typeof ProjectFolderSelectionSchema>;
+
 export type ProjectStatus = z.infer<typeof ProjectStatusSchema>;
 
 export const projectQueries = {
@@ -42,6 +49,9 @@ export const projectQueries = {
 };
 
 export const projectApi = {
+  pickFolder(): Promise<ProjectFolderSelection> {
+    return api.post("/api/projects/pick-folder", {}, ProjectFolderSelectionSchema);
+  },
   create(input: { name: string; workspacePath: string }): Promise<ProjectSelection> {
     return api.post("/api/projects", input, ProjectSchema);
   },

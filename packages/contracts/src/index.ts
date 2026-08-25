@@ -102,7 +102,7 @@ export const ChatStreamEnvelopeSchema=z.object({
   emittedAt:z.string().datetime(),
   payload:z.object({eventId:z.string()}).strict(),
 }).strict();
-export const ConversationTaskActionResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:TaskStatusSchema,outcome:z.enum(["cancelled","already_cancelled","retried"]),afterCursor:z.number().int().nonnegative().optional()}).strict();
+export const ConversationTaskActionResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:TaskStatusSchema,outcome:z.enum(["cancelled","already_cancelled","retried","resumed"]),afterCursor:z.number().int().nonnegative().optional()}).strict();
 
 // Local orchestrator <-> hosted-api pairing (Plans/generic-sprouting-dragon.md
 // Phase 4). These describe what apps/web can learn from the LOCAL orchestrator
@@ -474,6 +474,10 @@ export const RoutingDecisionSchema=z.object({
   fallbackUsed:z.boolean(),
   overridden:z.boolean(),
   privacy:PresetPrivacySchema,
+  // The assistant profile policy is distinct from the selected preset's
+  // privacy label. It is optional for old persisted routing records and is
+  // populated for new dispatches.
+  privacyMode:z.enum(["local_only","controlled_cloud","custom"]).optional(),
   candidates:z.array(RoutingCandidateSchema),
   mode:AgentModeSchema.optional(),
   toolProfile:ToolProfileSchema.optional(),
@@ -497,6 +501,7 @@ export const WebConversationRoutingSchema=z.object({
   overridden:z.boolean(),
   mode:AgentModeSchema.nullable(),
   autoApprove:z.boolean().nullable(),
+  privacyMode:z.enum(["local_only","controlled_cloud","custom"]).nullable().optional(),
 }).strict();
 
 export const WebConversationMessageSchema=ConversationMessageSchema.extend({

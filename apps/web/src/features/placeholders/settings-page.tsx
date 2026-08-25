@@ -27,7 +27,7 @@ function safeError(error: unknown, fallback: string): string {
 const PRIVACY_MODE_COPY = {
   local_only: {
     label: "Prefer local providers",
-    hint: "Records your preference for local models. It does not block configured cloud providers or tools.",
+    hint: "Enforces local model routing. Remote provider attempts are blocked until you choose Controlled cloud.",
   },
   controlled_cloud: {
     label: "Cloud providers available",
@@ -189,8 +189,8 @@ function AssistantPrivacySection({ clearedMessage, clearDrafts }: { clearedMessa
       </div>
       <p className="morrow-settings-label">Provider preference</p>
       <div className="morrow-settings-disclosure">
-        <b>Saved preference, not an enforcement boundary</b>
-        <p>This is a saved preference for future routing controls. It does not enforce provider or tool routing today. Choose the provider for each task and review the visible model selection before sending sensitive context.</p>
+        <b>Privacy mode is an enforcement boundary</b>
+        <p>Local only blocks remote model routes before a request leaves this machine. Controlled cloud and Custom let you use approved remote routes, with the provider and model recorded in the task activity.</p>
       </div>
       {profile.isPending ? <p aria-live="polite" className="morrow-settings-status" role="status">Loading provider preference…</p> : null}
       {profile.data ? (

@@ -23,12 +23,17 @@ export interface TurnFailureNoticeProps {
   /** Present only when this turn can actually be retried. */
   onRetry?: (() => void) | undefined;
   retryDisabled?: boolean | undefined;
+  /** Present when an interrupted task has a durable continuation to resume. */
+  onResume?: (() => void) | undefined;
+  resumeDisabled?: boolean | undefined;
 }
 
 export const TurnFailureNotice = memo(function TurnFailureNotice({
   failure,
   onRetry,
   retryDisabled = false,
+  onResume,
+  resumeDisabled = false,
 }: TurnFailureNoticeProps) {
   const [open, setOpen] = useState(false);
 
@@ -55,6 +60,16 @@ export const TurnFailureNotice = memo(function TurnFailureNotice({
               {open ? "Hide details" : "Details"}
             </button>
           ) : null}
+          {onResume ? (
+            <button
+              className="morrow-turn-failure__button morrow-turn-failure__button--primary"
+              disabled={resumeDisabled}
+              onClick={onResume}
+              type="button"
+            >
+              Resume saved work
+            </button>
+          ) : null}
           {onRetry ? (
             <button
               className="morrow-turn-failure__button morrow-turn-failure__button--primary"
@@ -62,7 +77,7 @@ export const TurnFailureNotice = memo(function TurnFailureNotice({
               onClick={onRetry}
               type="button"
             >
-              Retry
+              {onResume ? "Retry from the beginning" : "Retry"}
             </button>
           ) : null}
         </div>

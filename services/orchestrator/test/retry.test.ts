@@ -81,6 +81,30 @@ describe("POST /api/tasks/:taskId/retry", () => {
   });
 });
 
+describe("POST project-scoped task recovery", () => {
+  it("resumes an interrupted conversation task without discarding its continuation", async () => {
+    const db = openDatabase(":memory:");
+    const app = buildServer({ db, runner: new TaskRunner(db, async () => {}) });
+    try {
+      seedTask(db, "interrupted");
+      db.prepare("INSERT INTO task_continuations (task_id, tool_call_id, tool_name, args_json, created_at) VALUES (?, ?, ?, ?, ?)")
+        .run("t1", "call-1", "run_command", "{}", new Date().toISOString());
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/projects/p1/conversations/c1/tasks/t1/resume",
+      });
+
+      expect(res.statusCode).toBe(202);
+      expect(res.json()).toMatchObject({ version: 1, taskId: "t1", status: "queued", outcome: "resumed" });
+      expect(db.prepare("SELECT COUNT(*) n FROM task_continuations WHERE task_id = ?").get("t1")).toEqual({ n: 1 });
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+});
+
 describe("POST /api/tasks/:taskId/resume", () => {
   it("refuses an unchanged persisted oversize state before redispatching or calling a provider", async () => {
     const db = openDatabase(":memory:");

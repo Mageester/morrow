@@ -1,3 +1,4 @@
+import { getEventListeners } from "node:events";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -367,6 +368,32 @@ describe("provider adapter conformance", () => {
           expect(streamError.reason.length).toBeGreaterThan(20);
         });
       }
+
+      /**
+       * The agent loop builds ONE abort signal per task (`execution/agent.ts`)
+       * and hands that same instance to `streamChat` on every turn. An adapter
+       * that subscribes to it per request and never unsubscribes accumulates a
+       * listener per turn on a signal that lives as long as the task, each
+       * closure pinning its own AbortController — a leak that grew with run
+       * length and tripped Node's max-listeners warning on long missions.
+       *
+       * Stated once for all adapters: however an adapter bridges the caller's
+       * signal, a settled request must leave no listener behind on it.
+       */
+      it("leaves no listener on the caller's abort signal once the request settles", async () => {
+        const taskSignal = new AbortController().signal;
+        const options: StreamOptions = { ...OPTIONS, abortSignal: taskSignal };
+
+        for (const scenario of ["stop", "truncated", "tool_use"] as const) {
+          respondWith(() => sseResponse(adapter.wire[scenario]));
+          await collect(adapter.make(), options);
+        }
+        // A transport failure exits through a different path; it must clean up too.
+        respondWith(() => { throw new Error("connection reset"); });
+        await collect(adapter.make(), options);
+
+        expect(getEventListeners(taskSignal, "abort")).toHaveLength(0);
+      });
 
       it("never echoes the credential into any emitted chunk", async () => {
         for (const scenario of ["stop", "truncated", "tool_use"] as const) {
