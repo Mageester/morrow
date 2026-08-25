@@ -6,6 +6,26 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+### Changed
+
+- A conversation now reads in the order the run happened. An assistant turn is
+  rendered as the sequence it actually was — what Morrow said, the tool calls
+  that followed it, what it said next — instead of a summary box listing every
+  tool of the task above one block of text. This applies to the web chat and to
+  the interactive terminal, which previously pooled a whole task's tool calls
+  into a single block after all of its prose.
+- The web chat renders the assistant's intermediate narration, which the
+  durable projection had always recorded and no surface had ever shown. It also
+  stops rendering `message.content` beside that narration: while a task streams
+  that field is a whole-task accumulator of every turn's text, so the transcript
+  was printing the run twice — once in order, once as one growing blob.
+- Morrow's words in the web chat sit flat on the page rather than in a bubble;
+  yours still sit in one. One bubble per turn made sense when a turn was one
+  block, and read as a column of disconnected cards once it became a sequence.
+- The per-turn totals ("Completed · 41s · 9 tools") moved from above the answer
+  to a receipt line under it, and are no longer drawn while a turn is running —
+  the live status line above the composer already answers that.
+
 ## [0.6.0] - 2026-08-25
 
 Morrow can use skills other people wrote. Installing one is treated as granting

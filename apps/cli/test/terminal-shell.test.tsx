@@ -963,3 +963,81 @@ describe("reading back through the conversation", () => {
     expect(plain(view.lastFrame())).not.toContain("esc close");
   });
 })
+
+describe("a run reads in the order it happened", () => {
+  it("puts each turn's tool calls under the prose that asked for them", async () => {
+    const { view, store } = mount();
+    const events: import("../src/terminal/events.js").TerminalEvent[] = [
+      { type: "user.message", text: "fix the retry budget" },
+      { type: "assistant.turn_start", turnId: "t1" },
+      { type: "assistant.delta", turnId: "t1", text: "I'll find where the budget is enforced." },
+      { type: "assistant.turn_end", turnId: "t1", final: false },
+      { type: "tool.start", id: "c1", name: "search_text", purpose: "retryBudget" },
+      { type: "tool.end", id: "c1", status: "completed", summary: "Searched for retryBudget" },
+      { type: "tool.start", id: "c2", name: "read_file", purpose: "policy.ts" },
+      { type: "tool.end", id: "c2", status: "completed", summary: "Read policy.ts" },
+      { type: "assistant.turn_start", turnId: "t2" },
+      { type: "assistant.delta", turnId: "t2", text: "Found it. Applying the fix." },
+      { type: "assistant.turn_end", turnId: "t2", final: false },
+      { type: "tool.start", id: "c3", name: "propose_patch", purpose: "agent.ts" },
+      { type: "tool.end", id: "c3", status: "completed", summary: "Edited agent.ts" },
+      { type: "assistant.turn_start", turnId: "t3" },
+      { type: "assistant.delta", turnId: "t3", text: "Done. The budget comes from the policy now." },
+      { type: "assistant.turn_end", turnId: "t3", final: true },
+      { type: "task.completed" },
+    ];
+    for (const event of events) {
+      store.apply(event);
+      await tick();
+    }
+    await tick();
+
+    // `<Static>` writes settled rows once and never redraws them, so the run as
+    // a terminal actually received it is the frame stream, not the last frame.
+    const transcript = plain(view.frames.join(""));
+    const order = [
+      "I'll find where the budget is enforced.",
+      "Searched for retryBudget",
+      "Read policy.ts",
+      "Found it. Applying the fix.",
+      "Edited agent.ts",
+      "Done. The budget comes from the policy now.",
+    ].map((line) => transcript.indexOf(line));
+
+    // Every line present, and in this order. Settling work only at the end of
+    // the task put all three tool rows after all three pieces of prose, which
+    // is a summary of a run rather than a reading of one.
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((left, right) => left - right));
+
+  });
+
+  it("stops drawing work in the live region once it has settled", async () => {
+    const { view, store } = mount();
+    for (const event of [
+      { type: "user.message", text: "look around" },
+      { type: "assistant.turn_start", turnId: "t1" },
+      { type: "assistant.delta", turnId: "t1", text: "Reading the config." },
+      { type: "assistant.turn_end", turnId: "t1", final: false },
+      { type: "tool.start", id: "c1", name: "read_file", purpose: "policy.ts" },
+      { type: "tool.end", id: "c1", status: "completed", summary: "Read policy.ts" },
+    ] satisfies import("../src/terminal/events.js").TerminalEvent[]) {
+      store.apply(event);
+      await tick();
+    }
+    // Still live: the turn has not ended, so the running summary is the only
+    // place this call exists.
+    expect(plain(view.lastFrame())).toContain("1 tool");
+
+    store.apply({ type: "assistant.turn_start", turnId: "t2" });
+    await tick();
+    store.apply({ type: "assistant.delta", turnId: "t2", text: "It is already correct." });
+    await tick();
+
+    // Settled into scrollback, and gone from the live region. Counted in both,
+    // it would be on screen twice for the rest of the run.
+    const frame = plain(view.lastFrame());
+    expect(frame).not.toContain("1 tool");
+    expect(frame).toContain("It is already correct.");
+  });
+});

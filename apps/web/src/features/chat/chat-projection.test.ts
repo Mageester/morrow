@@ -161,3 +161,58 @@ describe("formatElapsed", () => {
     expect(formatElapsed(-1)).toBeNull();
   });
 });
+
+describe("projectTurnWork blocks", () => {
+  it("orders the turn as it happened and collapses each burst of tools on its own", () => {
+    const work = projectTurnWork([
+      entry({ id: "n1", sequence: 1, kind: "narration", summary: "Assistant message", text: "Looking for the call site." }),
+      entry({ id: "r1", sequence: 2, kind: "file", summary: "Read a.ts", toolName: "read_file" }),
+      entry({ id: "r2", sequence: 3, kind: "file", summary: "Read b.ts", toolName: "read_file" }),
+      entry({ id: "r3", sequence: 4, kind: "file", summary: "Read c.ts", toolName: "read_file" }),
+      entry({ id: "n2", sequence: 5, kind: "narration", summary: "Assistant message", text: "Found it." }),
+      entry({ id: "r4", sequence: 6, kind: "file", summary: "Read d.ts", toolName: "read_file" }),
+    ]);
+
+    expect(work.blocks.map((block) => block.type)).toEqual(["prose", "work", "prose", "work"]);
+
+    // Three reads in one burst collapse; the lone read after the prose does
+    // not. Grouping is per run, because a run is what the sentence above it
+    // describes — counting across the whole turn would fold that last read
+    // into a group it never belonged to.
+    const [, first, , second] = work.blocks;
+    expect(first).toMatchObject({ type: "work", steps: [{ type: "group", label: "Files read" }] });
+    expect(second).toMatchObject({ type: "work", steps: [{ type: "single" }] });
+
+    // The flat views are unchanged: the whole turn still ran four tools.
+    expect(work.toolCount).toBe(4);
+  });
+
+  it("carries a notable in the reading order, once", () => {
+    const work = projectTurnWork([
+      entry({ id: "n1", sequence: 1, kind: "narration", summary: "Assistant message", text: "Asking the model." }),
+      entry({ id: "p1", sequence: 2, kind: "provider", summary: "Route fallback used", detail: "429" }),
+      entry({ id: "p2", sequence: 3, kind: "provider", summary: "Route fallback used", detail: "429" }),
+      entry({ id: "n2", sequence: 4, kind: "narration", summary: "Assistant message", text: "Done." }),
+    ]);
+    expect(work.blocks.map((block) => block.type)).toEqual(["prose", "notable", "prose"]);
+  });
+
+  it("produces no prose block for narration that has not streamed a token yet", () => {
+    const work = projectTurnWork(
+      [
+        entry({ id: "n1", sequence: 1, kind: "narration", summary: "Assistant message", text: "  " }),
+        entry({ id: "r1", sequence: 2, kind: "file", summary: "Read a.ts", toolName: "read_file" }),
+      ],
+      true,
+    );
+    // An empty paragraph in the reading column is worse than a slightly later
+    // one — and the caller uses "has prose" to decide whether the timeline may
+    // stand in for the message body at all.
+    expect(work.blocks.some((block) => block.type === "prose")).toBe(false);
+  });
+
+  it("stays empty for a turn with nothing recorded", () => {
+    expect(projectTurnWork([]).blocks).toEqual([]);
+    expect(projectTurnWork(undefined, true).blocks).toEqual([]);
+  });
+});

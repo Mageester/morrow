@@ -6,21 +6,25 @@ import { formatElapsed, workSummaryLabel, type TurnWork, type WorkStep } from ".
 import { EvidenceCard } from "./evidence-card.js";
 
 /**
- * The work surface for one assistant turn.
+ * The work surface for a turn that recorded no narration.
  *
- * Every step the turn ran, one line each, shown by default: what tool, what it
- * acted on, what came back. A reader should be able to answer "what did it
- * actually do?" by looking, not by opening something first — which is what the
- * previous single collapsed row asked of them, and why a completed turn read
- * as a claim rather than a record.
+ * Where narration exists, `turn-timeline.tsx` renders each tool call inline at
+ * the point in the turn where it ran, which is strictly better: the reader gets
+ * the same rows plus the sentence that explains them. This surface is what is
+ * left for a message with no narration to interleave against — a legacy row, or
+ * a route that returned an answer without streaming it. There the tool calls
+ * have nowhere inline to live, so they keep their own collapsible list above
+ * the body.
  *
- * Opening a line reveals what that step recorded. That is a request of its own
- * (see EvidenceCard): the transcript carries handles, not output, so the list
+ * `WorkStepRow` and below are shared with the timeline, and are the parts worth
+ * keeping either way: every step the turn ran, one line each, shown by default.
+ * Opening a line reveals what that step recorded, which is a request of its own
+ * (see EvidenceCard) — the transcript carries handles, not output, so the list
  * stays a list however much the run produced.
  *
- * This is still not the ledger. Routine bookkeeping is classified out in
- * chat-projection.ts and remains in Activity / Inspect, where the question is
- * "in what order did everything happen?" rather than "what was done?".
+ * Neither surface is the ledger. Routine bookkeeping is classified out in
+ * chat-projection.ts and remains in Activity / Inspect, which is still the only
+ * place that shows every event rather than the ones worth reading.
  */
 
 function statusMark(status: TurnWork["status"]) {
@@ -132,7 +136,7 @@ export const WorkSummary = memo(function WorkSummary({
   );
 });
 
-const WorkStepRow = memo(function WorkStepRow({
+export const WorkStepRow = memo(function WorkStepRow({
   step,
   projectId,
   conversationId,

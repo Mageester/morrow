@@ -353,6 +353,93 @@
   overflow-wrap: anywhere;
 }
 
+/* ── Turn timeline ───────────────────────────────────────────────────────── */
+
+/*
+ * The turn read in order: prose, the work that followed it, the next prose.
+ *
+ * The rhythm is the whole point, so the gaps are asymmetric. Prose gets room
+ * around it because it is what someone is reading; a work run sits closer to
+ * the prose above it because it is what that sentence just described. Nothing
+ * is boxed — a run is marked by the same hairline the step list already uses.
+ */
+.morrow-turn-timeline {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.morrow-turn-run {
+  align-self: stretch;
+  min-width: 0;
+  /* Pulled up toward the prose it belongs to, and indented so a column of runs
+     reads as subordinate to the sentences between them. */
+  margin: -5px 0 0 2px;
+}
+
+.morrow-turn-run .morrow-work__more {
+  margin-left: 10px;
+}
+
+/* ── Turn footer ─────────────────────────────────────────────────────────── */
+
+/*
+ * The receipt, under the answer. Above it, the same totals were a claim the
+ * reader had to accept before reading anything; below, they are a summary of
+ * something already shown step by step.
+ */
+.morrow-turn-footer {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  margin: 2px 0 0;
+  padding-top: 9px;
+  border-top: 1px solid var(--morrow-product-line-soft, var(--morrow-product-line));
+  color: var(--morrow-product-faint);
+  font-size: 11.5px;
+  gap: 8px;
+  line-height: 1.5;
+}
+
+.morrow-turn-footer__mark {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--morrow-product-line-strong);
+  transform: translateY(-1px);
+}
+
+.morrow-turn-footer[data-status="failed"] .morrow-turn-footer__mark {
+  background: var(--morrow-product-danger);
+}
+
+.morrow-turn-footer__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.morrow-conversation-message .morrow-turn-footer__inspect {
+  min-height: 0;
+  margin-inline-start: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--morrow-product-copy-quiet);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11.5px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  transition: color var(--morrow-premium-control) var(--morrow-product-shift);
+  white-space: nowrap;
+}
+
+.morrow-conversation-message .morrow-turn-footer__inspect:hover {
+  color: var(--morrow-product-copy);
+}
+
 /* ── Failure surface ─────────────────────────────────────────────────────── */
 
 .morrow-turn-failure {
