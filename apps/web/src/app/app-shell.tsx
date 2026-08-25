@@ -6,7 +6,9 @@ import {
   Clock3,
   Folder,
   Home,
+  ListChecks,
   MoreHorizontal,
+  Plus,
   Settings,
   UsersRound,
   WandSparkles,
@@ -49,6 +51,7 @@ interface NavItem {
 
 const NAVIGATION: NavItem[] = [
   { icon: Home, label: "Home", to: "/" },
+  { icon: ListChecks, label: "Missions", to: "/missions" },
   { icon: Folder, label: "Projects", to: "/projects" },
   { icon: WandSparkles, label: "Skills", to: "/skills" },
   { icon: Brain, label: "Memory", to: "/memory" },
@@ -61,8 +64,7 @@ const NAVIGATION: NavItem[] = [
 const MOBILE_NAVIGATION: NavItem[] = [
   { icon: Home, label: "Home", to: "/" },
   { icon: Clock3, label: "History", to: "/chats" },
-  { icon: Folder, label: "Projects", to: "/projects" },
-  { icon: WandSparkles, label: "Skills", to: "/skills" },
+  { icon: ListChecks, label: "Missions", to: "/missions" },
 ];
 
 const runtimeLabels = {
@@ -131,6 +133,23 @@ function NavItemLink({ item, onNavigate }: { item: NavItem; onNavigate: () => vo
   );
 }
 
+function MobileNavLink({ item, onNavigate }: { item: NavItem; onNavigate: () => void }) {
+  const Icon = item.icon;
+  return (
+    <Link
+      activeOptions={{ exact: item.to === "/" }}
+      activeProps={{ "aria-current": "page" }}
+      className="morrow-mobile-dock__link"
+      data-nav={item.label}
+      onClick={onNavigate}
+      to={item.to!}
+    >
+      <Icon aria-hidden="true" size={18} strokeWidth={1.8} />
+      <span>{item.label}</span>
+    </Link>
+  );
+}
+
 function SidebarNewChat() {
   const { activeProject } = useActiveProject();
   if (!activeProject) {
@@ -142,6 +161,35 @@ function SidebarNewChat() {
     );
   }
   return <NewChatButton projectId={activeProject?.id} />;
+}
+
+function MobileNewChat({ onNavigate }: { onNavigate: () => void }) {
+  const { activeProject } = useActiveProject();
+
+  if (!activeProject) {
+    return (
+      <Link
+        aria-label="New chat"
+        className="morrow-mobile-dock__link"
+        data-nav="New"
+        onClick={onNavigate}
+        title="New chat"
+        to="/projects"
+      >
+        <Plus aria-hidden="true" size={18} strokeWidth={1.8} />
+        <span>New</span>
+      </Link>
+    );
+  }
+
+  return (
+    <div className="morrow-mobile-dock__action" data-nav="New">
+      <NewChatButton
+        className="morrow-mobile-dock__link morrow-mobile-dock__new"
+        projectId={activeProject.id}
+      />
+    </div>
+  );
 }
 
 /**
@@ -173,24 +221,14 @@ function GroupParticipantBoundary() {
 function MobileDock({ onMore, onNavigate }: { onMore: () => void; onNavigate: () => void }) {
   return (
     <nav aria-label="Mobile navigation" className="morrow-mobile-dock">
-      {MOBILE_NAVIGATION.map((item) => {
-        const Icon = item.icon;
-        return (
-          <Link
-            activeOptions={{ exact: item.to === "/" }}
-            activeProps={{ "aria-current": "page" }}
-            className="morrow-mobile-dock__link"
-            data-nav={item.label}
-            key={item.label}
-            onClick={onNavigate}
-            to={item.to!}
-          >
-            <Icon aria-hidden="true" size={18} strokeWidth={1.8} />
-            <span>{item.label}</span>
-          </Link>
-        );
-      })}
-      <button aria-label="More navigation" className="morrow-mobile-dock__link" onClick={onMore} type="button">
+      {MOBILE_NAVIGATION.slice(0, 2).map((item) => (
+        <MobileNavLink item={item} key={item.label} onNavigate={onNavigate} />
+      ))}
+      <MobileNewChat onNavigate={onNavigate} />
+      {MOBILE_NAVIGATION.slice(2).map((item) => (
+        <MobileNavLink item={item} key={item.label} onNavigate={onNavigate} />
+      ))}
+      <button aria-label="More navigation" className="morrow-mobile-dock__link" data-nav="More" onClick={onMore} type="button">
         <MoreHorizontal aria-hidden="true" size={19} strokeWidth={1.8} />
         <span>More</span>
       </button>

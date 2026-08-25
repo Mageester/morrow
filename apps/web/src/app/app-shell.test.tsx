@@ -11,6 +11,7 @@ import { createAppRouter } from "./router.js";
 
 const NAV_ORDER = [
   "Home",
+  "Missions",
   "Projects",
   "Skills",
   "Memory",
@@ -141,6 +142,7 @@ describe("Morrow application shell", () => {
 
   it.each([
     ["/app/chats", "History"],
+    ["/app/missions", "Missions"],
     ["/app/projects", "Projects"],
     ["/app/skills", "Skills"],
     ["/app/connections", "Connect a model"],
@@ -171,7 +173,16 @@ describe("Morrow application shell", () => {
     renderAt("/app/");
 
     const dock = await screen.findByRole("navigation", { name: "Mobile navigation" });
+    expect([...dock.querySelectorAll("[data-nav]")].map((element) => element.getAttribute("data-nav"))).toEqual([
+      "Home",
+      "History",
+      "New",
+      "Missions",
+      "More",
+    ]);
     expect(within(dock).getByRole("link", { name: "History" })).toBeVisible();
+    expect(within(dock).getByRole("link", { name: "New chat" })).toBeVisible();
+    expect(within(dock).getByRole("link", { name: "Missions" })).toBeVisible();
     await user.click(within(dock).getByRole("button", { name: "More navigation" }));
     expect(await screen.findByRole("button", { name: "Close navigation" })).toHaveAttribute(
       "aria-expanded",
