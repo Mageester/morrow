@@ -722,7 +722,49 @@ export class MorrowApi {
   updateMcpToolPermission(serverId: string, toolName: string, policy: "always_allow" | "require_approval" | "deny") {
     return this.req<{ ok: boolean }>("PUT", `/api/mcp/permissions/${encodeURIComponent(serverId)}/${encodeURIComponent(toolName)}`, { policy });
   }
+
+  /**
+   * Skill installation goes through the service rather than the CLI's own
+   * filesystem helpers, so the CLI, the Skills page and the agent all write to
+   * one skill root through one set of checks. A download can be slow, so the
+   * preview gets a longer window than the default.
+   */
+  previewSkillInstall(source: string, opts: { subdir?: string | null; overwrite?: boolean } = {}) {
+    return this.req<SkillInstallPreview>("POST", "/api/skills/install/preview", {
+      source,
+      subdir: opts.subdir ?? null,
+      overwrite: opts.overwrite ?? false,
+    }, { timeoutMs: 60_000 });
+  }
+  applySkillInstall(handle: string) {
+    return this.req<{ id: string; directory: string; enabled: boolean }>("POST", "/api/skills/install", { handle });
+  }
+  discardSkillInstall(handle: string) {
+    return this.req<void>("POST", "/api/skills/install/discard", { handle });
+  }
+  removeSkill(id: string) {
+    return this.req<void>("DELETE", `/api/skills/${encodeURIComponent(id)}`);
+  }
 }
+
+export interface SkillInstallPlan {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  publisher: string;
+  riskClass: string;
+  source: string;
+  permissions: { tools: string[]; filesystemScopes: string[]; networkDomains: string[]; requiredSecrets: string[] };
+  files: Array<{ path: string; bytes: number }>;
+  generatedMetadata: string[];
+  replaces: string | null;
+  warnings: string[];
+}
+
+export type SkillInstallPreview =
+  | { kind: "ready"; plan: SkillInstallPlan; handle: string }
+  | { kind: "choices"; source: string; candidates: Array<{ subdir: string; id: string; name: string; description: string }> };
 
 function safeJson(text: string): unknown {
   try {

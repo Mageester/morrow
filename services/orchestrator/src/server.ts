@@ -75,6 +75,14 @@ import { learnedSkillsRepository } from "./repositories/learned-skills.js";
 import { AutomaticMemoryService } from "./cortex/automatic-memory.js";
 import { AutomaticSkillService } from "./cortex/automatic-skills.js";
 import { verifySkillDirectory } from "./skills/registry.js";
+import {
+  applySkillInstall,
+  discardSkillInstall,
+  parseSkillSource,
+  planSkillInstall,
+  removeInstalledSkill,
+  SkillInstallError,
+} from "./skills/install.js";
 import { schedulesRepository } from "./repositories/schedules.js";
 import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
@@ -4336,6 +4344,76 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     }
     (out as any[]).sort((a, b) => String(a.name).localeCompare(String(b.name)));
     return out;
+  });
+
+  /**
+   * Installing a skill, in two steps.
+   *
+   * A skill is instructions the agent will follow, so an install grants a
+   * capability rather than copying a file, and the split below is what lets a
+   * person see what they are agreeing to. `preview` fetches, normalizes and
+   * stages the bundle and reports what it found — provenance, requested
+   * permissions, and which metadata Morrow had to invent because the author
+   * shipped none. `install` promotes that exact staging directory. There is no
+   * second fetch in between, so what was shown is what lands.
+   *
+   * Every surface — CLI, the Skills page, and the agent's own tool — goes
+   * through here, so there is one registry and one answer.
+   */
+  const skillInstallFailure = (error: unknown): never => {
+    if (error instanceof SkillInstallError) {
+      const detail = error.issues.length ? `${error.message}: ${error.issues.join("; ")}` : error.message;
+      throw new ApiError(400, detail, "SKILL_INSTALL_REFUSED");
+    }
+    throw error;
+  };
+
+  app.post("/api/skills/install/preview", async (request) => {
+    const body = z.object({
+      source: z.string().trim().min(1).max(2048),
+      subdir: z.string().trim().max(512).nullish(),
+      overwrite: z.boolean().optional(),
+    }).strict().parse((request.body ?? {}) as unknown);
+    try {
+      return await planSkillInstall(parseSkillSource(body.source), {
+        subdir: body.subdir ?? null,
+        overwrite: body.overwrite ?? false,
+      });
+    } catch (error) {
+      return skillInstallFailure(error);
+    }
+  });
+
+  app.post("/api/skills/install", async (request, reply) => {
+    const body = z.object({ handle: z.string().trim().min(1).max(128) }).strict().parse((request.body ?? {}) as unknown);
+    try {
+      const installed = applySkillInstall(body.handle);
+      reply.status(201);
+      // Installing never enables: the skill is on disk and inert until someone
+      // turns it on, which is a separate and deliberate act.
+      return { ...installed, enabled: false };
+    } catch (error) {
+      return skillInstallFailure(error);
+    }
+  });
+
+  /** Abandon a preview without installing it, so staging does not accumulate. */
+  app.post("/api/skills/install/discard", async (request, reply) => {
+    const body = z.object({ handle: z.string().trim().min(1).max(128) }).strict().parse((request.body ?? {}) as unknown);
+    discardSkillInstall(body.handle);
+    reply.status(204);
+    return null;
+  });
+
+  app.delete("/api/skills/:skillId", async (request, reply) => {
+    const { skillId } = request.params as { skillId: string };
+    try {
+      removeInstalledSkill(skillId);
+      reply.status(204);
+      return null;
+    } catch (error) {
+      return skillInstallFailure(error);
+    }
   });
 
   app.get("/api/projects/:projectId/skills/usage", async (request) => {

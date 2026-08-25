@@ -6,7 +6,7 @@ import { EXIT, notFound, usageError } from "../cli/errors.js";
 import { discoverSkills, verifySkill, type LocalSkill } from "../skills/registry.js";
 import { validateSkillSpec, generateSkillFiles, installSkill, KNOWN_SKILL_TOOLS, type SkillSpec } from "../skills/creator.js";
 import { findDuplicates, backupSkill, listBackups, rollbackSkill, archiveSkill, restoreArchived, listArchived } from "../skills/curator.js";
-import { ask, isInteractive } from "./common.js";
+import { ask, confirm, isInteractive } from "./common.js";
 import { flagString, flagBool } from "../cli/args.js";
 
 const builtInRoot = resolve(fileURLToPath(new URL("../../../../skills", import.meta.url)));
@@ -56,15 +56,112 @@ export async function skillsCommand(ctx: Context, sub: string | undefined, args:
     else { ctx.out.heading(skill.manifest.name); ctx.out.keyValue([["id", skill.id], ["version", skill.manifest.version], ["risk", skill.manifest.riskClass], ["publisher", skill.manifest.publisher], ["verification", verification.ok ? "passed" : verification.issues.join("; ")]]); }
     return EXIT.OK;
   }
-  if (verb === "install") throw usageError("Remote skills are disabled. Review and copy a skill into the local skills directory before enabling it.");
-  if (verb === "remove") throw usageError("Local skill removal is intentionally manual; remove the reviewed directory yourself.");
+  if (verb === "install") return installFromSource(ctx, args);
+  if (verb === "remove") return removeSkill(ctx, args[0]);
   if (verb === "create") return createSkill(ctx, args, {});
   if (verb === "update") return updateSkill(ctx, args);
   if (verb === "dedupe") return dedupeSkill(ctx, args[0]);
   if (verb === "backup" || verb === "backups" || verb === "rollback" || verb === "archive" || verb === "restore" || verb === "archived" || verb === "pin" || verb === "unpin") {
     return curateSkill(ctx, verb, args);
   }
-  throw usageError(`Unknown skills subcommand: ${verb}`, "Try: list, search, inspect, verify, enable, disable, create, update, dedupe, backup, backups, rollback, archive, restore, archived, pin, unpin");
+  throw usageError(`Unknown skills subcommand: ${verb}`, "Try: list, search, install, remove, inspect, verify, enable, disable, create, update, dedupe, backup, backups, rollback, archive, restore, archived, pin, unpin");
+}
+
+
+/**
+ * Install a skill from a local folder, a `.tar.gz`, or GitHub.
+ *
+ * The work happens in the service, not here, so the CLI, the Skills page and
+ * the agent all write to one skill root through one set of checks. What this
+ * function owns is the consent step: show what was actually fetched — where it
+ * came from, what it asks for, and which metadata Morrow had to invent because
+ * the author shipped none — and only then apply the staged bundle.
+ */
+async function installFromSource(ctx: Context, args: string[]): Promise<number> {
+  const raw = args.find((arg) => !arg.startsWith("-"));
+  if (!raw) {
+    throw usageError(
+      "Usage: morrow skills install <source>",
+      "A GitHub repo (owner/repo, owner/repo@v1.2, a github.com URL), a local folder (./my-skill), or a .tar.gz",
+    );
+  }
+  // A relative path means "relative to where I am typing". The service has its
+  // own working directory, so resolve it here or it would resolve to something
+  // else entirely on the other end.
+  const source = raw.startsWith(".") ? resolve(process.cwd(), raw) : raw;
+  const subdirFlag = flagString(ctx.flags, "subdir") ?? null;
+  const overwrite = flagBool(ctx.flags, "overwrite") || flagBool(ctx.flags, "force");
+  const assumeYes = flagBool(ctx.flags, "yes") || flagBool(ctx.flags, "y");
+  const api = ctx.api();
+
+  const preview = await api.previewSkillInstall(source, { subdir: subdirFlag, overwrite });
+
+  if (preview.kind === "choices") {
+    if (ctx.out.json) { ctx.out.data(preview); return EXIT.OK; }
+    ctx.out.info(`${preview.source} contains ${preview.candidates.length} skills. Choose one with --subdir:`);
+    ctx.out.table(["subdir", "id", "description"], preview.candidates.map((candidate) => [candidate.subdir, candidate.id, candidate.description]));
+    return EXIT.OK;
+  }
+
+  const { plan, handle } = preview;
+  if (ctx.out.json && !assumeYes) { ctx.out.data({ ...preview, applied: false }); return EXIT.OK; }
+
+  if (!ctx.out.json) {
+    ctx.out.heading(`${plan.name} (${plan.id})`);
+    ctx.out.keyValue([
+      ["version", plan.version],
+      ["from", plan.source],
+      ["publisher", plan.publisher],
+      ["risk", plan.riskClass],
+      ["files", String(plan.files.length)],
+      ...(plan.replaces ? [["replaces", `version ${plan.replaces}`] as [string, string]] : []),
+    ]);
+    if (plan.description) ctx.out.info(plan.description);
+    ctx.out.info(describePermissions(plan.permissions));
+    if (plan.generatedMetadata.length > 0) {
+      // Say plainly that the empty permission set is Morrow's default rather
+      // than the author's considered answer.
+      ctx.out.info(`Morrow generated ${plan.generatedMetadata.join(" and ")} because this bundle shipped none.`);
+    }
+    for (const warning of plan.warnings) ctx.out.info(`! ${warning}`);
+  }
+
+  if (!assumeYes) {
+    if (!isInteractive(ctx)) {
+      throw usageError("Refusing to install without confirmation.", "Re-run with --yes once you have reviewed the skill.");
+    }
+    if (!(await confirm(`Install ${plan.id}?`, false))) {
+      await api.discardSkillInstall(handle).catch(() => {});
+      ctx.out.info("Not installed.");
+      return EXIT.OK;
+    }
+  }
+
+  const installed = await api.applySkillInstall(handle);
+  if (ctx.out.json) ctx.out.data({ ...installed, plan });
+  else {
+    ctx.out.success(`Installed ${installed.id} to ${installed.directory}`);
+    // Installing is not enabling, and the next step should not be a surprise.
+    ctx.out.info(`It is disabled until you run: morrow skills enable ${installed.id}`);
+  }
+  return EXIT.OK;
+}
+
+function describePermissions(permissions: { tools: string[]; filesystemScopes: string[]; networkDomains: string[]; requiredSecrets: string[] }): string {
+  const parts: string[] = [];
+  if (permissions.tools.length) parts.push(`tools: ${permissions.tools.join(", ")}`);
+  if (permissions.filesystemScopes.length) parts.push(`filesystem: ${permissions.filesystemScopes.join(", ")}`);
+  if (permissions.networkDomains.length) parts.push(`network: ${permissions.networkDomains.join(", ")}`);
+  if (permissions.requiredSecrets.length) parts.push(`secrets: ${permissions.requiredSecrets.join(", ")}`);
+  return parts.length ? `Requests ${parts.join("; ")}` : "Requests no tools, filesystem, network, or secrets";
+}
+
+async function removeSkill(ctx: Context, id: string | undefined): Promise<number> {
+  if (!id) throw usageError("Usage: morrow skills remove <id>");
+  await ctx.api().removeSkill(id);
+  if (ctx.out.json) ctx.out.data({ id, removed: true });
+  else ctx.out.success(`Removed ${id}.`);
+  return EXIT.OK;
 }
 
 function dedupeSkill(ctx: Context, id?: string): number {
