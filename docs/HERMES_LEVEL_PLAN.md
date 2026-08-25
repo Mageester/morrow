@@ -41,7 +41,7 @@
 | 1 | Installation & updates | 3 | D,W | Health-failure rollback path untested; apply-update automation partial |
 | 2 | First-run onboarding | 3 | D | Onboarding exists CLI+web; not verified continuous to first task |
 | 3 | Provider setup | 3 | D,M | OAuth (Claude/Codex) + key flows; wizard discoverability thin |
-| 4 | Workspace / project setup | 3 | D,M | Create/select works; no guided "open a folder" first-run bridge |
+| 4 | Workspace / project setup | 3 | D,M | Create/select works; first-run continuity still needs an end-to-end acceptance path |
 | 5 | Interactive chat | 3 | D,M | SSE streaming CLI+web; reconnect/dedup mid-stream unproven |
 | 6 | Planning | 3 | M,D | Plan steps + plan-only mode; flat, no nested child plans |
 | 7 | Autonomous execution | 3 | M,D | Loop/budget guards real; verification-gating shallow |

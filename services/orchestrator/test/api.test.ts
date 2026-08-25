@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
+import { FolderPickerUnavailableError } from "../src/system/folder-picker.js";
 
 describe("REST API and Task Runner Vertical Slice", () => {
   let db: any;
@@ -269,6 +270,31 @@ describe("REST API and Task Runner Vertical Slice", () => {
 
     const listRes = await app.inject({ method: "GET", url: "/api/projects" });
     expect(listRes.json()).toHaveLength(1);
+  });
+
+  it("returns a selected folder from the native picker bridge", async () => {
+    const wsDir = join(tempDir, "picked-ws");
+    mkdirSync(wsDir);
+    await app.close();
+    app = buildServer({ db, runner, folderPicker: async () => wsDir });
+
+    const res = await app.inject({ method: "POST", url: "/api/projects/pick-folder" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ path: wsDir, name: "picked-ws" });
+  });
+
+  it("returns a structured fallback when no native picker is available", async () => {
+    await app.close();
+    app = buildServer({ db, runner, folderPicker: async () => { throw new FolderPickerUnavailableError(); } });
+
+    const res = await app.inject({ method: "POST", url: "/api/projects/pick-folder" });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toMatchObject({
+      code: "FOLDER_PICKER_UNAVAILABLE",
+      message: expect.stringContaining("manually"),
+    });
   });
 
   it("creates Cortex specialist roles and exposes the named agent team for missions", async () => {

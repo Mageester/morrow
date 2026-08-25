@@ -48,12 +48,16 @@
   MISSING). Transient failures aren't cleanly distinguished from fatal (Journey E).
 
 ## Journey: First task
-1. Select/create project (`projects` CLI / API) — needs a workspace path.
+1. Select/create project (`projects` CLI / API). In the local web app, **Choose
+   folder** opens the OS folder picker, derives a project name, and fills the
+   registration form; manual path entry remains available.
 2. Create a conversation, send a message → `POST /api/conversations/:id/messages`
    creates an `agent_chat` task `status=queued`, then `runner.run(task.id)`
    (`server.ts:665`), streams via SSE (`/api/tasks/:id/events/stream`).
 3. Watch tool cards, plan steps, final answer.
-- **Hidden prerequisite:** a project with a valid workspace path must exist first.
+- **Hidden prerequisite:** a project with a valid workspace path must exist first;
+  the web picker makes choosing that path discoverable but does not create a
+  project until the user confirms **Add project**.
 - **Works:** startup reconciliation re-dispatches persisted `queued` tasks after
   restart; see Journey: Restart for the remaining recovery gaps.
 

@@ -77,6 +77,61 @@ describe("ProjectsPage", () => {
     expect(screen.getByText("Active")).toBeVisible();
   });
 
+  it("lets the user choose a folder and uses its metadata to create the project", async () => {
+    let createdPayload: unknown;
+    let created = false;
+    renderProjects(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/projects/pick-folder" && init?.method === "POST") {
+        return Response.json({ path: "/home/dread/Code/morrow", name: "morrow" });
+      }
+      if (url === "/api/projects" && init?.method === "POST") {
+        created = true;
+        createdPayload = JSON.parse(String(init.body));
+        return Response.json(projectA);
+      }
+      if (url === "/api/projects") return Response.json(created ? [projectA] : []);
+      if (url === `/api/projects/${projectA.id}/status`) return Response.json(statusFor(projectA));
+      throw new Error(`unexpected ${url}`);
+    });
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /new project/i }));
+    await user.click(screen.getByRole("button", { name: /choose folder/i }));
+
+    expect(screen.getByRole("textbox", { name: /project name/i })).toHaveValue("morrow");
+    expect(screen.getByRole("textbox", { name: /folder path/i })).toHaveValue("/home/dread/Code/morrow");
+
+    await user.click(screen.getByRole("button", { name: /add project/i }));
+
+    await waitFor(() => expect(createdPayload).toEqual({
+      name: "morrow",
+      workspacePath: "/home/dread/Code/morrow",
+    }));
+    expect(await screen.findByRole("region", { name: "Current project: Alpha" })).toBeVisible();
+  });
+
+  it("keeps manual path entry available when the native picker is unavailable", async () => {
+    renderProjects(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/projects/pick-folder" && init?.method === "POST") {
+        return Response.json(
+          { version: 1, error: { code: "FOLDER_PICKER_UNAVAILABLE", message: "Use manual entry for this install." } },
+          { status: 503 },
+        );
+      }
+      if (url === "/api/projects") return Response.json([]);
+      throw new Error(`unexpected ${url}`);
+    });
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /new project/i }));
+    await user.click(screen.getByRole("button", { name: /choose folder/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Use manual entry for this install.");
+    expect(screen.getByRole("textbox", { name: /folder path/i })).toBeEnabled();
+  });
+
   it("lists existing projects with neither active until the user picks one", async () => {
     renderProjects(async (input) => {
       const url = String(input);

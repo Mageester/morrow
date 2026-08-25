@@ -1,7 +1,7 @@
 import { Button, Surface } from "@morrow/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Trash2 } from "lucide-react";
+import { FolderOpen, Trash2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { ApiClientError } from "../../api/client.js";
 import { projectApi, projectQueries, type ProjectSelection } from "../../api/projects.js";
@@ -16,16 +16,27 @@ export function ProjectsPage() {
   const { projects, activeProject, isPending, isError, refetch, selectProject } = useActiveProject();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
+  const [nameEdited, setNameEdited] = useState(false);
   const [workspacePath, setWorkspacePath] = useState("");
   const [projectToDelete, setProjectToDelete] = useState<ProjectSelection | null>(null);
   // Adding a project is a deliberate act, not a form that occupies the page
   // ahead of the work already in it.
   const [adding, setAdding] = useState(false);
 
+  const pickFolder = useMutation({
+    mutationFn: projectApi.pickFolder,
+    onSuccess: (selection) => {
+      if (!selection.path) return;
+      setWorkspacePath(selection.path);
+      if (!nameEdited) setName(selection.name ?? "");
+    },
+  });
+
   const createProject = useMutation({
     mutationFn: () => projectApi.create({ name: name.trim(), workspacePath: workspacePath.trim() }),
     onSuccess: (created) => {
       setName("");
+      setNameEdited(false);
       setWorkspacePath("");
       setAdding(false);
       selectProject(created.id);
@@ -89,29 +100,51 @@ export function ProjectsPage() {
           is uploaded.
         </p>
         <form className="morrow-projects__form" onSubmit={submit}>
-          <label className="morrow-projects__field">
-            <span>Project name</span>
+          <div className="morrow-projects__field">
+            <label htmlFor="project-name">Project name</label>
             <input
+              id="project-name"
               maxLength={120}
               name="project-name"
-              onChange={(event) => setName(event.target.value)}
+              onChange={(event) => {
+                setName(event.target.value);
+                setNameEdited(true);
+              }}
               placeholder="My app"
               value={name}
             />
-          </label>
-          <label className="morrow-projects__field">
-            <span>Folder path</span>
-            <input
-              name="project-path"
-              onChange={(event) => setWorkspacePath(event.target.value)}
-              placeholder="C:\code\my-app"
-              value={workspacePath}
-            />
-          </label>
-          <Button disabled={!name.trim() || !workspacePath.trim() || createProject.isPending} type="submit">
+          </div>
+          <div className="morrow-projects__field">
+            <label htmlFor="project-path">Folder path</label>
+            <span className="morrow-projects__path-control">
+              <input
+                id="project-path"
+                name="project-path"
+                onChange={(event) => setWorkspacePath(event.target.value)}
+                placeholder="C:\code\my-app"
+                value={workspacePath}
+              />
+              <Button
+                disabled={pickFolder.isPending || createProject.isPending}
+                onClick={() => pickFolder.mutate()}
+                size="compact"
+                type="button"
+                variant="secondary"
+              >
+                <FolderOpen aria-hidden="true" size={16} />
+                {pickFolder.isPending ? "Opening…" : "Choose folder"}
+              </Button>
+            </span>
+          </div>
+          <Button disabled={!name.trim() || !workspacePath.trim() || createProject.isPending || pickFolder.isPending} type="submit">
             {createProject.isPending ? "Adding…" : "Add project"}
           </Button>
         </form>
+        {pickFolder.isError ? (
+          <p role="alert">
+            {safeError(pickFolder.error, "Morrow could not open the folder picker. Enter the path manually instead.")}
+          </p>
+        ) : null}
         {createProject.isError ? (
           <p role="alert">
             {safeError(createProject.error, "Morrow could not add this project. Check the path exists and try again.")}

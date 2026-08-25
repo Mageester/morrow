@@ -246,7 +246,7 @@ import { hashString, assertContainedRealPath } from "./tools/diff-applier.js";
 import { canonicalCommandTrustKey, classifyCommand } from "./tools/command-policy.js";
 import { resolveMorrowHome } from "./home.js";
 import { unlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createProvider, installProviderModelDiscoveries, listProviderStatuses, providerCapabilities } from "./provider/registry.js";
 import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
@@ -286,6 +286,7 @@ import { projectRoutineProposal } from "./web/routine-proposal.js";
 import { routinesRepository } from "./repositories/routines.js";
 import { assertRoutineTarget, dispatchRoutineTask } from "./routines/dispatch.js";
 import { registerWebAppRoutes } from "./web/static-app.js";
+import { createNativeFolderPicker, FolderPickerUnavailableError, type FolderPicker } from "./system/folder-picker.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -364,6 +365,8 @@ export type ServerDependencies = {
    * surface exists.
    */
   webRoot?: string;
+  /** Local OS folder chooser used by the web project-registration flow. */
+  folderPicker?: FolderPicker;
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
@@ -389,6 +392,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   });
 
   const projects = projectRepository(deps.db);
+  const folderPicker = deps.folderPicker ?? createNativeFolderPicker();
   const agents = agentsRepository(deps.db);
   const teammateTrust = teammateTrustRepository(deps.db);
   const teams = teamsRepository(deps.db);
@@ -729,6 +733,32 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       }
       throw e;
     }
+  });
+
+  app.post("/api/projects/pick-folder", async () => {
+    let selectedPath: string | null;
+    try {
+      selectedPath = await folderPicker();
+    } catch (error) {
+      if (error instanceof FolderPickerUnavailableError) {
+        throw new ApiError(503, "Morrow could not open a native folder picker. Enter the folder path manually instead.", "FOLDER_PICKER_UNAVAILABLE");
+      }
+      throw error;
+    }
+
+    if (!selectedPath) return { path: null, name: null };
+    if (!existsSync(selectedPath) || !lstatSync(selectedPath).isDirectory()) {
+      throw new ApiError(400, "The selected workspace is not an accessible directory", "INVALID_WORKSPACE");
+    }
+
+    let canonicalPath: string;
+    try {
+      canonicalPath = realpathSync(selectedPath);
+    } catch {
+      throw new ApiError(400, "The selected workspace could not be opened", "INVALID_WORKSPACE");
+    }
+
+    return { path: canonicalPath, name: basename(canonicalPath) || "Project" };
   });
 
   app.get("/api/projects", async (request, reply) => {
