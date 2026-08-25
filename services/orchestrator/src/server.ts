@@ -3228,6 +3228,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         args: body.args,
         cwd,
         mode: body.mode,
+        keepAlive: body.keepAlive === true,
         ...(body.timeoutMs ? { timeoutMs: body.timeoutMs } : {}),
       });
     } catch (e: any) {
@@ -3253,14 +3254,20 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (status && !["running", "exited", "failed", "cancelled", "lost"].includes(status)) {
       throw new ApiError(400, "Invalid process status filter", "VALIDATION_ERROR");
     }
-    return processesRepo.listByProject(projectId, status as any);
+    // Endpoints are attached here rather than stored on the row: they are
+    // derived from captured output, so recomputing keeps them correct for a
+    // server that announces its address late (a slow first compile) without a
+    // migration or a second write path that could disagree with the log.
+    return processesRepo
+      .listByProject(projectId, status as any)
+      .map((record) => ({ ...record, endpoints: supervisor.endpoints(record.id) }));
   });
 
   app.get("/api/processes/:processId", async (request) => {
     const { processId } = request.params as { processId: string };
     const record = processesRepo.get(processId);
     if (!record) throw new ApiError(404, "Process not found", "NOT_FOUND");
-    return record;
+    return { ...record, endpoints: supervisor.endpoints(processId) };
   });
 
   app.get("/api/processes/:processId/output", async (request) => {

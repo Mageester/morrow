@@ -374,13 +374,21 @@ export const checkpointCommand: Command = {
   },
 };
 
+/** The address worth printing for a job: loopback always reaches it. */
+function processAddress(entry: { endpoints?: { url: string; host: string }[] }): string {
+  const endpoints = entry.endpoints ?? [];
+  if (endpoints.length === 0) return "—";
+  const loopback = endpoints.find((e) => e.host === "127.0.0.1" || e.host.toLowerCase() === "localhost");
+  return (loopback ?? endpoints[0]!).url.replace(/^https?:\/\//, "");
+}
+
 export const processesCommand: Command = {
   name: "ps",
   aliases: ["processes"],
   summary: "background processes the agent started",
-  usage: "[kill <id>]",
+  usage: "[logs <id>|kill <id>]",
   category: "work",
-  subcommands: ["kill"],
+  subcommands: ["logs", "kill"],
   async run(args, ctx) {
     if (!ctx.backend.listProcesses) return unavailable("Process listing");
     try {
@@ -390,6 +398,29 @@ export const processesCommand: Command = {
         await ctx.backend.killProcess(args.rest, true);
         return { notice: { level: "info", text: `Terminated ${shortId(args.rest)}.` } };
       }
+
+      if (args.sub === "logs") {
+        const [id, streamArg] = args.rest.split(/\s+/).filter(Boolean);
+        if (!id) return { notice: { level: "warn", text: "Usage: /ps logs <id> [stdout|stderr]" } };
+        if (!ctx.backend.readProcessOutput) return unavailable("Reading process output");
+        const stream = streamArg === "stderr" ? "stderr" : "stdout";
+        // An id typed from the table is the short form; resolve it against the
+        // real ids rather than making someone copy a UUID out of a column that
+        // deliberately truncates it.
+        const processes = await ctx.backend.listProcesses();
+        const match = processes.find((entry) => entry.id === id || entry.id.startsWith(id));
+        if (!match) return { notice: { level: "warn", text: `No process matches ${id}.` } };
+        const slice = await ctx.backend.readProcessOutput(match.id, { stream, offset: 0, limit: 64 * 1024 });
+        if (!slice.data.trim()) {
+          return { notice: { level: "info", text: `Nothing on ${stream} for ${shortId(match.id)} yet.` } };
+        }
+        const builder = report(`${match.command} ${stream}`)
+          .subtitle(`${match.status}${slice.truncated ? " · capture limit reached" : ""}`)
+          .code(slice.data.trimEnd());
+        const address = processAddress(match);
+        return { report: (address === "—" ? builder : builder.hint(`listening on ${address}`)).build() };
+      }
+
       const processes = await ctx.backend.listProcesses();
       const live = processes.filter((entry) => entry.status === "running");
       if (processes.length === 0) return { notice: { level: "info", text: "No background processes." } };
@@ -397,10 +428,14 @@ export const processesCommand: Command = {
         report: report("Processes")
           .subtitle(`${live.length} running of ${processes.length}`)
           .table(
-            ["State", "Command", "PID", "Id", "Started"],
+            // "Address" is the column this table existed without for too long:
+            // a dev server you cannot reach is indistinguishable from one that
+            // never started.
+            ["State", "Command", "Address", "PID", "Id", "Started"],
             processes.slice(0, 20).map((entry) => [
               entry.status,
-              [entry.command, ...entry.args].join(" ").slice(0, 48),
+              [entry.command, ...entry.args].join(" ").slice(0, 40),
+              processAddress(entry),
               entry.pid == null ? "—" : String(entry.pid),
               shortId(entry.id),
               relativeTime(entry.startedAt),
@@ -409,7 +444,7 @@ export const processesCommand: Command = {
               entry.status === "running" ? "accent" : entry.status === "failed" ? "danger" : undefined,
             ),
           )
-          .hint("/ps kill <id> stops one")
+          .hint("/ps logs <id> shows output · /ps kill <id> stops one")
           .build(),
       };
     } catch (error) {

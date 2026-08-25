@@ -46,6 +46,20 @@ function statusMark(ctx: Context, status: string): string {
   }
 }
 
+/**
+ * The address worth printing for a job.
+ *
+ * Loopback wins when a server announced several: only one of a machine's
+ * addresses is guaranteed to reach it from here, and a table column must not
+ * ask the reader to know which.
+ */
+function processAddress(record: ProcessRecord): string {
+  const endpoints = record.endpoints ?? [];
+  if (endpoints.length === 0) return "-";
+  const loopback = endpoints.find((e) => e.host === "127.0.0.1" || e.host.toLowerCase() === "localhost");
+  return (loopback ?? endpoints[0]!).url.replace(/^https?:\/\//, "");
+}
+
 async function list(ctx: Context, api: MorrowApi): Promise<number> {
   const projectId = (await resolveProject(ctx, api, { required: true, autoCreateMissing: true }))!.id;
   const status = flagString(ctx.flags, "status") as any;
@@ -60,11 +74,14 @@ async function list(ctx: Context, api: MorrowApi): Promise<number> {
   }
   ctx.out.heading(`Processes (${processes.length})`);
   ctx.out.table(
-    ["id", "status", "command", "pid", "started", "exit"],
+    // "address" earns its column: a dev server you cannot reach is
+    // indistinguishable from one that never started.
+    ["id", "status", "command", "address", "pid", "started", "exit"],
     processes.map((p) => [
       p.id.slice(0, 8),
       statusMark(ctx, p.status),
-      [p.command, ...p.args].join(" ").slice(0, 48),
+      [p.command, ...p.args].join(" ").slice(0, 40),
+      processAddress(p),
       p.pid !== null ? String(p.pid) : "-",
       p.startedAt,
       p.exitCode !== null ? String(p.exitCode) : "-",
@@ -81,7 +98,10 @@ async function start(ctx: Context, api: MorrowApi, args: string[]): Promise<numb
     throw usageError("Usage: morrow processes start -- <command> [args …]", "Everything after -- is passed through verbatim.");
   }
   const projectId = (await resolveProject(ctx, api, { required: true, autoCreateMissing: true }))!.id;
-  const input: { command: string; args: string[]; cwd?: string; timeoutMs?: number } = { command, args: rest };
+  const input: { command: string; args: string[]; cwd?: string; timeoutMs?: number; keepAlive?: boolean } = { command, args: rest };
+  // A job started from the CLI has no task to be cleaned up by, but the flag
+  // is carried so the row records the intent and the app can label it.
+  if (flagBool(ctx.flags, "keep-alive")) input.keepAlive = true;
   const cwd = flagString(ctx.flags, "cwd");
   if (cwd) input.cwd = cwd;
   const timeout = flagString(ctx.flags, "timeout");

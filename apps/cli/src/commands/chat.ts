@@ -282,6 +282,7 @@ function buildBackend(
     },
 
     listProcesses: () => api.listProcesses(project.id),
+    readProcessOutput: (id, opts) => api.getProcessOutput(id, opts ?? {}),
     killProcess: async (id, force) => {
       await api.terminateProcess(id, force ?? false);
     },

@@ -120,6 +120,13 @@ export interface SessionBackend {
   /** Background processes started by the agent. */
   listProcesses?(): Promise<import("../client/api.js").ProcessRecord[]>;
   killProcess?(id: string, force?: boolean): Promise<void>;
+  /** Captured stdout/stderr for one background process. `/ps` could start and
+   *  stop a dev server long before it could show you why one failed to come
+   *  up, which is the only question a stopped server actually raises. */
+  readProcessOutput?(
+    id: string,
+    opts?: { stream?: "stdout" | "stderr"; offset?: number; limit?: number },
+  ): Promise<{ data: string; nextOffset: number; eof: boolean; truncated: boolean }>;
 
   /** Isolated worktrees and their integration attempts. */
   listWorktrees?(): Promise<import("../client/api.js").WorktreeRecord[]>;

@@ -860,3 +860,220 @@
   }
 
 }
+
+/* ── Background jobs ─────────────────────────────────────────────────────── */
+
+/*
+ * A dev server the agent started, sitting above the composer while it runs.
+ *
+ * Quiet by construction. This is not an alert — nothing is wrong, something is
+ * simply up — so it gets a hairline and a live dot rather than a filled card
+ * competing with the approvals below it. It disappears entirely when nothing
+ * is running, which is most of the time.
+ */
+.morrow-process-dock {
+  display: flex;
+  width: 100%;
+  max-width: var(--morrow-premium-composer);
+  flex-direction: column;
+  margin: 0 auto 8px;
+  gap: 6px;
+}
+
+.morrow-process {
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--morrow-product-line-soft, var(--morrow-product-line));
+  border-radius: 12px;
+  background: var(--morrow-product-field, transparent);
+}
+
+.morrow-process__head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+
+/* Liveness, stated once. The row exists only for running jobs, so this is a
+   restatement — but a still dot beside "2m 14s" is what makes it read as
+   "right now" instead of "at some point". */
+.morrow-process__pulse {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--morrow-product-success, #6fbf73);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .morrow-process__pulse {
+    animation: morrow-process-pulse 2.4s ease-in-out infinite;
+  }
+}
+
+@keyframes morrow-process-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.morrow-process__command {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--morrow-product-copy-soft);
+  font-family: var(--morrow-product-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The address is the reason this row exists, so it is the one thing in it
+   that looks clickable. */
+.morrow-process__endpoint {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 2px 7px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 999px;
+  color: var(--morrow-product-copy);
+  font-size: 11.5px;
+  gap: 5px;
+  text-decoration: none;
+  transition:
+    background-color var(--morrow-premium-control) var(--morrow-product-shift),
+    border-color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-process__endpoint:hover {
+  border-color: var(--morrow-product-line-strong);
+  background: var(--morrow-product-field-inset, transparent);
+}
+
+.morrow-process__pending {
+  flex: none;
+  color: var(--morrow-product-faint);
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* Marks a job that will still be here after the agent stops. */
+.morrow-process__persist {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 999px;
+  color: var(--morrow-product-copy-quiet);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+
+.morrow-process__uptime {
+  flex: none;
+  margin-inline-start: auto;
+  color: var(--morrow-product-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.morrow-conversation-action-shelf .morrow-process__action {
+  display: inline-flex;
+  flex: none;
+  min-height: 0;
+  align-items: center;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--morrow-product-copy-quiet);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11.5px;
+  gap: 5px;
+  transition:
+    background-color var(--morrow-premium-control) var(--morrow-product-shift),
+    border-color var(--morrow-premium-control) var(--morrow-product-shift),
+    color var(--morrow-premium-control) var(--morrow-product-shift);
+}
+
+.morrow-conversation-action-shelf .morrow-process__action:hover:not(:disabled) {
+  border-color: var(--morrow-product-line-soft);
+  color: var(--morrow-product-copy);
+}
+
+.morrow-conversation-action-shelf .morrow-process__action--stop:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--morrow-product-danger) 40%, transparent);
+  color: var(--morrow-product-danger);
+}
+
+.morrow-conversation-action-shelf .morrow-process__action:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .morrow-process__spinner {
+    animation: morrow-work-spin 1.1s linear infinite;
+  }
+}
+
+.morrow-process__error {
+  margin: 6px 0 0;
+  color: var(--morrow-product-danger);
+  font-size: 11.5px;
+}
+
+.morrow-process__logs {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--morrow-product-line-soft, var(--morrow-product-line));
+}
+
+.morrow-process__streams {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.morrow-conversation-action-shelf .morrow-process__stream {
+  min-height: 0;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--morrow-product-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.morrow-conversation-action-shelf .morrow-process__stream[aria-selected="true"] {
+  background: var(--morrow-product-field-inset, transparent);
+  color: var(--morrow-product-copy);
+}
+
+.morrow-process__truncated {
+  margin-inline-start: auto;
+  color: var(--morrow-product-warning);
+  font-size: 10.5px;
+}
+
+/* The log scrolls inside itself. A dev server can print a lot, and the shelf
+   above the composer is the last place that should grow without bound. */
+.morrow-process__log {
+  max-height: 180px;
+  margin: 6px 0 0;
+  overflow: auto;
+  color: var(--morrow-product-copy-soft);
+  font-family: var(--morrow-product-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.morrow-process__log-empty {
+  margin: 6px 0 0;
+  color: var(--morrow-product-faint);
+  font-size: 11px;
+}

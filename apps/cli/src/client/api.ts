@@ -165,6 +165,17 @@ export interface TaskTreeNode {
   children: TaskTreeNode[];
 }
 
+/** An address a background process announced it is listening on, parsed from
+ *  its own output by the orchestrator. `rewritten` marks a wildcard bind
+ *  normalized to loopback so the printed address and the reachable one can be
+ *  told apart. */
+export interface ProcessEndpoint {
+  url: string;
+  host: string;
+  port: number;
+  rewritten: boolean;
+}
+
 export interface ProcessRecord {
   id: string;
   projectId: string;
@@ -180,6 +191,8 @@ export interface ProcessRecord {
   detail: string | null;
   startedAt: string;
   endedAt: string | null;
+  /** Absent on an older orchestrator that predates endpoint detection. */
+  endpoints?: ProcessEndpoint[];
 }
 
 export interface WorktreeRecord {

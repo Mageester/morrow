@@ -29,6 +29,15 @@ export interface ProcessRecord {
   startedAt: string;
   endedAt: string | null;
   createdAt: string;
+  /**
+   * This job outlives the task that started it.
+   *
+   * Off by default: a terminal task force-stops what it started, which is what
+   * keeps an agentic run from leaking dev servers. Set when the request was
+   * explicitly "start it and keep it running", which is not a leak — it is the
+   * thing that was asked for.
+   */
+  keepAlive: boolean;
 }
 
 function mapRow(row: any): ProcessRecord {
@@ -46,6 +55,7 @@ function mapRow(row: any): ProcessRecord {
     exitCode: row.exit_code,
     runId: row.run_id,
     detail: row.detail,
+    keepAlive: row.keep_alive === 1,
     startedAt: row.started_at,
     endedAt: row.ended_at,
     createdAt: row.created_at,
@@ -65,10 +75,11 @@ export function processesRepository(db: Database.Database) {
       mode: "pipe" | "pty";
       pid: number | null;
       runId: string;
+      keepAlive?: boolean;
     }, now = new Date().toISOString()): ProcessRecord {
       db.prepare(
-        `INSERT INTO processes (id, project_id, task_id, agent_id, command, args_json, cwd, mode, pid, status, exit_code, run_id, detail, started_at, ended_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', NULL, ?, NULL, ?, NULL, ?)`
+        `INSERT INTO processes (id, project_id, task_id, agent_id, command, args_json, cwd, mode, pid, status, exit_code, run_id, detail, started_at, ended_at, created_at, keep_alive)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', NULL, ?, NULL, ?, NULL, ?, ?)`
       ).run(
         input.id,
         input.projectId,
@@ -81,7 +92,8 @@ export function processesRepository(db: Database.Database) {
         input.pid,
         input.runId,
         now,
-        now
+        now,
+        input.keepAlive === true ? 1 : 0
       );
       return this.get(input.id)!;
     },

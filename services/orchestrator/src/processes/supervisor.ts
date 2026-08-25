@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { filterEnv, resolveExecutable, SHELL_META_CHARS } from "../tools/command-executor.js";
 import type { ProcessRecord, ProcessStatus } from "../repositories/processes.js";
+import { detectEndpoints, type ProcessEndpoint } from "./endpoints.js";
 
 /**
  * Durable background-process supervisor.
@@ -37,6 +38,9 @@ export interface StartProcessOptions {
   mode?: "pipe" | "pty";
   timeoutMs?: number;
   maxLogBytes?: number;
+  /** Exempt this job from the cleanup a terminal task performs on what it
+   *  started. See the `keep_alive` migration for why this is opt-in. */
+  keepAlive?: boolean;
 }
 
 export interface OutputSlice {
@@ -58,6 +62,10 @@ interface LiveChild {
 }
 
 const DEFAULT_MAX_LOG_BYTES = 1024 * 1024; // 1 MB per stream
+
+/** How much of each log's head to scan for a startup banner. Generous enough
+ *  for a verbose build's preamble, small enough to re-read on every poll. */
+const ENDPOINT_SCAN_BYTES = 64 * 1024;
 
 const require = createRequire(import.meta.url);
 
@@ -84,6 +92,7 @@ interface ProcessesRepo {
   create(input: {
     id: string; projectId: string; taskId?: string | null; agentId?: string | null;
     command: string; args: string[]; cwd: string; mode: "pipe" | "pty"; pid: number | null; runId: string;
+    keepAlive?: boolean;
   }): ProcessRecord;
   get(id: string): ProcessRecord | undefined;
   listByProject(projectId: string, status?: ProcessStatus): ProcessRecord[];
@@ -161,6 +170,7 @@ export class ProcessSupervisor {
       mode,
       pid: child.pid ?? null,
       runId: this.runId,
+      keepAlive: options.keepAlive === true,
     });
 
     const entry: LiveChild = { child, ptyProc: null, timeout: null, truncated: false };
@@ -253,6 +263,7 @@ export class ProcessSupervisor {
       mode: "pty",
       pid: ptyProc.pid ?? null,
       runId: this.runId,
+      keepAlive: options.keepAlive === true,
     });
 
     const entry: LiveChild = { child: null, ptyProc, timeout: null, truncated: false };
@@ -372,6 +383,34 @@ export class ProcessSupervisor {
     } finally {
       closeSync(fd);
     }
+  }
+
+  /**
+   * Where this process announced it is listening, read from its own output.
+   *
+   * Both streams are scanned because tools disagree about which one a startup
+   * banner belongs on — Vite writes it to stdout, plenty of others to stderr —
+   * and a reader who cannot find the URL does not care which pipe it was on.
+   *
+   * Bounded to the head of each log on purpose. The address is announced at
+   * startup, so reading the first slice answers the question, while a busy
+   * server can produce megabytes of request logging that would cost real time
+   * to rescan on every poll.
+   */
+  endpoints(id: string, scanBytes = ENDPOINT_SCAN_BYTES): ProcessEndpoint[] {
+    const seen = new Map<string, ProcessEndpoint>();
+    for (const stream of ["stdout", "stderr"] as const) {
+      let slice: OutputSlice;
+      try {
+        slice = this.readOutput(id, stream, 0, scanBytes);
+      } catch {
+        return [];
+      }
+      for (const endpoint of detectEndpoints(slice.data)) {
+        if (!seen.has(endpoint.url)) seen.set(endpoint.url, endpoint);
+      }
+    }
+    return [...seen.values()];
   }
 
   /**

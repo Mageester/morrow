@@ -1158,7 +1158,15 @@ export async function executeAgentChatTask({
     status: "completed" | "failed" | "cancelled",
     transitionEvent: Parameters<typeof records.transitionTask>[2],
   ): ReturnType<typeof records.transitionTask> => {
-    const orphaned = processesRepo.listByProject(projectId, "running").filter((process) => process.taskId === taskId);
+    // `keepAlive` jobs are spared: the user asked for a server that outlives
+    // the turn that started it, and killing it is not leak-prevention, it is
+    // refusing the request. Everything else this task started still goes — an
+    // agent that spawned a watcher to check its own work must not leave it
+    // behind. Both kinds are listed with a Stop in the app, so neither is the
+    // silent leak this cleanup was originally written to stop.
+    const orphaned = processesRepo
+      .listByProject(projectId, "running")
+      .filter((process) => process.taskId === taskId && !process.keepAlive);
     for (const process of orphaned) {
       void procSupervisor.terminate(process.id, { force: true })
         .then(() => { event("workspace.inspected", { kind: "auto_stop_process", processId: process.id, reason: `task_${status}` }); })
@@ -1686,14 +1694,15 @@ export async function executeAgentChatTask({
           args: { type: "array", items: { type: "string" }, description: "Command arguments" },
           cwd: { type: "string", description: "Optional working directory relative to project root" },
           purpose: { type: "string", description: "Reason for running this command" },
-          background: { type: "boolean", description: "Start a long-running process (e.g. 'npm run dev') without waiting for it to exit. Returns { processId, pid } instead of exit output." }
+          background: { type: "boolean", description: "Start a long-running process (e.g. 'npm run dev') without waiting for it to exit. Returns { processId, pid } instead of exit output." },
+          keepAlive: { type: "boolean", description: "Keep this process running after the task finishes. Set it ONLY when the user asked for a server that stays up (\"start the dev server and leave it running\"). Default false: anything you started to verify your own work is stopped when the task ends." }
         },
         required: ["executable", "args", "purpose"]
       }
     },
     {
       name: "read_process_output",
-      description: "Read captured stdout/stderr from a process started with run_command background:true. Poll this to see readiness output (e.g. 'Local: http://localhost:5173') without blocking.",
+      description: "Read captured stdout/stderr from a process started with run_command background:true. Poll this to see readiness output without blocking; the result also reports `endpoints` — any address the process announced it is listening on, parsed from its own output — so you never have to guess a URL.",
       parameters: {
         type: "object",
         properties: {
@@ -2570,6 +2579,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
             command: exec,
             args: cmdArgs,
             cwd: resolvedCwd,
+            keepAlive: args.keepAlive === true,
           });
         } catch (e: any) {
           throw new Error(`Failed to start background process: ${e?.message ?? e}`);
@@ -2578,7 +2588,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           processId: record.id,
           pid: record.pid,
           status: record.status,
-          note: "Started in the background. It keeps running after this tool call returns — use read_process_output to check its output and stop_process to end it.",
+          keepAlive: record.keepAlive,
+          note: "Started in the background. It keeps running after this tool call returns — poll read_process_output for its startup banner (that call reports any address it announced) and use stop_process to end it.",
         });
         records.appendEvidence({
           id: randomUUID(),
@@ -6070,7 +6081,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
             const offset = typeof args.offset === "number" && Number.isFinite(args.offset) && args.offset >= 0 ? Math.floor(args.offset) : 0;
             const slice = procSupervisor.readOutput(processId, stream, offset, 64 * 1024);
             const status = processesRepo.get(processId)?.status ?? owned.status;
-            resultStr = JSON.stringify({ processId, stream, status, ...slice });
+            // The address the server announced, parsed from what it printed.
+            // This is the answer to the question the agent is actually polling
+            // for ("is it up, and where?"), so returning it here saves it from
+            // re-deriving a URL out of a log slice — and from guessing one.
+            const endpoints = procSupervisor.endpoints(processId);
+            resultStr = JSON.stringify({ processId, stream, status, ...slice, endpoints });
             event("workspace.inspected", { kind: "read_process_output", processId, truncated: slice.truncated });
           } else if (tc.name === "stop_process") {
             const processId = args.processId;
