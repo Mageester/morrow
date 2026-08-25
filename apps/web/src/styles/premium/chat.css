@@ -313,19 +313,24 @@
 }
 
 /*
- * Their words sit in a bubble too, so the thread has two visible voices rather
- * than one voice and one page. Markdown inside keeps working — a teammate that
- * returns a list or a diff must still be readable.
+ * Morrow's words sit flat on the page; yours sit in a bubble. That asymmetry is
+ * deliberate and it replaces an earlier symmetric one.
+ *
+ * A bubble reads as "one utterance", which held while a turn was a single
+ * block of text. A turn is now a sequence — say, do, say, do — and boxing each
+ * piece of it produced a column of three or four cards for what is one
+ * continuous thought, with the tool runs stranded in the gaps between them.
+ * Flat prose lets the turn read as one thing, and the bubble still marks whose
+ * words are whose, because only one side has it.
  */
 .morrow-conversation-message__content--markdown {
-  padding: 11px 14px;
-  border: 1px solid var(--morrow-product-line-soft);
-  border-radius: 16px 16px 16px 5px;
-  background: var(--morrow-product-bubble-them);
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--morrow-product-copy);
   font-size: var(--morrow-product-text);
-  line-height: 1.52;
-  box-shadow: 0 2px 12px rgb(0 0 0 / 0.08);
+  line-height: 1.6;
+  box-shadow: none;
 }
 
 .morrow-conversation-message__content--markdown p {

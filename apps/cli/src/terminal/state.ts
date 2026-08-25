@@ -122,6 +122,15 @@ export interface TerminalState {
   conversation: ConversationEntry[];
   activity: ActivityEntry[];
   tools: ToolCard[];
+  /**
+   * How many of `tools` have already been written into the transcript.
+   *
+   * A high-water mark rather than a queue, because `tools` is the task's whole
+   * record and is read as such elsewhere. Everything at or past this index is
+   * still live: it is what the running work summary draws, and what the next
+   * turn boundary will settle.
+   */
+  settledTools: number;
   patches: PatchEntry[];
   plan: PlanEntry[];
   notices: NoticeEntry[];
@@ -168,22 +177,37 @@ export interface TerminalState {
 }
 
 /**
- * Move a finished turn's tool calls out of the live region and into the
- * transcript, so they stay attached to the turn that made them.
+ * Move the tool calls run since the last settle out of the live region and into
+ * the transcript, at the point in it where they happened.
  *
- * A no-op when the turn used no tools — an empty work row is noise.
+ * Called at every turn boundary, not only at the end of the task. That is the
+ * difference between a transcript that reads
+ *
+ *     ✦ I'll find the call site.
+ *       ✓ Searched … ✓ Read a.ts
+ *     ✦ Found it — the ceiling is derived twice.
+ *       ✓ Edited a.ts ✓ Ran the tests
+ *
+ * and one that reads as three paragraphs of prose followed by a block of
+ * fourteen tools belonging to none of them in particular. The events were
+ * always ordered; settling only at task end was what discarded the order.
+ *
+ * `tools` is deliberately left in place rather than drained. It is the task's
+ * record and several consumers still read it whole — the completion card counts
+ * verification steps from it, and clearing it reported "0 tools" for a task that
+ * had just run five. `settledTools` is a high-water mark into that array, so the
+ * record stays complete and each card still reaches the transcript exactly once.
+ *
+ * A no-op when nothing new has run — an empty work row is noise.
  */
 function settleWork(state: TerminalState): TerminalState {
-  if (state.tools.length === 0) return state;
-  // `tools` is deliberately left in place. It is the finished turn's record and
-  // several consumers still read it — the completion card counts verification
-  // steps from it, and clearing it here reported "0 tools" for a turn that had
-  // just run five. The surface stops drawing the live summary once the turn
-  // ends; it does not need the data deleted to do that.
+  const pending = state.tools.slice(state.settledTools);
+  if (pending.length === 0) return state;
   return {
     ...state,
+    settledTools: state.tools.length,
     conversation: bounded(
-      [...state.conversation, { role: "work", text: "", streaming: false, tools: state.tools }],
+      [...state.conversation, { role: "work", text: "", streaming: false, tools: pending }],
       MAX_CONVERSATION,
     ),
   };
@@ -195,7 +219,7 @@ export const MAX_NOTICES = 6;
 export const MAX_QUEUED = 5;
 
 export function initialState(): TerminalState {
-  return { conversation: [], activity: [], tools: [], patches: [], plan: [], notices: [], status: "idle", processes: [], worktrees: [], agents: [], integrations: [], recoverySuggestions: [], recoveries: [], queuedMessages: [], epoch: 0, reasoning: "" };
+  return { conversation: [], activity: [], tools: [], settledTools: 0, patches: [], plan: [], notices: [], status: "idle", processes: [], worktrees: [], agents: [], integrations: [], recoverySuggestions: [], recoveries: [], queuedMessages: [], epoch: 0, reasoning: "" };
 }
 
 function bounded<T>(items: T[], max: number): T[] {
@@ -297,6 +321,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         ),
         activity: [],
         tools: [],
+        settledTools: 0,
         patches: [],
         plan: [],
         recoveries: [],
@@ -376,6 +401,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         conversation: [],
         activity: [],
         tools: [],
+        settledTools: 0,
         patches: [],
         plan: [],
         notices: [],
@@ -403,10 +429,15 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         conversation = [...conversation];
         conversation[conversation.length - 1] = { ...prior, streaming: false, aborted: true };
       }
+      // Everything the previous turn ran has finished by now: a turn ends, its
+      // tool calls execute, and only then does the next turn open. Settling here
+      // puts those calls under the prose that asked for them, which is the whole
+      // point of reading a run rather than a summary of one.
+      const settled = settleWork({ ...state, conversation });
       return {
-        ...state,
+        ...settled,
         conversation: bounded(
-          [...conversation, { role: "assistant", text: "", streaming: true, turnId: event.turnId }],
+          [...settled.conversation, { role: "assistant", text: "", streaming: true, turnId: event.turnId }],
           MAX_CONVERSATION
         ),
         status: "streaming",

@@ -420,22 +420,25 @@ describe("ConversationPage interleaved transcript", () => {
     };
   }
 
-  it("renders one work summary and the answer, never the answer twice", async () => {
+  it("reads the turn in the order it happened, and prints the answer once", async () => {
     const activity = {
       version: 1,
       projectId: "project-1",
       conversationId: conversation.id,
       entries: [
         entry({ id: "n1", sequence: 1, kind: "narration", summary: "Assistant message", text: "First I read the config." }),
-        entry({ id: "t1", sequence: 2, kind: "file", summary: "Read package.json", target: "package.json", toolName: "read_file" }),
+        entry({ id: "t1", sequence: 2, kind: "file", summary: "Read package.json", target: "package.json", toolName: "read_file", evidenceRef: "ev-1" }),
         entry({ id: "n2", sequence: 3, kind: "narration", summary: "Assistant message", text: "Now applying the fix." }),
-        entry({ id: "t2", sequence: 4, kind: "diff", summary: "Edited src/a.ts", target: "src/a.ts", toolName: "propose_patch" }),
+        entry({ id: "t2", sequence: 4, kind: "diff", summary: "Edited src/a.ts", target: "src/a.ts", toolName: "propose_patch", evidenceRef: "ev-2" }),
       ],
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
       if (path.endsWith("/activity")) return json(activity);
       if (path.includes("/approvals")) return json([]);
+      // While a task runs, this field is the whole-task accumulator: every
+      // turn's text glued together. Rendering it beside the narration is what
+      // printed the turn twice.
       if (path.endsWith("/messages")) return json([message({ content: "First I read the config. Now applying the fix." })]);
       if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
       throw new Error(`Unexpected request ${path}`);
@@ -444,30 +447,95 @@ describe("ConversationPage interleaved transcript", () => {
     const user = userEvent.setup();
     renderPage();
 
-    // The answer renders exactly once: narration is the same words as the
-    // message body, so projecting both would duplicate the whole turn.
-    expect(await screen.findAllByText(/First I read the config/)).toHaveLength(1);
+    const timeline = await screen.findByTestId("turn-timeline");
 
-    const summary = await screen.findByTestId("turn-work-summary");
-    expect(summary).toHaveTextContent(/Completed/);
-    expect(summary).toHaveTextContent(/2 tools/);
-    expect(summary).toHaveTextContent(/1 file changed/);
+    // The turn reads as a sequence. What Morrow said, then what it did because
+    // of it, then what it said next — which is the one thing a summary box
+    // above a wall of text could never show.
+    const order = Array.from(
+      timeline.querySelectorAll('[data-testid="turn-prose"], [data-testid="turn-work-run"]'),
+    ).map((node) => node.getAttribute("data-testid"));
+    expect(order).toEqual(["turn-prose", "turn-work-run", "turn-prose", "turn-work-run"]);
 
-    // Every step is legible without opening anything: a completed turn should
-    // read as a record of what happened, not a claim that something did.
-    expect(within(summary).getByText("Read package.json")).toBeVisible();
-    expect(within(summary).getByText("Edited src/a.ts")).toBeVisible();
+    // Each run holds only the steps that followed the prose above it.
+    const runs = within(timeline).getAllByTestId("turn-work-run");
+    expect(within(runs[0]!).getByText("Read package.json")).toBeVisible();
+    expect(within(runs[0]!).queryByText("Edited src/a.ts")).not.toBeInTheDocument();
+    expect(within(runs[1]!).getByText("Edited src/a.ts")).toBeVisible();
+
+    // Narration is the same words the message body accumulates, so exactly one
+    // of the two reaches the screen.
+    expect(screen.getAllByText(/First I read the config/)).toHaveLength(1);
+    expect(screen.queryByTestId("turn-work-summary")).not.toBeInTheDocument();
+
+    // The totals become a receipt under the answer rather than a claim above it.
+    const footer = within(timeline.parentElement!).getByTestId("turn-footer");
+    expect(footer).toHaveTextContent(/Completed/);
+    expect(footer).toHaveTextContent(/2 tools/);
+    expect(footer).toHaveTextContent(/1 file changed/);
 
     // What a step recorded is one click from its own line, and costs a request
     // only when asked for.
     expect(screen.queryByTestId("evidence-card")).not.toBeInTheDocument();
-    await user.click(within(summary).getAllByTestId("work-step")[0]!);
+    await user.click(within(runs[0]!).getAllByTestId("work-step")[0]!);
     expect(await screen.findByTestId("evidence-card")).toBeVisible();
+  });
 
-    // The header still collapses the whole record for a reader who wants the
-    // answer and nothing else.
-    await user.click(within(summary).getByRole("button", { expanded: true, name: /Completed/ }));
-    expect(within(summary).queryByText("Read package.json")).not.toBeInTheDocument();
+  it("leaves the running turn's status to the one live line, and pays the receipt after", async () => {
+    const activity = {
+      version: 1,
+      projectId: "project-1",
+      conversationId: conversation.id,
+      entries: [
+        entry({ id: "n1", sequence: 1, kind: "narration", summary: "Assistant message", text: "Reading the config." }),
+        entry({ id: "t1", sequence: 2, kind: "file", summary: "Read package.json", target: "package.json", toolName: "read_file", status: "running" }),
+      ],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/activity")) return json(activity);
+      if (path.includes("/approvals")) return json([]);
+      if (path.endsWith("/messages")) return json([message({ content: "Reading the config.", streamingState: "streaming", taskStatus: "running" })]);
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      throw new Error(`Unexpected request ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+
+    // The work so far is already readable in place.
+    const timeline = await screen.findByTestId("turn-timeline");
+    expect(within(timeline).getByText("Read package.json")).toBeVisible();
+
+    // But "is Morrow doing something, and what?" is answered once, by the live
+    // status line above the composer — not a second time a few pixels away.
+    expect(screen.queryByTestId("turn-footer")).not.toBeInTheDocument();
+  });
+
+  it("keeps the summary shape for a turn that recorded no narration", async () => {
+    const activity = {
+      version: 1,
+      projectId: "project-1",
+      conversationId: conversation.id,
+      entries: [
+        entry({ id: "t1", sequence: 1, kind: "file", summary: "Read package.json", target: "package.json", toolName: "read_file" }),
+      ],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/activity")) return json(activity);
+      if (path.includes("/approvals")) return json([]);
+      if (path.endsWith("/messages")) return json([message({ content: "The config was already correct." })]);
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      throw new Error(`Unexpected request ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+
+    // With no narration there is nothing to interleave, and the body is the
+    // only text there is — so it must still be rendered.
+    expect(await screen.findByText("The config was already correct.")).toBeVisible();
+    expect(await screen.findByTestId("turn-work-summary")).toBeVisible();
+    expect(screen.queryByTestId("turn-timeline")).not.toBeInTheDocument();
   });
 
   it("presents a failed turn as a compact notice with the exact reason behind Details", async () => {
