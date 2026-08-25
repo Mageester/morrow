@@ -26,7 +26,7 @@ function renderPage() {
 describe("Settings page — assistant profile", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("shows the current profile and describes privacy as a non-enforcing preference", async () => {
+  it("shows the current profile and describes privacy as an enforced routing boundary", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/assistant-profile") return Response.json(profile);
@@ -35,7 +35,7 @@ describe("Settings page — assistant profile", () => {
     const user = userEvent.setup();
     renderPage();
     expect(await screen.findByRole("radio", { name: /Prefer local providers/ })).toBeChecked();
-    expect(screen.getByText(/does not enforce provider or tool routing/i)).toBeVisible();
+    expect(screen.getByText(/blocks remote model routes before a request leaves/i)).toBeVisible();
     expect(screen.queryByText(/No external model providers/)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Personalization/ }));
     expect(await screen.findByDisplayValue("Aidan")).toBeVisible();

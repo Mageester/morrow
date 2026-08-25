@@ -8,6 +8,7 @@ import {
   Home,
   MoreHorizontal,
   Settings,
+  UsersRound,
   WandSparkles,
   type LucideIcon,
 } from "lucide-react";
@@ -53,6 +54,7 @@ const NAVIGATION: NavItem[] = [
   { icon: Brain, label: "Memory", to: "/memory" },
   { icon: Clock3, label: "History", to: "/chats" },
   { icon: Cable, label: "Connections", to: "/connections" },
+  { icon: UsersRound, label: "Teams", to: "/teams" },
   { icon: Settings, label: "Settings", to: "/settings" },
 ];
 

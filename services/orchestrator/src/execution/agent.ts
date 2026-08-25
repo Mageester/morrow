@@ -88,6 +88,8 @@ import { applySkillInstall, discardSkillInstall, parseSkillSource, planSkillInst
 import { boundCompletedToolArguments, boundTerminalToolArguments, buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
 import { providerRouteFingerprint } from "../routing/effective-context.js";
 import { resolveModelBudget, withCurrentModelVisibleTokens } from "../routing/model-budget.js";
+import { isLikelyNetworkCommand, isPrivacyBlockedTool } from "../security/privacy-policy.js";
+import { compareBaseline, diagnosticsToolForCommand, parseEslintDiagnostics, parseTscDiagnostics, summarizeDiagnostics, type Diagnostic } from "../workspace/diagnostics.js";
 import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type CumulativeUsage, type RequestUsage } from "../routing/usage-snapshot.js";
 import { toolArtifactsRepository } from "../repositories/tool-artifacts.js";
 import { collectOfferedArtifactIds, externalizeToolResult, readArtifactRange, renderExternalizedForContext } from "./artifact-externalization.js";
@@ -652,7 +654,8 @@ class AgentToolFailure extends Error {
     | "command_exit_nonzero"
     | "command_timeout"
     | "command_cancelled"
-    | "requirement_violation";
+    | "requirement_violation"
+    | "privacy_policy_blocked";
 
   constructor(
     message: string,
@@ -665,7 +668,8 @@ class AgentToolFailure extends Error {
       | "command_exit_nonzero"
       | "command_timeout"
       | "command_cancelled"
-      | "requirement_violation" = "tool_failed",
+      | "requirement_violation"
+      | "privacy_policy_blocked" = "tool_failed",
   ) {
     super(message);
     this.name = "AgentToolFailure";
@@ -1127,6 +1131,13 @@ export async function executeAgentChatTask({
     return records.appendEvent({ id: randomUUID(), taskId, type, payload, createdAt: now() });
   };
 
+  // Diagnostics are learned only from commands the model already chose to
+  // run. A later verification is compared with the last same-family snapshot
+  // after a workspace mutation; no extra command or provider call is spawned.
+  const diagnosticBaselines = new Map<"tsc" | "eslint", Diagnostic[]>();
+  let workspaceMutationSinceDiagnostics = false;
+  let diagnosticRegressionObserved: { tool: string; detail: string } | null = null;
+
   // A task-owned background process (a dev server started with run_command
   // background:true) has no lifetime tied to the task by default: nothing
   // terminates it just because the task reaches a genuinely final state. Live
@@ -1461,6 +1472,8 @@ export async function executeAgentChatTask({
   // A pinned route therefore has exactly one candidate; when it cannot serve
   // the turn, the task fails with the typed provider outcome instead.
   const routePinned = routing?.decision.overridden === true;
+  const privacyMode = routing?.decision.privacyMode ?? null;
+  const localOnlyPrivacy = privacyMode === "local_only";
 
   // Stream candidates for live fallback: the primary first, then any injected
   // fallbacks (tests) or â€” on the real registry path â€” every other *configured*
@@ -1491,6 +1504,7 @@ export async function executeAgentChatTask({
     pinned: routePinned,
     overridden: routing?.decision.overridden ?? false,
     fallbackUsed: routing?.decision.fallbackUsed ?? false,
+    privacyMode,
     alternateCandidates: streamCandidates.slice(1).map((candidate) => candidate.id),
   });
   if (taskMissionId) {
@@ -1518,7 +1532,7 @@ export async function executeAgentChatTask({
     taskId,
     executionMode: "agent-interactive",
     provider: providerType,
-    networkAccess: providerType === "mock" ? "disabled" : "enabled",
+    networkAccess: localOnlyPrivacy || providerType === "mock" ? "disabled" : "enabled",
     filesystemAccess: canExecute ? "workspace-write" : "read-only",
     shellExecution: canExecute,
     modelInvocation: true,
@@ -2049,6 +2063,7 @@ export async function executeAgentChatTask({
     ? []
     : activeToolProfile === "agent"
       ? tools.filter((tool) => (!BROWSER_TOOL_NAMES.has(tool.name) || browserToolsRequested)
+        && !isPrivacyBlockedTool(tool.name, privacyMode)
         && (tool.name !== ASK_TEAMMATE_TOOL_NAME || (!assignedAgent?.teamId && askableTeammates.length > 0))
         // ask_teammate is the one named-profile capability that is not part of
         // task-intent classification: expose it alongside the selected
@@ -2056,6 +2071,7 @@ export async function executeAgentChatTask({
         && (tool.name === ASK_TEAMMATE_TOOL_NAME || optimizationToolSelection.tools.includes(tool.name))
         && (agentExecutionPolicy === null || agentExecutionPolicy.canUseTool(tool.name)))
       : tools.filter((tool) => READ_ONLY_TOOL_NAMES.has(tool.name)
+        && !isPrivacyBlockedTool(tool.name, privacyMode)
         && optimizationToolSelection.tools.includes(tool.name)
         && (agentExecutionPolicy === null || agentExecutionPolicy.canUseTool(tool.name)));
   event("optimization.tool_profile_selected", {
@@ -2488,6 +2504,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const reason = typeof payload.reason === "string" ? payload.reason : "the action conflicts with an explicit task requirement";
       throw new AgentToolFailure(`Explicit task requirement violated: ${reason}`, payload, "requirement_violation");
     }
+    if (isPrivacyBlockedTool(toolName, privacyMode)) {
+      throw new AgentToolFailure(
+        `Local-only privacy blocks the external tool "${toolName}". Switch the assistant profile to Controlled cloud before using browser or MCP network access.`,
+        { error: "privacy_policy_blocked", toolName, privacyMode },
+        "privacy_policy_blocked",
+      );
+    }
     if (toolName.startsWith("browser_")) {
       return executeBrowserTool(toolName, args);
     } else if (toolName === "run_command") {
@@ -2495,6 +2518,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const cmdArgs = args.args || [];
       const cmdCwd = args.cwd || "";
       const purpose = args.purpose || "";
+
+      if (localOnlyPrivacy && typeof exec === "string" && Array.isArray(cmdArgs) && isLikelyNetworkCommand(exec, cmdArgs)) {
+        throw new AgentToolFailure(
+          `Local-only privacy blocks network command "${exec}". Use a local verification command or switch the assistant profile to Controlled cloud.`,
+          { error: "privacy_policy_blocked", executable: exec, args: cmdArgs, privacyMode },
+          "privacy_policy_blocked",
+        );
+      }
 
       // Re-assert workspace containment of the working directory immediately
       // before execution (defense in depth: the cwd was also checked before the
@@ -2635,6 +2666,43 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         terminationReason: result.terminationReason
       });
 
+      const diagnosticOutput = `${result.stdout}\n${result.stderr}`;
+      const diagnosticTool = diagnosticsToolForCommand(exec, cmdArgs, diagnosticOutput);
+      if (diagnosticTool) {
+        const diagnostics = diagnosticTool === "tsc"
+          ? parseTscDiagnostics(diagnosticOutput)
+          : parseEslintDiagnostics(diagnosticOutput);
+        const report = summarizeDiagnostics(diagnosticTool, diagnostics);
+        const before = diagnosticBaselines.get(diagnosticTool);
+        const comparison = before && workspaceMutationSinceDiagnostics
+          ? compareBaseline(before, diagnostics)
+          : null;
+        event("verification.completed", {
+          tool: diagnosticTool,
+          status: result.exitCode === 0 && !comparison?.regressed ? "passed" : "failed",
+          count: report.count,
+          errorCount: report.errorCount,
+          warningCount: report.warningCount,
+          ...(comparison ? {
+            baselineCount: comparison.beforeCount,
+            baselineErrors: comparison.beforeErrors,
+            newIssueCount: comparison.newIssues.length,
+            fixedIssueCount: comparison.fixedIssues.length,
+            regressed: comparison.regressed,
+          } : { baseline: "not_available" }),
+        });
+        if (comparison?.regressed) {
+          diagnosticRegressionObserved = {
+            tool: diagnosticTool,
+            detail: `${diagnosticTool} verification introduced ${comparison.newIssues.length} new error${comparison.newIssues.length === 1 ? "" : "s"} after a workspace change`,
+          };
+        } else if (comparison && !comparison.regressed) {
+          diagnosticRegressionObserved = null;
+        }
+        diagnosticBaselines.set(diagnosticTool, diagnostics);
+        workspaceMutationSinceDiagnostics = false;
+      }
+
       records.appendEvidence({
         id: randomUUID(),
         taskId,
@@ -2758,6 +2826,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           strategy: "overwrite",
           changed: result.changed,
         });
+        workspaceMutationSinceDiagnostics = true;
         return JSON.stringify({ status: "success", strategy: "overwrite", ...result, changeSetId: changeSet.id });
       } catch (error) {
         changeSets.updateState(changeSet.id, "failed");
@@ -2844,6 +2913,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           appendedBytes: result.appendedBytes,
           action: "append_file",
         });
+        workspaceMutationSinceDiagnostics = true;
         return JSON.stringify({ status: "success", ...result, changeSetId: changeSet.id });
       } catch (error) {
         changeSets.updateState(changeSet.id, "failed");
@@ -2964,6 +3034,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           createdAt: now()
         });
         event("evidence.persisted", { path: pf.newPath, size: Buffer.byteLength(newContent, "utf8"), action: "patched" });
+        workspaceMutationSinceDiagnostics = true;
       }
 
       changeSets.updateApplied(changeSet.id, postApplyHashes, backupReferences);
@@ -2990,6 +3061,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         createdAt: now(),
       });
       event("evidence.persisted", { path: relPath, size: 0, action: "created_directory" });
+      workspaceMutationSinceDiagnostics = true;
       return JSON.stringify({ status: "success", path: relPath, created });
     } else if (toolName === "write_plan") {
       // The model owns this plan. The three-step scaffold created at task start
@@ -3737,6 +3809,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       }
       failure = failedOutcome ? { tool: call.toolName, detail: failedOutcome } : null;
     }
+    if (failure === null && diagnosticRegressionObserved) failure = diagnosticRegressionObserved;
     return { failure, verification };
   };
 

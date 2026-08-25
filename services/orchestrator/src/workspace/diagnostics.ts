@@ -151,3 +151,17 @@ export function summarizeDiagnostics(tool: "tsc" | "eslint", diagnostics: Diagno
     diagnostics,
   };
 }
+
+/** Identify the diagnostic family a completed command produced, without
+ * pretending that an arbitrary `check` script has a known formatter. */
+export function diagnosticsToolForCommand(
+  executable: string,
+  args: readonly string[],
+  output: string,
+): "tsc" | "eslint" | null {
+  const command = `${executable} ${args.join(" ")}`.toLowerCase();
+  if (/(^|[/\\])eslint(?:\.cmd|\.exe|\.bat)?\b/.test(command) || /\beslint\b/.test(command)) return "eslint";
+  if (/(^|[/\\])tsc(?:\.cmd|\.exe|\.bat)?\b/.test(command) || /\btsc\b/.test(command) || /\btypescript\b/.test(command) || /\bTS\d{4}\b/.test(output)) return "tsc";
+  if (parseEslintDiagnostics(output).length > 0) return "eslint";
+  return null;
+}

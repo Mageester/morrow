@@ -16,6 +16,7 @@ const NAV_ORDER = [
   "Memory",
   "History",
   "Connections",
+  "Teams",
   "Settings",
 ];
 const IMPLEMENTED = NAV_ORDER;

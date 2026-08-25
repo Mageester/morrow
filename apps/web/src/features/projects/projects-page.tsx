@@ -6,6 +6,7 @@ import { useState, type FormEvent } from "react";
 import { ApiClientError } from "../../api/client.js";
 import { projectApi, projectQueries, type ProjectSelection } from "../../api/projects.js";
 import { ProductHeader } from "../../components/product-frame.js";
+import { NewChatButton } from "../chat/new-chat-button.js";
 import { useActiveProject } from "./use-active-project.js";
 
 function safeError(error: unknown, fallback: string): string {
@@ -121,7 +122,7 @@ export function ProjectsPage() {
                 id="project-path"
                 name="project-path"
                 onChange={(event) => setWorkspacePath(event.target.value)}
-                placeholder="C:\code\my-app"
+                placeholder="e.g. /home/you/code/my-app"
                 value={workspacePath}
               />
               <Button
@@ -317,9 +318,10 @@ function ActiveProjectPanel({ activeProject }: { activeProject: ProjectSelection
           {status.data?.workspacePath ?? "Checking workspace…"}
         </span>
         {status.data?.gitDetected ? <span>{status.data.branch ?? "detached HEAD"}</span> : null}
-        <Link className="morrow-feature-panel__open" to="/chats">
-          Open project →
+        <Link className="morrow-feature-panel__open" search={{ projectId: activeProject.id }} to="/chats">
+          Open project history →
         </Link>
+        <NewChatButton className="morrow-feature-panel__new-chat" projectId={activeProject.id} />
       </div>
     </section>
   );

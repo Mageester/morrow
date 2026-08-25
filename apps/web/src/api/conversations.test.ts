@@ -68,6 +68,42 @@ describe("conversation API", () => {
     expect(calls.at(-1)?.init?.body).toBe(JSON.stringify({ confirmation: "delete" }));
   });
 
+  it("exposes a project-scoped resume operation separately from retry", async () => {
+    const fetchMock = vi.fn(async () => Response.json({
+      version: 1,
+      taskId: "task-1",
+      status: "queued",
+      outcome: "resumed",
+      afterCursor: 7,
+    }, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(conversationApi.resume("project-1", "conversation-1", "task-1")).resolves.toMatchObject({ outcome: "resumed" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-1/conversations/conversation-1/tasks/task-1/resume",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("loads a strict project-scoped support bundle", async () => {
+    const fetchMock = vi.fn(async () => Response.json({
+      version: 1,
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      generatedAt: now,
+      tasks: [],
+      entries: [],
+      privacyNotice: "Redacted support evidence.",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(conversationApi.supportBundle("project-1", "conversation-1")).resolves.toMatchObject({ version: 1, tasks: [] });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-1/conversations/conversation-1/support-bundle",
+      expect.any(Object),
+    );
+  });
+
   it("generates one idempotency key per accepted attempt and preserves it across a transport retry", async () => {
     const bodies: string[] = [];
     let calls = 0;

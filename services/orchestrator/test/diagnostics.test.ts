@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseTscDiagnostics, parseEslintDiagnostics, compareBaseline, summarizeDiagnostics, type Diagnostic } from "../src/workspace/diagnostics.js";
+import { parseTscDiagnostics, parseEslintDiagnostics, compareBaseline, diagnosticsToolForCommand, summarizeDiagnostics, type Diagnostic } from "../src/workspace/diagnostics.js";
 
 describe("parseTscDiagnostics", () => {
   it("parses tsc error/warning lines and normalizes path separators", () => {
@@ -95,5 +95,13 @@ describe("summarizeDiagnostics", () => {
 
     expect(JSON.stringify(report)).not.toContain(probe);
     expect(report.diagnostics[1]).toMatchObject({ file: "credential ***redacted***", message: "credential ***redacted***" });
+  });
+});
+
+describe("diagnosticsToolForCommand", () => {
+  it("recognizes direct tsc and eslint commands while leaving unrelated checks unknown", () => {
+    expect(diagnosticsToolForCommand("pnpm", ["exec", "tsc", "--noEmit"], "")).toBe("tsc");
+    expect(diagnosticsToolForCommand("eslint", [".", "-f", "json"], "[]")).toBe("eslint");
+    expect(diagnosticsToolForCommand("pnpm", ["test"], "all tests passed")).toBeNull();
   });
 });

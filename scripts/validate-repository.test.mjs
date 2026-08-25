@@ -23,8 +23,8 @@ test("README does not overclaim maturity or platform support", async () => {
   // no production-readiness claim, and platform support stated as it actually
   // is rather than implied to be universal.
   assert.doesNotMatch(readme, /production[ -]ready/i);
-  assert.match(readme, /Linux via source build/i, "README must not imply a packaged Linux install exists");
-  assert.match(readme, /macOS planned/i, "README must not imply macOS is supported");
+  assert.match(readme, /Linux x64\/arm64/i, "README must state the supported Linux package architectures");
+  assert.match(readme, /macOS x64\/arm64/i, "README must state the supported macOS package architectures");
 });
 
 test("installer scripts are ASCII-only and force UTF-8 console output", async () => {

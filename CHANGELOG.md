@@ -34,6 +34,16 @@ every turn.
 
 ### Changed
 
+- Project selection now has an OS folder picker, active-project history/new-chat
+  actions, and an honest provider “Needs a model” readiness state.
+- Local-only privacy is enforced at routing and tool boundaries; interrupted
+  agent work has a project-scoped resume endpoint; Activity / Inspect can
+  download a redacted support bundle.
+- Compact mobile composers keep provider/context capability status reachable;
+  Teams is present in primary navigation; doctor reports optional PTY support.
+- Bundled high-risk red-team skills are withheld from the default executable
+  catalog until an explicit security-review workflow exists.
+
 - Anthropic requests now carry `cache_control` breakpoints on the stable
   tools+system prefix and the end of the conversation. Morrow already priced
   cache reads end to end but never asked for the cache, so every turn re-read

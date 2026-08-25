@@ -23,9 +23,15 @@ function renderProjects(fetchImpl: (input: RequestInfo | URL, init?: RequestInit
   const root = createRootRoute();
   const projectsRoute = createRoute({ getParentRoute: () => root, path: "/", component: ProjectsPage });
   const chatsRoute = createRoute({ getParentRoute: () => root, path: "/chats", component: () => null });
+  const conversationRoute = createRoute({
+    getParentRoute: () => root,
+    path: "/chats/$conversationId",
+    validateSearch: (search: Record<string, unknown>) => ({ projectId: search.projectId as string }),
+    component: () => null,
+  });
   const router = createRouter({
     history: createMemoryHistory({ initialEntries: ["/"] }),
-    routeTree: root.addChildren([projectsRoute, chatsRoute]),
+    routeTree: root.addChildren([projectsRoute, chatsRoute, conversationRoute]),
   });
   render(
     <QueryClientProvider client={queryClient}>
@@ -109,6 +115,39 @@ describe("ProjectsPage", () => {
       workspacePath: "/home/dread/Code/morrow",
     }));
     expect(await screen.findByRole("region", { name: "Current project: Alpha" })).toBeVisible();
+  });
+
+  it("keeps project history and new chat actions scoped to the active project", async () => {
+    const conversation = {
+      id: "conversation-a",
+      projectId: projectA.id,
+      title: "New conversation",
+      archived: false,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    };
+    let createCalls = 0;
+    renderProjects(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/projects") return Response.json([projectA]);
+      if (url === `/api/projects/${projectA.id}/status`) return Response.json(statusFor(projectA));
+      if (url === `/api/projects/${projectA.id}/conversations` && init?.method === "POST") {
+        createCalls += 1;
+        return Response.json(conversation, { status: 201 });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+
+    const panel = await screen.findByRole("region", { name: "Current project: Alpha" });
+    expect(within(panel).getByRole("link", { name: /open project history/i })).toHaveAttribute(
+      "href",
+      "/chats?projectId=project-a",
+    );
+
+    const user = userEvent.setup();
+    await user.click(within(panel).getByRole("button", { name: "New chat" }));
+    await waitFor(() => expect(createCalls).toBe(1));
   });
 
   it("keeps manual path entry available when the native picker is unavailable", async () => {

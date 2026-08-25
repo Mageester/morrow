@@ -4,7 +4,7 @@
 
 Morrow is a self-hosted, deeply customizable personal AI agent. Local-first, provider-neutral, with visible execution, explicit permissions, and persistent memory.
 
-> **Status:** v0.6.0. Windows 10/11 x64 supported. Linux via source build. macOS planned.
+> **Status:** v0.6.0 beta. Windows 10/11 x64, Linux x64/arm64, and macOS x64/arm64 packages are supported.
 
 ## Quick Install (Windows)
 
@@ -30,20 +30,19 @@ live in Morrow's database, so a closed or crashed terminal loses the screen and
 nothing else — `/sessions` and `/resume` pick the work back up. See
 [the terminal reference](docs/TERMINAL.md).
 
-Morrow supports 30 model providers. `morrow providers list` browses them grouped
+Morrow ships a 33-provider model catalog. `morrow providers list` browses them grouped
 by kind; `morrow providers configure` runs a guided setup that offers
 subscription sign-in where one really exists, otherwise opens the provider's key
 page, verifies the credential, and lets you pick a default model from the models
 that key can actually reach. Credentials are stored locally and take effect
 without a restart. See [the provider reference](docs/providers.md).
 
-Beta.30 adds model and reasoning routing: an interactive `/model` picker with
-honest live status/context, and a normalized reasoning-effort control that is
-actually wired through to the provider request. It also hardens mission
-continuity across context-window limits and terminal event/recovery
-integrity. Run `morrow doctor` for consumer-readable checks, `morrow doctor
---json` for automation, or `morrow doctor --export` for a redacted diagnostic
-bundle.
+The 0.6.0 release includes model and reasoning routing, honest context status,
+project-scoped history, resumable interrupted work, redacted support bundles,
+and local-only privacy enforcement that blocks remote routes and network tools
+before they execute. Run `morrow doctor` for consumer-readable checks,
+`morrow doctor --json` for automation, or `morrow doctor --export` for a
+redacted diagnostic bundle.
 
 Morrow binds its service to loopback by default. Conversations, project state,
 memory, provider credentials, logs, and diagnostics remain local unless a tool

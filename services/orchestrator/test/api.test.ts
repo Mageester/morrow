@@ -4,7 +4,7 @@ import { buildServer } from "../src/server.js";
 import { TaskRunner } from "../src/runner.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { FolderPickerUnavailableError } from "../src/system/folder-picker.js";
@@ -76,6 +76,22 @@ describe("REST API and Task Runner Vertical Slice", () => {
     })).statusCode).toBe(404);
     expect((await app.inject({ method: "DELETE", url: "/api/agents/a-skill/skill-access/s1?projectId=p2" })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: "/api/agents/a-skill/skill-access?projectId=p1" })).statusCode).toBe(200);
+  });
+
+  it("keeps high-risk bundled skills out of the default executable catalog", async () => {
+    const skillsRoot = resolve(process.cwd(), "../../skills");
+    const previous = process.env.MORROW_SKILLS_DIR;
+    try {
+      process.env.MORROW_SKILLS_DIR = skillsRoot;
+
+      const response = await app.inject({ method: "GET", url: "/api/skills" });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toContainEqual(expect.objectContaining({ id: "accessibility", trustTier: "core" }));
+      expect(response.body).not.toContain("dan-jailbreak");
+    } finally {
+      if (previous === undefined) delete process.env.MORROW_SKILLS_DIR;
+      else process.env.MORROW_SKILLS_DIR = previous;
+    }
   });
 
   it("includes context usage metadata in task aggregates without message content", async () => {

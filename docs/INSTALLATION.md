@@ -1,6 +1,6 @@
 # Morrow installation
 
-Morrow v0.5.1 is an unsigned Early Access release. Native release packages
+Morrow v0.6.0 is an unsigned beta release. Native release packages
 include their own Node.js runtime; Git, Node.js, and pnpm are not required when
 a package is published for the current platform.
 
@@ -106,3 +106,7 @@ POSIX installs keep application files under `~/.local/share/morrow` and user
 data under `~/.morrow` by default. The Windows package uses
 `%LOCALAPPDATA%\Morrow\data`. See [privacy-model.md](privacy-model.md) for the
 local data-flow and provider boundaries.
+
+The packaged web app is served locally at `/app`; the terminal remains fully
+supported. `morrow doctor` reports whether optional interactive PTY support is
+available. Pipe-mode process capture is always the guaranteed fallback.

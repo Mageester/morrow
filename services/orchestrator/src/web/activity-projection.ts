@@ -277,7 +277,14 @@ function projectEvent(
         summary: "Approval resolved",
       });
     case "verification.completed":
-      return null;
+      return entry(taskId, event, {
+        kind: "validation",
+        status: payload.status === "passed" ? "completed" : "failed",
+        summary: payload.status === "passed" ? "Verification completed" : "Verification found issues",
+        detail: identifier(payload.tool)
+          ? `${identifier(payload.tool)} · ${nonnegativeInteger(payload.errorCount) ?? 0} error${(nonnegativeInteger(payload.errorCount) ?? 0) === 1 ? "" : "s"}`
+          : null,
+      });
     case "memory.learned": {
       const count = nonnegativeInteger(payload.count) ?? 0;
       return entry(taskId, event, {

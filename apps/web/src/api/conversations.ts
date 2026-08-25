@@ -3,6 +3,7 @@ import {
   ConversationTaskActionResultSchema,
   DeleteConversationResultSchema,
   WebConversationActivitySchema,
+  WebConversationSupportBundleSchema,
   WebSendMessageResultSchema,
   WebConversationMessageSchema,
   WebTaskReasoningSchema,
@@ -36,6 +37,7 @@ export const conversationKeys = {
   activity(projectId: string, conversationId: string) {
     return [...this.all, "activity", projectId, conversationId] as const;
   },
+
   reasoning(projectId: string, conversationId: string, taskId: string) {
     return [...this.all, "reasoning", projectId, conversationId, taskId] as const;
   },
@@ -133,6 +135,13 @@ export const conversationApi = {
     );
   },
 
+  supportBundle(projectId: string, conversationId: string) {
+    return api.get(
+      `${conversationPath(projectId, conversationId)}/support-bundle`,
+      WebConversationSupportBundleSchema,
+    );
+  },
+
   reasoning(projectId: string, conversationId: string, taskId: string) {
     return api.get(
       `${conversationPath(projectId, conversationId)}/tasks/${encodeURIComponent(taskId)}/reasoning`,
@@ -177,6 +186,14 @@ export const conversationApi = {
   retry(projectId: string, conversationId: string, taskId: string) {
     return api.post(
       `${conversationPath(projectId, conversationId)}/tasks/${encodeURIComponent(taskId)}/retry`,
+      {},
+      ConversationTaskActionResultSchema,
+    );
+  },
+
+  resume(projectId: string, conversationId: string, taskId: string) {
+    return api.post(
+      `${conversationPath(projectId, conversationId)}/tasks/${encodeURIComponent(taskId)}/resume`,
       {},
       ConversationTaskActionResultSchema,
     );

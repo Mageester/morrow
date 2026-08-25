@@ -324,6 +324,14 @@ export class MorrowApi {
     }
   }
 
+  terminalCapabilities() {
+    return this.req<{
+      version: 1;
+      pipe: { available: true; detail: string };
+      pty: { available: boolean; detail: string };
+    }>("GET", "/api/capabilities/terminal");
+  }
+
   // ── Projects ──────────────────────────────────────────────────────────────
   listProjects() { return this.req<Project[]>("GET", "/api/projects"); }
   getProject(id: string) { return this.req<Project>("GET", `/api/projects/${id}`); }

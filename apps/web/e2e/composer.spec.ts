@@ -301,7 +301,7 @@ test("portaled panels keep their own width cap and panel-scoped styling", async 
   expect(measured.sliderDirection).toBe("column");
 });
 
-test("an open panel closes when its trigger is hidden at a breakpoint", async ({ isMobile, page }) => {
+test("capability status stays reachable at the compact breakpoint", async ({ isMobile, page }) => {
   test.skip(isMobile, "This crosses the desktop-to-compact breakpoint deliberately.");
   await page.goto(HARNESS);
   await page.getByRole("button", { name: "Toggle active task" }).click();
@@ -311,10 +311,22 @@ test("an open panel closes when its trigger is hidden at a breakpoint", async ({
   const dialog = page.getByRole("dialog", { name: /Capability and context status/ });
   await expect(dialog).toBeVisible();
 
-  // Below 700px the whole control is display:none. A portaled panel does not
-  // disappear with its trigger the way an in-flow child would, so it used to
-  // reposition against a 0x0 rect and strand itself in the top-left corner
-  // with nothing left on screen to close it.
   await page.setViewportSize({ width: 600, height: 900 });
-  await expect(dialog).not.toBeVisible();
+  await expect(trigger).toBeVisible();
+  await expect(dialog).toBeVisible();
+});
+
+test("mobile keeps provider and context status touch-reachable", async ({ isMobile, page }) => {
+  test.skip(!isMobile, "Touch coverage runs in the dedicated mobile project.");
+  await page.goto(HARNESS);
+  await page.getByRole("button", { name: "Toggle active task" }).click();
+  await page.setViewportSize({ width: 390, height: 500 });
+
+  const trigger = page.getByRole("button", { name: /Capability and context status/ });
+  await expect(trigger).toBeVisible();
+  const box = await trigger.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.width).toBeGreaterThanOrEqual(28);
+  await trigger.tap();
+  await expect(page.getByRole("dialog", { name: /Capability and context status/ })).toBeVisible();
 });

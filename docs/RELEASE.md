@@ -76,7 +76,7 @@ Override with `MORROW_HOME` environment variable.
 |---------|---------|
 | API port | 4317 |
 | Bind address | `127.0.0.1` (localhost only) |
-| Product interface | Terminal (`morrow`) |
+| Product interface | Terminal (`morrow`) + local web app (`/app`) |
 
 ## Service Lifecycle
 
@@ -98,6 +98,8 @@ morrow uninstall — Remove application, prompt about user data
 - Workspace containment: agent operations scoped to approved paths
 - Tool execution remains workspace-scoped and approval-gated unless the user explicitly enables scoped YOLO mode
 - Diagnostic exports redact secret fields, credential-shaped strings, and the user-home prefix
+- `local_only` assistant profiles block remote model routes, browser/MCP network tools, and likely network shell commands before execution
+- Support bundles contain redacted activity and execution summaries only; raw events, tool arguments/results, prompts, secrets, and private reasoning are excluded
 
 ## Publication sequence
 

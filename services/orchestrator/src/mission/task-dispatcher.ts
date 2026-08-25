@@ -20,6 +20,7 @@ import { missionsRepository } from "../repositories/missions.js";
 import { taskRecordsRepository } from "../repositories/task-records.js";
 import { taskRoutingRepository } from "../repositories/task-routing.js";
 import { taskRepository } from "../repositories/tasks.js";
+import { assistantProfileRepository } from "../repositories/assistant-profile.js";
 import { worktreesRepository } from "../repositories/worktrees.js";
 import { resolveReasoningCapability } from "../routing/models.js";
 import { DEFAULT_PRESET_ID, getPreset } from "../routing/presets.js";
@@ -30,6 +31,7 @@ import {
   TeammateSpawnRegistry,
   teammateSpawnKey,
 } from "../tools/teammate-delegation.js";
+import { isLocalPrivacyProvider } from "../security/privacy-policy.js";
 
 export class AgentTaskDispatchError extends Error {
   constructor(
@@ -428,6 +430,7 @@ export function dispatchAgentTask(
   const { conversationId, parentTaskId, deferRun, delegationId, expectedAgentProfileHash, ...rawBody } = request;
   const requested = SendMessageSchema.parse(rawBody);
   const env = dependencies.env ?? process.env;
+  const privacyMode = assistantProfileRepository(dependencies.db).get().defaultPrivacyMode;
   const now = dependencies.now ?? (() => new Date());
   const createId = dependencies.createId ?? randomUUID;
   const tasks = taskRepository(dependencies.db);
@@ -500,7 +503,15 @@ export function dispatchAgentTask(
     }
   }
 
-  const { presetId, decision } = resolveDecision(body, env);
+  const { presetId, decision: routedDecision } = resolveDecision(body, env);
+  if (privacyMode === "local_only" && !isLocalPrivacyProvider(routedDecision.providerId, env)) {
+    throw new AgentTaskDispatchError(
+      409,
+      `Local-only privacy blocks remote provider "${routedDecision.providerId}" for this request. Switch the assistant profile to Controlled cloud before sending.`,
+      "PRIVACY_POLICY_BLOCKED",
+    );
+  }
+  const decision: RoutingDecision = { ...routedDecision, privacyMode };
   const timestamp = now();
   const timestampIso = timestamp.toISOString();
   let bundle;

@@ -235,6 +235,42 @@ export const WebConversationActivitySchema = z.object({
 }).strict();
 
 /**
+ * Downloadable support evidence. This is intentionally a summary contract:
+ * raw task events, tool arguments/results, prompts, and private reasoning do
+ * not belong in a file a user may attach to a bug report.
+ */
+export const WebConversationSupportTaskSchema = z.object({
+  taskId: z.string().min(1),
+  status: z.enum(["queued", "running", "completed", "verified", "failed", "cancelled", "interrupted"]),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  eventCount: z.number().int().nonnegative(),
+  evidenceCount: z.number().int().nonnegative(),
+  providerId: z.string().min(1).max(80).nullable(),
+  model: z.string().max(200).nullable(),
+  privacyMode: z.enum(["local_only", "controlled_cloud", "custom"]).nullable(),
+  fallbackUsed: z.boolean(),
+  verificationStatus: z.literal("verified").nullable(),
+  disclosure: z.object({
+    provider: z.string().min(1).max(80),
+    networkAccess: z.enum(["disabled", "enabled"]),
+    filesystemAccess: z.enum(["read-only", "workspace-write"]),
+    shellExecution: z.boolean(),
+    modelInvocation: z.boolean(),
+  }).strict().nullable(),
+}).strict();
+
+export const WebConversationSupportBundleSchema = z.object({
+  version: z.literal(1),
+  projectId: z.string().min(1),
+  conversationId: z.string().min(1),
+  generatedAt: z.string().datetime(),
+  tasks: z.array(WebConversationSupportTaskSchema),
+  entries: z.array(WebConversationActivityEntrySchema),
+  privacyNotice: z.string().max(1000),
+}).strict();
+
+/**
  * One step's complete recorded output, fetched on demand.
  *
  * Deliberately narrower than the operator task aggregate: it carries the
@@ -283,3 +319,5 @@ export type WebActivityKind = z.infer<typeof WebActivityKindSchema>;
 export type WebActivityStatus = z.infer<typeof WebActivityStatusSchema>;
 export type WebConversationActivityEntry = z.infer<typeof WebConversationActivityEntrySchema>;
 export type WebConversationActivity = z.infer<typeof WebConversationActivitySchema>;
+export type WebConversationSupportTask = z.infer<typeof WebConversationSupportTaskSchema>;
+export type WebConversationSupportBundle = z.infer<typeof WebConversationSupportBundleSchema>;

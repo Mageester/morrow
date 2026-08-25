@@ -23,8 +23,9 @@
 1. Download/run `installer/install.ps1` (Windows). Atomic, data-preserving swap;
    bundles Node runtime. → installs `morrow` launcher, sets PATH.
 2. `morrow doctor` validates node/pnpm/home/migrations/providers.
-- **Hidden prerequisite:** Windows-only today (`install.sh` for Linux is MISSING
-  per parity matrix). macOS/Linux users have no one-command path.
+- **Works:** Windows and POSIX installers select checksum-verified native
+  packages; source fallback remains documented when a native artifact is not
+  published for the current platform.
 - `⛔` **Health-failure rollback is untested** — if the freshly-activated service
   is unhealthy, the rollback exists but has no automated proof (`CURRENT_STATE.md`).
 
@@ -83,9 +84,10 @@
 2. `/diff` (`GET /api/tasks/:id/diff`) shows the change; `/undo`
    (`/api/tasks/:id/undo`) rolls it back.
 - **Works:** repair e2e is tested (`agent-repair-e2e.test.ts`).
-- `⛔` **No baseline-regression auto-block:** `compareBaseline` exists
-  (`workspace/diagnostics.ts`) but is **not wired into the write path**, so an
-  edit that adds type/lint errors is not automatically caught before "completed".
+- **Works:** direct TypeScript/ESLint verification records bounded diagnostic
+  summaries; after a workspace mutation, the next same-family verification is
+  compared against its prior snapshot and a regression remains a completion
+  blocker (`verification.completed`).
 - `⛔` **Verification gating is shallow** — a task can reach `completed` without a
   hard re-verify step, risking a confidently-wrong success (Phase 4).
 
@@ -149,9 +151,9 @@
 2. `/api/projects/:id/diagnostics` returns normalized tsc/eslint diagnostics.
 3. Audit log + task events provide a trail. In terminal Mission Control, `/tree`
    shows the task/subagent tree and `/result` summarizes final evidence.
-- `⛔` **No single support-bundle export** (redacted logs + versions + task
-  timeline in one artifact). A user diagnosing a stuck task still lacks a full
-  chronological tool-call timeline and parent synthesis view (Phase 9).
+- **Works:** Activity / Inspect can download a project-scoped support bundle
+  containing redacted chronological activity plus task/provider/disclosure and
+  verification summaries. Raw tool payloads and private reasoning remain out.
 - `⛔` **Stray debug logging** (`console.log("INSPECTING WORKSPACE PATH:" …)`,
   `inspect-workspace.ts:26`) leaks workspace paths to stdout.
 
@@ -166,7 +168,7 @@
 | 3 | Approval-after-restart path still uses direct status reset | Approval | P2 | slice 3 |
 | 4 | Full tool timeline and parent synthesis view | Diagnosis | P2 | Mission Control |
 | 5 | Terminal/duplicate cancellation route semantics need richer CLI/web wording | Cancellation | P2 | Mission Control |
-| 6 | No baseline-regression auto-block | Coding | P2 | Phase 4 |
-| 7 | No support bundle / tool timeline | Diagnosis | P2 | Phase 9 |
+| 6 | Broader LSP/semantic diagnostics beyond tsc and ESLint | Coding | P2 | Phase 4 |
+| 7 | Mid-stream reconnect/dedup and parent synthesis | Diagnosis | P2 | Phase 9 |
 | 8 | Stray workspace-path debug log | Diagnosis | P3 | quick fix |
 | 9 | No continuous onboarding→first-task thread | Onboarding | P2 | Phase 2/5 |

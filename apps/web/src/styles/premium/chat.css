@@ -38,6 +38,8 @@
   .morrow-conversation-page[data-activity="open"] .morrow-activity-panel {
     position: static;
     width: auto;
+    height: auto;
+    min-height: 0;
     box-shadow: none;
   }
 }
@@ -588,6 +590,7 @@
   display: flex;
   flex-direction: column;
   width: min(520px, 94vw);
+  min-height: 0;
   border-left: 1px solid var(--morrow-product-line);
   background: var(--morrow-product-shell, #151612);
   box-shadow: -16px 0 48px rgb(0 0 0 / 0.55);
@@ -747,6 +750,7 @@
 
 .morrow-activity-panel__content {
   flex: 1 1 auto;
+  min-height: 0;
   padding: 14px 22px;
   overflow-y: auto;
 }
@@ -759,6 +763,29 @@
   line-height: 1.45;
 }
 
+.morrow-activity-panel__support {
+  min-height: 30px;
+  padding: 6px 10px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 7px;
+  background: var(--morrow-product-field-strong);
+  color: var(--morrow-product-copy-soft);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-align: center;
+}
+
+.morrow-activity-panel__support:hover:not(:disabled) {
+  border-color: var(--morrow-product-copper);
+  color: var(--morrow-product-copy);
+}
+
+.morrow-activity-panel__support:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .morrow-activity-panel__footer p {
   margin: 0;
 }
@@ -766,6 +793,9 @@
 @media (max-width: 700px) {
   .morrow-activity-panel {
     width: 100%;
+    /* Keep the drawer above the fixed mobile dock so its close/action controls
+       and the support export footer never sit under navigation chrome. */
+    bottom: 82px;
     border-left: 0;
     border-radius: 16px 0 0 16px;
     box-shadow: -10px 0 32px rgb(0 0 0 / 0.42);
@@ -779,9 +809,14 @@
     font-size: 16px;
   }
 
-  .morrow-activity-panel__header .morrow-eyebrow,
-  .morrow-activity-panel__footer {
+  .morrow-activity-panel__header .morrow-eyebrow {
     display: none;
+  }
+
+  .morrow-activity-panel__footer {
+    display: grid;
+    gap: 8px;
+    padding: 10px 16px;
   }
 
   .morrow-activity-panel__controls {
@@ -819,7 +854,4 @@
     padding: 12px 16px;
   }
 
-  .morrow-activity-panel__footer {
-    padding: 10px 16px;
-  }
 }

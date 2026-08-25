@@ -101,6 +101,7 @@ describe("reasoning: real send → execution → wire-body pipeline (HTTP)", () 
   }
 
   async function makeConversation() {
+    await json("PATCH", "/api/assistant-profile", { defaultPrivacyMode: "controlled_cloud" });
     const project = (await json("POST", "/api/projects", { name: "Reasoning", workspacePath: process.cwd() })).body;
     const conv = (await json("POST", `/api/projects/${project.id}/conversations`, { title: "Chat" })).body;
     return { project, conv };

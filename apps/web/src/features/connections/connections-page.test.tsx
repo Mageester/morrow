@@ -68,6 +68,17 @@ function json(body: unknown, status = 200) { return Response.json(body, { status
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("ConnectionsPage", () => {
+  it("does not call a configured provider healthy until a default model is selected", async () => {
+    installApi((path) => {
+      if (path === "/api/providers") return json([provider({ configured: true, available: true, authStatus: "configured", models: ["vendor/model"], defaultModel: null })]);
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    renderPage();
+
+    expect(await screen.findByText("Needs a model", { exact: true })).toBeVisible();
+    expect(screen.queryByText("Healthy", { exact: true })).not.toBeInTheDocument();
+  });
+
   it("connects OpenRouter, clears the key, and never places it in query data or visible copy", async () => {
     let configured = false;
     const fetchMock = installApi((path) => {
@@ -272,7 +283,7 @@ describe("ConnectionsPage — the full provider catalog", () => {
 
   /**
    * The page was hardcoded to OpenRouter — its API client literally asserted
-   * `z.literal("openrouter")` — so 29 of the 30 providers the engine supports
+   * `z.literal("openrouter")` — so the rest of the provider catalog the engine supports
    * could not be connected from the web app at all.
    */
   it("offers every supported provider, grouped so the list is navigable", async () => {

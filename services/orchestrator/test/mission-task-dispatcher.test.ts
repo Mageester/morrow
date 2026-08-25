@@ -3,6 +3,7 @@ import { openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRepository } from "../src/repositories/tasks.js";
+import { assistantProfileRepository } from "../src/repositories/assistant-profile.js";
 import {
   AgentTaskDispatchError,
   dispatchAgentTask,
@@ -90,6 +91,43 @@ describe("mission agent-task dispatcher", () => {
       .get(result.task.id) as { use_memory: number; decision_json: string };
     expect(stored.use_memory).toBe(0);
     expect(JSON.parse(stored.decision_json)).toEqual(result.routing);
+    expect(run).toHaveBeenCalledWith(result.task.id);
+  });
+
+  it("blocks a remote route under local-only privacy before starting the runner", () => {
+    const env = { ...process.env, MOCK_PROVIDER: "false", OPENAI_API_KEY: "test-key" };
+    assistantProfileRepository(db).update({ defaultPrivacyMode: "local_only" }, "2026-07-16T12:00:00.000Z");
+
+    expect(() => dispatchAgentTask({ db, runner: { run }, env }, {
+      conversationId: "conversation-1",
+      content: "Keep this local",
+      providerId: "openai",
+      model: "gpt-5.6-sol",
+      idempotencyKey: "privacy-local-only",
+    })).toThrow(expect.objectContaining({
+      code: "PRIVACY_POLICY_BLOCKED",
+      statusCode: 409,
+    }));
+    expect(run).not.toHaveBeenCalled();
+    expect(taskRepository(db).listTasksByProject("project-1")).toHaveLength(0);
+  });
+
+  it("persists the effective profile privacy mode with an allowed route", () => {
+    const env = { ...process.env, MOCK_PROVIDER: "false", OPENAI_API_KEY: "test-key" };
+    assistantProfileRepository(db).update({ defaultPrivacyMode: "controlled_cloud" }, "2026-07-16T12:00:00.000Z");
+
+    const result = dispatchAgentTask({ db, runner: { run }, env }, {
+      conversationId: "conversation-1",
+      content: "Use the approved provider",
+      providerId: "openai",
+      model: "gpt-5.6-sol",
+      idempotencyKey: "privacy-controlled-cloud",
+    });
+
+    expect(result.routing).toMatchObject({ providerId: "openai", privacyMode: "controlled_cloud" });
+    const stored = db.prepare("SELECT decision_json FROM task_routing WHERE task_id=?")
+      .get(result.task.id) as { decision_json: string };
+    expect(JSON.parse(stored.decision_json)).toMatchObject({ privacyMode: "controlled_cloud" });
     expect(run).toHaveBeenCalledWith(result.task.id);
   });
 

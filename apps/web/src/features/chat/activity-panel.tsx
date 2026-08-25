@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { conversationQueries } from "../../api/conversations.js";
+import { conversationApi, conversationQueries } from "../../api/conversations.js";
 import { Markdown } from "../../components/markdown.js";
 
 export type ActivityFilterCategory =
@@ -303,6 +303,7 @@ export function ActivityPanel({ conversationId, onClose, projectId }: ActivityPa
   const [filter, setFilter] = useState<ActivityFilterCategory>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [expandAll, setExpandAll] = useState<boolean | undefined>(undefined);
+  const [bundleState, setBundleState] = useState<"idle" | "downloading" | "error">("idle");
 
   useEffect(() => {
     closeRef.current?.focus();
@@ -340,6 +341,23 @@ export function ActivityPanel({ conversationId, onClose, projectId }: ActivityPa
       return text.includes(query);
     });
   }, [allEntries, filter, searchQuery]);
+
+  const downloadSupportBundle = async () => {
+    setBundleState("downloading");
+    try {
+      const bundle = await conversationApi.supportBundle(projectId, conversationId);
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `morrow-support-${conversationId}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setBundleState("idle");
+    } catch {
+      setBundleState("error");
+    }
+  };
 
   const CATEGORIES: Array<{ id: ActivityFilterCategory; label: string }> = [
     { id: "all", label: "All" },
@@ -459,6 +477,16 @@ export function ActivityPanel({ conversationId, onClose, projectId }: ActivityPa
 
       <footer className="morrow-activity-panel__footer">
         <p>Completed events remain in this saved history. Sensitive arguments and private model reasoning stay server-side.</p>
+        <button
+          aria-label="Download support bundle"
+          className="morrow-activity-panel__support"
+          disabled={bundleState === "downloading"}
+          onClick={() => { void downloadSupportBundle(); }}
+          type="button"
+        >
+          {bundleState === "downloading" ? "Preparing support bundle…" : "Download support bundle"}
+        </button>
+        {bundleState === "error" ? <p role="alert">Support bundle could not be prepared. Try again.</p> : null}
       </footer>
     </aside>
   );

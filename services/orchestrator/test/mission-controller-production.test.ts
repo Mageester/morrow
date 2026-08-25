@@ -6,6 +6,7 @@ import { missionsRepository } from "../src/repositories/missions.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { taskRepository } from "../src/repositories/tasks.js";
+import { assistantProfileRepository } from "../src/repositories/assistant-profile.js";
 
 describe("production durable mission controller composition", () => {
   const databases: Array<ReturnType<typeof openDatabase>> = [];
@@ -15,6 +16,7 @@ describe("production durable mission controller composition", () => {
     const db = openDatabase(":memory:");
     databases.push(db);
     const now = "2026-07-17T02:00:00.000Z";
+    assistantProfileRepository(db).update({ defaultPrivacyMode: "controlled_cloud" }, now);
     projectRepository(db).createProject({
       id: "project-1",
       name: "Project",

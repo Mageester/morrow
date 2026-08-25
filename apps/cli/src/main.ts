@@ -843,6 +843,16 @@ async function doctor(ctx: Context): Promise<number> {
       critical: false,
       fix: "Run `morrow init` from the repository.",
     });
+    const terminal = await ctx.api().terminalCapabilities().catch(() => null);
+    if (terminal) {
+      checks.push({
+        name: "process modes",
+        ok: terminal.pipe.available,
+        detail: terminal.pty.available ? "pipe + interactive PTY" : `pipe only; ${terminal.pty.detail}`,
+        critical: false,
+        ...(terminal.pty.available ? {} : { fix: "Use pipe mode, or install the optional node-pty dependency for interactive processes." }),
+      });
+    }
   } catch {
     checks.push({
       name: "orchestrator",

@@ -2,6 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readSync, statSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { filterEnv, resolveExecutable, SHELL_META_CHARS } from "../tools/command-executor.js";
 import type { ProcessRecord, ProcessStatus } from "../repositories/processes.js";
 
@@ -57,6 +58,27 @@ interface LiveChild {
 }
 
 const DEFAULT_MAX_LOG_BYTES = 1024 * 1024; // 1 MB per stream
+
+const require = createRequire(import.meta.url);
+
+/** Report the terminal modes this build can honestly provide. */
+export function terminalCapabilities(): {
+  pipe: { available: true; detail: string };
+  pty: { available: boolean; detail: string };
+} {
+  try {
+    require.resolve("node-pty");
+    return {
+      pipe: { available: true, detail: "Bounded stdout/stderr capture is available." },
+      pty: { available: true, detail: "Interactive PTY processes are available." },
+    };
+  } catch {
+    return {
+      pipe: { available: true, detail: "Bounded stdout/stderr capture is available." },
+      pty: { available: false, detail: "Interactive PTY is unavailable; start processes in pipe mode." },
+    };
+  }
+}
 
 interface ProcessesRepo {
   create(input: {
