@@ -136,9 +136,34 @@ export interface WorkStepGroup {
 
 export type WorkStep = WorkStepSingle | WorkStepGroup;
 
+/**
+ * One unit of an assistant turn, in the order it actually happened.
+ *
+ * A turn is not "some prose with a pile of tool calls attached to it". It is a
+ * sequence: Morrow says what it is about to do, does it, says what it found,
+ * does more. Reading that sequence back in order is how someone follows the
+ * work — and flattening it into a summary box above a single wall of text is
+ * what made a long turn unreadable, because the one thing the reader needed
+ * (which words go with which actions) was the one thing thrown away.
+ *
+ * Consecutive tool steps collapse into a single `work` run so a burst of eight
+ * reads is one paragraph-sized object between two pieces of prose, not eight
+ * interruptions.
+ */
+export type TurnBlock =
+  | { type: "prose"; key: string; text: string }
+  | { type: "work"; key: string; steps: readonly WorkStep[] }
+  | { type: "notable"; key: string; entry: WebConversationActivityEntry };
+
 export type TurnStatus = "idle" | "running" | "completed" | "failed";
 
 export interface TurnWork {
+  /**
+   * The turn as a reader experiences it: prose, work, prose, work, in the order
+   * the run produced them. Empty for a message with no recorded narration, in
+   * which case the message body is the only text there is.
+   */
+  blocks: readonly TurnBlock[];
   /** Ordered, with repetitive read-only operations collapsed. */
   steps: readonly WorkStep[];
   /** Exceptional transitions, de-duplicated against repeats. */
@@ -166,6 +191,7 @@ export interface TurnWork {
 }
 
 const EMPTY_TURN: TurnWork = {
+  blocks: [],
   steps: [],
   notables: [],
   narrations: [],
@@ -272,27 +298,58 @@ export function projectTurnWork(
   let runningEntry: WebConversationActivityEntry | null = null;
   let failed = false;
 
+  // The ordered reading of the turn, built in the same pass. `pendingRun` holds
+  // the tool steps seen since the last piece of prose, so a burst of them
+  // becomes one block rather than one block each.
+  const blocks: TurnBlock[] = [];
+  let pendingRun: WebConversationActivityEntry[] = [];
+  const flushRun = () => {
+    if (pendingRun.length === 0) return;
+    blocks.push({ type: "work", key: `work:${pendingRun[0]!.id}`, steps: groupSteps(pendingRun) });
+    pendingRun = [];
+  };
+
   for (const entry of entries) {
     switch (chatEntryRole(entry)) {
-      case "narration":
+      case "narration": {
         narrations.push(entry);
+        // A narration entry accumulates its turn's deltas, so it can exist with
+        // nothing but whitespace in it for the instant before the first token
+        // lands. An empty paragraph in the reading column is worse than a
+        // slightly later one.
+        const text = entry.text ?? "";
+        if (text.trim().length > 0) {
+          flushRun();
+          blocks.push({ type: "prose", key: entry.id, text });
+        }
         break;
+      }
       case "step":
         steps.push(entry);
+        pendingRun.push(entry);
         if (entry.status === "running") runningEntry = entry;
         if (entry.status === "failed") failed = true;
         if (entry.status === "completed" && entry.toolName && MUTATING_TOOLS.has(entry.toolName) && entry.target) {
           changedFiles.add(entry.target);
         }
         break;
-      case "notable":
+      case "notable": {
         notables.push(entry);
         if (entry.status === "failed") failed = true;
+        // Deduplicated against the notable before it for the same reason the
+        // flat list is: the runtime can emit one transition twice.
+        const previous = notables.at(-2);
+        if (!previous || previous.summary !== entry.summary || previous.detail !== entry.detail) {
+          flushRun();
+          blocks.push({ type: "notable", key: entry.id, entry });
+        }
         break;
+      }
       case "hidden":
         break;
     }
   }
+  flushRun();
 
   const status: TurnStatus = streaming
     ? "running"
@@ -304,6 +361,7 @@ export function projectTurnWork(
 
   const span = bounds(entries);
   return {
+    blocks,
     steps: groupSteps(steps),
     notables: dedupeNotables(notables),
     narrations,

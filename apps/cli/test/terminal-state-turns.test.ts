@@ -237,3 +237,96 @@ describe("reasoning is bounded to the turn that produced it", () => {
     expect(entry?.text).toBe("working on it");
   });
 });
+
+describe("state reducer: work settles where it happened", () => {
+  it("attaches each turn's tools to that turn instead of pooling them at the end", () => {
+    const state = fold([
+      { type: "user.message", text: "fix the retry budget" },
+      { type: "assistant.turn_start", turnId: "t1" },
+      { type: "assistant.delta", turnId: "t1", text: "Finding the call site." },
+      { type: "assistant.turn_end", turnId: "t1", final: false },
+      { type: "tool.start", id: "c1", name: "search_text" },
+      { type: "tool.end", id: "c1", status: "completed" },
+      { type: "tool.start", id: "c2", name: "read_file" },
+      { type: "tool.end", id: "c2", status: "completed" },
+      { type: "assistant.turn_start", turnId: "t2" },
+      { type: "assistant.delta", turnId: "t2", text: "Found it. Applying the fix." },
+      { type: "assistant.turn_end", turnId: "t2", final: false },
+      { type: "tool.start", id: "c3", name: "propose_patch" },
+      { type: "tool.end", id: "c3", status: "completed" },
+      { type: "assistant.turn_start", turnId: "t3" },
+      { type: "assistant.delta", turnId: "t3", text: "Done." },
+      { type: "assistant.turn_end", turnId: "t3", final: true },
+      { type: "task.completed" },
+    ]);
+
+    // The transcript reads in the order the run happened: what Morrow said,
+    // then what it did because of it, then what it said next.
+    expect(state.conversation.map((entry) => entry.role)).toEqual([
+      "user",
+      "assistant",
+      "work",
+      "assistant",
+      "work",
+      "assistant",
+    ]);
+
+    const work = state.conversation.filter((entry) => entry.role === "work");
+    expect(work[0]!.tools?.map((tool) => tool.id)).toEqual(["c1", "c2"]);
+    expect(work[1]!.tools?.map((tool) => tool.id)).toEqual(["c3"]);
+
+    // Every card reached the transcript exactly once, and the task's own record
+    // of what it ran is still whole.
+    expect(state.settledTools).toBe(3);
+    expect(state.tools).toHaveLength(3);
+  });
+
+  it("settles work a final turn ran after its last prose", () => {
+    const state = fold([
+      { type: "user.message", text: "run the tests" },
+      { type: "assistant.turn_start", turnId: "t1" },
+      { type: "assistant.delta", turnId: "t1", text: "Running them now." },
+      { type: "assistant.turn_end", turnId: "t1", final: true },
+      { type: "tool.start", id: "c1", name: "run_command" },
+      { type: "tool.end", id: "c1", status: "completed" },
+      { type: "task.completed" },
+    ]);
+    // No further turn opened, so the terminal event is the only boundary left
+    // to settle against — the work must not be dropped for want of one.
+    expect(state.conversation.map((entry) => entry.role)).toEqual(["user", "assistant", "work"]);
+    expect(state.settledTools).toBe(1);
+  });
+
+  it("does not re-settle work that already reached the transcript", () => {
+    const state = fold([
+      { type: "user.message", text: "look around" },
+      { type: "assistant.turn_start", turnId: "t1" },
+      { type: "assistant.delta", turnId: "t1", text: "Looking." },
+      { type: "assistant.turn_end", turnId: "t1", final: false },
+      { type: "tool.start", id: "c1", name: "read_file" },
+      { type: "tool.end", id: "c1", status: "completed" },
+      { type: "assistant.turn_start", turnId: "t2" },
+      { type: "assistant.delta", turnId: "t2", text: "Nothing to change." },
+      { type: "assistant.turn_end", turnId: "t2", final: true },
+      { type: "task.completed" },
+    ]);
+    expect(state.conversation.filter((entry) => entry.role === "work")).toHaveLength(1);
+  });
+
+  it("starts a new message with nothing carried over from the last one", () => {
+    const state = fold([
+      { type: "user.message", text: "first" },
+      { type: "assistant.turn_start", turnId: "t1" },
+      { type: "assistant.delta", turnId: "t1", text: "ok" },
+      { type: "assistant.turn_end", turnId: "t1", final: true },
+      { type: "tool.start", id: "c1", name: "read_file" },
+      { type: "tool.end", id: "c1", status: "completed" },
+      { type: "task.completed" },
+      { type: "user.message", text: "second" },
+    ]);
+    // `tools` resets per message, so the high-water mark has to reset with it
+    // or the next task's first turn would settle nothing.
+    expect(state.tools).toEqual([]);
+    expect(state.settledTools).toBe(0);
+  });
+});

@@ -6,9 +6,12 @@
  *
  * Stdout contract: stdout receives exactly the FINAL answer, so a pipe gets
  * clean text. Turn text is buffered per turn; when a turn ends final it is
- * written to stdout, when it ends intermediate it goes to stderr as dim
- * narration (visible in a terminal, out of the way of pipes). Legacy streams
- * with no turn boundaries keep the old stream-as-it-arrives behavior.
+ * written to stdout, and when it ends intermediate it is dropped — this
+ * surface reports what a run concluded, not how it got there. (The interactive
+ * shell is the opposite: it settles each turn's work as the turn ends, so a
+ * run reads in order. See `ink/app.tsx` and `settleWork` in `state.ts`.)
+ * Legacy streams with no turn boundaries keep the old stream-as-it-arrives
+ * behavior.
  * Activity, actions, recovery stories, and the completion card go to stderr
  * as diagnostics — mirroring the contract the rest of the CLI relies on.
  */
@@ -98,6 +101,11 @@ export class LineRenderer implements Renderer {
           out.write(text);
           this.wroteText = true;
         }
+        // An intermediate turn's text is deliberately dropped on this surface,
+        // not written to stderr. See the stdout contract above: this renderer
+        // exists for pipes, CI and logs, where "exactly the answer" is the
+        // whole point, and `terminal-line-renderer.test.ts` pins it. The
+        // interactive shell is where a run is meant to be read turn by turn.
         break;
       }
 

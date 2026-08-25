@@ -30,6 +30,7 @@ import { useConversationAutoscroll } from "./use-conversation-autoscroll.js";
 import { ReasoningDisclosure } from "./reasoning-disclosure.js";
 import { projectTurnWork } from "./chat-projection.js";
 import { NotableEvent, WorkSummary } from "./work-summary.js";
+import { TurnFooter, TurnTimeline } from "./turn-timeline.js";
 import { parseTurnFailure } from "./turn-failure.js";
 import { TurnFailureNotice } from "./turn-failure-notice.js";
 import { LiveTurnStatus } from "./live-status.js";
@@ -171,15 +172,22 @@ export interface ConversationMessageItemProps {
 /**
  * One turn of the conversation.
  *
- * An assistant turn is a single coherent unit: the work Morrow did, folded into
- * one compact summary; any exceptional transition that changes how the answer
- * should be read; then the answer itself, which is what the turn is for and
- * therefore what dominates once it exists.
+ * An assistant turn is a sequence, not a block: Morrow says what it is going to
+ * do, does it, says what it found, and goes again. The transcript renders that
+ * sequence in order — prose, the tool run that followed it, the next piece of
+ * prose — because which words go with which actions is the thing a reader is
+ * actually following.
  *
- * The ordered interleaving of narration and tool calls is not reproduced here.
- * It remains complete in Activity / Inspect, where a reader is asking "in what
- * order did this happen?" — a different question from the one a conversation
- * answers. Rendering it inline is what turned this surface into an event feed.
+ * This reverses an earlier decision to fold every tool call into one summary
+ * above a single block of text. That shape was defensible when a turn ran two
+ * or three tools; on a real agentic run it produced a wall of prose with a
+ * detached inventory on top, and the intermediate narration — most of what
+ * Morrow said — was not rendered anywhere at all.
+ *
+ * `message.content` remains the fallback for a message with no recorded
+ * narration (a legacy row, or one with no task behind it). Where narration
+ * exists it IS the message: the same redacted text, split at the turn
+ * boundaries the runtime already recorded.
  */
 /**
  * "10:53 AM" — the clock time a message was written.
@@ -241,9 +249,20 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
   const speaker = teammate?.name ?? "Morrow";
   const sentAt = messageTime(message.createdAt);
   const body = failure ? failure.content : message.content;
-  // Exactly one waiting signal per turn: the line below until work starts, the
-  // work summary once it has, the answer once there is one.
-  const waiting = !body && streaming && work.steps.length === 0;
+  // Where narration was recorded, the timeline is the turn. `message.content`
+  // is deliberately NOT rendered alongside it: while a task streams, that field
+  // is a whole-task accumulator holding every turn's text glued together, so
+  // showing both would print the entire conversation twice — once in order and
+  // once as one block. It settles to the canonical final answer, which is the
+  // last narration entry, so it is a duplicate either way.
+  //
+  // The test is prose, not blocks: a turn that ran tools always has blocks, and
+  // taking that as "the timeline has the words" would suppress the body on a
+  // route that records no narration at all — losing the answer entirely.
+  const timeline = work.blocks.some((block) => block.type === "prose");
+  // Exactly one waiting signal per turn: the line below until the turn has
+  // produced something — prose, a body, or a step — and the turn itself after.
+  const waiting = streaming && !timeline && !body && work.steps.length === 0;
 
   return (
     <article
@@ -262,7 +281,9 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
           <span className="morrow-conversation-message__speaker">{speaker}</span>
           {sentAt ? <time className="morrow-conversation-message__time">{sentAt}</time> : null}
         </p>
-        {message.taskId ? (
+        {/* Legacy shape, for a message with no recorded narration: the tool
+            inventory has nowhere inline to live, so it keeps its own surface. */}
+        {message.taskId && !timeline ? (
           <WorkSummary
             conversationId={conversationId}
             onInspect={onOpenActivity}
@@ -271,11 +292,7 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
           />
         ) : null}
 
-        {work.notables.map((entry) => <NotableEvent entry={entry} key={entry.id} />)}
-
-        {(handoffs ?? []).map((handoff) => (
-          <HandoffRow handoff={handoff} key={handoff.id} projectId={projectId} />
-        ))}
+        {timeline ? null : work.notables.map((entry) => <NotableEvent entry={entry} key={entry.id} />)}
 
         {showReasoning && message.taskId ? (
           <ReasoningDisclosure
@@ -298,11 +315,24 @@ export const ConversationMessageItem = memo(function ConversationMessageItem({
               <span />
             </span>
           </p>
+        ) : timeline ? (
+          <TurnTimeline
+            blocks={work.blocks}
+            conversationId={conversationId}
+            projectId={projectId}
+            streaming={streaming}
+          />
         ) : body ? (
           <div className="morrow-conversation-message__content morrow-conversation-message__content--markdown">
             <Markdown streaming={streaming} text={body} />
           </div>
         ) : null}
+
+        {(handoffs ?? []).map((handoff) => (
+          <HandoffRow handoff={handoff} key={handoff.id} projectId={projectId} />
+        ))}
+
+        {timeline ? <TurnFooter onInspect={onOpenActivity} work={work} /> : null}
 
         {failed ? (
           <TurnFailureNotice

@@ -497,6 +497,11 @@ export function App({
     };
   }, [state.conversation]);
 
+  const liveTools = useMemo(
+    () => state.tools.slice(state.settledTools),
+    [state.tools, state.settledTools],
+  );
+
   // `<Static>` keys on identity, and a cleared transcript reuses indices. The
   // epoch makes a clear produce genuinely new keys so old rows are not replayed.
   const staticItems = useMemo(
@@ -522,9 +527,12 @@ export function App({
         <PlanView expanded={expanded} plan={state.plan} unicode={unicode} width={width} />
       ) : null}
 
-      {streaming && state.tools.length > 0 ? (
+      {/* Only the work not yet written into scrollback. Earlier turns settled
+          at their own boundaries and are in <Static> above; drawing them here
+          too would show every tool of the run twice. */}
+      {streaming && liveTools.length > 0 ? (
         <Box marginTop={1}>
-          <WorkSummary expanded={expanded} streaming tools={state.tools} unicode={unicode} />
+          <WorkSummary expanded={expanded} streaming tools={liveTools} unicode={unicode} />
         </Box>
       ) : null}
 
