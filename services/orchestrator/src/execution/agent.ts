@@ -84,6 +84,7 @@ import {
 import { normalizeTrailingLegacyToolCalls } from "./legacy-tool-call.js";
 import { resolveAblations } from "./ablation.js";
 import { measureProviderRequest, prepareContextForProvider } from "./context-budget.js";
+import { applySkillInstall, discardSkillInstall, parseSkillSource, planSkillInstall, SkillInstallError } from "../skills/install.js";
 import { boundCompletedToolArguments, boundTerminalToolArguments, buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
 import { providerRouteFingerprint } from "../routing/effective-context.js";
 import { resolveModelBudget, withCurrentModelVisibleTokens } from "../routing/model-budget.js";
@@ -1851,6 +1852,19 @@ export async function executeAgentChatTask({
           overwrite: { type: "boolean", description: "Overwrite if skill already exists (default: false)" }
         },
         required: ["id", "name", "description", "instructions"]
+      }
+    },
+    {
+      name: "install_skill",
+      description: "Install a skill someone else authored, from GitHub (owner/repo, owner/repo@tag, or a github.com URL), a local folder, or a .tar.gz. Requires a one-shot user approval that names the source and the permissions the skill asks for. The skill is installed switched off; it does not take effect in this task. If the source holds several skills, the result lists them and you must name one with `subdir`.",
+      parameters: {
+        type: "object",
+        properties: {
+          source: { type: "string", description: "owner/repo, owner/repo@v1.2, a github.com URL, or a local folder or .tar.gz path" },
+          subdir: { type: "string", description: "Which skill to take, when the source holds several" },
+          overwrite: { type: "boolean", description: "Replace an already-installed skill of the same id (default: false)" }
+        },
+        required: ["source"]
       }
     },
     {
@@ -6775,6 +6789,126 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           } else if (tc.name === "create_skill") {
             if (activeToolProfile !== "agent") throw new Error(`Tool "create_skill" is not permitted in ${agentMode} mode`);
             resultStr = await executeApprovedTool(tc.name, args, tc.id);
+          } else if (tc.name === "install_skill") {
+            /**
+             * Installing a skill the model chose is the sharpest tool here.
+             *
+             * A skill is instructions the agent will later follow, so an
+             * install is a privilege change, and the model can be steered
+             * toward one by anything it has read â€” a web page, a file, a tool
+             * result. So the user approves every install individually, with the
+             * source and the requested permissions in front of them, and there
+             * is no standing grant to accumulate: `allow_once_only`, the same
+             * posture ask_teammate takes, because "trust this project" must
+             * never turn into "install whatever you like from the internet".
+             *
+             * The bundle is fetched, verified and staged BEFORE the approval,
+             * so the approval names the real id and the real permissions rather
+             * than whatever the model claimed, and applying it afterwards
+             * installs those exact staged bytes.
+             */
+            if (activeToolProfile !== "agent") throw new Error(`Tool "install_skill" is not permitted in ${agentMode} mode`);
+            const rawSource = typeof args.source === "string" ? args.source.trim() : "";
+            if (!rawSource) throw new AgentToolFailure("install_skill needs a source", { error: "install_skill needs a source", kind: "invalid_tool_arguments", toolName: tc.name }, "invalid_tool_arguments");
+
+            let preview: Awaited<ReturnType<typeof planSkillInstall>>;
+            try {
+              preview = await planSkillInstall(parseSkillSource(rawSource), {
+                subdir: typeof args.subdir === "string" && args.subdir.trim() !== "" ? args.subdir.trim() : null,
+                overwrite: args.overwrite === true,
+              });
+            } catch (error) {
+              const message = error instanceof SkillInstallError
+                ? (error.issues.length ? `${error.message}: ${error.issues.join("; ")}` : error.message)
+                : `Could not read ${rawSource}`;
+              throw new AgentToolFailure(message, { error: message, kind: "invalid_tool_arguments", toolName: tc.name }, "invalid_tool_arguments");
+            }
+
+            if (preview.kind === "choices") {
+              // Nothing was staged, so there is nothing to approve or release.
+              resultStr = JSON.stringify({ installed: false, reason: "multiple_skills", source: preview.source, candidates: preview.candidates });
+            } else {
+              const { plan, handle } = preview;
+              let approvalRecord = approvals.listByTask(taskId).find((a) =>
+                a.kind === "command" && a.details.tool === "install_skill" && a.details.toolCallId === tc.id
+              );
+              // A run interrupted while waiting for this approval re-plans on
+              // resume, which re-reads the source. If the source changed in
+              // between, the staged bundle is no longer the one that was
+              // approved, and installing it would quietly substitute different
+              // instructions for the ones a person agreed to. The SKILL.md hash
+              // is what says "the same skill"; a mismatch is a refusal.
+              if (approvalRecord && approvalRecord.details.checksum !== plan.checksum) {
+                discardSkillInstall(handle);
+                throw new Error(`${plan.source} no longer holds the skill that was approved; ask again.`);
+              }
+              let isApproved = approvalRecord?.status === "approved" && approvalRecord.decision === "allow_once";
+              if (approvalRecord?.status === "approved" && approvalRecord.decision !== "allow_once") {
+                discardSkillInstall(handle);
+                throw new Error("Installing a skill accepts only a one-shot approval.");
+              }
+              if (approvalRecord?.status === "denied") {
+                discardSkillInstall(handle);
+                throw new Error("Skill install denied by user.");
+              }
+              if (!isApproved) {
+                if (!approvalRecord) {
+                  approvalRecord = approvals.create({
+                    id: randomUUID(),
+                    taskId,
+                    projectId: project.id,
+                    kind: "command",
+                    summary: `Install skill ${plan.id} from ${plan.source}`,
+                    createdAt: now(),
+                    details: {
+                      tool: "install_skill",
+                      operation: "install_skill",
+                      toolCallId: tc.id,
+                      skillId: plan.id,
+                      skillName: plan.name,
+                      source: plan.source,
+                      publisher: plan.publisher,
+                      riskClass: plan.riskClass,
+                      // Binds this decision to these exact instructions.
+                      checksum: plan.checksum,
+                      // The requested permissions and the metadata Morrow had
+                      // to invent are the substance of this decision, so they
+                      // travel with the approval rather than being summarized.
+                      permissions: plan.permissions,
+                      generatedMetadata: plan.generatedMetadata,
+                      warnings: plan.warnings,
+                      replaces: plan.replaces,
+                      fileCount: plan.files.length,
+                      approvalMode: "allow_once_only",
+                    },
+                  });
+                }
+                transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
+                event("approval.requested", { approvalId: approvalRecord.id, kind: "command", tool: "install_skill" });
+                await persistExecutionCheckpoint("waiting_for_approval");
+                await awaitApprovalChecked(approvalRecord.id);
+                const settled = approvals.get(approvalRecord.id);
+                if (settled?.status === "approved" && settled.decision === "allow_once") isApproved = true;
+                else if (settled?.status === "approved") {
+                  discardSkillInstall(handle);
+                  throw new Error("Installing a skill accepts only a one-shot approval.");
+                } else {
+                  discardSkillInstall(handle);
+                  throw new Error("Skill install denied by user.");
+                }
+              }
+              const installed = applySkillInstall(handle);
+              // Installed is not enabled, and the model is told so plainly so it
+              // does not go on to act as though the skill were now in force.
+              resultStr = JSON.stringify({
+                installed: true,
+                id: installed.id,
+                source: plan.source,
+                permissions: plan.permissions,
+                enabled: false,
+                note: "Installed but switched off. It does not apply to this task; the user enables it separately.",
+              });
+            }
           } else if (isMcpTool(tc.name)) {
             let isApproved = autoApprove;
             if (!isApproved) {

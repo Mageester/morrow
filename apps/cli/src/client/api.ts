@@ -755,6 +755,8 @@ export interface SkillInstallPlan {
   publisher: string;
   riskClass: string;
   source: string;
+  /** SHA-256 of SKILL.md — the identity of the instructions themselves. */
+  checksum: string;
   permissions: { tools: string[]; filesystemScopes: string[]; networkDomains: string[]; requiredSecrets: string[] };
   files: Array<{ path: string; bytes: number }>;
   generatedMetadata: string[];

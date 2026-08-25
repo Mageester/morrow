@@ -73,6 +73,15 @@ export interface SkillInstallPlan {
   riskClass: string;
   /** Where this came from, in a form worth showing a person before they consent. */
   source: string;
+  /**
+   * SHA-256 of SKILL.md — the identity of the instructions themselves.
+   *
+   * A ref moves and a path can be rewritten, so this is the only thing that
+   * says "the same skill". A caller that has to re-plan after an interruption
+   * compares this against what was approved rather than trusting that the
+   * source still holds what it held then.
+   */
+  checksum: string;
   permissions: SkillPermissions;
   files: Array<{ path: string; bytes: number }>;
   /**
@@ -410,6 +419,28 @@ function stagingRoot(env: NodeJS.ProcessEnv): string {
   return join(resolveMorrowHome(env), ".skill-staging");
 }
 
+/** How long a staged bundle waits for a decision before it is swept. */
+const STAGING_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Drop staged bundles nobody came back for.
+ *
+ * Every surface releases its own staging on cancel, but a browser tab closed
+ * mid-decision or a process killed between plan and apply leaves one behind,
+ * and without this the directory would only ever grow.
+ */
+function sweepAbandonedStaging(env: NodeJS.ProcessEnv): void {
+  const root = stagingRoot(env);
+  if (!existsSync(root)) return;
+  const cutoff = Date.now() - STAGING_TTL_MS;
+  for (const entry of readdirSync(root)) {
+    const directory = join(root, entry);
+    try {
+      if (statSync(directory).mtimeMs < cutoff) rmSync(directory, { recursive: true, force: true });
+    } catch { /* another process may have swept it first */ }
+  }
+}
+
 /**
  * Fetch, normalize, stage and check a skill without installing it.
  *
@@ -591,6 +622,7 @@ export async function planSkillInstall(source: SkillSource, options: PlanOptions
   };
 
   const handle = randomUUID();
+  sweepAbandonedStaging(env);
   const staging = join(stagingRoot(env), handle);
   const staged = files
     .filter((file) => file.path !== "manifest.json" && file.path !== "permissions.json")
@@ -631,6 +663,7 @@ export async function planSkillInstall(source: SkillSource, options: PlanOptions
       publisher,
       riskClass,
       source: provenance,
+      checksum,
       permissions,
       files: staged.map((file) => ({ path: file.path, bytes: file.contents.byteLength })).sort((a, b) => a.path.localeCompare(b.path)),
       generatedMetadata,

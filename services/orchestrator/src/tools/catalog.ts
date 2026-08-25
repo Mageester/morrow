@@ -271,6 +271,16 @@ export const TOOL_CATALOG: ToolSpec[] = [
     constraints: ["Validated skill IDs, tools, and risk class", "Checksummed generated instructions", "Backs up explicit overwrites", "Cannot silently enable the generated skill"],
   },
   {
+    name: "install_skill", title: "Install skill", description: "Install a skill authored elsewhere from GitHub, a local folder, or an archive.", sideEffect: "write", enabled: true,
+    parameters: { source: { type: "string" }, subdir: { type: "string" }, overwrite: { type: "boolean" } },
+    constraints: [
+      "Every install needs a one-shot user approval; there is no standing grant",
+      "The approval names the source, the id, and the permissions requested",
+      "Verified and staged before approval, so what is approved is what lands",
+      "Cannot enable the installed skill",
+    ],
+  },
+  {
     name: "browser_open", title: "Open browser page", description: "Open an HTTP(S) page in a task-scoped controlled browser.", sideEffect: "network", enabled: true,
     parameters: { url: { type: "string" } },
     constraints: ["Exact origin requires a durable visible approval", "HTTP(S) only; URL credentials rejected", "Private/loopback access requires the approved hostname", "Session approval excludes credentials, payments, purchases, destructive account actions, releases, deploys, and pushes"],
@@ -326,7 +336,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
 export const IMPLEMENTED_TOOL_NAMES = [
   "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols",
   "git_status", "git_diff", "git_log", "run_command", "read_process_output", "stop_process", "write_plan", "record_decision", "ask_teammate", "propose_patch", "create_file", "append_file", "create_directory",
-  "read_artifact", "find_skill", "load_skill", "create_skill", "browser_open", "browser_snapshot", "browser_console", "browser_click",
+  "read_artifact", "find_skill", "load_skill", "create_skill", "install_skill", "browser_open", "browser_snapshot", "browser_console", "browser_click",
   "browser_type", "browser_key", "browser_select", "browser_viewport", "browser_screenshot", "browser_download", "browser_close",
   "read_mcp_resource",
 ] as const;

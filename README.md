@@ -179,6 +179,42 @@ The "Inspect workspace" task is a safe, deterministic execution workflow:
 2. **Guarantees**: For this specific executor, there is **no network access**, **no model invocation**, and **no shell execution**. It operates entirely locally and predictably.
 3. **Restart-Recovery**: If the orchestrator is restarted while tasks are running, any interrupted tasks are recovered and transitioned to a safe `interrupted` state.
 
+## Installing skills
+
+A skill is a folder with a `SKILL.md` in it — instructions Morrow can follow, plus
+whatever helper files they reference. Morrow ships a set, and you can install more.
+
+```bash
+morrow skills install anthropics/skills            # lists the skills in a repo
+morrow skills install anthropics/skills --subdir skills/pdf
+morrow skills install owner/repo@v1.2              # pin a tag or a commit
+morrow skills install ./my-skill                   # a local folder or a .tar.gz
+morrow skills enable pdf                           # installing does not enable
+morrow skills remove pdf
+```
+
+The same thing is available on the Skills page, and Morrow can install one
+mid-task with your approval.
+
+Installing a skill grants a capability rather than copying a file, so:
+
+- **You see it before it lands.** Morrow fetches, checks and stages the bundle,
+  then shows you where it came from, what it asks for, and which metadata it had
+  to invent because the bundle shipped none. What gets installed is what you were
+  shown — there is no second fetch after you agree.
+- **Installing is not enabling.** A newly installed skill is inert until you turn
+  it on.
+- **A bundle that fails its own checksum is refused,** rather than having the
+  checksum quietly rewritten.
+- **Morrow asks every time.** When Morrow installs a skill mid-task it needs a
+  one-shot approval naming the source and the permissions; no standing "trust
+  this project" grant covers it.
+- **Nothing leaves your machine** except the request that fetches the skill.
+
+Only `github.com` and local paths are accepted as sources. A branch name moves,
+so pin a tag or commit if you want the same bytes next time — Morrow says so when
+you do not.
+
 ## Multi-provider agent (alpha)
 
 Morrow runs a conversation-first agent through a provider-neutral runtime:

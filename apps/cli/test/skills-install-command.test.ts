@@ -34,6 +34,7 @@ describe("morrow skills install", () => {
     publisher: "github:acme",
     riskClass: "medium",
     source: "github:acme/skills@main",
+    checksum: "a".repeat(64),
     permissions: { tools: ["command-exec"], filesystemScopes: ["workspace"], networkDomains: [], requiredSecrets: [] },
     files: [{ path: "SKILL.md", bytes: 120 }],
     generatedMetadata: ["permissions.json"],
