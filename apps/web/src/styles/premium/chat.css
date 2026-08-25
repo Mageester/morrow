@@ -952,6 +952,17 @@
   font-style: italic;
 }
 
+/* Marks a job that will still be here after the agent stops. */
+.morrow-process__persist {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--morrow-product-line);
+  border-radius: 999px;
+  color: var(--morrow-product-copy-quiet);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+
 .morrow-process__uptime {
   flex: none;
   margin-inline-start: auto;

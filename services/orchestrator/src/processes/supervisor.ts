@@ -38,6 +38,9 @@ export interface StartProcessOptions {
   mode?: "pipe" | "pty";
   timeoutMs?: number;
   maxLogBytes?: number;
+  /** Exempt this job from the cleanup a terminal task performs on what it
+   *  started. See the `keep_alive` migration for why this is opt-in. */
+  keepAlive?: boolean;
 }
 
 export interface OutputSlice {
@@ -89,6 +92,7 @@ interface ProcessesRepo {
   create(input: {
     id: string; projectId: string; taskId?: string | null; agentId?: string | null;
     command: string; args: string[]; cwd: string; mode: "pipe" | "pty"; pid: number | null; runId: string;
+    keepAlive?: boolean;
   }): ProcessRecord;
   get(id: string): ProcessRecord | undefined;
   listByProject(projectId: string, status?: ProcessStatus): ProcessRecord[];
@@ -166,6 +170,7 @@ export class ProcessSupervisor {
       mode,
       pid: child.pid ?? null,
       runId: this.runId,
+      keepAlive: options.keepAlive === true,
     });
 
     const entry: LiveChild = { child, ptyProc: null, timeout: null, truncated: false };
@@ -258,6 +263,7 @@ export class ProcessSupervisor {
       mode: "pty",
       pid: ptyProc.pid ?? null,
       runId: this.runId,
+      keepAlive: options.keepAlive === true,
     });
 
     const entry: LiveChild = { child: null, ptyProc, timeout: null, truncated: false };

@@ -1914,6 +1914,18 @@ export const migrations:Migration[]=[
     CREATE INDEX IF NOT EXISTS tasks_roster_latest_idx
       ON tasks(project_id, type, agent_id, updated_at DESC, id DESC, status);
   `}
+  ,{id:67,name:"processes_keep_alive",sql:`
+    -- A background job the user asked to KEEP running past the task that
+    -- started it. Default 0 preserves today's behaviour exactly: a task
+    -- reaching a terminal state still force-stops everything it started, which
+    -- is what stops an agentic run from leaking dev servers.
+    --
+    -- The exemption is opt-in because the leak that unconditional cleanup was
+    -- added to fix was a SILENT one: a process nobody could see and nobody
+    -- could stop. Morrow now lists running jobs with a Stop beside each, so
+    -- "keep this alive" can be honoured without becoming invisible again.
+    ALTER TABLE processes ADD COLUMN keep_alive INTEGER NOT NULL DEFAULT 0;
+  `}
 ];
 /**
  * Durability mode for committed writes.

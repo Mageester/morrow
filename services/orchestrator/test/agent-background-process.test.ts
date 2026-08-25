@@ -378,6 +378,48 @@ describe("agent background processes (full-stack dev-server capability)", () => 
     rmSync(logsDir, { recursive: true, force: true });
   });
 
+  it("leaves a keepAlive server running after the task completes", async () => {
+    // The counterpart to the test above, and the reason that one cannot simply
+    // be unconditional: "start the dev server and leave it running" is a real
+    // request, and a task that force-stops the server on its way out has
+    // refused it rather than served it.
+    seed(db, ws);
+    const logsDir = mkdtempSync(join(tmpdir(), "morrow-bgproc-logs4-"));
+    const supervisor = new ProcessSupervisor(processesRepository(db), logsDir);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("x1", "run_command", {
+          executable: "node",
+          args: ["-e", LONG_RUNNING_SCRIPT],
+          purpose: "start the dev server and leave it up",
+          background: true,
+          keepAlive: true,
+        }), done],
+        [text("the server is up and will stay up"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, supervisor, maxTurns: 4 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    const call = conversationsRepository(db).listToolCallsForTask("t").find((c: any) => c.toolName === "run_command")!;
+    const result = JSON.parse(call.resultJson!);
+    expect(result.keepAlive).toBe(true);
+
+    // The task is finished. The server is not.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(processesRepository(db).get(result.processId)?.status).toBe("running");
+
+    // It is still Morrow's to stop — the exemption is from automatic cleanup,
+    // not from control.
+    await supervisor.terminate(result.processId, { force: true });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(processesRepository(db).get(result.processId)?.status).not.toBe("running");
+    rmSync(logsDir, { recursive: true, force: true });
+  });
+
   it("denies stop_process outside agent mode, same as run_command", async () => {
     seed(db, ws, "read-only");
     const provider = new MockProvider({

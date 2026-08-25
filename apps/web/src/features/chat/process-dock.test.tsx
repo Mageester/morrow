@@ -23,6 +23,7 @@ function job(over: Partial<WebProcess> = {}): WebProcess {
     startedAt: new Date(Date.now() - 74_000).toISOString(),
     endedAt: null,
     createdAt: new Date().toISOString(),
+    keepAlive: false,
     endpoints: [],
     ...over,
   };

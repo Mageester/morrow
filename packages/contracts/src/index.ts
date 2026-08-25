@@ -29,7 +29,7 @@ export const SpawnSubagentSchema=z.object({kind:z.enum(["inspect_workspace","age
 export type SpawnSubagentInput=z.infer<typeof SpawnSubagentSchema>;
 export const CreateCheckpointSchema=z.object({name:z.string().trim().min(1).max(100),files:z.array(z.string().min(1).max(1024)).min(1).max(500).optional(),taskId:z.string().optional()}).strict();
 export type CreateCheckpointInput=z.infer<typeof CreateCheckpointSchema>;
-export const StartProcessSchema=z.object({command:z.string().trim().min(1).max(500),args:z.array(z.string().max(4096)).max(100).default([]),cwd:z.string().max(1024).optional(),taskId:z.string().optional(),agentId:z.string().optional(),mode:z.enum(["pipe","pty"]).default("pipe"),timeoutMs:z.number().int().positive().max(86400000).optional()}).strict();
+export const StartProcessSchema=z.object({command:z.string().trim().min(1).max(500),args:z.array(z.string().max(4096)).max(100).default([]),cwd:z.string().max(1024).optional(),taskId:z.string().optional(),agentId:z.string().optional(),mode:z.enum(["pipe","pty"]).default("pipe"),timeoutMs:z.number().int().positive().max(86400000).optional(),keepAlive:z.boolean().optional()}).strict();
 export type StartProcessInput=z.infer<typeof StartProcessSchema>;
 export const ProcessStatusSchema=z.enum(["running","exited","failed","cancelled","lost"]);
 /** An address a background process announced it is listening on, parsed from
@@ -43,7 +43,7 @@ export type ProcessEndpoint=z.infer<typeof ProcessEndpointSchema>;
 /** A background job as a browser sees it. `endpoints` is derived per request
  *  from captured output rather than stored, so a server that announces its
  *  address late still reports it without a second write path. */
-export const WebProcessSchema=z.object({id:z.string().min(1),projectId:z.string().min(1),taskId:z.string().nullable(),agentId:z.string().nullable(),command:z.string(),args:z.array(z.string()),cwd:z.string(),mode:z.enum(["pipe","pty"]),pid:z.number().int().nullable(),status:ProcessStatusSchema,exitCode:z.number().int().nullable(),runId:z.string(),detail:z.string().nullable(),startedAt:z.string(),endedAt:z.string().nullable(),createdAt:z.string(),endpoints:z.array(ProcessEndpointSchema).default([])}).strict();
+export const WebProcessSchema=z.object({id:z.string().min(1),projectId:z.string().min(1),taskId:z.string().nullable(),agentId:z.string().nullable(),command:z.string(),args:z.array(z.string()),cwd:z.string(),mode:z.enum(["pipe","pty"]),pid:z.number().int().nullable(),status:ProcessStatusSchema,exitCode:z.number().int().nullable(),runId:z.string(),detail:z.string().nullable(),startedAt:z.string(),endedAt:z.string().nullable(),createdAt:z.string(),keepAlive:z.boolean().default(false),endpoints:z.array(ProcessEndpointSchema).default([])}).strict();
 export type WebProcess=z.infer<typeof WebProcessSchema>;
 export const ProcessOutputSchema=z.object({processId:z.string().min(1),stream:z.enum(["stdout","stderr"]),data:z.string(),nextOffset:z.number().int().nonnegative(),eof:z.boolean(),truncated:z.boolean()}).strict();
 export type ProcessOutput=z.infer<typeof ProcessOutputSchema>;

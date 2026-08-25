@@ -146,6 +146,16 @@ const ProcessRow = memo(function ProcessRow({
           <span className="morrow-process__pending">no address announced yet</span>
         )}
 
+        {/* A job that outlives the task that started it is a different thing
+            from one being kept alive only while a turn runs — it will still be
+            here after the agent stops, and the reader is the only one who will
+            ever stop it. */}
+        {entry.keepAlive ? (
+          <span className="morrow-process__persist" title="Kept running after the task that started it finished">
+            stays up
+          </span>
+        ) : null}
+
         <span className="morrow-process__uptime">{uptime(entry.startedAt, now)}</span>
 
         <button

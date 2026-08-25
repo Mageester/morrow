@@ -24,6 +24,13 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 - `/ps` gained an Address column and `/ps logs <id> [stdout|stderr]`. It could
   start and stop a dev server long before it could show you why one failed to
   come up.
+- A background job can be asked to outlive the task that started it. Until now
+  a finishing task force-stopped everything it had started, so "start the dev
+  server and leave it running" was refused rather than served — the server died
+  the moment the agent stopped. `run_command` gains `keepAlive`, and only those
+  jobs are exempt from cleanup; anything the agent started to check its own work
+  is still stopped. Kept-alive jobs are labelled "stays up" in the dock, so one
+  that outlives its task is visible rather than abandoned.
 
 ## [0.6.0] - 2026-08-25
 

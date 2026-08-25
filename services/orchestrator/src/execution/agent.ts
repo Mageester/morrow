@@ -1158,7 +1158,15 @@ export async function executeAgentChatTask({
     status: "completed" | "failed" | "cancelled",
     transitionEvent: Parameters<typeof records.transitionTask>[2],
   ): ReturnType<typeof records.transitionTask> => {
-    const orphaned = processesRepo.listByProject(projectId, "running").filter((process) => process.taskId === taskId);
+    // `keepAlive` jobs are spared: the user asked for a server that outlives
+    // the turn that started it, and killing it is not leak-prevention, it is
+    // refusing the request. Everything else this task started still goes â€” an
+    // agent that spawned a watcher to check its own work must not leave it
+    // behind. Both kinds are listed with a Stop in the app, so neither is the
+    // silent leak this cleanup was originally written to stop.
+    const orphaned = processesRepo
+      .listByProject(projectId, "running")
+      .filter((process) => process.taskId === taskId && !process.keepAlive);
     for (const process of orphaned) {
       void procSupervisor.terminate(process.id, { force: true })
         .then(() => { event("workspace.inspected", { kind: "auto_stop_process", processId: process.id, reason: `task_${status}` }); })
@@ -1686,7 +1694,8 @@ export async function executeAgentChatTask({
           args: { type: "array", items: { type: "string" }, description: "Command arguments" },
           cwd: { type: "string", description: "Optional working directory relative to project root" },
           purpose: { type: "string", description: "Reason for running this command" },
-          background: { type: "boolean", description: "Start a long-running process (e.g. 'npm run dev') without waiting for it to exit. Returns { processId, pid } instead of exit output." }
+          background: { type: "boolean", description: "Start a long-running process (e.g. 'npm run dev') without waiting for it to exit. Returns { processId, pid } instead of exit output." },
+          keepAlive: { type: "boolean", description: "Keep this process running after the task finishes. Set it ONLY when the user asked for a server that stays up (\"start the dev server and leave it running\"). Default false: anything you started to verify your own work is stopped when the task ends." }
         },
         required: ["executable", "args", "purpose"]
       }
@@ -2570,6 +2579,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             command: exec,
             args: cmdArgs,
             cwd: resolvedCwd,
+            keepAlive: args.keepAlive === true,
           });
         } catch (e: any) {
           throw new Error(`Failed to start background process: ${e?.message ?? e}`);
@@ -2578,6 +2588,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           processId: record.id,
           pid: record.pid,
           status: record.status,
+          keepAlive: record.keepAlive,
           note: "Started in the background. It keeps running after this tool call returns â€” poll read_process_output for its startup banner (that call reports any address it announced) and use stop_process to end it.",
         });
         records.appendEvidence({

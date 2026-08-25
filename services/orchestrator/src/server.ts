@@ -3228,6 +3228,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         args: body.args,
         cwd,
         mode: body.mode,
+        keepAlive: body.keepAlive === true,
         ...(body.timeoutMs ? { timeoutMs: body.timeoutMs } : {}),
       });
     } catch (e: any) {
