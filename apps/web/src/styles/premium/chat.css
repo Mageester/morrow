@@ -462,11 +462,13 @@
     padding-inline: 18px;
   }
 
-  /* Clear of the mobile dock, and clear of the on-screen keyboard's own
-     inset, so Send and Stop are never the controls sitting underneath it. */
+  /* Clear of the mobile dock, its 10px bottom offset, the shell's 10px frame,
+     and an 8px visual gap. The dock is 64px tall at its current touch-target
+     metrics, so 92px keeps the composer surface and its icons above it. The
+     safe-area inset is additive for devices with a home indicator. */
   .morrow-conversation-composer {
     padding: 12px 14px calc(14px + env(safe-area-inset-bottom));
-    padding-bottom: calc(74px + env(safe-area-inset-bottom));
+    padding-bottom: calc(92px + env(safe-area-inset-bottom));
   }
 
   .morrow-conversation-message--user {
