@@ -298,6 +298,12 @@ NODE="$1"
 # The packaged Windows build sets the same variable from its launcher.
 MORROW_WEB_ROOT="\${MORROW_WEB_ROOT:-\$APP/apps/web/dist}"
 export MORROW_WEB_ROOT
+# Source installs still ship the trusted skills bundle beside the checkout.
+# Keep the CLI doctor and the orchestrator pointed at that bundle; otherwise
+# the service falls back to the user-writable skills directory and reports an
+# empty registry on a fresh install.
+MORROW_SKILLS_DIR="\${MORROW_SKILLS_DIR:-\$APP/skills}"
+export MORROW_SKILLS_DIR
 exec "\$NODE" "\$APP/apps/cli/bin/morrow.mjs" "\$@"
 EOF
   else

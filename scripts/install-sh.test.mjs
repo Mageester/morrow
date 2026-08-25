@@ -74,6 +74,15 @@ test("the installer is POSIX-shell clean and self-documenting", { skip }, () => 
   assert.match(help.stdout, /is never\s+modified by this installer/i);
 });
 
+test("source launcher exposes its bundled skills to the CLI and service", { skip }, async () => {
+  const installer = readFileSync(INSTALLER, "utf8");
+  assert.match(
+    installer,
+    /MORROW_SKILLS_DIR="\\\$\{MORROW_SKILLS_DIR:-\\\$APP\/skills\}"/,
+    "source installs must point both the CLI and orchestrator at bundled skills",
+  );
+});
+
 test("an unknown option fails instead of installing something unintended", { skip }, () => {
   const res = spawnSync("sh", [INSTALLER, "--wat"], { encoding: "utf8" });
   assert.notEqual(res.status, 0);
