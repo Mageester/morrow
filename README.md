@@ -4,7 +4,7 @@
 
 Morrow is a self-hosted, deeply customizable personal AI agent. Local-first, provider-neutral, with visible execution, explicit permissions, and persistent memory.
 
-> **Status:** v0.6.0 beta. Windows 10/11 x64, Linux x64/arm64, and macOS x64/arm64 packages are supported.
+> **Status:** v0.7.0 beta. Windows 10/11 x64, Linux x64/arm64, and macOS x64/arm64 packages are supported.
 
 ## Quick Install (Windows)
 
@@ -37,7 +37,12 @@ page, verifies the credential, and lets you pick a default model from the models
 that key can actually reach. Credentials are stored locally and take effect
 without a restart. See [the provider reference](docs/providers.md).
 
-The 0.6.0 release includes model and reasoning routing, honest context status,
+The 0.7.0 release adds background jobs you can reach: a dev server Morrow
+starts is listed with the address it announced, its own output, and a stop
+control, and one asked to stay up outlives the task that started it. A
+conversation now reads in the order the run happened — what Morrow said, the
+tools that followed, what it said next — instead of a summary above one block
+of text. It carries forward model and reasoning routing, honest context status,
 project-scoped history, resumable interrupted work, redacted support bundles,
 and local-only privacy enforcement that blocks remote routes and network tools
 before they execute. Run `morrow doctor` for consumer-readable checks,

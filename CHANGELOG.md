@@ -6,6 +6,14 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-25
+
+Morrow can run a live server and let you reach it. Background jobs — dev
+servers, watchers — were already supervised durably; now they are visible,
+their address is read from what they printed, and one asked to stay up
+survives the task that started it. The conversation also reads in the order
+the run happened rather than as a summary above a wall of text.
+
 ### Added
 
 - Background jobs are visible and controllable from the web app. A dev server
