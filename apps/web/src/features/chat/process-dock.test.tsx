@@ -18,6 +18,8 @@ function job(over: Partial<WebProcess> = {}): WebProcess {
     pid: 4242,
     status: "running",
     exitCode: null,
+    terminationReason: null,
+    signal: null,
     runId: "run-1",
     detail: null,
     startedAt: new Date(Date.now() - 74_000).toISOString(),

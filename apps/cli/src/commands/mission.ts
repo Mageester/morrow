@@ -25,7 +25,7 @@ export function printMissionHelp(out: Output): number {
     "Morrow Mission",
     "",
     "Usage:",
-    "  morrow mission \"<objective>\"",
+    "  morrow mission \"<objective>\" [--timeout <seconds>] [--detach]",
     "  morrow mission list",
     "  morrow mission show [id]",
     "  morrow mission criteria [id]",
@@ -145,7 +145,7 @@ export async function runMission(ctx: Context, api: MorrowApi, objective: string
   // Start exactly once. From this point the orchestrator owns continuation;
   // this CLI only observes persisted state and may disconnect safely.
   ctx.out.info("");
-  ctx.out.info(ctx.out.magenta("Durable controller started. You may close this terminal without stopping the mission."));
+  ctx.out.info(ctx.out.magenta("Durable controller started. This terminal observes it; use --detach to leave it running, or interrupt to cancel it cleanly."));
   const observed = await api.startMission(mission.id);
   return observeDurableMission(ctx, api, observed);
 }
@@ -170,18 +170,93 @@ async function observeDurableMission(ctx: Context, api: MorrowApi, initial: Dura
   const missionId = initial.id;
   if (flagBool(ctx.flags, "detach")) return EXIT.OK;
 
+  let cleanupPromise: Promise<number> | undefined;
+  const requestCleanup = (cause: "timeout" | "signal"): Promise<number> => {
+    if (!cleanupPromise) cleanupPromise = cancelMissionForCli(ctx, api, missionId, cause);
+    return cleanupPromise;
+  };
+  const onSignal = () => { void requestCleanup("signal"); };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  const timeoutMs = missionObservationTimeoutMs(ctx);
+  const timeout = timeoutMs === undefined
+    ? undefined
+    : setTimeout(() => { void requestCleanup("timeout"); }, timeoutMs);
+
   let lastState: string | null = null;
-  while (observed.runtime && !isRuntimeTerminal(observed.runtime.state)) {
-    if (observed.runtime.state !== lastState) {
-      ctx.out.info(ctx.out.gray(`  ${observed.runtime.state}${observed.runtime.blocker ? ` · ${observed.runtime.blocker}` : ""}`));
-      lastState = observed.runtime.state;
+  try {
+    while (observed.runtime && !isRuntimeTerminal(observed.runtime.state)) {
+      if (cleanupPromise) return await cleanupPromise;
+      if (observed.runtime.state !== lastState) {
+        ctx.out.info(ctx.out.gray(`  ${observed.runtime.state}${observed.runtime.blocker ? ` · ${observed.runtime.blocker}` : ""}`));
+        lastState = observed.runtime.state;
+      }
+      await delay(500);
+      if (cleanupPromise) return await cleanupPromise;
+      observed = await api.getMission(missionId);
     }
-    await delay(500);
+    if (cleanupPromise) return await cleanupPromise;
+    if (observed.result) renderResult(ctx, observed);
+    else if (observed.runtime?.blocker) ctx.out.warn(observed.runtime.blocker);
+    return observed.runtime?.state === "completed" ? EXIT.OK : EXIT.ERROR;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+  }
+}
+
+function missionObservationTimeoutMs(ctx: Context): number | undefined {
+  const raw = flagString(ctx.flags, "timeout");
+  if (raw === undefined) return undefined;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw usageError("--timeout must be a positive number of seconds.");
+  }
+  return Math.max(1, Math.round(seconds * 1_000));
+}
+
+/**
+ * A CLI timeout is an attached-observer timeout, not permission to abandon a
+ * durable mission. The cancellation endpoint waits for the controller and
+ * task tree; retrying here keeps the CLI from reporting timeout while work is
+ * still active after the timeout result is returned.
+ */
+async function cancelMissionForCli(ctx: Context, api: MorrowApi, missionId: string, cause: "timeout" | "signal"): Promise<number> {
+  ctx.out.warn(cause === "timeout"
+    ? "CLI observation timed out; cancelling the durable mission and waiting for workers to stop."
+    : "CLI interrupted; cancelling the durable mission and waiting for workers to stop.");
+  for (;;) {
+    try {
+      const cancelled = await api.cancelMission(missionId);
+      let terminal = cancelled;
+      if (terminal.runtime && !isRuntimeTerminal(terminal.runtime.state)) {
+        terminal = await waitForMissionTerminal(api, missionId, terminal);
+      }
+      if (ctx.out.json) {
+        ctx.out.data({
+          status: "cancelled",
+          outcome: cause === "timeout" ? "cli_timeout_cancelled" : "cli_signal_cancelled",
+          mission: terminal,
+        });
+      } else {
+        ctx.out.info(`Mission ${shortId(missionId.replace(/^mission-/, ""))} cancelled (${cause}); no active worker remains.`);
+      }
+      return EXIT.CANCELLED;
+    } catch (error) {
+      ctx.out.warn(`Could not confirm mission cancellation yet${error instanceof Error ? `: ${error.message}` : ""}; retrying.`);
+      await delay(1_000);
+    }
+  }
+}
+
+async function waitForMissionTerminal(api: MorrowApi, missionId: string, initial: DurableMission): Promise<DurableMission> {
+  let observed = initial;
+  while (observed.runtime && !isRuntimeTerminal(observed.runtime.state)) {
+    await delay(250);
     observed = await api.getMission(missionId);
   }
-  if (observed.result) renderResult(ctx, observed);
-  else if (observed.runtime?.blocker) ctx.out.warn(observed.runtime.blocker);
-  return observed.runtime?.state === "completed" ? EXIT.OK : EXIT.ERROR;
+  return observed;
 }
 
 function isRuntimeTerminal(state: string): boolean {

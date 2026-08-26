@@ -59,7 +59,7 @@ describe("durable mission controller", () => {
   function harness(
     state: MissionRuntimeState,
     snapshot: Partial<ControllerSnapshot> = {},
-    options: { activeTaskId?: string | null } = {},
+    options: { activeTaskId?: string | null; deferTerminalOutcomes?: boolean } = {},
   ) {
     const runtime = missionRuntimeRepository(db);
     runtime.create({ missionId: "mission-1", state, now });
@@ -114,6 +114,7 @@ describe("durable mission controller", () => {
       validateMission,
       reviewMission,
       resolveApproval,
+      ...(options.deferTerminalOutcomes === undefined ? {} : { deferTerminalOutcomes: options.deferTerminalOutcomes }),
       now: () => now,
     });
     return { runtime, fence, current, controller, dispatchWorker, finalizeMission, validateMission, reviewMission, resolveApproval };
@@ -255,6 +256,69 @@ describe("durable mission controller", () => {
       kind: "run_review",
       status: "completed",
     }));
+  });
+
+  it("terminates instead of dispatching another worker after review cycles are exhausted", async () => {
+    const validating = harness("validating", {
+      guardianDecision: {
+        ...failedGuardian,
+        failed: [{
+          kind: "review",
+          id: "mission-1",
+          detail: "Independent review requires revisions. Review cycle budget exhausted (2/2). Missing verification: npm test. Concern: output is incomplete.",
+        }],
+        nextActions: ["review_cycle_exhausted"],
+      },
+    }, { deferTerminalOutcomes: true });
+
+    const result = await validating.controller.tick("mission-1", validating.fence);
+
+    expect(result.terminalOutcome).toEqual(expect.objectContaining({
+      kind: "controller_exhausted",
+      preserveStatus: "blocked",
+      reason: expect.stringContaining("npm test"),
+    }));
+    expect(result.runtime.state).toBe("validating");
+    expect(validating.dispatchWorker).not.toHaveBeenCalled();
+    expect(validating.reviewMission).not.toHaveBeenCalled();
+  });
+
+  it("runs a fresh review for evidence newer than the previous revisions-required review", async () => {
+    const validating = harness("validating", {
+      guardianDecision: {
+        ...failedGuardian,
+        failed: [{
+          kind: "review",
+          id: "mission-1",
+          detail: "Independent review is stale because newer evidence was recorded.",
+        }],
+        nextActions: ["run_independent_review"],
+      },
+    });
+
+    const result = await validating.controller.tick("mission-1", validating.fence);
+
+    expect(result.runtime.state).toBe("validating");
+    expect(validating.reviewMission).toHaveBeenCalledWith("mission-1");
+    expect(validating.dispatchWorker).not.toHaveBeenCalled();
+  });
+
+  it("honors a worker terminal outcome instead of requeuing an interrupted task", async () => {
+    const interrupted = harness("executing", {
+      tasks: [{ id: "task-1", status: "interrupted" }],
+      terminalOutcomeKind: "controller_exhausted",
+      terminalOutcomeReason: "No measurable workspace progress remained.",
+    }, { deferTerminalOutcomes: true });
+
+    const result = await interrupted.controller.tick("mission-1", interrupted.fence);
+
+    expect(result.terminalOutcome).toEqual(expect.objectContaining({
+      kind: "controller_exhausted",
+      preserveStatus: "blocked",
+      reason: "No measurable workspace progress remained.",
+    }));
+    expect(interrupted.dispatchWorker).not.toHaveBeenCalled();
+    expect(interrupted.runtime.listRecoveryDecisions("mission-1")).toHaveLength(0);
   });
 
   it("selects a recovery before replanning", async () => {

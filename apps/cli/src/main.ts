@@ -296,6 +296,12 @@ export async function run(argv: string[]): Promise<number> {
       parsed.positionals[0] === "acceptance"
     )
       return (await load.printAcceptanceHelp())(out);
+    if (
+      flagBool(parsed.flags, "help")
+      && ["providers", "build", "run"].includes(parsed.positionals[0] ?? "")
+    ) {
+      return printCommandHelp(out, parsed.positionals[0]!);
+    }
     if (parsed.positionals[0] === "help") return printHelp(out);
     if (flagBool(parsed.flags, "version")) return printVersion(out);
     const invocation = resolveInvocation(parsed.positionals);
@@ -728,6 +734,41 @@ function printHelp(out: Output): number {
     ),
   ].join("\n");
   if (out.json) out.data({ version: VERSION, help });
+  else out.print(help);
+  return EXIT.OK;
+}
+
+function printCommandHelp(out: Output, command: string): number {
+  const helpByCommand: Record<string, string> = {
+    providers: [
+      "Morrow providers — configure and inspect model providers",
+      "",
+      "Usage:",
+      "  morrow providers list",
+      "  morrow providers status",
+      "  morrow providers configure <provider> [--key <key>] [--url <url>] [--model <id>]",
+      "  morrow providers test <provider>",
+      "  morrow providers remove <provider>",
+    ].join("\n"),
+    build: [
+      "Morrow build — create a project and build it end to end",
+      "",
+      "Usage:",
+      "  morrow build \"<what you want built>\" [--in <directory>] [--name <name>] [--timeout <seconds>] [--detach]",
+      "",
+      "The attached command cancels the durable mission when its timeout or signal ends the observation. --detach leaves it running.",
+    ].join("\n"),
+    run: [
+      "Morrow run — execute one prompt and return its result",
+      "",
+      "Usage:",
+      "  morrow run \"<prompt>\" [--provider <id>] [--model <id>]",
+      "",
+      "Ctrl+C cancels the active task. Use morrow mission or morrow build for durable, timeout-bounded execution.",
+    ].join("\n"),
+  };
+  const help = helpByCommand[command] ?? `Morrow ${command}`;
+  if (out.json) out.data({ version: VERSION, command, help });
   else out.print(help);
   return EXIT.OK;
 }

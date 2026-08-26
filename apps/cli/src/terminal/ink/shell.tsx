@@ -363,7 +363,7 @@ export function startShell(options: ShellOptions): ShellHandle {
       leaveApplicationScreen();
       if (wasRaw && typeof stdin.setRawMode === "function")
         stdin.setRawMode(false);
-      stdin.pause();
+      if (typeof stdin.pause === "function") stdin.pause();
       const result = editExternally(text);
       if (result.error) {
         emit({
@@ -375,7 +375,7 @@ export function startShell(options: ShellOptions): ShellHandle {
       }
       return result.text;
     } finally {
-      stdin.resume();
+      if (typeof stdin.resume === "function") stdin.resume();
       if (wasRaw && typeof stdin.setRawMode === "function")
         stdin.setRawMode(true);
       enterApplicationScreen();

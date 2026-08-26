@@ -10,7 +10,7 @@ import { approvalsRepository } from "../src/repositories/approvals.js";
 import { changeSetsRepository } from "../src/repositories/change-sets.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { capToolArgumentsForContext, executeAgentChatTask } from "../src/execution/agent.js";
-import { mkdtempSync, rmSync, existsSync, readFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, realpathSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -474,5 +474,40 @@ describe("agent file creation under YOLO", () => {
       expect(call).toMatchObject({ status: "failed" });
       expect(call!.errorMessage).toMatch(/denied path pattern/i);
     }
+  });
+
+  it("uses a synthetic secret fixture provisioned outside the worker", async () => {
+    // Security tests may need a credential-shaped path, but the worker must not
+    // manufacture one. The harness provisions a synthetic fixture before the
+    // task starts; the worker can exercise the test by checking its presence,
+    // while create_file remains blocked for the same path.
+    mkdirSync(join(ws, "fixtures", "failing"), { recursive: true });
+    writeFileSync(join(ws, "fixtures", "failing", ".env"), "FIXTURE_STATUS=expected-failure\n", { mode: 0o600 });
+    seedYolo(db, ws, "verify the isolated failing fixture");
+    const provider = new MockProvider({
+      chunks: [
+        [tool("verify-fixture", "run_command", {
+          executable: "node",
+          args: ["-e", "const fs=require('node:fs'); process.exit(fs.existsSync('fixtures/failing/.env') ? 1 : 2)"],
+          purpose: "verify the synthetic fixture exists",
+          expectedExitCode: 1,
+        }), done],
+        [text("The isolated fixture produced its expected failure status."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: "t", provider, maxTurns: 4 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(existsSync(join(ws, "fixtures", "failing", ".env"))).toBe(true);
+    const call = conversationsRepository(db).listToolCallsForTask("t").find((row: any) => row.id === "verify-fixture");
+    expect(call).toMatchObject({ toolName: "run_command", status: "completed" });
+    expect(JSON.parse(call!.resultJson!)).toMatchObject({
+      exitCode: 1,
+      expectedExitCode: 1,
+      expectedStatus: "matched",
+    });
   });
 });

@@ -14,6 +14,8 @@ export {
   migrateLegacyDatabase,
 } from "./home.js";
 export { TaskRunner, type TaskExecutor } from "./runner.js";
+export { ProcessSupervisor, terminalCapabilities } from "./processes/supervisor.js";
+export { processesRepository } from "./repositories/processes.js";
 export { recoverRunningTasks, reconcileTasksOnStartup, reconcileMissionsOnStartup } from "./recovery.js";
 export { MissionControllerRunner, createDefaultMissionControllerRunner, isMissionRuntimeTerminal } from "./mission/controller-runner.js";
 export { MissionController, type ControllerSnapshot } from "./mission/controller.js";

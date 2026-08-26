@@ -601,8 +601,8 @@ function prepareStdinForLineInput(): void {
   if (stdin.isTTY && stdin.isRaw && typeof stdin.setRawMode === "function") {
     stdin.setRawMode(false);
   }
-  stdin.ref();
-  stdin.resume();
+  if (typeof stdin.ref === "function") stdin.ref();
+  if (typeof stdin.resume === "function") stdin.resume();
 }
 
 export function ask(question: string): Promise<string> {
@@ -685,16 +685,16 @@ export function askSecret(question: string): Promise<string> {
   return new Promise((resolve) => {
     process.stderr.write(question);
     let value = "";
-    stdin.setRawMode(true);
+    if (typeof stdin.setRawMode === "function") stdin.setRawMode(true);
     // ref() as well as resume(): an Ink screen earlier in the flow may have
     // unref'd stdin on teardown, and a resumed-but-unref'd stdin does not keep
     // the event loop alive, so the process exits mid-prompt.
-    stdin.ref();
-    stdin.resume();
+    if (typeof stdin.ref === "function") stdin.ref();
+    if (typeof stdin.resume === "function") stdin.resume();
     stdin.setEncoding("utf8");
     const finish = () => {
-      stdin.setRawMode(false);
-      stdin.pause();
+      if (typeof stdin.setRawMode === "function") stdin.setRawMode(false);
+      if (typeof stdin.pause === "function") stdin.pause();
       stdin.removeListener("data", onData);
       process.stderr.write("\n");
     };

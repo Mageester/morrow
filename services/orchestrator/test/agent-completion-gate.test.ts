@@ -98,6 +98,37 @@ describe("agent completion gate", () => {
     });
   });
 
+  it("treats intentional exit codes 0 through 4 as passed evidence without retrying", async () => {
+    seedYolo(db, ws);
+    const expected = [0, 1, 2, 3, 4];
+    const provider = new MockProvider({
+      chunks: [
+        ...expected.map((code) => [tool(`expected-${code}`, "run_command", {
+          executable: "node",
+          args: ["-e", `process.exit(${code})`],
+          purpose: "verify expected fixture status",
+          expectedExitCode: code,
+        }), done] as any),
+        [text("all intentional fixture statuses were verified"), done],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 10 });
+
+    const calls = conversationsRepository(db).listToolCallsForTask("t")
+      .filter((call: any) => call.toolName === "run_command");
+    expect(calls).toHaveLength(expected.length);
+    for (const [index, code] of expected.entries()) {
+      const call = calls[index]!;
+      expect(call.status).toBe("completed");
+      expect(JSON.parse(call.resultJson!).exitCode).toBe(code);
+      expect(JSON.parse(call.resultJson!).expectedStatus).toBe("matched");
+    }
+    expect(actionAttemptsRepository(db).listForTask("t").every((attempt) => attempt.status === "succeeded")).toBe(true);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
+
   it("classifies a timed-out verification as failed and keeps mission progress incomplete", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({

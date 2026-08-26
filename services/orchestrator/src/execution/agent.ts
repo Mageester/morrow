@@ -34,7 +34,7 @@ import { actionAttemptsRepository, actionEnvironmentFingerprint, normalizeAction
 import { ApprovalContinuationRegistry } from "./continuation.js";
 import { buildConversationWorkingSet, type WorkingSetTurn } from "./conversation-working-set.js";
 import { buildExecutionProgressSnapshot, fingerprintWorkspacePaths } from "./progress-snapshot.js";
-import { assessProgress, type MissionProgressSnapshot } from "./progress.js";
+import { assessProgress, isMeaningfulProgress, type MissionProgressSnapshot } from "./progress.js";
 import { missionRuntimeRepository } from "../repositories/mission-runtime.js";
 import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs } from "../tools/command-policy.js";
 import { IMPLEMENTED_TOOL_NAMES, PERMISSION_PROFILE } from "../tools/catalog.js";
@@ -582,14 +582,25 @@ export function runCommandIsVerification(args: Record<string, unknown>): boolean
     || /\b(?:tsc|vitest|jest|pytest)\b/i.test(executable);
 }
 
+/** The default command assertion remains the conventional exit code 0. */
+export function expectedCommandExitCode(args: Record<string, unknown>): number {
+  const value = args.expectedExitCode;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 255 ? value : 0;
+}
+
+export function commandExitMatched(args: Record<string, unknown>, result: { exitCode?: unknown; terminationReason?: unknown }): boolean {
+  const transportCompleted = result.terminationReason === undefined || result.terminationReason === "completed";
+  return transportCompleted && result.exitCode === expectedCommandExitCode(args);
+}
+
 export function toolCallPassedVerification(call: Pick<ToolCallRecord, "status" | "toolName" | "resultJson" | "argsJson">): boolean {
   if (call.status !== "completed") return false;
   if (call.toolName !== "run_command") return true;
   try {
     const args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>;
     if (!runCommandIsVerification(args)) return false;
-    const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: unknown };
-    return result.exitCode === 0;
+    const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: unknown; terminationReason?: unknown };
+    return commandExitMatched(args, result);
   } catch {
     return false;
   }
@@ -1139,43 +1150,67 @@ export async function executeAgentChatTask({
   let diagnosticRegressionObserved: { tool: string; detail: string } | null = null;
 
   // A task-owned background process (a dev server started with run_command
-  // background:true) has no lifetime tied to the task by default: nothing
-  // terminates it just because the task reaches a genuinely final state. Live
-  // evidence recorded exactly this leak (flagship-web-v1, 2026-08-09): a task
-  // completed while its dev server kept running, because the only existing
-  // protection â€” the background_process_running completion blocker â€” fires
-  // only when the user's prompt happens to contain explicit "stop it before
-  // finishing" phrasing. Most prompts don't say that. This funnel makes
-  // cleanup unconditional at the one place every genuinely terminal
-  // transition (completed/failed/cancelled â€” not interrupted, which can
-  // resume and legitimately keep talking to the same process) already goes
-  // through, instead of depending on every call site to remember it.
-  // Deliberately synchronous and non-blocking: several call sites run inside
-  // a better-sqlite3 db.transaction() callback, which must stay synchronous.
-  // Termination is kicked off here and finishes independently; the task
-  // transition itself never waits on it.
+  // background:true) is retained only when a successful task explicitly asks
+  // for keepAlive. Every other terminal outcome must reap it before the task
+  // runner settles. This is the owning boundary for both foreground command
+  // cancellation and background-process cleanup, so callers cannot observe a
+  // terminal task while one of its children is still active.
   const transitionToTerminalStatus = (
     status: "completed" | "failed" | "cancelled",
     transitionEvent: Parameters<typeof records.transitionTask>[2],
   ): ReturnType<typeof records.transitionTask> => {
-    // `keepAlive` jobs are spared: the user asked for a server that outlives
-    // the turn that started it, and killing it is not leak-prevention, it is
-    // refusing the request. Everything else this task started still goes â€” an
-    // agent that spawned a watcher to check its own work must not leave it
-    // behind. Both kinds are listed with a Stop in the app, so neither is the
-    // silent leak this cleanup was originally written to stop.
-    const orphaned = processesRepo
-      .listByProject(projectId, "running")
-      .filter((process) => process.taskId === taskId && !process.keepAlive);
-    for (const process of orphaned) {
-      void procSupervisor.terminate(process.id, { force: true })
-        .then(() => { event("workspace.inspected", { kind: "auto_stop_process", processId: process.id, reason: `task_${status}` }); })
-        .catch(() => {
-          // Best-effort: a task reaching a terminal state must not fail on
-          // cleanup of a process that may have already exited on its own.
-        });
-    }
     return records.transitionTask(taskId, status, transitionEvent);
+  };
+
+  // Processes started by this execution are the ones a successful task must
+  // reap when they were not explicitly marked keepAlive. A process can also be
+  // attached to a task by a caller before execution begins (for example, a
+  // test or an already-running preview); that existing process remains
+  // inspectable on a successful task so the completion evidence can report its
+  // blocker instead of silently taking ownership of it. Cancellation and
+  // failure still stop every process owned by the task.
+  const executionOwnedProcessIds = new Set<string>();
+
+  /**
+   * Reap every process this task owns before the runner promise settles. A
+   * successful task preserves only explicitly requested keep-alive jobs;
+   * cancellation, failure, and interruption stop all descendants, including
+   * a keep-alive process, because no task may outlive an aborted execution.
+   */
+  const cleanupTaskProcesses = async (): Promise<void> => {
+    const finalStatus = tasks.getTaskById(taskId)?.status;
+    const preserveKeepAlive = finalStatus === "completed" || finalStatus === "verified";
+    for (;;) {
+      const running = processesRepo
+        .listByProject(projectId, "running")
+        .filter((process) => process.taskId === taskId && (
+          preserveKeepAlive
+            ? !process.keepAlive && executionOwnedProcessIds.has(process.id)
+            : true
+        ));
+      if (running.length === 0) return;
+
+      await Promise.all(running.map(async (process) => {
+        try {
+          const outcome = await procSupervisor.terminate(process.id, { force: true });
+          if (outcome.ok && typeof procSupervisor.waitFor === "function") {
+            await procSupervisor.waitFor(process.id);
+          }
+          event("workspace.inspected", {
+            kind: "auto_stop_process",
+            processId: process.id,
+            reason: `task_${finalStatus ?? "terminal"}`,
+            result: outcome.ok ? "stopped" : outcome.reason ?? "not_stopped",
+          });
+        } catch (error) {
+          event("task.progress_warning", {
+            reason: "process_cleanup_failed",
+            processId: process.id,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }));
+    }
   };
 
   const taskMissionId = (task as { missionId?: string | null }).missionId ?? null;
@@ -1695,7 +1730,8 @@ export async function executeAgentChatTask({
           cwd: { type: "string", description: "Optional working directory relative to project root" },
           purpose: { type: "string", description: "Reason for running this command" },
           background: { type: "boolean", description: "Start a long-running process (e.g. 'npm run dev') without waiting for it to exit. Returns { processId, pid } instead of exit output." },
-          keepAlive: { type: "boolean", description: "Keep this process running after the task finishes. Set it ONLY when the user asked for a server that stays up (\"start the dev server and leave it running\"). Default false: anything you started to verify your own work is stopped when the task ends." }
+          keepAlive: { type: "boolean", description: "Keep this process running after the task finishes. Set it ONLY when the user asked for a server that stays up (\"start the dev server and leave it running\"). Default false: anything you started to verify your own work is stopped when the task ends." },
+          expectedExitCode: { type: "number", description: "Expected process exit code (0 by default). Use this for an intentional failure fixture; the actual exit code, stdout, stderr, and matched/mismatch status remain in evidence." }
         },
         required: ["executable", "args", "purpose"]
       }
@@ -2581,6 +2617,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             cwd: resolvedCwd,
             keepAlive: args.keepAlive === true,
           });
+          executionOwnedProcessIds.add(record.id);
         } catch (e: any) {
           throw new Error(`Failed to start background process: ${e?.message ?? e}`);
         }
@@ -2610,6 +2647,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const requestedTimeoutMs = typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs)
         ? Math.max(10, Math.floor(args.timeoutMs))
         : policyTimeoutMs;
+      const expectedExitCode = expectedCommandExitCode(args);
+      if (args.expectedExitCode !== undefined
+        && (typeof args.expectedExitCode !== "number" || !Number.isInteger(args.expectedExitCode) || args.expectedExitCode < 0 || args.expectedExitCode > 255)) {
+        throw new AgentToolFailure(
+          "expectedExitCode must be an integer from 0 through 255",
+          { error: "expectedExitCode must be an integer from 0 through 255", expectedExitCode: args.expectedExitCode },
+          "invalid_tool_arguments",
+        );
+      }
       const runOptions: Parameters<typeof runProcessSafe>[4] = {
         // Models may request a shorter timeout for bounded probes. They can
         // never raise the command-policy ceiling.
@@ -2629,6 +2675,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         args: cmdArgs,
         cwd: cmdCwd,
         background: false,
+        expectedExitCode,
       });
       const attempt = actionAttempts.start({
         id: randomUUID(),
@@ -2674,7 +2721,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         stdout: result.stdout,
         stderr: result.stderr,
         durationMs: result.durationMs,
-        terminationReason: result.terminationReason
+        terminationReason: result.terminationReason,
+        signal: result.signal ?? null,
+        expectedExitCode,
+        expectedStatus: commandExitMatched({ expectedExitCode }, result) ? "matched" : "mismatch",
       });
 
       const diagnosticOutput = `${result.stdout}\n${result.stderr}`;
@@ -2690,7 +2740,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           : null;
         event("verification.completed", {
           tool: diagnosticTool,
-          status: result.exitCode === 0 && !comparison?.regressed ? "passed" : "failed",
+          status: commandExitMatched({ expectedExitCode }, result) && !comparison?.regressed ? "passed" : "failed",
           count: report.count,
           errorCount: report.errorCount,
           warningCount: report.warningCount,
@@ -2722,7 +2772,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         metadata: {
           exitCode: result.exitCode,
           durationMs: result.durationMs,
-          terminationReason: result.terminationReason
+          terminationReason: result.terminationReason,
+          signal: result.signal ?? null,
+          expectedExitCode,
+          expectedStatus: commandExitMatched({ expectedExitCode }, result) ? "matched" : "mismatch",
         },
         createdAt: now()
       });
@@ -2743,10 +2796,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           "command_cancelled",
         );
       }
-      if (result.exitCode !== 0) {
+      if (!commandExitMatched({ expectedExitCode }, result)) {
         finishAttempt("failed", { exitStatus: result.exitCode, terminationReason: result.terminationReason ?? null, failureCategory: "command_exit_nonzero" });
         throw new AgentToolFailure(
-          `Command ${exec} exited with status ${result.exitCode ?? "unknown"}.`,
+          `Command ${exec} exited with status ${result.exitCode ?? "unknown"} (expected ${expectedExitCode}).`,
           JSON.parse(resultStr),
           "command_exit_nonzero",
         );
@@ -3350,6 +3403,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const progressIdentity = taskMissionId ?? `task:${taskId}`;
   const executionCheckpointIds: string[] = [];
   const seenProgressFingerprints = new Set<string>();
+  const countedProgressCommandSignatures = new Set<string>();
+  let lastProviderTurnToolCallIds = new Set<string>();
+  let observedCheckpointCount = 0;
+  // Distinct diagnostic actions can be legitimate progress toward a later
+  // mutation (for example, checking several known entry points before opening
+  // a local app). Repetition of the same no-progress action is the stronger
+  // signal for the provider loop reported by the gauntlet, so count it by
+  // canonical tool/argument identity rather than treating every read-only
+  // turn as a stall.
+  const noProgressActionCounts = new Map<string, number>();
+  let meaningfulProgressObserved = false;
   let previousProgressSnapshot: MissionProgressSnapshot | null = null;
   const missionFailures = createMissionToolFailureReporter({
     service: missionService,
@@ -3370,6 +3434,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     if ((priorCall.status !== "completed" && priorCall.status !== "failed") || !priorCall.resultJson) continue;
     const signature = toolCallSignature(priorCall.toolName, priorCall.argsJson);
     loopDetector.record(signature);
+    if (priorCall.toolName === "run_command" && priorCall.status === "completed") countedProgressCommandSignatures.add(signature);
   }
   let responseContent = assistantMessageRow.content || "";
 
@@ -3556,7 +3621,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // this gate at the call site: they cannot call a write tool at all, so
   // Journey A's "diagnose but do not modify" requests must never trip it.
   const requestsWorkspaceChange = (prompt: string): boolean =>
-    /\b(fix|repair|patch|implement|refactor|build|develop)\b/i.test(prompt)
+    /\b(fix|repair|patch|implement|refactor|build|develop|start|launch|serve)\b/i.test(prompt)
     // "add" is deliberately excluded here: it collides too easily with a
     // function/variable *named* add (as in this journey's own fixture),
     // which would misclassify a plain question about it as a change request.
@@ -3790,10 +3855,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       let failedOutcome: string | null = call.status === "failed" ? (call.errorMessage ?? "tool failed") : null;
       if (call.toolName === "run_command" && call.status === "completed") {
         try {
-          const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: number | null };
+          const commandArgs = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>;
+          const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: number | null; terminationReason?: string };
           if (typeof result.exitCode === "number") {
-            verification = { status: result.exitCode === 0 ? "passed" : "failed", toolCallId: call.id, exitCode: result.exitCode };
-            if (result.exitCode !== 0) failedOutcome = `command exited ${result.exitCode}`;
+            const passed = commandExitMatched(commandArgs, result);
+            verification = { status: passed ? "passed" : "failed", toolCallId: call.id, exitCode: result.exitCode };
+            if (!passed) failedOutcome = `command exited ${result.exitCode} (expected ${expectedCommandExitCode(commandArgs)})`;
           }
         } catch { /* malformed raw results cannot establish passed verification */ }
       } else if (call.toolName === "run_command" && call.status === "failed") {
@@ -4307,9 +4374,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // failed verification wrongly blocks completion of a finished build.
       if (runCommandStartedBackgroundProcess(call.resultJson)) return [];
       let exitCode: number | null | undefined;
+      let terminationReason: unknown;
       try {
-        const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: unknown };
+        const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: unknown; terminationReason?: unknown };
         if (typeof result.exitCode === "number" || result.exitCode === null) exitCode = result.exitCode;
+        terminationReason = result.terminationReason;
       } catch { /* malformed results cannot establish a pass */ }
       const command = typeof args.executable === "string" && Array.isArray(args.args)
         ? { executable: args.executable, args: args.args.map(String) }
@@ -4317,7 +4386,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       return [{
         id: call.id,
         ...(command ? { command } : {}),
-        passed: call.status === "completed" && exitCode === 0,
+        passed: call.status === "completed" && commandExitMatched(args, { exitCode, terminationReason }),
         ...(exitCode !== undefined ? { exitCode } : {}),
         completed: call.status === "completed",
         independentlyObserved: true,
@@ -4420,11 +4489,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
    * bounded Git read only happens when a write or command could have touched
    * paths we cannot attribute, so read-only turns spawn no subprocess.
    */
-  const refreshKnownArtifacts = async (): Promise<void> => {
+  const refreshKnownArtifacts = async (): Promise<boolean> => {
     const paths = new Set(touchedPaths);
     if (unattributedWorkspaceWrite) for (const path of await dirtyWorkspacePaths()) paths.add(path);
-    if (paths.size === 0) return;
-    for (const artifact of fingerprintPaths([...paths])) knownArtifacts.set(artifact.path, artifact.contentHash);
+    if (paths.size === 0) return false;
+    let changed = false;
+    for (const artifact of fingerprintPaths([...paths])) {
+      if (knownArtifacts.get(artifact.path) !== artifact.contentHash) changed = true;
+      knownArtifacts.set(artifact.path, artifact.contentHash);
+    }
+    return changed;
   };
 
   /**
@@ -4436,14 +4510,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
    * cleared, checkpoints created â€” and appends the deltas to the mission ledger.
    * Mission surfaces and Mission Guardian's evidence lookup read those rows.
    *
-   * Deliberately absent: any stagnation counter, exhaustion assessment, strategy
-   * fingerprint, or return value the execution loop can branch on. A turn that
-   * observes nothing simply writes nothing; it never escalates, never warns the
-   * model, and never interrupts the task. `assessExhaustion` is NOT called from
-   * this path and must not be reintroduced here.
+   * A successful provider turn may also feed the bounded no-progress guard below.
+   * That guard only counts concrete mutation/verification state changes; provider
+   * failures are handled on the error path and never consume this budget.
    */
-  const observeTurnProgress = async (): Promise<void> => {
-    await refreshKnownArtifacts();
+  const observeTurnProgress = async (): Promise<{ meaningful: boolean }> => {
+    const artifactChanged = await refreshKnownArtifacts();
     const calls = convs.listToolCallsForMessage(assistantMessageRow.id);
     const current = buildExecutionProgressSnapshot({
       missionId: progressIdentity,
@@ -4492,8 +4564,97 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         }
       }
     }
+    const currentCalls = calls.filter((call) => lastProviderTurnToolCallIds.has(call.id));
+    const successfulCommand = currentCalls.some((call) => {
+      if (call.toolName !== "run_command" || call.status !== "completed" || runCommandStartedBackgroundProcess(call.resultJson)) return false;
+      try {
+        const args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>;
+        const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: unknown; terminationReason?: unknown };
+        const signature = toolCallSignature(call.toolName, call.argsJson);
+        if (!commandExitMatched(args, result) || countedProgressCommandSignatures.has(signature)) return false;
+        countedProgressCommandSignatures.add(signature);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const successfulStateChange = currentCalls.some((call) => {
+      if (call.status !== "completed") return false;
+      if (WORKSPACE_WRITE_TOOLS.has(call.toolName)) {
+        try {
+          const result = JSON.parse(call.resultJson ?? "{}") as { changed?: unknown; status?: unknown };
+          return result.changed !== false && result.status !== "already_applied";
+        } catch {
+          return true;
+        }
+      }
+      return call.toolName === "write_plan" || call.toolName === "create_checkpoint";
+    });
+    const checkpointCreated = executionCheckpointIds.length > observedCheckpointCount;
+    observedCheckpointCount = executionCheckpointIds.length;
     touchedPaths.clear();
     unattributedWorkspaceWrite = false;
+    return {
+      // Browser validation is durable evidence even when it does not mutate a
+      // file. Count a newly verified browser result as progress so a healthy
+      // frontend validation ladder is not mistaken for the no-progress loop;
+      // repeated identical tool calls are still bounded by the broader turn
+      // budget and browser completion contract.
+      meaningful: artifactChanged || successfulCommand || successfulStateChange || checkpointCreated
+        || observations.some((item) => isMeaningfulProgress(item.kind)),
+    };
+  };
+
+  let stagnantProviderTurns = 0;
+  const NO_PROGRESS_STALL_THRESHOLD = 3;
+  // After a real mutation, a bounded verification/reconciliation sequence may
+  // legitimately reread the same file several times before its next write.
+  // Give that narrow read-only shape a slightly larger bounded window while
+  // keeping the no-progress-from-the-start case at three turns.
+  const READ_ONLY_OBSERVATION_TOOLS = new Set([
+    "read_file", "list_files", "inspect_workspace", "git_status", "git_diff", "git_log", "read_process_output",
+  ]);
+  const POST_PROGRESS_READ_STALL_THRESHOLD = 5;
+  const interruptForNoProgress = async (threshold: number, repeatedActionCount: number): Promise<boolean> => {
+    const message = `The provider made no measurable workspace progress while repeating the same action for ${threshold} successful turns. Morrow stopped the task so it does not probe indefinitely; review the provider output and resume with a different action or model.`;
+    event("task.progress_warning", {
+      reason: "no_progress_stall",
+      message,
+      turnsWithoutProgress: stagnantProviderTurns,
+      threshold,
+      repeatedActionCount,
+    });
+    closeCurrentTurn({ final: false, aborted: true });
+    const checkpointId = await persistExecutionCheckpoint("no_progress_stall");
+    failCurrentSegment("no_progress_stall");
+    transitionAgentState("interrupted", {
+      reason: "no_progress_stall",
+      message,
+      checkpointId,
+      turns: absoluteTurn,
+      turnsWithoutProgress: stagnantProviderTurns,
+    });
+    records.transitionTask(taskId, "interrupted", {
+      id: randomUUID(),
+      createdAt: now(),
+      payload: {
+        reason: "no_progress_stall",
+        terminalEntryKind: "controller_exhausted",
+        message,
+        checkpointId,
+        missionId: taskMissionId,
+        turns: absoluteTurn,
+        turnsWithoutProgress: stagnantProviderTurns,
+      },
+    });
+    convs.updateMessageContentAndState(
+      assistantMessageRow.id,
+      `${responseContent}\n\n[Stopped: ${message}]`,
+      "interrupted",
+      now(),
+    );
+    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+    return true;
   };
 
   const interruptAtSegmentLimit = (checkpointId: string): boolean => {
@@ -6870,7 +7031,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
             }
             resultStr = JSON.stringify(read.payload);
-          } else if (tc.name === "find_skill" || tc.name === "load_skill" || tc.name === "record_decision") {
+          } else if (tc.name === "find_skill" || tc.name === "load_skill" || tc.name === "record_decision" || tc.name === "write_plan") {
             // Read-only skill discovery/loading: no approval needed. (These were
             // advertised to the model but never dispatched here, so the model's
             // calls hit the Forbidden branch -- the cause of "Forbidden tool".)
@@ -7106,9 +7267,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             failedOutcome = errorMessage ?? "tool failed";
           } else if (tc.name === "run_command") {
             try {
-              const parsedRun = JSON.parse(resultStr) as { exitCode?: number | null };
-              if (parsedRun.exitCode !== undefined && parsedRun.exitCode !== null && parsedRun.exitCode !== 0) {
-                failedOutcome = `${args.executable ?? "command"} exited ${parsedRun.exitCode}`;
+              const parsedRun = JSON.parse(resultStr) as { exitCode?: number | null; terminationReason?: string };
+              if (parsedRun.exitCode !== undefined && parsedRun.exitCode !== null && !commandExitMatched(args, parsedRun)) {
+                failedOutcome = `${args.executable ?? "command"} exited ${parsedRun.exitCode} (expected ${expectedCommandExitCode(args)})`;
               }
             } catch { /* non-JSON result â€” treat as clean */ }
           }
@@ -7146,18 +7307,19 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         if (VERIFY_OR_WRITE_TOOLS.has(tc.name)) {
           lastVerificationFailure = completionStateFromCalls(convs.listToolCallsForMessage(assistantMessageRow.id)).failure;
         }
-        // Observe-only mission ledger. `reportFailure` returns an exhaustion
-        // hint that this loop deliberately discards: the ledger records what
-        // happened for `/failures` and the mission surfaces, and never decides
-        // whether execution continues.
+        // Mission ledger telemetry. Its retry/exhaustion hint is intentionally
+        // not used here: ordinary tool failures remain observations. The
+        // separate successful-turn no-progress guard below owns bounded
+        // no-change stalls without rewriting the failure ledger.
         if (isSuccess) {
           missionFailures.reportSuccess(tc.name, args);
         } else {
           missionFailures.reportFailure(tc.name, args, errorMessage ?? "", errorType);
         }
-        // Observe-only progress fingerprints. A distinct (tool, args, result)
-        // triple is the evidence a later `assessProgress` delta is derived
-        // from; nothing here counts repeats or gates the next turn.
+        // Progress fingerprints. A distinct (tool, args, result) triple is the
+        // evidence a later `assessProgress` delta is derived from. Repeat
+        // advice remains informational; the turn-level guard below owns the
+        // bounded no-progress decision.
         if (isSuccess) seenProgressFingerprints.add(toolProgressFingerprint(tc.name, args, contextResultStr));
         // Every terminal result participates in exact-repeat advice, including
         // failures. The previous durable observation is read before replacing
@@ -7299,10 +7461,39 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       completedWithoutMoreTools = true;
     }
 
-    // Durable observe-only telemetry for the mission ledger. It returns nothing
-    // and is never branched on; the loop's behavior is identical with or
-    // without it.
-    await observeTurnProgress();
+    // Durable progress telemetry plus a bounded guard for successful provider
+    // turns that never mutate, verify, or otherwise change durable state.
+    lastProviderTurnToolCallIds = new Set(currentToolCalls.map((call) => call.id).filter((id): id is string => typeof id === "string"));
+    const progress = await observeTurnProgress();
+    if (agentMode === "agent" && requestsWorkspaceChange(taskIntentPrompt)) {
+      if (progress.meaningful) {
+        meaningfulProgressObserved = true;
+        stagnantProviderTurns = 0;
+        noProgressActionCounts.clear();
+      } else {
+        stagnantProviderTurns += 1;
+        const noProgressActionFingerprint = currentToolCalls.length === 0
+          ? "no-tool-call"
+          : currentToolCalls
+            .map((call) => toolCallSignature(call.name, call.arguments))
+            .sort()
+            .join("\n");
+        const repeatedActionCount = (noProgressActionCounts.get(noProgressActionFingerprint) ?? 0) + 1;
+        noProgressActionCounts.set(noProgressActionFingerprint, repeatedActionCount);
+        const isReadOnlyObservation = currentToolCalls.length > 0
+          && currentToolCalls.every((call) => READ_ONLY_OBSERVATION_TOOLS.has(call.name));
+        const stallThreshold = meaningfulProgressObserved && isReadOnlyObservation
+          ? POST_PROGRESS_READ_STALL_THRESHOLD
+          : NO_PROGRESS_STALL_THRESHOLD;
+        event("task.progress_warning", {
+          reason: "no_progress_turn",
+          turnsWithoutProgress: stagnantProviderTurns,
+          threshold: stallThreshold,
+          repeatedActionCount,
+        });
+        if (repeatedActionCount >= stallThreshold && await interruptForNoProgress(stallThreshold, repeatedActionCount)) return;
+      }
+    }
 
     // A provider turn that includes tool calls is never a final answer: its
     // assistant text may have been emitted before the model saw the resulting
@@ -7428,6 +7619,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   completeWithCanonicalAnswer(canonicalFinalText, finalTurn.turnKey);
   } finally {
+    await cleanupTaskProcesses();
     clearInterval(actorRevocationMonitor);
     await closeBrowserSession();
     await mcpPool.closeAll().catch(() => {});

@@ -216,7 +216,16 @@ export class ProcessSupervisor {
     }
 
     child.on("error", (err) => {
-      this.settle(id, entry, "failed", null, `spawn error: ${err.message}`, "error", null, [stdoutFd, stderrFd]);
+      // A kill can emit `error` before `exit`. Preserve the lifecycle cause so
+      // a timeout or explicit cancellation is never reported as an unrelated
+      // spawn failure.
+      const reason: ProcessTerminationReason = entry.timedOut
+        ? "timeout"
+        : entry.killRequested
+          ? "cancelled"
+          : "error";
+      const detail = reason === "error" ? `spawn error: ${err.message}` : reason === "timeout" ? `timeout after ${options.timeoutMs} ms` : "terminated by user";
+      this.settle(id, entry, reason === "cancelled" ? "cancelled" : "failed", null, detail, reason, null, [stdoutFd, stderrFd]);
     });
     child.on("exit", (code, signal) => {
       if (entry.timedOut) {
@@ -296,10 +305,19 @@ export class ProcessSupervisor {
       }, options.timeoutMs);
       entry.timeout.unref?.();
     }
-    ptyProc.onExit(({ exitCode }: { exitCode: number }) => {
-      const status = entry.timedOut || entry.killRequested ? (entry.timedOut ? "failed" : "cancelled") : exitCode === 0 ? "exited" : "failed";
-      const reason: ProcessTerminationReason = entry.timedOut ? "timeout" : entry.killRequested ? "cancelled" : "completed";
-      this.settle(id, entry, status, exitCode, entry.timedOut ? `timeout after ${options.timeoutMs} ms` : entry.truncated ? "output truncated at capture limit" : null, reason, null, [fd]);
+    ptyProc.onExit(({ exitCode, signal }: { exitCode: number; signal?: number | string }) => {
+      const observedSignal = signal === undefined || signal === null || signal === 0 ? null : String(signal);
+      const status = entry.timedOut || entry.killRequested
+        ? (entry.timedOut ? "failed" : "cancelled")
+        : observedSignal ? "failed" : exitCode === 0 ? "exited" : "failed";
+      const reason: ProcessTerminationReason = entry.timedOut
+        ? "timeout"
+        : entry.killRequested
+          ? "cancelled"
+          : observedSignal
+            ? "signal"
+            : "completed";
+      this.settle(id, entry, status, exitCode, entry.timedOut ? `timeout after ${options.timeoutMs} ms` : entry.truncated ? "output truncated at capture limit" : observedSignal ? `signal ${observedSignal}` : null, reason, observedSignal, [fd]);
     });
     return record;
   }
@@ -481,6 +499,29 @@ export class ProcessSupervisor {
       this.repo.finish(id, "cancelled", null, "orchestrator shutdown", undefined, "cancelled", null);
     }
     this.live.clear();
+  }
+
+  /**
+   * Shutdown boundary for a live server. Unlike the legacy synchronous helper
+   * used by small test fixtures, this waits for every child exit callback after
+   * killing its process group, so the service cannot return while a descendant
+   * still owns a port or runs provider-adjacent work.
+   */
+  async stopAllAndWait(): Promise<void> {
+    for (;;) {
+      const ids = [...this.live.keys()];
+      if (ids.length === 0) return;
+      await Promise.all(ids.map(async (id) => {
+        const result = await this.terminate(id, { force: true });
+        if (result.ok) {
+          await this.waitFor(id);
+        } else if (this.repo.get(id)?.status !== "running") {
+          // A terminal callback may have raced the lookup. Do not retain a
+          // stale in-memory entry that would make shutdown spin forever.
+          this.live.delete(id);
+        }
+      }));
+    }
   }
 
   private logPath(id: string, stream: "stdout" | "stderr"): string {

@@ -22,6 +22,7 @@ export function localBackend(): ExecutionBackend {
         stderr: result.stderr,
         durationMs: result.durationMs,
         terminationReason: result.terminationReason,
+        signal: result.signal ?? null,
       };
     },
   };

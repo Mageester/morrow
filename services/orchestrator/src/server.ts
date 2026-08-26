@@ -253,7 +253,7 @@ import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
-import { BUILT_IN_MODELS, installModelCatalog, listModels, listConfiguredCustomModels, mergeModelCatalog, resolveModelMetadata, resolveModelStatuses } from "./routing/models.js";
+import { BUILT_IN_MODELS, installModelCatalog, mergeModelCatalog, resolveModelMetadata, resolveModelStatuses } from "./routing/models.js";
 import { ModelCatalog, externalCatalogFromSnapshot } from "./routing/model-catalog.js";
 import { installExternalModelCatalog } from "./provider/external-catalog/index.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
@@ -328,6 +328,7 @@ export type ServerDependencies = {
     run?(missionId: string): void;
     wake(missionId: string): void;
     cancel?(missionId: string): void;
+    cancelAndWait?(missionId: string): Promise<void>;
     waitFor?(missionId: string): Promise<void>;
     isActive?(missionId: string): boolean;
   };
@@ -633,7 +634,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         id: crypto.randomUUID(),
         taskId: record.taskId,
         type: "process.exited",
-        payload: { processId: record.id, status: record.status, exitCode: record.exitCode, detail: record.detail },
+        payload: {
+          processId: record.id,
+          status: record.status,
+          exitCode: record.exitCode,
+          terminationReason: record.terminationReason,
+          signal: record.signal,
+          detail: record.detail,
+        },
         createdAt: new Date().toISOString(),
       });
     } catch { /* the task may be gone; never break the supervisor */ }
@@ -1212,7 +1220,15 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { parentTaskId } = DelegationAccessContextSchema.parse(request.body);
     const { delegation } = requireDelegationContext(delegationId, parentTaskId);
     if (delegation.childTaskId) {
-      deps.runner.cancel(delegation.childTaskId);
+      if (typeof deps.runner.cancelAndWait === "function") {
+        await deps.runner.cancelAndWait(delegation.childTaskId);
+      } else {
+        // Keep lightweight/injected runners compatible with the cancellation
+        // boundary. Production TaskRunner implements cancelAndWait; a test or
+        // embedding runner that only exposes cancel still receives the child
+        // cancellation rather than failing the delegation request itself.
+        deps.runner.cancel(delegation.childTaskId);
+      }
     }
     return delegations.cancel(delegationId, new Date().toISOString());
   });
@@ -2125,7 +2141,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (["completed", "verified", "failed", "interrupted"].includes(task.status)) {
       throw new ApiError(409, `Task is ${task.status}; cancellation was not applied.`, "TASK_NOT_ACTIVE");
     }
-    deps.runner.cancel(taskId);
+    if (typeof deps.runner.cancelAndWait === "function") await deps.runner.cancelAndWait(taskId);
+    else deps.runner.cancel(taskId);
     const updated = tasks.getTaskById(taskId);
     reply.status(202);
     return { version: 1, taskId, status: updated?.status ?? "cancelled", outcome: "cancelled" };
@@ -2456,7 +2473,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       throw new ApiError(409, "Task is interrupted and can be resumed or retried; cancellation was not applied.", "TASK_NOT_ACTIVE");
     }
 
-    deps.runner.cancel(taskId);
+    if (typeof deps.runner.cancelAndWait === "function") await deps.runner.cancelAndWait(taskId);
+    else deps.runner.cancel(taskId);
     const updated = tasks.getTaskById(taskId);
     reply.status(202);
     return { taskId, status: updated?.status ?? task.status, outcome: "cancelled" };
@@ -3012,12 +3030,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.post("/api/missions/:missionId/cancel", async (request) => {
     const { missionId } = request.params as { missionId: string };
     requireMission(missionId);
-    deps.missionControllerRunner?.cancel?.(missionId);
     const cancelled = runMission(() => missionService.cancel(missionId));
-    if (deps.missionControllerRunner?.waitFor) {
+    if (deps.missionControllerRunner?.cancelAndWait) {
+      await deps.missionControllerRunner.cancelAndWait(missionId);
+      deps.missionControllerRunner.wake(missionId);
+      await deps.missionControllerRunner.waitFor?.(missionId);
+    } else if (deps.missionControllerRunner?.waitFor) {
+      deps.missionControllerRunner.cancel?.(missionId);
       deps.missionControllerRunner.wake(missionId);
       await deps.missionControllerRunner.waitFor?.(missionId);
     } else {
+      deps.missionControllerRunner?.cancel?.(missionId);
       deps.missionControllerRunner?.wake(missionId);
       const runtime = missionRuntime.get(missionId);
       if (runtime && !["blocked", "completed", "cancelled", "abandoned", "superseded"].includes(runtime.state)) {
@@ -3949,7 +3972,10 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.get("/api/models/budgets", async () => {
     const budgetStatuses = listProviderStatuses();
     const configuredIds = new Set(budgetStatuses.filter((s) => s.configured).map((s) => s.id));
-    const budgetModels = [...listModels(), ...listConfiguredCustomModels(budgetStatuses)];
+    // Keep the budget/detail surface on the same durable discovery snapshot as
+    // `/api/models`. A model that an authenticated provider reported must not
+    // disappear when the picker asks for its route-aware budget metadata.
+    const budgetModels = resolveModelStatuses(budgetStatuses, providerModelDiscovery.list()).map((status) => status.model);
     return budgetModels.map((model): unknown => {
       const configured = configuredIds.has(model.providerId);
       let route: ProviderRouteMetadata;

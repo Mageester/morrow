@@ -221,6 +221,36 @@ describe("morrow root command", () => {
     expect(help).toContain("morrow acceptance report");
   });
 
+  it.each(["providers", "build", "run"])("prints %s help before loading onboarding/configuration", async (command) => {
+    const oldHome = process.env.MORROW_HOME;
+    const home = mkdtempSync(join(tmpdir(), `morrow-${command}-help-test-`));
+    process.env.MORROW_HOME = home;
+    try {
+      await expect(run([command, "--help"])).resolves.toBe(0);
+      const help = stdout.mock.calls.map(([value]) => String(value)).join("");
+      const err = stderr.mock.calls.map(([value]) => String(value)).join("");
+      expect(help).toContain(`Morrow ${command}`);
+      expect(help).toContain("Usage:");
+      expect(err).not.toMatch(/Welcome to Morrow|stdin\.ref|onboarding/i);
+    } finally {
+      if (oldHome === undefined) delete process.env.MORROW_HOME;
+      else process.env.MORROW_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["providers", "build", "run"])("prints %s help under a TTY-shaped output without touching onboarding", async (command) => {
+    const originalIsTTY = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+    try {
+      await expect(run([command, "--help"])).resolves.toBe(0);
+      expect(stdout.mock.calls.map(([value]) => String(value)).join("")).toContain(`Morrow ${command}`);
+      expect(stderr.mock.calls.map(([value]) => String(value)).join("")).not.toMatch(/Welcome to Morrow|stdin\.ref/i);
+    } finally {
+      Object.defineProperty(process.stdout, "isTTY", { value: originalIsTTY, configurable: true });
+    }
+  });
+
   it("exposes a dry-run uninstall that removes launcher/app surfaces while preserving data by default", async () => {
     const oldHome = process.env.MORROW_HOME;
     const home = mkdtempSync(join(tmpdir(), "morrow-uninstall-test-"));

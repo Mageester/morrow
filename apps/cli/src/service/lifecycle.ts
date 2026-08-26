@@ -48,6 +48,8 @@ export async function serveForeground(ctx: Context): Promise<number> {
     openDatabase,
     buildServer,
     TaskRunner,
+    ProcessSupervisor,
+    processesRepository,
     createDefaultMissionControllerRunner,
     reconcileMissionsOnStartup,
     migrateLegacyDatabase,
@@ -61,13 +63,18 @@ export async function serveForeground(ctx: Context): Promise<number> {
   const migration = migrateLegacyDatabase(ctx.service.dbPath, ctx.paths.legacyDbPaths);
   mkdirSync(dirname(ctx.service.dbPath), { recursive: true });
   const db = openDatabase(ctx.service.dbPath);
-  const runner = new TaskRunner(db);
+  // The foreground service is the normal source-checkout path behind
+  // `morrow start`. Share one supervisor between the runner and HTTP routes so
+  // agent-started processes are visible and cancellable through the same
+  // registry, with one owner for their OS process groups.
+  const supervisor = new ProcessSupervisor(processesRepository(db), join(ctx.paths.home, "process-logs"));
+  const runner = new TaskRunner(db, undefined, supervisor);
   const missionControllerRunner = createDefaultMissionControllerRunner({ db, taskRunner: runner });
   const reconciliation = await reconcileMissionsOnStartup({ db, runner, controllerRunner: missionControllerRunner });
   // A packaged launcher sets MORROW_WEB_ROOT to the bundled web bundle so the
   // in-process service serves the local app at /app; unset in source dev.
   const webRoot = process.env.MORROW_WEB_ROOT?.trim();
-  const app = buildServer({ db, runner, missionControllerRunner, secretsFile: ctx.paths.secretsFile, ...(webRoot ? { webRoot } : {}) });
+  const app = buildServer({ db, runner, missionControllerRunner, supervisor, secretsFile: ctx.paths.secretsFile, ...(webRoot ? { webRoot } : {}) });
 
   await app.listen({ host: ctx.service.host, port: ctx.service.port });
 
@@ -101,6 +108,7 @@ export async function serveForeground(ctx: Context): Promise<number> {
     ctx.out.diag("");
     ctx.out.info("Shutting down…");
     try {
+      await supervisor.stopAllAndWait();
       await app.close();
       db.close();
     } catch {

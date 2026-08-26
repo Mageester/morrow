@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { join } from "node:path";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, cpSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, cpSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
@@ -36,7 +36,7 @@ describe("agent loop advisory", () => {
     }
   });
 
-  function seed(missionLinked = false) {
+function seed(missionLinked = false, prompt = "go") {
     const ts = new Date().toISOString();
     projectRepository(db).createProject({ id: "p1", name: "Loop", workspacePath: tempDir, createdAt: ts });
     if (missionLinked) {
@@ -47,9 +47,18 @@ describe("agent loop advisory", () => {
     }
     writeFileSync(join(tempDir, "readme.md"), "Morrow");
     conversationsRepository(db).createConversation({ id: "c1", projectId: "p1", title: "Loop", createdAt: ts, updatedAt: ts });
-    conversationsRepository(db).appendMessage({ id: "msg-user", conversationId: "c1", role: "user", content: "go", createdAt: ts, updatedAt: ts });
+    conversationsRepository(db).appendMessage({ id: "msg-user", conversationId: "c1", role: "user", content: prompt, createdAt: ts, updatedAt: ts });
     taskRepository(db).createTask({ id: "task-1", projectId: "p1", ...(missionLinked ? { missionId: "mission-1" } : {}), kind: "agent_chat", status: "queued", createdAt: ts });
     conversationsRepository(db).appendMessage({ id: "msg-assistant", conversationId: "c1", role: "assistant", content: "", taskId: "task-1", streamingState: "queued", createdAt: ts, updatedAt: ts });
+  }
+
+  function isProcessAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   it("does not count a completed command transport with nonzero exit as passed verification", () => {
@@ -67,6 +76,151 @@ describe("agent loop advisory", () => {
     })).toBe(true);
     expect(runCommandIsVerification({ executable: "type", args: ["src/index.ts"], purpose: "Read source file" })).toBe(false);
     expect(runCommandIsVerification({ executable: "npm", args: ["run", "build"], purpose: "Compile project" })).toBe(true);
+  });
+
+  it.each([0, 1, 2, 3, 4])("accepts expected verification exit code %i as passed evidence", (expectedExitCode) => {
+    expect(toolCallPassedVerification({
+      status: "completed",
+      toolName: "run_command",
+      argsJson: JSON.stringify({ executable: "fixture", args: [], purpose: "verification", expectedExitCode }),
+      resultJson: JSON.stringify({ exitCode: expectedExitCode, terminationReason: "completed" }),
+    })).toBe(true);
+    expect(toolCallPassedVerification({
+      status: "completed",
+      toolName: "run_command",
+      argsJson: JSON.stringify({ executable: "fixture", args: [], purpose: "verification", expectedExitCode }),
+      resultJson: JSON.stringify({ exitCode: expectedExitCode === 4 ? 0 : expectedExitCode + 1, terminationReason: "completed" }),
+    })).toBe(false);
+  });
+
+  it("stops a successful no-progress provider loop after three turns", async () => {
+    seed(false, "Build the requested artifact in the workspace.");
+    const readTurn = (id: string): ProviderChunk[] => [
+      {
+        type: "tool_call",
+        toolCalls: [{
+          id,
+          index: 0,
+          type: "function",
+          function: { name: "read_file", arguments: JSON.stringify({ path: "readme.md" }) },
+        }],
+      },
+      { type: "done" },
+    ];
+    const provider = new MockProvider({
+      chunks: [readTurn("stall-1"), readTurn("stall-2"), readTurn("stall-3"), readTurn("stall-4")],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider });
+
+    expect(provider.requests).toHaveLength(3);
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
+    const events = taskRecordsRepository(db).listEvents("task-1") as Array<{ type: string; payload: Record<string, unknown> }>;
+    expect(events.some((event) => event.type === "task.progress_warning" && event.payload.reason === "no_progress_stall")).toBe(true);
+    const terminal = events.find((event) => event.type === "task.interrupted" && event.payload.reason === "no_progress_stall");
+    expect(terminal?.payload.terminalEntryKind).toBe("controller_exhausted");
+  });
+
+  it("bounds repeated timed-out foreground service commands and reaps the process", async () => {
+    seed(false, "Start the requested service in the workspace.");
+    taskRoutingRepository(db).upsert({
+      taskId: "task-1",
+      presetId: "best-quality",
+      providerId: "mock",
+      model: "mock-model",
+      useMemory: false,
+      decision: {
+        version: 1,
+        presetId: "best-quality",
+        providerId: "mock",
+        model: "mock-model",
+        reason: "foreground stall regression",
+        fallbackUsed: false,
+        overridden: false,
+        privacy: "cloud",
+        candidates: [],
+        mode: "agent",
+        autoApprove: true,
+      },
+      createdAt: new Date().toISOString(),
+    });
+    const pidFile = join(tempDir, "foreground-service.pid");
+    const commandTurn = (id: string): ProviderChunk[] => [
+      {
+        type: "tool_call",
+        toolCalls: [{
+          id,
+          index: 0,
+          type: "function",
+          function: {
+            name: "run_command",
+            arguments: JSON.stringify({
+              executable: "node",
+              args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`],
+              purpose: "start the foreground service",
+              timeoutMs: 100,
+            }),
+          },
+        }],
+      },
+      { type: "done" },
+    ];
+    const provider = new MockProvider({
+      chunks: [commandTurn("stall-command-1"), commandTurn("stall-command-2"), commandTurn("stall-command-3"), commandTurn("stall-command-4")],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 8 });
+
+    expect(provider.requests).toHaveLength(3);
+    const calls = conversationsRepository(db).listToolCallsForTask("task-1").filter((call) => call.toolName === "run_command");
+    expect(calls).toHaveLength(3);
+    expect(calls.every((call) => call.status === "failed")).toBe(true);
+    expect(calls.every((call) => JSON.parse(call.resultJson ?? "{}").terminationReason === "timeout")).toBe(true);
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
+    const events = taskRecordsRepository(db).listEvents("task-1") as Array<{ type: string; payload: Record<string, unknown> }>;
+    expect(events.some((event) => event.type === "task.progress_warning" && event.payload.reason === "no_progress_stall")).toBe(true);
+
+    // The foreground executor does not hand a process row to the supervisor;
+    // its terminal result is the cleanup proof. When the child was fast enough
+    // to write its pid before the timeout, also assert the OS process is gone.
+    if (existsSync(pidFile)) {
+      const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+      expect(Number.isFinite(pid)).toBe(true);
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline && isProcessAlive(pid)) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(isProcessAlive(pid)).toBe(false);
+    }
+  }, 15_000);
+
+  it("executes the advertised write_plan tool in the live worker path", async () => {
+    seed(false, "Plan the requested work before answering.");
+    const provider = new MockProvider({
+      chunks: [
+        [{
+          type: "tool_call",
+          toolCalls: [{
+            id: "plan-call",
+            index: 0,
+            type: "function",
+            function: {
+              name: "write_plan",
+              arguments: JSON.stringify({ steps: [{ title: "Inspect the workspace", status: "running" }] }),
+            },
+          }],
+        }, { type: "done" }],
+        [{ type: "text", text: "The plan is ready." }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider });
+
+    const call = conversationsRepository(db).listToolCallsForTask("task-1").find((item) => item.id === "plan-call");
+    expect(call?.resultJson).toBe('{"status":"success","stepCount":1}');
+    expect(JSON.parse(call?.resultJson ?? "{}")).toMatchObject({ status: "success", stepCount: 1 });
+    expect(taskRecordsRepository(db).listPlanSteps("task-1")).toHaveLength(1);
+    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.reason === "forbidden_tool")).toBe(false);
   });
 
   it("keeps one already-applied result factual without immediate execution directives", async () => {

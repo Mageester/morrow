@@ -38,6 +38,7 @@ export interface ObservableTaskRunner {
   isActive(taskId: string): boolean;
   waitFor(taskId: string): Promise<void>;
   cancel?(taskId: string, reason?: TaskCancelReason): void;
+  cancelAndWait?(taskId: string, reason?: TaskCancelReason): Promise<void>;
   onSettled?(listener: (taskId: string) => void): () => void;
 }
 
@@ -116,6 +117,34 @@ export class MissionControllerRunner {
     if (runtime?.activeTaskId) this.dependencies.taskRunner.cancel?.(runtime.activeTaskId, "mission_terminal");
   }
 
+  /**
+   * Stop controller driving and await the durable worker tree. Callers use
+   * this before returning a timeout/cancel response so the response cannot
+   * race an active worker or one of its descendants.
+   */
+  async cancelAndWait(missionId: string): Promise<void> {
+    this.cancelled.add(missionId);
+    this.pendingWakes.delete(missionId);
+    for (;;) {
+      const runtime = this.dependencies.runtime.get(missionId);
+      if (runtime?.activeTaskId) {
+        await this.cancelTaskAndWait(runtime.activeTaskId);
+      }
+      await this.waitFor(missionId);
+
+      // A controller tick that was already inside dispatch can persist its
+      // active task after the first scan above. Re-read the runtime after the
+      // controller settles and cancel that late task before returning to the
+      // caller; otherwise a timeout response could still leave a worker alive.
+      const lateTaskId = this.dependencies.runtime.get(missionId)?.activeTaskId;
+      if (lateTaskId && this.dependencies.taskRunner.isActive(lateTaskId)) {
+        await this.cancelTaskAndWait(lateTaskId);
+        continue;
+      }
+      if (!this.isActive(missionId)) return;
+    }
+  }
+
   /** Stop this process from driving a mission without mutating durable worker state. */
   async stop(missionId: string): Promise<void> {
     this.cancelled.add(missionId);
@@ -154,8 +183,7 @@ export class MissionControllerRunner {
     }
     const runtime = this.dependencies.runtime.get(missionId);
     if (runtime?.activeTaskId) {
-      this.dependencies.taskRunner.cancel?.(runtime.activeTaskId, "mission_terminal");
-      await this.dependencies.taskRunner.waitFor(runtime.activeTaskId);
+      await this.cancelTaskAndWait(runtime.activeTaskId);
     }
     const closed = await this.dependencies.concludeTerminalOutcome?.(missionId, input);
     const status = typeof (closed as { status?: unknown } | undefined)?.status === "string"
@@ -221,8 +249,7 @@ export class MissionControllerRunner {
     const runtime = this.dependencies.runtime.get(missionId);
     const activeTaskId = runtime?.activeTaskId;
     if (activeTaskId) {
-      this.dependencies.taskRunner.cancel?.(activeTaskId, "mission_terminal");
-      await this.dependencies.taskRunner.waitFor(activeTaskId);
+      await this.cancelTaskAndWait(activeTaskId);
     }
 
     const closed = await this.dependencies.concludeTerminalOutcome?.(missionId, input);
@@ -270,6 +297,15 @@ export class MissionControllerRunner {
 
   private expiresAt(now: string): string {
     return new Date(Date.parse(now) + this.leaseMs).toISOString();
+  }
+
+  private async cancelTaskAndWait(taskId: string): Promise<void> {
+    if (this.dependencies.taskRunner.cancelAndWait) {
+      await this.dependencies.taskRunner.cancelAndWait(taskId, "mission_terminal");
+      return;
+    }
+    this.dependencies.taskRunner.cancel?.(taskId, "mission_terminal");
+    await this.dependencies.taskRunner.waitFor(taskId);
   }
 }
 

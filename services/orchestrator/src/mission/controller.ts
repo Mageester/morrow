@@ -241,6 +241,13 @@ export class MissionController {
       return this.result(missionId, "validate:candidate", true, false);
     }
     if (active.status === "failed" || active.status === "interrupted") {
+      if (snapshot.terminalOutcomeKind) {
+        return this.terminalOutcome(missionId, runtime, snapshot, fence, now, {
+          kind: snapshot.terminalOutcomeKind,
+          reason: snapshot.terminalOutcomeReason ?? `Worker ended ${active.status} with terminal outcome ${snapshot.terminalOutcomeKind}.`,
+          preserveStatus: snapshot.terminalOutcomeKind === "user_cancel" ? "cancelled" : "blocked",
+        });
+      }
       await this.recordRecovery(missionId, active.id, snapshot.recovery, fence, now);
       this.dependencies.runtime.transition({
         missionId,
@@ -343,6 +350,14 @@ export class MissionController {
   ): Promise<ControllerTickResult> {
     if (!snapshot.guardianDecision.passed) {
       const requested = new Set(snapshot.guardianDecision.nextActions);
+      if (requested.has("review_cycle_exhausted")) {
+        const reviewFinding = snapshot.guardianDecision.failed.find((item) => item.kind === "review");
+        return this.terminalOutcome(missionId, runtime, snapshot, fence, now, {
+          kind: "controller_exhausted",
+          reason: reviewFinding?.detail ?? "Independent review requires revisions, but the review-cycle budget is exhausted.",
+          preserveStatus: "blocked",
+        });
+      }
       if (this.dependencies.validateMission && [
         "validate_criteria",
         "validate_requirements",

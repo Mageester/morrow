@@ -177,7 +177,7 @@ export function runOnboardingLaunchpad(input: {
         ) {
           stdin.setRawMode(false);
         }
-        stdin.resume();
+        if (typeof stdin.resume === "function") stdin.resume();
         resolve(choice);
       });
     };

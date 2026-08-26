@@ -113,7 +113,8 @@ export interface SpawnResult {
   stdout: string;
   stderr: string;
   durationMs: number;
-  terminationReason: "completed" | "timeout" | "cancelled" | "error";
+  terminationReason: "completed" | "timeout" | "cancelled" | "signal" | "error";
+  signal?: NodeJS.Signals | null;
   error?: string;
 }
 
@@ -171,6 +172,7 @@ export function runProcessSafe(
         stderr: "",
         durationMs: 0,
         terminationReason: "cancelled",
+        signal: null,
       });
     }
 
@@ -184,6 +186,7 @@ export function runProcessSafe(
         stderr: "",
         durationMs: 0,
         terminationReason: "error",
+        signal: null,
         error: e.message,
       });
     }
@@ -203,6 +206,7 @@ export function runProcessSafe(
             stderr: "",
             durationMs: 0,
             terminationReason: "error",
+            signal: null,
             error: `Argument contains forbidden shell metacharacters: ${arg}`,
           });
         }
@@ -239,7 +243,7 @@ export function runShellCommandSafe(
     const filteredEnv = filterEnv(env);
 
     if (options.abortSignal?.aborted) {
-      return resolveResult({ exitCode: null, stdout: "", stderr: "", durationMs: 0, terminationReason: "cancelled" });
+      return resolveResult({ exitCode: null, stdout: "", stderr: "", durationMs: 0, terminationReason: "cancelled", signal: null });
     }
 
     const shell = isWindows ? (filteredEnv.COMSPEC || "cmd.exe") : "/bin/sh";
@@ -341,6 +345,7 @@ function runSpawned(
         stderr: stderrBuffer,
         durationMs: Date.now() - start,
         terminationReason,
+        signal: null,
       });
     }, KILL_GRACE_MS);
     graceId.unref?.();
@@ -360,6 +365,10 @@ function runSpawned(
 
   if (options.abortSignal) {
     options.abortSignal.addEventListener("abort", onAbort);
+    // The signal can be aborted between the initial check above and listener
+    // registration. Re-check after subscribing so cancellation cannot miss a
+    // process that has just been spawned.
+    if (options.abortSignal.aborted) onAbort();
   }
 
   child.stdout.on("data", (chunk: Buffer) => {
@@ -385,26 +394,33 @@ function runSpawned(
   });
 
   child.on("error", (err) => {
+    // Killing a child can emit `error` before `close`. Preserve the lifecycle
+    // reason that caused the kill instead of rewriting a timeout/cancellation
+    // as a generic spawn error.
+    const reason = isTerminated ? terminationReason : "error";
     settle({
       exitCode: null,
       stdout: stdoutBuffer,
       stderr: stderrBuffer,
       durationMs: Date.now() - start,
-      terminationReason: "error",
-      error: err.message,
+      terminationReason: reason,
+      signal: null,
+      ...(reason === "error" ? { error: err.message } : {}),
     });
   });
 
-  child.on("close", (code) => {
+  child.on("close", (code, signal) => {
+    const normalizedCode = typeof code === "number" && code > 0x7fffffff ? code - 0x100000000 : code;
     settle({
       // Windows surfaces negative exit codes as large unsigned integers
       // (0xFFFFFFC6 arrives as 4294963238). Normalize back to signed so
       // failure messages, durable records, and gates read truthfully.
-      exitCode: typeof code === "number" && code > 0x7fffffff ? code - 0x100000000 : code,
+      exitCode: normalizedCode,
       stdout: stdoutBuffer,
       stderr: stderrBuffer,
       durationMs: Date.now() - start,
-      terminationReason,
+      terminationReason: terminationReason === "completed" && signal ? "signal" : terminationReason,
+      signal,
     });
   });
 }

@@ -95,6 +95,12 @@ export function normalizeActionSignature(actionKind: string, args: unknown): str
         ),
         cwd: normalizedCwd(input.cwd),
         background: input.background === true,
+        expectedExitCode: typeof input.expectedExitCode === "number"
+          && Number.isInteger(input.expectedExitCode)
+          && input.expectedExitCode >= 0
+          && input.expectedExitCode <= 255
+          ? input.expectedExitCode
+          : 0,
       }
     : input;
   return `${actionKind}:${sha256(stableStringify(canonical))}`;

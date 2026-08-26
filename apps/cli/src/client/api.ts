@@ -188,9 +188,14 @@ export interface ProcessRecord {
   pid: number | null;
   status: "running" | "exited" | "failed" | "cancelled" | "lost";
   exitCode: number | null;
+  /** Added by the lifecycle-aware orchestrator; optional for older services. */
+  terminationReason?: "completed" | "timeout" | "cancelled" | "signal" | "error" | "lost" | null;
+  /** The OS signal when terminationReason is `signal`. */
+  signal?: string | null;
   detail: string | null;
   startedAt: string;
   endedAt: string | null;
+  keepAlive?: boolean;
   /** Absent on an older orchestrator that predates endpoint detection. */
   endpoints?: ProcessEndpoint[];
 }
@@ -373,7 +378,7 @@ export class MorrowApi {
   undoTask(taskId: string) { return this.req<{ status: string; restoredFiles: string[] }>("POST", `/api/tasks/${encodeURIComponent(taskId)}/undo`); }
 
   // ── Background processes ──────────────────────────────────────────────────
-  startProcess(projectId: string, input: { command: string; args?: string[]; cwd?: string; taskId?: string; agentId?: string; mode?: "pipe" | "pty"; timeoutMs?: number }) {
+  startProcess(projectId: string, input: { command: string; args?: string[]; cwd?: string; taskId?: string; agentId?: string; mode?: "pipe" | "pty"; timeoutMs?: number; keepAlive?: boolean }) {
     return this.req<ProcessRecord>("POST", `/api/projects/${projectId}/processes`, input);
   }
   listProcesses(projectId: string, status?: ProcessRecord["status"]) {

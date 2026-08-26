@@ -58,8 +58,8 @@ export async function readLineWithCompletion(
 
     readline.emitKeypressEvents(input);
     const wasRaw = input.isRaw;
-    input.setRawMode(true);
-    input.resume();
+    if (typeof input.setRawMode === "function") input.setRawMode(true);
+    if (typeof input.resume === "function") input.resume();
 
     const registry = builtinRegistry();
     const menuVisible = (): boolean =>
@@ -129,8 +129,8 @@ export async function readLineWithCompletion(
       // mid-line cursor never truncates it visually), then drop to a fresh line.
       output.write("\r" + ESC + "0J" + opts.label + buffer + "\n");
       input.removeListener("keypress", onKey);
-      if (!wasRaw) input.setRawMode(false);
-      input.pause();
+      if (!wasRaw && typeof input.setRawMode === "function") input.setRawMode(false);
+      if (typeof input.pause === "function") input.pause();
     };
 
     const finish = (value: string | typeof PROMPT_EXIT): void => {
@@ -275,8 +275,8 @@ function simpleLine(
     if (input.isTTY && input.isRaw && typeof input.setRawMode === "function") {
       input.setRawMode(false);
     }
-    input.ref();
-    input.resume();
+    if (typeof input.ref === "function") input.ref();
+    if (typeof input.resume === "function") input.resume();
     const rl = readline.createInterface({ input, output });
     rl.question(stripAnsi(label), (answer) => {
       rl.close();

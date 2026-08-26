@@ -106,4 +106,46 @@ describe("mission Guardian", () => {
     expect(decision.missing).toContainEqual(expect.objectContaining({ kind: "validation", id: "browser" }));
     expect(decision.nextActions).toEqual(expect.arrayContaining(["repair_protected_paths", "run_required_validation"]));
   });
+
+  it("refreshes a revisions-required review when later evidence is newer", () => {
+    const decision = evaluateGuardian(fixture({
+      reviewVerdict: "revisions_required",
+      reviewCreatedAt: "2026-08-25T10:00:00.000Z",
+      latestEvidenceAt: "2026-08-25T10:01:00.000Z",
+      reviewMissingVerification: ["npm test"],
+      reviewConcerns: ["The generated artifact was not checked."],
+      reviewCyclesUsed: 1,
+      maxReviewCycles: 2,
+    }));
+
+    expect(decision.nextActions).toContain("run_independent_review");
+    expect(decision.nextActions).not.toContain("apply_review_revisions");
+    expect(decision.failed).toContainEqual(expect.objectContaining({
+      kind: "review",
+      detail: expect.stringContaining("newer evidence"),
+    }));
+  });
+
+  it("stops review recovery at the configured cycle budget and preserves findings", () => {
+    const decision = evaluateGuardian(fixture({
+      reviewVerdict: "revisions_required",
+      reviewCreatedAt: "2026-08-25T10:00:00.000Z",
+      latestEvidenceAt: "2026-08-25T09:59:00.000Z",
+      reviewMissingVerification: ["npm test", "npm run build"],
+      reviewConcerns: ["The output path is not documented."],
+      reviewCyclesUsed: 2,
+      maxReviewCycles: 2,
+    }));
+
+    expect(decision.nextActions).toContain("review_cycle_exhausted");
+    expect(decision.nextActions).not.toContain("apply_review_revisions");
+    expect(decision.failed).toContainEqual(expect.objectContaining({
+      kind: "review",
+      detail: expect.stringContaining("npm test"),
+    }));
+    expect(decision.failed).toContainEqual(expect.objectContaining({
+      kind: "review",
+      detail: expect.stringContaining("The output path is not documented."),
+    }));
+  });
 });

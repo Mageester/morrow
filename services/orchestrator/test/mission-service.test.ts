@@ -350,6 +350,38 @@ describe("MissionService — independent review and honest grading", () => {
     expect(final.result!.reviewVerdict).toBe("insufficient_evidence");
   });
 
+  it("refreshes a revisions-required review after later verification evidence", async () => {
+    const completion: MissionCompletionFn = async (_messages, opts) => opts.purpose === "review"
+      ? { text: JSON.stringify({ verdict: "revisions_required", recommendedStatus: "blocked", criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: ["the generated artifact"], concerns: ["the output path is unclear"], summary: "More evidence is needed." }) }
+      : { text: "[]" };
+    const { service, repo, workspace } = setup({ completion });
+    writeFileSync(join(workspace, "a.js"), "const a=1;\n");
+    const mission = service.create("p1", { objective: "Repair" });
+    const criterion = service.addCriterion(mission.id, "a.js parses", { kind: "command", command: "node --check a.js", expectExitCode: 0 });
+    service.approveCriteria(mission.id);
+    await service.verifyCriterion(mission.id, criterion.id);
+    const review = await service.runReview(mission.id);
+
+    repo.addEvidence({
+      id: "ev-later-verification",
+      missionId: mission.id,
+      criterionIds: [criterion.id],
+      type: "test",
+      summary: "Later verification passed",
+      command: "npm test",
+      exitCode: 0,
+      outputRef: null,
+      artifactPath: null,
+      status: "passed",
+      recordedAt: new Date(Date.parse(review.createdAt) + 1_000).toISOString(),
+    });
+
+    const guardian = service.assessGuardian(mission.id);
+    expect(guardian.nextActions).toContain("run_independent_review");
+    expect(guardian.nextActions).not.toContain("apply_review_revisions");
+    expect(guardian.failed.find((item) => item.kind === "review")?.detail).toContain("newer evidence");
+  });
+
   /**
    * Found dogfooding: a mission created with an explicit provider override
    * (`--provider opencode-zen`) had its worker correctly use that provider,

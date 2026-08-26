@@ -1207,6 +1207,7 @@ export class MissionService {
         id: item.id,
         criterionIds: item.criterionIds,
         status: item.status,
+        recordedAt: item.recordedAt,
       })),
       operations: guardianDependencies.operations,
       tasks: guardianDependencies.tasks,
@@ -1228,6 +1229,16 @@ export class MissionService {
           : [],
       },
       reviewVerdict: mission.finalReview?.verdict ?? null,
+      reviewCreatedAt: mission.finalReview?.createdAt ?? null,
+      latestEvidenceAt: mission.evidence
+        .filter((item) => item.type !== "review")
+        .map((item) => item.recordedAt)
+        .sort()
+        .at(-1) ?? null,
+      reviewMissingVerification: mission.finalReview?.missingVerification ?? [],
+      reviewConcerns: mission.finalReview?.concerns ?? [],
+      reviewCyclesUsed: mission.budget.reviewCyclesUsed,
+      maxReviewCycles: mission.budget.maxReviewCycles,
       requiredValidationKinds: [...new Set(
         mission.criteria
           .filter((criterion) => criterion.state !== "waived")

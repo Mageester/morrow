@@ -144,6 +144,8 @@ async function show(ctx: Context, api: MorrowApi, args: string[]): Promise<numbe
     ["started", record.startedAt],
     ["ended", record.endedAt ?? "-"],
     ["exit code", record.exitCode !== null ? String(record.exitCode) : "-"],
+    ["termination", record.terminationReason ?? "-"],
+    ...(record.signal ? [["signal", record.signal] as [string, string]] : []),
     ...(record.taskId ? [["task", record.taskId] as [string, string]] : []),
     ...(record.detail ? [["detail", record.detail] as [string, string]] : []),
   ]);

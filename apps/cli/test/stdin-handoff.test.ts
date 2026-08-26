@@ -89,4 +89,27 @@ describe("readline prompts after an Ink screen", () => {
     if (!hadSetRawMode)
       delete (stdin as unknown as Record<string, unknown>).setRawMode;
   });
+
+  it("does not require optional ref/resume methods on a pipe-like input", async () => {
+    vi.resetModules();
+    vi.doMock("node:readline", () => ({
+      createInterface: () => ({
+        question: (_q: string, cb: (a: string) => void) => cb("pipe-answer"),
+        close: () => {},
+      }),
+      default: {
+        createInterface: () => ({
+          question: (_q: string, cb: (a: string) => void) => cb("pipe-answer"),
+          close: () => {},
+        }),
+      },
+    }));
+
+    const { readLineWithCompletion } = await import("../src/terminal/prompt.js");
+    const input = { isTTY: false } as unknown as NodeJS.ReadStream;
+    const output = {} as NodeJS.WriteStream;
+    await expect(readLineWithCompletion({ out: {} as never, unicode: false, label: "Answer: ", labelWidth: 8, input, output })).resolves.toBe("pipe-answer");
+
+    vi.doUnmock("node:readline");
+  });
 });

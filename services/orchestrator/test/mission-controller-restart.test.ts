@@ -497,4 +497,48 @@ describe("mission controller restart continuity", () => {
     expect(tick).toHaveBeenCalledTimes(1);
     expect(controllerRunner.isActive("mission-1")).toBe(false);
   });
+
+  it("cancels a worker assigned by a controller tick racing with cancellation", async () => {
+    let releaseTick!: () => void;
+    const tickGate = new Promise<void>((resolve) => { releaseTick = resolve; });
+    const current = { activeTaskId: null as string | null };
+    const activeTasks = new Set<string>();
+    const cancelAndWait = vi.fn(async (taskId: string) => { activeTasks.delete(taskId); });
+    const tick = vi.fn(async () => {
+      await tickGate;
+      current.activeTaskId = "late-task";
+      activeTasks.add("late-task");
+      return {
+        runtime: { activeTaskId: "late-task" },
+        action: "dispatch:worker",
+        immediate: false,
+        waitingForExternal: true,
+      };
+    });
+    const controllerRunner = new MissionControllerRunner({
+      runtime: {
+        claimLease: vi.fn(() => ({ ownerId: "controller-test", generation: 1 })),
+        releaseLease: vi.fn(),
+        renewLease: vi.fn(),
+        get: vi.fn(() => current),
+      } as never,
+      controller: { tick } as never,
+      taskRunner: {
+        isActive: (taskId: string) => activeTasks.has(taskId),
+        waitFor: async () => undefined,
+        cancelAndWait,
+      },
+      ownerId: "controller-test",
+    });
+
+    controllerRunner.run("mission-1");
+    await vi.waitFor(() => expect(tick).toHaveBeenCalledOnce());
+    const cancellation = controllerRunner.cancelAndWait("mission-1");
+    releaseTick();
+    await cancellation;
+
+    expect(cancelAndWait).toHaveBeenCalledWith("late-task", "mission_terminal");
+    expect(activeTasks).toEqual(new Set());
+    expect(controllerRunner.isActive("mission-1")).toBe(false);
+  });
 });

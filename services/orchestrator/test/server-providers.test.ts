@@ -253,6 +253,153 @@ describe("Provider / preset / memory API", () => {
     }
   });
 
+  it("uses cached provider discovery for provider and model selection surfaces", async () => {
+    const previousTokenRouterKey = process.env.TOKENROUTER_API_KEY;
+    const previousNvidiaKey = process.env.NVIDIA_API_KEY;
+    process.env.TOKENROUTER_API_KEY = "test-tokenrouter-key";
+    process.env.NVIDIA_API_KEY = "test-nvidia-key";
+    const discovered = {
+      tokenrouter: {
+        id: "tokenrouter" as const,
+        model: "tokenrouter/free-route",
+        label: "TokenRouter free route",
+      },
+      "nvidia-nim": {
+        id: "nvidia-nim" as const,
+        model: "nvidia/nemotron-3-ultra-550b-a55b",
+        label: "Nemotron 3 Ultra",
+      },
+    } as const;
+    const connectivity = vi.fn(async (id: any) => {
+      const item = discovered[id as keyof typeof discovered];
+      if (!item) throw new Error(`Unexpected provider in discovery test: ${String(id)}`);
+      return {
+        id: item.id,
+        ok: true,
+        configured: true,
+        status: 200,
+        latencyMs: 1,
+        checkedEndpoint: `${id}.example.test`,
+        detail: "connected",
+        errorKind: null,
+        modelsSample: [item.model],
+        models: [{
+          providerModelId: item.model,
+          displayName: item.label,
+          contextWindow: null,
+          maxOutputTokens: null,
+          capabilities: { streaming: true, toolCalls: true, vision: false },
+          metadataSource: "provider-reported" as const,
+        }],
+      };
+    });
+    const localDb = openDatabase(":memory:");
+    const localApp = buildServer({
+      db: localDb,
+      runner: new TaskRunner(localDb, async () => {}),
+      providerConnectivityTest: connectivity,
+      backgroundModelDiscovery: false,
+    });
+    try {
+      await localApp.ready();
+      for (const providerId of ["tokenrouter", "nvidia-nim"] as const) {
+        const refreshed = await localApp.inject({ method: "POST", url: `/api/providers/${providerId}/models/refresh` });
+        expect(refreshed.statusCode).toBe(200);
+      }
+
+      const providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+      for (const item of Object.values(discovered)) {
+        expect(providers.find((provider: any) => provider.id === item.id)).toMatchObject({
+          configured: true,
+          available: true,
+          models: expect.arrayContaining([item.model]),
+        });
+      }
+      const models = JSON.parse((await localApp.inject({ method: "GET", url: "/api/models" })).body);
+      for (const item of Object.values(discovered)) {
+        expect(models.find((status: any) => status.model.providerId === item.id && status.model.id === item.model)).toMatchObject({
+          available: true,
+          availability: "available",
+          availabilitySource: "provider-reported",
+        });
+      }
+      const budgets = JSON.parse((await localApp.inject({ method: "GET", url: "/api/models/budgets" })).body);
+      for (const item of Object.values(discovered)) {
+        expect(budgets.find((budget: any) => budget.providerId === item.id && budget.selectedModelId === item.model)).toMatchObject({
+          configured: true,
+          selectedModelId: item.model,
+        });
+      }
+
+      await localApp.close();
+      const restarted = buildServer({
+        db: localDb,
+        runner: new TaskRunner(localDb, async () => {}),
+        providerConnectivityTest: vi.fn(async () => { throw new Error("refresh should not be needed"); }),
+        backgroundModelDiscovery: false,
+      });
+      try {
+        await restarted.ready();
+        const cachedModels = JSON.parse((await restarted.inject({ method: "GET", url: "/api/models" })).body);
+        for (const item of Object.values(discovered)) {
+          expect(cachedModels.find((status: any) => status.model.providerId === item.id && status.model.id === item.model)).toMatchObject({
+            available: true,
+            availability: "available",
+          });
+        }
+        const cachedBudgets = JSON.parse((await restarted.inject({ method: "GET", url: "/api/models/budgets" })).body);
+        for (const item of Object.values(discovered)) {
+          expect(cachedBudgets.find((budget: any) => budget.providerId === item.id && budget.selectedModelId === item.model)).toBeTruthy();
+        }
+
+        const failureApp = buildServer({
+          db: localDb,
+          runner: new TaskRunner(localDb, async () => {}),
+          providerConnectivityTest: vi.fn(async (id: any) => ({
+            id,
+            ok: false,
+            configured: true,
+            status: 503,
+            latencyMs: 1,
+            checkedEndpoint: `${id}.example.test`,
+            detail: "temporary provider outage",
+            errorKind: "provider_unavailable",
+            modelsSample: [],
+            models: [],
+          })),
+          backgroundModelDiscovery: false,
+        });
+        try {
+          await failureApp.ready();
+          const failedRefresh = await failureApp.inject({ method: "POST", url: "/api/providers/tokenrouter/models/refresh" });
+          expect(failedRefresh.statusCode).toBe(200);
+          const providersAfterFailure = JSON.parse((await failureApp.inject({ method: "GET", url: "/api/providers" })).body);
+          expect(providersAfterFailure.find((provider: any) => provider.id === discovered.tokenrouter.id)).toMatchObject({
+            configured: true,
+            available: false,
+            models: expect.arrayContaining([discovered.tokenrouter.model]),
+          });
+          const modelsAfterFailure = JSON.parse((await failureApp.inject({ method: "GET", url: "/api/models" })).body);
+          expect(modelsAfterFailure.find((status: any) => status.model.providerId === discovered.tokenrouter.id && status.model.id === discovered.tokenrouter.model)).toMatchObject({
+            available: false,
+            availability: "unavailable",
+          });
+        } finally {
+          await failureApp.close();
+        }
+      } finally {
+        await restarted.close();
+      }
+    } finally {
+      // The first app is closed above before the restart check. This is safe to
+      // repeat because Fastify close is idempotent for this test harness.
+      await localApp.close();
+      localDb.close();
+      if (previousTokenRouterKey === undefined) delete process.env.TOKENROUTER_API_KEY; else process.env.TOKENROUTER_API_KEY = previousTokenRouterKey;
+      if (previousNvidiaKey === undefined) delete process.env.NVIDIA_API_KEY; else process.env.NVIDIA_API_KEY = previousNvidiaKey;
+    }
+  });
+
   it("lists presets, models, capabilities, and honest OAuth findings", async () => {
     expect((await json("GET", "/api/presets")).body.length).toBe(7);
     const models = (await json("GET", "/api/models")).body;

@@ -220,6 +220,35 @@ describe("morrow mission command", () => {
     expect(chatCommand).not.toHaveBeenCalled();
   });
 
+  it("cancels and waits for a durable mission when attached observation times out", async () => {
+    const active = mission({
+      status: "running",
+      result: null,
+      finalReview: null,
+      runtime: { state: "executing", blocker: null },
+    });
+    const cancelled = mission({
+      status: "cancelled",
+      result: null,
+      finalReview: null,
+      runtime: { state: "cancelled", blocker: "Mission cancelled by user." },
+    });
+    const api = {
+      listProjects: vi.fn(async () => [{ id: "p1", name: "P1", workspacePath: "C:/repo" }]),
+      createMission: vi.fn(async () => active),
+      generateMissionCriteria: vi.fn(async () => active),
+      intelligenceStaleness: vi.fn(async () => ({ changedScopes: [], itemsMarked: 0, architectureStale: false })),
+      analyzeMissionImpact: vi.fn(async () => { throw new Error("no intelligence"); }),
+      startMission: vi.fn(async () => active),
+      getMission: vi.fn(async () => active),
+      cancelMission: vi.fn(async () => cancelled),
+    };
+
+    await expect(missionCommand(ctx(api, { yes: true, timeout: "0.001" }), "Timeout me", [])).resolves.toBe(130);
+    expect(api.cancelMission).toHaveBeenCalledWith(active.id);
+    expect(printed.join("")).toContain("no active worker remains");
+  });
+
   it("persists the selected preset, provider, and model on a durable mission", async () => {
     const active = mission({ status: "running", result: null, runtime: { state: "completed", blocker: null } });
     const api = {

@@ -39,7 +39,7 @@ export interface GuardianInput {
     evidenceRefs: string[];
     lastFailure?: string | null;
   }>;
-  evidence: Array<{ id: string; criterionIds: string[]; status: MissionEvidenceStatus }>;
+  evidence: Array<{ id: string; criterionIds: string[]; status: MissionEvidenceStatus; recordedAt?: string }>;
   operations: Array<{ id: string; status: MissionOperationStatus; effectEvidenceIds: string[] }>;
   tasks: Array<{ id: string; status: TaskStatus }>;
   approvals: Array<{ id: string; status: ApprovalStatus }>;
@@ -52,6 +52,13 @@ export interface GuardianInput {
     unresolvedFailures: string[];
   };
   reviewVerdict: MissionReviewVerdict | null;
+  /** Facts about the current review used to avoid redispatching stale work. */
+  reviewCreatedAt?: string | null;
+  latestEvidenceAt?: string | null;
+  reviewMissingVerification?: string[];
+  reviewConcerns?: string[];
+  reviewCyclesUsed?: number;
+  maxReviewCycles?: number;
   requiredValidationKinds: string[];
   completedValidationKinds: string[];
   changedFiles: string[];
@@ -166,8 +173,25 @@ export function evaluateGuardian(input: GuardianInput): GuardianDecision {
 
   if (input.reviewVerdict !== "approved") {
     if (input.reviewVerdict === "revisions_required") {
-      failed.push({ kind: "review", id: input.missionId, detail: "Independent review requires revisions." });
-      nextActions.add("apply_review_revisions");
+      const reviewIsStale = isLaterTimestamp(input.latestEvidenceAt, input.reviewCreatedAt);
+      if (reviewIsStale) {
+        failed.push({
+          kind: "review",
+          id: input.missionId,
+          detail: "Independent review is stale because newer evidence was recorded; refresh the review before dispatching revisions.",
+        });
+        nextActions.add("run_independent_review");
+      } else if (reviewBudgetExhausted(input)) {
+        failed.push({
+          kind: "review",
+          id: input.missionId,
+          detail: reviewBudgetDetail(input),
+        });
+        nextActions.add("review_cycle_exhausted");
+      } else {
+        failed.push({ kind: "review", id: input.missionId, detail: "Independent review requires revisions." });
+        nextActions.add("apply_review_revisions");
+      }
     } else {
       missing.push({ kind: "review", id: input.missionId, detail: "Independent approval is missing." });
       nextActions.add("run_independent_review");
@@ -227,4 +251,30 @@ export function evaluateGuardian(input: GuardianInput): GuardianDecision {
       changedFiles: [...input.changedFiles],
     },
   };
+}
+
+function isLaterTimestamp(candidate: string | null | undefined, reference: string | null | undefined): boolean {
+  if (!candidate || !reference) return false;
+  const candidateMs = Date.parse(candidate);
+  const referenceMs = Date.parse(reference);
+  return Number.isFinite(candidateMs) && Number.isFinite(referenceMs) && candidateMs > referenceMs;
+}
+
+function reviewBudgetExhausted(input: GuardianInput): boolean {
+  return Number.isInteger(input.reviewCyclesUsed)
+    && Number.isInteger(input.maxReviewCycles)
+    && (input.reviewCyclesUsed as number) >= (input.maxReviewCycles as number);
+}
+
+function reviewBudgetDetail(input: GuardianInput): string {
+  const used = input.reviewCyclesUsed ?? 0;
+  const max = input.maxReviewCycles ?? used;
+  const findings = [
+    ...(input.reviewMissingVerification ?? []).map((item) => `Missing verification: ${item}`),
+    ...(input.reviewConcerns ?? []).map((item) => `Concern: ${item}`),
+  ];
+  return [
+    `Independent review requires revisions, but the review-cycle budget is exhausted (${used}/${max}).`,
+    ...findings,
+  ].join(" ");
 }

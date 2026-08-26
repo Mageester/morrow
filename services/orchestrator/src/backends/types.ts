@@ -21,7 +21,8 @@ export interface BackendResult {
   stdout: string;
   stderr: string;
   durationMs: number;
-  terminationReason: "completed" | "timeout" | "cancelled" | "error";
+  terminationReason: "completed" | "timeout" | "cancelled" | "signal" | "error";
+  signal?: NodeJS.Signals | null;
 }
 
 export interface ExecutionBackend {

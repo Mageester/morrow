@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/database.js";
@@ -10,6 +10,15 @@ import { processesRepository } from "../src/repositories/processes.js";
 import { ProcessSupervisor } from "../src/processes/supervisor.js";
 
 const NODE = process.execPath;
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function waitFor<T>(fn: () => T | undefined | false | Promise<T | undefined | false>, timeoutMs = 10_000, intervalMs = 25): Promise<T> {
   const deadline = Date.now() + timeoutMs;
@@ -60,6 +69,8 @@ describe("ProcessSupervisor (real child processes)", () => {
   });
 
   it("runs a process to completion and captures stdout/stderr separately", async () => {
+    const exits: any[] = [];
+    supervisor.onExit((process) => exits.push(process));
     const record = await supervisor.start({
       projectId: "p1",
       command: NODE,
@@ -78,6 +89,8 @@ describe("ProcessSupervisor (real child processes)", () => {
     expect(done.terminationReason).toBe("completed");
     expect(done.signal).toBeNull();
     expect(done.endedAt).toBeTruthy();
+    expect(exits).toHaveLength(1);
+    expect(exits[0]).toMatchObject({ id: record.id, status: "exited", terminationReason: "completed", signal: null });
 
     const out = supervisor.readOutput(record.id, "stdout");
     const err = supervisor.readOutput(record.id, "stderr");
@@ -155,6 +168,58 @@ describe("ProcessSupervisor (real child processes)", () => {
       return r && r.status !== "running" ? r : undefined;
     });
     expect(done.status).toBe("cancelled");
+  });
+
+  it.skipIf(process.platform === "win32")("reports a natural signal separately from a command failure", async () => {
+    const record = await supervisor.start({
+      projectId: "p1",
+      command: NODE,
+      args: ["-e", "process.kill(process.pid, 'SIGTERM')"],
+      cwd: ws,
+    });
+    const done = await waitFor(() => {
+      const r = repo.get(record.id);
+      return r && r.status !== "running" ? r : undefined;
+    });
+    expect(done.status).toBe("failed");
+    expect(done.exitCode).toBeNull();
+    expect(done.terminationReason).toBe("signal");
+    expect(done.signal).toBe("SIGTERM");
+  });
+
+  it("waits for a shutdown kill to reap a process group and its descendant", async () => {
+    const parentPidFile = join(ws, "shutdown-parent.pid");
+    const childPidFile = join(ws, "shutdown-child.pid");
+    const childCode = [
+      "const fs = require('node:fs');",
+      `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));`,
+      "setInterval(() => {}, 1000);",
+    ].join(" ");
+    const parentCode = [
+      "const { spawn } = require('node:child_process');",
+      "const fs = require('node:fs');",
+      `fs.writeFileSync(${JSON.stringify(parentPidFile)}, String(process.pid));`,
+      `spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], { stdio: 'ignore' });`,
+      "setInterval(() => {}, 1000);",
+    ].join(" ");
+    const record = await supervisor.start({
+      projectId: "p1",
+      command: NODE,
+      args: ["-e", parentCode],
+      cwd: ws,
+    });
+
+    await waitFor(() => existsSync(parentPidFile) && existsSync(childPidFile));
+    const parentPid = Number.parseInt(readFileSync(parentPidFile, "utf8"), 10);
+    const childPid = Number.parseInt(readFileSync(childPidFile, "utf8"), 10);
+    expect(processAlive(parentPid)).toBe(true);
+    expect(processAlive(childPid)).toBe(true);
+
+    await supervisor.stopAllAndWait();
+
+    expect(repo.get(record.id)).toMatchObject({ status: "cancelled", terminationReason: "cancelled" });
+    expect(processAlive(parentPid)).toBe(false);
+    expect(processAlive(childPid)).toBe(false);
   });
 
   it("enforces a timeout as a failed process", async () => {

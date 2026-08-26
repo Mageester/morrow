@@ -123,7 +123,8 @@ export const TOOL_CATALOG: ToolSpec[] = [
       purpose: { type: "string", description: "Explain why this command is being run" },
       timeoutMs: { type: "number", description: "Optional shorter timeout in milliseconds; cannot exceed the command-policy ceiling" },
       background: { type: "boolean", description: "Start a long-running process (e.g. a dev server) without waiting for it to exit. Returns a processId instead of exit output." },
-      keepAlive: { type: "boolean", description: "Keep the process running after the task finishes. Only when the user asked for a server that stays up; anything started to verify your own work should be left to the default so it is cleaned up." }
+      keepAlive: { type: "boolean", description: "Keep the process running after the task finishes. Only when the user asked for a server that stays up; anything started to verify your own work should be left to the default so it is cleaned up." },
+      expectedExitCode: { type: "number", description: "Expected exit code, 0 by default. Use for intentional failure fixtures; stdout, stderr, actual exit code, and matched/mismatch status remain in evidence." }
     },
     constraints: [
       "Must not use shell: true",
@@ -131,7 +132,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
       "Requires explicit user approval unless trusted",
       "Foreground commands are killed on timeout, cancellation, or task interruption",
       "background:true commands keep running after the tool call returns; stop them with stop_process when done",
-    "A finishing task stops the background processes it started, unless they were started with keepAlive:true",
+      "A finishing task stops the background processes it started, unless they were started with keepAlive:true",
     ],
   },
   {

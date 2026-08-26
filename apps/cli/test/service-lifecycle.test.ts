@@ -157,5 +157,15 @@ describe("service lifecycle", () => {
     resolveReconciliation({ missionsResumed: 1, interrupted: 0, requeued: 0, cancelledOrphans: 0 });
     await expect(foreground).resolves.toMatchObject({ message: "stop foreground test" });
     expect(order).toEqual(["reconciliation-start", "reconciliation-complete", "listen"]);
+
+    const serverDependencies = orchestratorMocks.buildServer.mock.calls[0]?.[0] as {
+      supervisor?: unknown;
+    } | undefined;
+    expect(serverDependencies?.supervisor).toBeDefined();
+    expect(orchestratorMocks.TaskRunner).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+      serverDependencies?.supervisor,
+    );
   });
 });

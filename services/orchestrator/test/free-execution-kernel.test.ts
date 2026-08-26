@@ -238,7 +238,10 @@ describe("Free Execution Kernel", () => {
         runId: "free-execution-test",
       }),
       readOutput: () => ({ data: "ready\n", nextOffset: 6, eof: false, truncated: false }),
-      terminate: async () => ({ ok: true }),
+      terminate: async (id: string) => {
+        processRepo.finish(id, "cancelled", null, "deterministic test cleanup", undefined, "cancelled", null);
+        return { ok: true };
+      },
     } as any;
     const provider = new MockProvider({
       chunks: [
@@ -250,7 +253,7 @@ describe("Free Execution Kernel", () => {
     await executeAgentChatTask({ db, taskId: "t", provider, supervisor, maxTurns: 6 });
 
     expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
-    expect(processRepo.get("owned-process")?.status).toBe("running");
+    expect(processRepo.get("owned-process")?.status).toBe("cancelled");
     expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({
       completion: {
         complete: false,

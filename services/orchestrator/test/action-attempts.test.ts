@@ -60,6 +60,24 @@ describe("durable action attempts", () => {
     expect(otherDirectory).not.toBe(first);
   });
 
+  it("keeps intentional exit-code assertions distinct for retry decisions", () => {
+    const expectedFailure = normalizeActionSignature("run_command", {
+      executable: "node",
+      args: ["fixture.mjs"],
+      expectedExitCode: 1,
+    });
+    const expectedSuccess = normalizeActionSignature("run_command", {
+      executable: "node",
+      args: ["fixture.mjs"],
+      expectedExitCode: 0,
+    });
+    expect(expectedFailure).not.toBe(expectedSuccess);
+    expect(normalizeActionSignature("run_command", {
+      executable: "node",
+      args: ["fixture.mjs"],
+    })).toBe(expectedSuccess);
+  });
+
   it("fingerprints only execution-relevant allowlisted environment values", () => {
     const first = actionEnvironmentFingerprint({
       PATH: "C:/tools",

@@ -12,7 +12,7 @@ export function visibleModelsForAccount(models: ModelStatus[], currentModelId?: 
     status.model.id === currentModelId ||
     (status.availability === undefined
       ? status.available
-      : status.availability === "available" && (status.model.lifecycle === "current" || status.model.lifecycle === "preview"))
+      : status.availability === "available")
   );
 }
 

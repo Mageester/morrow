@@ -226,6 +226,7 @@ describe("cancellation lifecycle — route and race semantics", () => {
       const first = await app.inject({ method: "POST", url: "/api/tasks/running/cancel" });
       expect(first.statusCode).toBe(202);
       expect(first.json()).toMatchObject({ taskId: "running", status: "cancelled", outcome: "cancelled" });
+      expect(runner.isActive("running")).toBe(false);
 
       const duplicate = await app.inject({ method: "POST", url: "/api/tasks/running/cancel" });
       expect(duplicate.statusCode).toBe(200);

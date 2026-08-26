@@ -43,7 +43,7 @@ export interface WebMissionRouteDependencies {
   missionRuntime: ReturnType<typeof missionRuntimeRepository>;
   missionService: MissionService;
   /** Wake durable mission ownership after a create or an attention resolution. */
-  missionControllerRunner?: { wake(missionId: string): void; cancel?(missionId: string): void; waitFor?(missionId: string): Promise<void> };
+  missionControllerRunner?: { wake(missionId: string): void; cancel?(missionId: string): void; cancelAndWait?(missionId: string): Promise<void>; waitFor?(missionId: string): Promise<void> };
   /** Provider environment; injectable for tests. Defaults to process.env. */
   env?: NodeJS.ProcessEnv;
   /** Header/body idempotency-key reader (shared with the task routes). */
@@ -277,12 +277,17 @@ export function registerWebMissionRoutes(app: FastifyInstance, deps: WebMissionR
       throw new ApiError(409, "This mission has already finished.", "MISSION_ALREADY_FINISHED");
     }
     deps.missionService.cancel(missionId);
-    deps.missionControllerRunner?.cancel?.(missionId);
     // Wake once so the controller can park the runtime machine in `cancelled`.
-    if (deps.missionControllerRunner?.waitFor) {
+    if (deps.missionControllerRunner?.cancelAndWait) {
+      await deps.missionControllerRunner.cancelAndWait(missionId);
+      deps.missionControllerRunner.wake(missionId);
+      await deps.missionControllerRunner.waitFor?.(missionId);
+    } else if (deps.missionControllerRunner?.waitFor) {
+      deps.missionControllerRunner.cancel?.(missionId);
       deps.missionControllerRunner.wake(missionId);
       await deps.missionControllerRunner.waitFor(missionId);
     } else {
+      deps.missionControllerRunner?.cancel?.(missionId);
       deps.missionControllerRunner?.wake(missionId);
       const runtime = deps.missionRuntime.get(missionId);
       if (runtime && !["blocked", "completed", "cancelled", "abandoned", "superseded"].includes(runtime.state)) {
@@ -329,8 +334,18 @@ export function registerWebMissionRoutes(app: FastifyInstance, deps: WebMissionR
       }
       if (body.choiceId === "deny") {
         deps.missionService.cancel(missionId);
-        deps.missionControllerRunner?.cancel?.(missionId);
-        deps.missionControllerRunner?.wake(missionId);
+        if (deps.missionControllerRunner?.cancelAndWait) {
+          await deps.missionControllerRunner.cancelAndWait(missionId);
+          deps.missionControllerRunner.wake(missionId);
+          await deps.missionControllerRunner.waitFor?.(missionId);
+        } else if (deps.missionControllerRunner?.waitFor) {
+          deps.missionControllerRunner.cancel?.(missionId);
+          deps.missionControllerRunner.wake(missionId);
+          await deps.missionControllerRunner.waitFor(missionId);
+        } else {
+          deps.missionControllerRunner?.cancel?.(missionId);
+          deps.missionControllerRunner?.wake(missionId);
+        }
         return projectMissionForWeb(projectionInput(missionId));
       }
       if (body.choiceId === "adjust") {
