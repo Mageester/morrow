@@ -50,7 +50,7 @@ not inspected or modified.
   it passed and verifies terminal cursor retention, closed transport, 1s/2s
   bounded retries, offline timer cancellation, and immediate visible/online
   retries.
-- Focused web stream tests: 3 files, 14 tests passed.
+- Focused web stream tests: 3 files, 15 tests passed.
 - Focused execution tests: 4 files, 67 tests passed.
 - `pnpm --filter @morrow/web check` and
   `pnpm --filter @morrow/orchestrator check` passed.
