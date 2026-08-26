@@ -1,6 +1,7 @@
 import { WebMissionStreamEnvelopeSchema } from "@morrow/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import { createEventSourceLifecycle, type EventStreamStatus } from "./event-stream.js";
 import { missionKeys } from "./query-keys.js";
 
 const streamEventTypes = [
@@ -10,11 +11,7 @@ const streamEventTypes = [
   "runtime.updated",
 ] as const;
 
-export type MissionStreamStatus =
-  | "connecting"
-  | "synchronized"
-  | "reconnecting"
-  | "offline";
+export type MissionStreamStatus = EventStreamStatus;
 
 const statusMessages: Record<MissionStreamStatus, string> = {
   connecting: "Connecting…",
@@ -30,135 +27,39 @@ export function useMissionStream(missionId: string) {
   );
 
   useEffect(() => {
-    let stopped = false;
-    let source: EventSource | null = null;
-    let reconnectTimer: number | null = null;
-    let reconnectAttempt = 0;
     let lastCursor = 0;
-
-    const clearReconnectTimer = () => {
-      if (reconnectTimer === null) return;
-      window.clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    };
-
-    const closeSource = () => {
-      const current = source;
-      source = null;
-      current?.close();
-    };
-
-    const setCurrentStatus = (next: MissionStreamStatus) => {
-      if (!stopped) setStatus(next);
-    };
-
-    let connect: () => void;
-
-    const scheduleReconnect = () => {
-      closeSource();
-      if (stopped) return;
-      if (!navigator.onLine) {
-        clearReconnectTimer();
-        setCurrentStatus("offline");
-        return;
-      }
-
-      setCurrentStatus("reconnecting");
-      if (reconnectTimer !== null) return;
-      const delay = Math.min(1_000 * 2 ** reconnectAttempt, 15_000);
-      reconnectAttempt += 1;
-      reconnectTimer = window.setTimeout(() => {
-        reconnectTimer = null;
-        connect();
-      }, delay);
-    };
-
-    connect = () => {
-      if (stopped || source || reconnectTimer !== null) return;
-      if (!navigator.onLine) {
-        setCurrentStatus("offline");
-        return;
-      }
-
-      const activeSource = new EventSource(
-        `/api/web/missions/${encodeURIComponent(missionId)}/stream?after=${lastCursor}`,
-      );
-      source = activeSource;
-
-      activeSource.addEventListener("open", () => {
-        if (stopped || source !== activeSource) return;
-        reconnectAttempt = 0;
-        setCurrentStatus("synchronized");
-      });
-      activeSource.addEventListener("error", () => {
-        if (stopped || source !== activeSource) return;
-        scheduleReconnect();
-      });
-
-      for (const eventType of streamEventTypes) {
-        activeSource.addEventListener(eventType, (event) => {
-          if (stopped || source !== activeSource) return;
-          try {
-            const parsed = WebMissionStreamEnvelopeSchema.safeParse(
-              JSON.parse(String((event as MessageEvent).data)),
-            );
-            if (
-              !parsed.success ||
-              parsed.data.missionId !== missionId ||
-              parsed.data.eventType !== eventType ||
-              parsed.data.cursor <= lastCursor
-            ) {
-              return;
-            }
-
-            if (parsed.data.cursor !== lastCursor + 1) {
-              void queryClient.invalidateQueries({
-                queryKey: missionKeys.detail(missionId),
-              });
-            }
-            lastCursor = parsed.data.cursor;
-            void queryClient.invalidateQueries({
-              queryKey: missionKeys.detail(missionId),
-            });
-          } catch {
-            // Malformed or private internal data never enters application state.
-          }
-        });
-      }
-    };
-
-    const handleOffline = () => {
-      clearReconnectTimer();
-      closeSource();
-      setCurrentStatus("offline");
-    };
-    const handleOnline = () => {
-      if (stopped || source || reconnectTimer !== null) return;
-      setCurrentStatus("reconnecting");
-      connect();
-    };
-    // A backgrounded tab can silently stall an EventSource without ever
-    // firing "error" — reconcile at least once when the tab becomes visible
-    // again (see chat-stream.ts for the same fix and the fuller rationale).
-    const handleVisibility = () => {
-      if (document.visibilityState !== "visible" || stopped) return;
+    const invalidate = () => {
       void queryClient.invalidateQueries({ queryKey: missionKeys.detail(missionId) });
     };
+    const lifecycle = createEventSourceLifecycle({
+      url: () => `/api/web/missions/${encodeURIComponent(missionId)}/stream?after=${lastCursor}`,
+      eventTypes: streamEventTypes,
+      onStatus: setStatus,
+      onEvent: (eventType, event) => {
+        try {
+          const parsed = WebMissionStreamEnvelopeSchema.safeParse(
+            JSON.parse(String(event.data)),
+          );
+          if (
+            !parsed.success ||
+            parsed.data.missionId !== missionId ||
+            parsed.data.eventType !== eventType ||
+            parsed.data.cursor <= lastCursor
+          ) return;
 
-    window.addEventListener("offline", handleOffline);
-    window.addEventListener("online", handleOnline);
-    document.addEventListener("visibilitychange", handleVisibility);
-    setCurrentStatus(navigator.onLine ? "connecting" : "offline");
-    if (navigator.onLine) connect();
-
-    return () => {
-      stopped = true;
-      clearReconnectTimer();
-      closeSource();
-      window.removeEventListener("offline", handleOffline);
-      window.removeEventListener("online", handleOnline);
-      document.removeEventListener("visibilitychange", handleVisibility);
-    };
+          if (parsed.data.cursor !== lastCursor + 1) invalidate();
+          lastCursor = parsed.data.cursor;
+          invalidate();
+        } catch {
+          // Malformed or private internal data never enters application state.
+        }
+      },
+      // A backgrounded tab can silently stall an EventSource without ever
+      // firing "error"; reconcile when it becomes visible again.
+      onVisible: invalidate,
+    });
+    lifecycle.start();
+    return () => lifecycle.stop();
   }, [missionId, queryClient]);
 
   return { status, statusMessage: statusMessages[status] } as const;

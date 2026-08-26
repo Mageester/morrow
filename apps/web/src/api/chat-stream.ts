@@ -2,6 +2,7 @@ import { ChatStreamEnvelopeSchema } from "@morrow/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { conversationKeys } from "./conversations.js";
+import { createEventSourceLifecycle, type EventStreamStatus } from "./event-stream.js";
 import { taskQueryKey } from "./task-keys.js";
 
 const eventTypes = [
@@ -11,11 +12,7 @@ const eventTypes = [
   "task.terminal",
 ] as const;
 
-export type ChatTaskStreamStatus =
-  | "connecting"
-  | "synchronized"
-  | "reconnecting"
-  | "offline";
+export type ChatTaskStreamStatus = EventStreamStatus;
 
 export interface ChatTaskStreamIdentity {
   projectId: string;
@@ -78,10 +75,9 @@ export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
   useEffect(() => {
     let stopped = false;
     let finished = false;
-    let source: EventSource | null = null;
-    let reconnectTimer: number | null = null;
-    let reconnectAttempt = 0;
     let reconcileTimer: number | null = null;
+    let terminalRetryTimer: number | null = null;
+    let terminalRetryAttempt = 0;
     const restored = readCursor(identity);
     let cursor = restored.cursor;
     let terminalPending = restored.terminal;
@@ -101,12 +97,14 @@ export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
       queryClient.invalidateQueries({ queryKey: activityKey }),
       queryClient.invalidateQueries({ queryKey: taskKey }),
     ]);
+    const clearReconcileTimer = () => {
+      if (reconcileTimer === null) return;
+      window.clearTimeout(reconcileTimer);
+      reconcileTimer = null;
+    };
     const scheduleReconcile = (immediate = false) => {
       if (immediate) {
-        if (reconcileTimer !== null) {
-          window.clearTimeout(reconcileTimer);
-          reconcileTimer = null;
-        }
+        clearReconcileTimer();
         void reconcile();
         return;
       }
@@ -129,26 +127,12 @@ export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
       // reconciliation above, which the retry/backoff loop depends on.
       queryClient.invalidateQueries({ queryKey: taskKey }),
     ]);
-    const clearTimer = () => {
-      if (reconnectTimer !== null) {
-        window.clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      if (reconcileTimer !== null) {
-        window.clearTimeout(reconcileTimer);
-        reconcileTimer = null;
-      }
-    };
-    const close = () => {
-      const active = source;
-      source = null;
-      active?.close();
-    };
-    const publishStatus = (next: ChatTaskStreamStatus) => {
-      if (!stopped) setStatus(next);
+    const clearTerminalRetryTimer = () => {
+      if (terminalRetryTimer === null) return;
+      window.clearTimeout(terminalRetryTimer);
+      terminalRetryTimer = null;
     };
 
-    let connect: () => void;
     const completeTerminal = async () => {
       try {
         await reconcileTerminal();
@@ -157,127 +141,78 @@ export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
         finished = true;
         terminalPending = false;
         setTerminal(true);
-        close();
+        lifecycle.close();
       } catch {
-        if (stopped) return;
+        if (stopped || finished) return;
         terminalPending = true;
-        publishStatus(navigator.onLine ? "reconnecting" : "offline");
-        if (!navigator.onLine || reconnectTimer !== null) return;
-        const delay = Math.min(1_000 * 2 ** reconnectAttempt, 15_000);
-        reconnectAttempt += 1;
-        reconnectTimer = window.setTimeout(() => {
-          reconnectTimer = null;
+        setStatus(navigator.onLine ? "reconnecting" : "offline");
+        if (!navigator.onLine || terminalRetryTimer !== null) return;
+        const delay = Math.min(1_000 * 2 ** terminalRetryAttempt, 15_000);
+        terminalRetryAttempt += 1;
+        terminalRetryTimer = window.setTimeout(() => {
+          terminalRetryTimer = null;
           void completeTerminal();
         }, delay);
       }
     };
-    const reconnect = () => {
-      close();
-      if (stopped || finished) return;
-      void reconcile();
-      if (!navigator.onLine) {
-        clearTimer();
-        publishStatus("offline");
-        return;
-      }
-      publishStatus("reconnecting");
-      if (reconnectTimer !== null) return;
-      const delay = Math.min(1_000 * 2 ** reconnectAttempt, 15_000);
-      reconnectAttempt += 1;
-      reconnectTimer = window.setTimeout(() => {
-        reconnectTimer = null;
-        connect();
-      }, delay);
-    };
 
-    connect = () => {
-      if (stopped || finished || terminalPending || source || reconnectTimer !== null) return;
-      if (!navigator.onLine) {
-        publishStatus("offline");
-        return;
-      }
-      const url = `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/tasks/${encodeURIComponent(taskId)}/stream?after=${cursor}`;
-      const active = new EventSource(url);
-      source = active;
-      active.addEventListener("open", () => {
-        if (stopped || source !== active || terminalPending) return;
-        reconnectAttempt = 0;
-        publishStatus("synchronized");
-        scheduleReconcile(true);
-      });
-      active.addEventListener("error", () => {
-        if (stopped || source !== active || finished) return;
-        reconnect();
-      });
-      for (const eventType of eventTypes) {
-        active.addEventListener(eventType, (event) => {
-          if (stopped || source !== active || finished || terminalPending) return;
-          try {
-            const parsed = ChatStreamEnvelopeSchema.safeParse(
-              JSON.parse(String((event as MessageEvent).data)),
-            );
-            if (
-              !parsed.success ||
-              parsed.data.conversationId !== conversationId ||
-              parsed.data.taskId !== taskId ||
-              parsed.data.eventType !== eventType ||
-              parsed.data.cursor <= cursor
-            ) return;
-            cursor = parsed.data.cursor;
-            persistCursor(identity, cursor, eventType === "task.terminal");
-            if (eventType === "task.terminal") {
-              terminalPending = true;
-              close();
-              void completeTerminal();
-              return;
-            }
-            scheduleReconcile(false);
-          } catch {
-            // Invalid or private stream data is ignored and never enters UI state.
+    const lifecycle = createEventSourceLifecycle({
+      url: () => `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/tasks/${encodeURIComponent(taskId)}/stream?after=${cursor}`,
+      eventTypes,
+      onStatus: setStatus,
+      canConnect: () => !finished && !terminalPending,
+      shouldHandleOnline: () => !finished && terminalRetryTimer === null,
+      onOpen: () => scheduleReconcile(true),
+      onReconnect: () => { void reconcile(); },
+      onOffline: () => {
+        clearReconcileTimer();
+        clearTerminalRetryTimer();
+        void reconcile();
+      },
+      onOnline: () => {
+        if (terminalPending) void completeTerminal();
+      },
+      // A backgrounded tab can silently stall an EventSource without firing
+      // "error"; reconcile when it becomes visible again.
+      onVisible: () => {
+        if (finished) return;
+        if (terminalPending) void completeTerminal();
+        else void reconcile();
+      },
+      onEvent: (eventType, event, stream) => {
+        try {
+          const parsed = ChatStreamEnvelopeSchema.safeParse(
+            JSON.parse(String(event.data)),
+          );
+          if (
+            !parsed.success ||
+            parsed.data.conversationId !== conversationId ||
+            parsed.data.taskId !== taskId ||
+            parsed.data.eventType !== eventType ||
+            parsed.data.cursor <= cursor
+          ) return;
+          cursor = parsed.data.cursor;
+          persistCursor(identity, cursor, eventType === "task.terminal");
+          if (eventType === "task.terminal") {
+            terminalPending = true;
+            stream.close();
+            void completeTerminal();
+            return;
           }
-        });
-      }
-    };
-
-    const offline = () => {
-      clearTimer();
-      close();
-      publishStatus("offline");
-      void reconcile();
-    };
-    const online = () => {
-      if (stopped || finished || source || reconnectTimer !== null) return;
-      publishStatus("reconnecting");
-      if (terminalPending) void completeTerminal();
-      else connect();
-    };
-    // A backgrounded browser tab can throttle or silently stall a live
-    // EventSource without ever firing "error" — nothing else here would
-    // notice, and refetchOnWindowFocus is deliberately off globally (see
-    // app/providers.tsx), so there was no other safety net. Reconcile at
-    // least once whenever the tab becomes visible again, unless the task is
-    // already finished.
-    const visibility = () => {
-      if (document.visibilityState !== "visible") return;
-      if (stopped || finished) return;
-      if (terminalPending) void completeTerminal();
-      else void reconcile();
-    };
-    window.addEventListener("offline", offline);
-    window.addEventListener("online", online);
-    document.addEventListener("visibilitychange", visibility);
-    if (navigator.onLine) {
-      if (terminalPending) void completeTerminal();
-      else connect();
-    }
+          scheduleReconcile(false);
+        } catch {
+          // Invalid or private stream data is ignored and never enters UI state.
+        }
+      },
+    });
+    lifecycle.start();
+    if (terminalPending && navigator.onLine) void completeTerminal();
 
     return () => {
       stopped = true;
-      clearTimer();
-      close();
-      window.removeEventListener("offline", offline);
-      window.removeEventListener("online", online);
-      document.removeEventListener("visibilitychange", visibility);
+      clearReconcileTimer();
+      clearTerminalRetryTimer();
+      lifecycle.stop();
     };
   }, [conversationId, projectId, queryClient, taskId]);
 
