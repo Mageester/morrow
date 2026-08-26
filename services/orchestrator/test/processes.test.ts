@@ -20,6 +20,21 @@ function processAlive(pid: number): boolean {
   }
 }
 
+function processActive(pid: number): boolean {
+  if (!processAlive(pid)) return false;
+  if (process.platform !== "linux") return true;
+  try {
+    // Linux briefly keeps a SIGKILLed descendant as a zombie while PID 1
+    // reaps it. It is no longer executable, so kill(pid, 0) must not treat it
+    // as an escaped background process.
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const state = stat.slice(stat.lastIndexOf(")") + 2).split(" ", 1)[0];
+    return state !== "Z";
+  } catch {
+    return false;
+  }
+}
+
 async function waitFor<T>(fn: () => T | undefined | false | Promise<T | undefined | false>, timeoutMs = 10_000, intervalMs = 25): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -187,7 +202,7 @@ describe("ProcessSupervisor (real child processes)", () => {
     expect(done.signal).toBe("SIGTERM");
   });
 
-  it("waits for a shutdown kill to reap a process group and its descendant", async () => {
+  it("does not leave an active process in a shutdown process group", async () => {
     const parentPidFile = join(ws, "shutdown-parent.pid");
     const childPidFile = join(ws, "shutdown-child.pid");
     const childCode = [
@@ -218,8 +233,8 @@ describe("ProcessSupervisor (real child processes)", () => {
     await supervisor.stopAllAndWait();
 
     expect(repo.get(record.id)).toMatchObject({ status: "cancelled", terminationReason: "cancelled" });
-    expect(processAlive(parentPid)).toBe(false);
-    expect(processAlive(childPid)).toBe(false);
+    expect(processActive(parentPid)).toBe(false);
+    expect(processActive(childPid)).toBe(false);
   });
 
   it("enforces a timeout as a failed process", async () => {
