@@ -35,7 +35,8 @@ export type WorkspacePathRejection = {
 
 export type WorkspacePathNormalization = { ok: true; path: string } | WorkspacePathRejection;
 
-function isAnyAbsolute(candidate: string): boolean {
+/** Recognize POSIX and Windows absolute paths regardless of the host OS. */
+export function isAnyAbsolutePath(candidate: string): boolean {
   return posix.isAbsolute(candidate) || win32.isAbsolute(candidate);
 }
 
@@ -76,7 +77,7 @@ export function normalizeWorkspacePath(root: string, requested: string): Workspa
     example,
   });
 
-  if (!isAnyAbsolute(requested)) {
+  if (!isAnyAbsolutePath(requested)) {
     // A relative path keeps its exact spelling; the owning tool applies its own
     // traversal and containment rules. Only reject the traversal here so every
     // tool reports it the same, actionable way.

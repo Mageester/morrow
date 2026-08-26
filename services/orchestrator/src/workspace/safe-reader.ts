@@ -1,19 +1,11 @@
 import { realpathSync, statSync, readFileSync } from "node:fs";
-import { posix, win32, relative, resolve, sep, extname } from "node:path";
+import { relative, resolve, sep, extname } from "node:path";
 import { isWithinWorkspace, normalizeWorkspacePath } from "./path-boundary.js";
 import { matchesDeniedNamePattern } from "../security/denied-name-patterns.js";
 
 export class SafeReadError extends Error {
   readonly code = "safe_read_rejected";
   constructor(message: string) { super(message); }
-}
-
-function isAnyAbsolutePath(candidate: string): boolean {
-  return posix.isAbsolute(candidate) || win32.isAbsolute(candidate);
-}
-
-function contained(root: string, target: string) {
-  return isWithinWorkspace(root, target);
 }
 
 /**
@@ -94,7 +86,7 @@ export function validateSafeReadPath(root: string, rawRequested: string): string
     throw new SafeReadError("File not found or inaccessible");
   }
 
-  if (!contained(root, target)) {
+  if (!isWithinWorkspace(root, target)) {
     throw new SafeReadError("Workspace path is outside configured workspace");
   }
 

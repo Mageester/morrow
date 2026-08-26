@@ -1,4 +1,4 @@
-import { isAnyAbsolutePath } from "./diff-applier.js";
+import { isAnyAbsolutePath } from "../workspace/path-boundary.js";
 
 /**
  * Provider tool-call arguments arrive as an opaque JSON string. Weaker or

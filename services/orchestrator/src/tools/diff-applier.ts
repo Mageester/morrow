@@ -1,7 +1,7 @@
-import { basename, dirname, join, resolve, relative, posix, win32 } from "node:path";
+import { basename, dirname, join, resolve, relative } from "node:path";
 import { existsSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { normalizeWorkspacePath } from "../workspace/path-boundary.js";
+import { isAnyAbsolutePath, normalizeWorkspacePath } from "../workspace/path-boundary.js";
 
 export interface PatchFile {
   oldPath: string;
@@ -90,16 +90,6 @@ export function buildReplacementDiff(relPath: string, oldContent: string, newCon
     ...newLines.map((line) => `+${line}`),
   ].join("\n");
   return `--- a/${target}\n+++ b/${target}\n@@ -1,${oldLines.length} +1,${newLines.length} @@\n${body}\n`;
-}
-
-/**
- * Model and user supplied paths can use either path dialect regardless of the
- * host Morrow is running on. `path.isAbsolute` only understands the host
- * dialect, so it would accept `C:\\Windows\\...` when the service runs on
- * Linux/WSL. Reject both forms before any containment calculation.
- */
-export function isAnyAbsolutePath(candidate: string): boolean {
-  return posix.isAbsolute(candidate) || win32.isAbsolute(candidate);
 }
 
 export function parseUnifiedDiff(diffStr: string): PatchFile[] {

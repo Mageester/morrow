@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { win32, posix } from "node:path";
-import { isWithinWorkspace } from "../src/workspace/path-boundary.js";
+import { isAnyAbsolutePath, isWithinWorkspace } from "../src/workspace/path-boundary.js";
 
 describe("workspace path containment", () => {
   const oneDriveRoot = "C:\\Users\\aidan\\OneDrive\\Documents\\Morrow\\Tests\\Todo-App";
+
+  it("recognizes either path dialect independent of the host platform", () => {
+    expect(isAnyAbsolutePath("/home/dev/project/file.ts")).toBe(true);
+    expect(isAnyAbsolutePath("C:\\Users\\aidan\\project\\file.ts")).toBe(true);
+    expect(isAnyAbsolutePath("src/file.ts")).toBe(false);
+  });
 
   it("treats the workspace root itself as contained", () => {
     expect(isWithinWorkspace(oneDriveRoot, oneDriveRoot, win32)).toBe(true);

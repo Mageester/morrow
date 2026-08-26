@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, realpathSync, statSync, type Dirent } from "node:fs";
-import { posix, win32, relative, resolve, sep } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import { createGitignoreMatcher, isBuiltInIgnoredName } from "./ignore.js";
 import { isWithinWorkspace, normalizeWorkspacePath } from "./path-boundary.js";
 
@@ -12,9 +12,7 @@ export type WorkspaceEntry = { path: string; type: "file"; size?: number };
 export type WorkspaceInspection = { entries: WorkspaceEntry[]; truncatedByDepth: boolean; truncatedByCount: boolean; inaccessibleEntryCount: number };
 export type WorkspaceInspectionOptions = { startPath?: string; maxDepth: number; maxResults: number };
 
-function contained(root: string, target: string) { return isWithinWorkspace(root, target); }
 function normalized(root: string, target: string) { return relative(root, target).split(sep).join("/"); }
-function isAnyAbsolutePath(candidate: string) { return posix.isAbsolute(candidate) || win32.isAbsolute(candidate); }
 
 export function inspectWorkspace(canonicalRoot: string, options: WorkspaceInspectionOptions): WorkspaceInspection {
   if (!Number.isInteger(options.maxDepth) || options.maxDepth < 0 || !Number.isInteger(options.maxResults) || options.maxResults < 1) throw new WorkspaceInspectionError("Workspace inspection limits are invalid");
@@ -30,7 +28,7 @@ export function inspectWorkspace(canonicalRoot: string, options: WorkspaceInspec
   }
   const requested = normalization.path;
   const start = realpathSync(resolve(root, requested));
-  if (!contained(root, start)) throw new WorkspaceInspectionError();
+  if (!isWithinWorkspace(root, start)) throw new WorkspaceInspectionError();
   const entries: WorkspaceEntry[] = [];
   const visited = new Set<string>();
   let truncatedByDepth = false;
@@ -54,7 +52,7 @@ export function inspectWorkspace(canonicalRoot: string, options: WorkspaceInspec
       if (ignoredByGitignore(rel, child.isDirectory())) continue;
       let target: string;
       try { target = realpathSync(candidate); } catch { inaccessibleEntryCount++; continue; }
-      if (!contained(root, target)) throw new WorkspaceInspectionError();
+      if (!isWithinWorkspace(root, target)) throw new WorkspaceInspectionError();
       let stat: ReturnType<typeof statSync>;
       try { stat = statSync(target); } catch { inaccessibleEntryCount++; continue; }
       if (stat.isDirectory()) {
