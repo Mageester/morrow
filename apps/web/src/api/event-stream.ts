@@ -45,7 +45,11 @@ export function createEventSourceLifecycle(
   };
 
   const closeSource = () => { const current = source; source = null; current?.close(); };
-  const publishOffline = () => { clearReconnectTimer(); publishStatus("offline"); };
+  const publishOffline = () => {
+    clearReconnectTimer();
+    publishStatus("offline");
+    publishLifecycle({ type: "offline" });
+  };
 
   let lifecycle: EventSourceLifecycle;
 
@@ -92,10 +96,8 @@ export function createEventSourceLifecycle(
   };
 
   const handleOffline = () => {
-    clearReconnectTimer();
     closeSource();
-    publishStatus("offline");
-    publishLifecycle({ type: "offline" });
+    publishOffline();
   };
 
   const handleOnline = () => {

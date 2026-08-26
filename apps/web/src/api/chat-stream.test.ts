@@ -148,6 +148,24 @@ describe("useChatTaskStream", () => {
     expect(sessionStorage.getItem(chatStreamCursorKey(identity))).toBeNull();
   });
 
+  it("reconciles when EventSource errors while already offline", () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+    const { result, unmount } = renderHook(() => useChatTaskStream({
+      projectId: "p-offline-error", conversationId: "c-offline-error", taskId: "t-offline-error",
+    }), { wrapper: wrapper(queryClient) });
+    const source = FakeEventSource.instances[0]!;
+    const beforeError = invalidate.mock.calls.length;
+
+    setOnline(false);
+    act(() => source.emit("error"));
+
+    expect(source.closed).toBe(true);
+    expect(result.current.status).toBe("offline");
+    expect(invalidate).toHaveBeenCalledTimes(beforeError + 3);
+    unmount();
+  });
+
   it("keeps a failed terminal reconciliation closed and retries after offline cancellation", async () => {
     vi.useFakeTimers();
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -155,7 +173,7 @@ describe("useChatTaskStream", () => {
     let refetchCalls = 0;
     const refetch = vi.spyOn(queryClient, "refetchQueries").mockImplementation(() => {
       const attempt = Math.floor(refetchCalls++ / 2);
-      return attempt < 3
+      return attempt < 4
         ? Promise.reject(new Error("canonical state is temporarily unavailable"))
         : Promise.resolve();
     });
@@ -181,10 +199,16 @@ describe("useChatTaskStream", () => {
     expect(refetch).toHaveBeenCalledTimes(4);
     expect(vi.getTimerCount()).toBe(1);
 
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_999); });
+    expect(refetch).toHaveBeenCalledTimes(4);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(refetch).toHaveBeenCalledTimes(6);
+    expect(vi.getTimerCount()).toBe(1);
+
     Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
     act(() => document.dispatchEvent(new Event("visibilitychange")));
     await act(async () => { await Promise.resolve(); });
-    expect(refetch).toHaveBeenCalledTimes(6);
+    expect(refetch).toHaveBeenCalledTimes(8);
     expect(source.closed).toBe(true);
     expect(vi.getTimerCount()).toBe(1);
 
@@ -200,7 +224,7 @@ describe("useChatTaskStream", () => {
       await Promise.resolve();
     });
     expect(result.current.terminal).toBe(true);
-    expect(refetch).toHaveBeenCalledTimes(8);
+    expect(refetch).toHaveBeenCalledTimes(10);
     expect(sessionStorage.getItem(chatStreamCursorKey(identity))).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
   });

@@ -22,8 +22,8 @@ different authority, failure contract, or security boundary.
 | Task/resume | `runner.ts`, task dispatch/continuation code, `execution-continuity.ts`, and resume tests | Keep cancellation-root tracking, descendant cancellation, continuation replay, and lease claims separate. They close different races and are not interchangeable retries. |
 | Tool execution | `tools/command-executor.ts` (426 lines), `command-policy.ts` (240), `catalog.ts` (384), `diff-applier.ts` (462), `tool-argument-repair.ts` (539), and privacy/approval tests | The path-boundary duplicate was removed in the prior pass. Keep command policy, process execution, patch application, and argument repair separate: permissions must be decided before execution and patch containment must remain independent of shell handling. |
 
-Protected prototype UI files listed by `AGENTS.md` were not inspected or
-modified.
+Protected prototype UI files listed by `agent_docs/project_structure.md` were
+not inspected or modified.
 
 ## Implemented simplifications
 
