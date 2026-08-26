@@ -229,9 +229,16 @@ describe("a realistic multi-file build history survives persistence, replay and 
 
   it("keeps arguments intact through the provider projection used by recovery and compaction", () => {
     // The projection is model-visible history, so an ordinary successful write
-    // keeps its exact arguments. Only a body larger than the projection's
-    // historical byte limit is replaced by a non-executable digest record —
-    // never by a truncated body that could be replayed as content.
+    // keeps its exact arguments. A body larger than the projection's
+    // historical byte limit has its real content replaced by a placeholder
+    // string (never the truncated real body), paired with a durable digest —
+    // but `content` stays a string. Dropping it entirely used to teach a model
+    // replaying its own history that create_file's arguments look like
+    // `{ path, durable_context }`, and a model that imitated that shape for a
+    // *new* call got hard-rejected by validation every time, with no path
+    // forward (see provider-projection.ts's `bodyPlaceholder`). A schema-valid
+    // placeholder call is the safe failure mode: at worst a wasted write of
+    // placeholder text, never an unrecoverable loop.
     const HISTORICAL_ARGUMENT_BYTE_LIMIT = 8 * 1024;
     const turns = files.map((file, index) => ({
       turnKey: `turn-${index}`,
@@ -258,17 +265,22 @@ describe("a realistic multi-file build history survives persistence, replay and 
         expect(result.args.content).toBe(file.content);
         return;
       }
-      // Oversized: the target and a durable digest remain, the body does not,
-      // and the record is refused by validation rather than executed.
+      // Oversized: the target and a durable digest remain; the real body is
+      // replaced by a placeholder string, never the truncated real content.
       const projectedArgs = JSON.parse(call.function.arguments) as Record<string, any>;
       expect(projectedArgs.path).toBe(file.path);
-      expect(projectedArgs.content).toBeUndefined();
+      expect(typeof projectedArgs.content).toBe("string");
+      expect(projectedArgs.content).not.toBe(file.content);
+      expect(projectedArgs.content.toLowerCase()).toContain("placeholder");
       expect(projectedArgs.durable_context).toMatchObject({
         kind: "completed_tool_arguments",
         tool: "create_file",
         payloadBytes: Buffer.byteLength(file.content, "utf8"),
       });
-      expect(throughBoundary("create_file", call.function.arguments, ["path", "content"]).stage).toBe("validate");
+      // Schema-valid — even a model that imitates this call's shape produces
+      // a call validation accepts (at worst a wasted placeholder write),
+      // never the hard, unrecoverable rejection a missing `content` caused.
+      expect(throughBoundary("create_file", call.function.arguments, ["path", "content"]).stage).toBe("ok");
     });
   });
 

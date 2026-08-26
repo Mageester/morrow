@@ -257,7 +257,17 @@ describe("durable provider projection", () => {
     const args = JSON.parse(call!.function.arguments) as Record<string, any>;
     expect(args.path).toBe("large.txt");
     expect(args.expectedOffset).toBe(5);
-    expect(args).not.toHaveProperty("content");
+    // `content` stays a string rather than being dropped in favour of a
+    // sibling `durable_context` object. A model retrying this write later
+    // sees its own historical call and pattern-matches its *shape* — dropping
+    // the field entirely taught the model that create_file's arguments look
+    // like `{ path, durable_context }`, and it would reproduce exactly that
+    // (a non-string `content`) for a *new* call, which validation then
+    // rejected every time with no way out. Keeping `content` a string means
+    // even an imitated call stays schema-valid.
+    expect(typeof args.content).toBe("string");
+    expect(args.content).not.toContain(body);
+    expect(args.content.toLowerCase()).toContain("placeholder");
     expect(args.durable_context).toMatchObject({ kind: "completed_tool_arguments", tool: "append_file", payloadBytes: body.length });
     expect(JSON.stringify(messages)).not.toContain(body);
     expect(JSON.stringify(messages)).not.toContain("_morrowAppliedWrite");
