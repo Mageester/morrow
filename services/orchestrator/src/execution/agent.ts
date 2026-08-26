@@ -4071,6 +4071,22 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     event("step.started", { stepId: activeStepId });
   }
 
+  type InterruptedExecutionLabel = "Paused" | "Stopped" | "Incomplete" | "Controller recovery required";
+  const recordInterruptedExecution = (input: {
+    reason: string;
+    message: string;
+    label?: InterruptedExecutionLabel;
+    checkpointId?: string;
+    details?: Record<string, unknown>;
+    taskDetails?: Record<string, unknown>;
+  }): void => {
+    const { reason, message, label = "Paused", checkpointId, details = {}, taskDetails = details } = input;
+    transitionAgentState("interrupted", { reason, message, ...(checkpointId ? { checkpointId } : {}), turns: absoluteTurn, ...details });
+    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason, message, ...(checkpointId ? { checkpointId } : {}), ...taskDetails } });
+    convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[${label}: ${message}]`, "interrupted", now());
+    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+  };
+
   type RequirementWorkspaceState = { lines: string[]; paths: string[]; pathTypes: RequirementPathObservation[]; measured: boolean; authoritative: boolean };
   let requirementBaselinePaths = new Set<string>();
   let requirementBaselinePathCount: number | undefined;
@@ -4627,33 +4643,19 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     closeCurrentTurn({ final: false, aborted: true });
     const checkpointId = await persistExecutionCheckpoint("no_progress_stall");
     failCurrentSegment("no_progress_stall");
-    transitionAgentState("interrupted", {
+    recordInterruptedExecution({
       reason: "no_progress_stall",
       message,
+      label: "Stopped",
       checkpointId,
-      turns: absoluteTurn,
-      turnsWithoutProgress: stagnantProviderTurns,
-    });
-    records.transitionTask(taskId, "interrupted", {
-      id: randomUUID(),
-      createdAt: now(),
-      payload: {
-        reason: "no_progress_stall",
+      details: { turnsWithoutProgress: stagnantProviderTurns },
+      taskDetails: {
         terminalEntryKind: "controller_exhausted",
-        message,
-        checkpointId,
         missionId: taskMissionId,
         turns: absoluteTurn,
         turnsWithoutProgress: stagnantProviderTurns,
       },
     });
-    convs.updateMessageContentAndState(
-      assistantMessageRow.id,
-      `${responseContent}\n\n[Stopped: ${message}]`,
-      "interrupted",
-      now(),
-    );
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
     return true;
   };
 
@@ -4664,10 +4666,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     closeCurrentTurn({ final: false, aborted: true });
     const message = `Automatic execution paused after ${automaticSegmentLimit} durable segments to bound unattended provider and tool usage.`;
     failCurrentSegment("segment_budget_exhausted");
-    transitionAgentState("interrupted", { reason: "segment_budget_exhausted", message, checkpointId, turns: absoluteTurn });
-    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "segment_budget_exhausted", message, checkpointId } });
-    convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Paused: ${message}]`, "interrupted", now());
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+    recordInterruptedExecution({ reason: "segment_budget_exhausted", message, checkpointId });
     return true;
   };
 
@@ -4684,10 +4683,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     closeCurrentTurn({ final: false, aborted: true });
     const message = `Automatic execution paused after ${unattendedTurnLimit} model turns to bound unattended provider and tool usage. The task is checkpointed and can be resumed.`;
     failCurrentSegment("turn_budget_exhausted");
-    transitionAgentState("interrupted", { reason: "turn_budget_exhausted", message, checkpointId, turns: absoluteTurn, limit: unattendedTurnLimit });
-    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "turn_budget_exhausted", message, checkpointId, turns: absoluteTurn, limit: unattendedTurnLimit } });
-    convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Paused: ${message}]`, "interrupted", now());
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+    recordInterruptedExecution({
+      reason: "turn_budget_exhausted",
+      message,
+      checkpointId,
+      details: { limit: unattendedTurnLimit },
+      taskDetails: { turns: absoluteTurn, limit: unattendedTurnLimit },
+    });
     return true;
   };
 
@@ -4700,19 +4702,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     closeCurrentTurn({ final: false, aborted: true });
     const checkpointId = await persistExecutionCheckpoint(outcome);
     failCurrentSegment(outcome);
-    transitionAgentState("interrupted", { reason: outcome, message, checkpointId, turns: absoluteTurn, ...details });
-    records.transitionTask(taskId, "interrupted", {
-      id: randomUUID(),
-      createdAt: now(),
-      payload: { reason: outcome, message, checkpointId, missionId: taskMissionId, ...details },
+    recordInterruptedExecution({
+      reason: outcome,
+      message,
+      label: "Controller recovery required",
+      checkpointId,
+      details,
+      taskDetails: { missionId: taskMissionId, ...details },
     });
-    convs.updateMessageContentAndState(
-      assistantMessageRow.id,
-      `${responseContent}\n\n[Controller recovery required: ${message}]`,
-      "interrupted",
-      now(),
-    );
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
     return true;
   };
 
@@ -4736,14 +4733,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     closeCurrentTurn({ final: false, aborted: true });
     const checkpointId = await persistExecutionCheckpoint("requirement_evaluation_incomplete");
     failCurrentSegment("requirement_evaluation_incomplete");
-    transitionAgentState("interrupted", { reason: "requirement_evaluation_incomplete", message, checkpointId, turns: absoluteTurn, ...details });
-    records.transitionTask(taskId, "interrupted", {
-      id: randomUUID(),
-      createdAt: now(),
-      payload: { reason: "requirement_evaluation_incomplete", message, checkpointId, ...details },
+    recordInterruptedExecution({
+      reason: "requirement_evaluation_incomplete",
+      message,
+      label: "Incomplete",
+      checkpointId,
+      details,
     });
-    convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Incomplete: ${message}]`, "interrupted", now());
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
     return true;
   };
 
@@ -4923,33 +4919,27 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     ? records.listEventsByType(taskId, "provider.request_started").length
     : 0;
   const agentBudgetStartedAtMs = Date.now();
-  const currentAgentBudgetViolation = (): { reason: "provider_calls" | "tokens" | "wall_clock"; actual: number; limit: number } | null => {
+  type AgentResourceViolation = { reason: "tokens" | "wall_clock"; actual: number; limit: number };
+  const agentResourceViolation = (inclusiveTokens: boolean): AgentResourceViolation | null => {
+    if (!agentBudget) return null;
+    const knownTokenTotal = cumulativeUsage.totalInputTokens + cumulativeUsage.outputTokens;
+    if (agentBudget.maxTokenBudget !== null && (inclusiveTokens ? knownTokenTotal >= agentBudget.maxTokenBudget : knownTokenTotal > agentBudget.maxTokenBudget)) {
+      return { reason: "tokens", actual: knownTokenTotal, limit: agentBudget.maxTokenBudget };
+    }
+    const elapsedMs = Date.now() - agentBudgetStartedAtMs;
+    if (agentBudget.maxWallClockMs !== null && elapsedMs >= agentBudget.maxWallClockMs) {
+      return { reason: "wall_clock", actual: elapsedMs, limit: agentBudget.maxWallClockMs };
+    }
+    return null;
+  };
+  const currentAgentBudgetViolation = () => {
     if (!agentBudget) return null;
     if (agentBudget.maxProviderCalls !== null && agentProviderCallCount >= agentBudget.maxProviderCalls) {
-      return { reason: "provider_calls", actual: agentProviderCallCount, limit: agentBudget.maxProviderCalls };
+      return { reason: "provider_calls" as const, actual: agentProviderCallCount, limit: agentBudget.maxProviderCalls };
     }
-    const knownTokenTotal = cumulativeUsage.totalInputTokens + cumulativeUsage.outputTokens;
-    if (agentBudget.maxTokenBudget !== null && knownTokenTotal >= agentBudget.maxTokenBudget) {
-      return { reason: "tokens", actual: knownTokenTotal, limit: agentBudget.maxTokenBudget };
-    }
-    const elapsedMs = Date.now() - agentBudgetStartedAtMs;
-    if (agentBudget.maxWallClockMs !== null && elapsedMs >= agentBudget.maxWallClockMs) {
-      return { reason: "wall_clock", actual: elapsedMs, limit: agentBudget.maxWallClockMs };
-    }
-    return null;
+    return agentResourceViolation(true);
   };
-  const completedTurnAgentBudgetViolation = (): { reason: "tokens" | "wall_clock"; actual: number; limit: number } | null => {
-    if (!agentBudget) return null;
-    const knownTokenTotal = cumulativeUsage.totalInputTokens + cumulativeUsage.outputTokens;
-    if (agentBudget.maxTokenBudget !== null && knownTokenTotal > agentBudget.maxTokenBudget) {
-      return { reason: "tokens", actual: knownTokenTotal, limit: agentBudget.maxTokenBudget };
-    }
-    const elapsedMs = Date.now() - agentBudgetStartedAtMs;
-    if (agentBudget.maxWallClockMs !== null && elapsedMs >= agentBudget.maxWallClockMs) {
-      return { reason: "wall_clock", actual: elapsedMs, limit: agentBudget.maxWallClockMs };
-    }
-    return null;
-  };
+  const completedTurnAgentBudgetViolation = () => agentResourceViolation(false);
   const effectiveAgentOutputBudget = (): number | null => {
     const base = effectiveOutputBudget();
     if (!agentBudget || agentBudget.maxTokenBudget === null) return base;
@@ -4967,10 +4957,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     });
     closeCurrentTurn({ final: false, aborted: true });
     failCurrentSegment("agent_budget_exhausted");
-    transitionAgentState("interrupted", { reason: "agent_budget_exhausted", message, budget: violation.reason, actual: violation.actual, limit: violation.limit, turns: absoluteTurn });
-    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "agent_budget_exhausted", message, budget: violation.reason, actual: violation.actual, limit: violation.limit } });
-    convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Paused: ${message}]`, "interrupted", now());
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+    recordInterruptedExecution({
+      reason: "agent_budget_exhausted",
+      message,
+      details: { budget: violation.reason, actual: violation.actual, limit: violation.limit },
+    });
   };
 
   while (true) {
@@ -7449,11 +7440,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         }
         const message = "Provider ended without a final answer after tool execution; the result remains incomplete.";
         if (await returnMissionWorkerOutcome("provider_recovery_required", message)) return;
-        failCurrentSegment(currentReasoningContent ? "reasoning_only_exhausted" : "missing_final_answer");
-        transitionAgentState("interrupted", { reason: currentReasoningContent ? "reasoning_only_exhausted" : "missing_final_answer", message, turns: turn });
-        records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: currentReasoningContent ? "reasoning_only_exhausted" : "missing_final_answer", message, turns: turn } });
-        convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
-        if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+        const reason = currentReasoningContent ? "reasoning_only_exhausted" : "missing_final_answer";
+        failCurrentSegment(reason);
+        recordInterruptedExecution({
+          reason,
+          message,
+          label: "Incomplete",
+          details: { turns: turn },
+        });
         return;
       }
       // No more tool calls and a final answer was streamed, so we're done.
