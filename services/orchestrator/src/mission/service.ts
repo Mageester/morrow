@@ -108,6 +108,11 @@ export interface MissionServiceDeps {
    *  post-review learning extraction. Optional so missions degrade gracefully
    *  when project intelligence is not in play (tests, minimal deployments). */
   cortex?: CortexService | undefined;
+  /** Count the mission's completed tasks for the terminal result. Optional:
+   *  without it the count is reported as 0, which understates the work done
+   *  and is exactly what would hide a runaway from someone reading the
+   *  summary. */
+  countCompletedTasks?: ((missionId: string) => number) | undefined;
 }
 
 export class MissionError extends Error {
@@ -1660,7 +1665,7 @@ export class MissionService {
         review: fresh.finalReview,
         changedFiles: this.changedFilesFor(fresh),
         humanInterventions: opts?.humanInterventions ?? 0,
-        tasksCompleted: opts?.tasksCompleted ?? 0,
+        tasksCompleted: opts?.tasksCompleted ?? this.safeCompletedTaskCount(missionId),
         elapsedMs: opts?.elapsedMs ?? (fresh.startedAt ? Date.parse(now) - Date.parse(fresh.startedAt) : null),
         spentUsd: fresh.budget.spentUsd || null,
         finalStatus,
@@ -2088,6 +2093,15 @@ export class MissionService {
    *  the exact same `reviewCyclesUsed >= maxReviewCycles` condition, so a
    *  caller can never observe `budgetExhausted() === false` while a further
    *  review reservation would actually be rejected, or vice versa. */
+  /** Never let a reporting nicety break finalization. */
+  private safeCompletedTaskCount(missionId: string): number {
+    try {
+      return this.deps.countCompletedTasks?.(missionId) ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+
   budgetExhausted(missionId: string): boolean {
     const b = this.get(missionId).budget;
     if (b.maxUsd !== null && b.spentUsd >= b.maxUsd) return true;
