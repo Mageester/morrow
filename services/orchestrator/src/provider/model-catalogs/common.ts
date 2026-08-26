@@ -19,11 +19,15 @@ export const price = (inputUsdPerMillion: number, outputUsdPerMillion: number, c
   source: "authoritative",
 });
 
-// Compatibility view: legacy pickers render an unknown route as "not
-// configurable". The provider-owned exact capability contract carries the
-// stronger distinction as an unknown fact, so this projection does not claim
-// that the provider explicitly disabled reasoning.
-export const UNKNOWN_REASONING: RouteReasoningCapability = { control: "none", efforts: [], budgets: [], source: "unknown" };
+// Absence of metadata is its own fact, and it is not "the provider disabled
+// reasoning". Encoding it as `none` made every route Morrow had not fetched
+// metadata for claim reasoning was unsupported, and `translateReasoning`
+// refused to apply a depth on that basis — a fresh install with no models.dev
+// snapshot silently lost reasoning on every model outside the bundled catalog.
+// `unknown` is carried by the same contract and every consumer already handles
+// it: pickers fall back to Auto, and the translator returns the actionable
+// "has not reported a reasoning capability" reason instead of a dead end.
+export const UNKNOWN_REASONING: RouteReasoningCapability = { control: "unknown", efforts: [], budgets: [], source: "unknown" };
 
 /**
  * Declare the reasoning modes one exact model offers.

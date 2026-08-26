@@ -637,6 +637,12 @@ export class MorrowApi {
     );
   }
   listModels() { return this.req<ModelStatus[]>("GET", "/api/models"); }
+  /** Fetch public model metadata (context windows, reasoning capability) from
+   * the catalogue source. Operator-triggered by design: Morrow never makes this
+   * request on its own, so without it a fresh install has no metadata layer. */
+  refreshModelCatalog() {
+    return this.req<{ catalogVersion?: string; source?: string; models?: unknown[] }>("POST", "/api/models/refresh");
+  }
   /** Canonical per-model budget view (routing/model-budget.ts) for every
    *  known model — powers the /model detail panel with real usable-input,
    *  reserve, and confidence numbers instead of a second guess at them. */

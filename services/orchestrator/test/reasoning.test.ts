@@ -34,9 +34,23 @@ describe("registry reasoning capability, with provenance", () => {
 
   it("returns an explicit unknown capability for a model the registry has never seen", () => {
     const cap = resolveReasoningCapability("openai-compatible", "north-mini-code-free");
-    expect(cap.control).toBe("none");
+    // "unknown", never "none": not having looked up a model is a different
+    // fact from the provider reporting it cannot reason, and only the latter
+    // may disable the reasoning controls. See UNKNOWN_REASONING.
+    expect(cap.control).toBe("unknown");
     expect(cap.source).toBe("unknown"); // never a guessed control
     expect(resolveModelMetadata("openai-compatible", "north-mini-code-free").builtIn).toBe(false);
+  });
+
+  it("does not refuse a reasoning depth merely because metadata was never fetched", () => {
+    const cap = resolveReasoningCapability("openai-compatible", "north-mini-code-free");
+    const refusal = translateReasoning({ mode: "effort", effort: "high" }, "openai-chat", cap);
+    // Still a refusal — Morrow cannot invent a wire format it has never seen —
+    // but it must be the recoverable "not reported" reason that points at
+    // fetching metadata, not the terminal "this route has no reasoning
+    // controls" claim that an unfetched model used to produce.
+    expect(refusal.ok).toBe(false);
+    expect(refusal.ok === false ? refusal.reason : "").toMatch(/has not reported a reasoning capability/);
   });
 
   it("threads the reasoning capability into the canonical ModelBudget", () => {

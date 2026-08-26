@@ -263,7 +263,12 @@ function externalReasoning(source: Record<string, unknown>): RouteReasoningCapab
   if (reasons === false) {
     return { control: "none", efforts: [], budgets: [], source: "external-catalog" };
   }
-  return { control: "none", efforts: [], budgets: [], source: "unknown" };
+  // No row, or a row that says nothing about reasoning. Distinct from the
+  // `reasons === false` case directly above, which is models.dev positively
+  // reporting that the model does not reason. Claiming "none" here would put
+  // words in the catalogue's mouth and disable the reasoning controls of every
+  // model Morrow simply has no metadata for.
+  return { control: "unknown", efforts: [], budgets: [], source: "unknown" };
 }
 
 function pricing(source: Record<string, unknown>): ModelInfo["pricing"] {
