@@ -25,6 +25,12 @@ export class TaskRunner {
   private activeTasks = new Set<string>();
   private activePromises = new Map<string, Promise<void>>();
   private abortControllers = new Map<string, AbortController>();
+  /**
+   * Cancellation roots remain in memory until this runner is shut down. This
+   * closes the dispatch race where a controller cancels a parent, then a
+   * queued descendant is dispatched before the cancellation sweep sees it.
+   */
+  private cancellationRoots = new Map<string, TaskCancelReason>();
   private settledListeners = new Set<(taskId: string) => void>();
   private executor: TaskExecutor;
   private teammateSpawner: TeammateSpawner | undefined;
@@ -71,6 +77,12 @@ export class TaskRunner {
   run(taskId: string, opts: { recovered?: boolean; resumeCheckpoint?: boolean; checkpointCursor?: number; executionLease?: ExecutionLeaseClaim } = {}) {
     if (this.activeTasks.has(taskId)) {
       throw new Error("Duplicate execution rejected");
+    }
+
+    const cancellation = this.cancellationFor(taskId);
+    if (cancellation) {
+      this.cancelOne(taskId, cancellation);
+      return;
     }
 
     this.activeTasks.add(taskId);
@@ -167,10 +179,49 @@ export class TaskRunner {
    * Cancelling a child never touches its parent or siblings.
    */
   cancel(taskId: string, reason: TaskCancelReason = "user_cancelled") {
+    this.cancellationRoots.set(taskId, reason);
     const targets = this.collectCancelTargets(taskId);
     targets.forEach((id, index) =>
       this.cancelOne(id, index === 0 ? reason : "parent_cancelled")
     );
+  }
+
+  /**
+   * Cancel a task tree and wait until every currently active descendant has
+   * settled. The target list is refreshed after each await because a running
+   * parent can otherwise dispatch a child during the cancellation window.
+   */
+  async cancelAndWait(taskId: string, reason: TaskCancelReason = "user_cancelled"): Promise<void> {
+    this.cancel(taskId, reason);
+
+    for (;;) {
+      const targets = this.collectCancelTargets(taskId);
+      const pending = targets
+        .map((id) => this.activePromises.get(id))
+        .filter((promise): promise is Promise<void> => promise !== undefined);
+      if (pending.length > 0) await Promise.all(pending);
+
+      // A descendant may have been persisted and dispatched while the prior
+      // promises were settling. Re-read the tree before declaring cleanup
+      // complete; run()'s cancellation-root guard prevents new work from
+      // escaping this loop.
+      if (!targets.some((id) => this.activeTasks.has(id))) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  private cancellationFor(taskId: string): TaskCancelReason | undefined {
+    const tasks = taskRepository(this.db);
+    const seen = new Set<string>();
+    let current = tasks.getTaskById(taskId);
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
+      const rootReason = this.cancellationRoots.get(current.id);
+      if (rootReason) return current.id === taskId ? rootReason : "parent_cancelled";
+      if (current.status === "cancelled") return "parent_cancelled";
+      current = current.parentTaskId ? tasks.getTaskById(current.parentTaskId) : undefined;
+    }
+    return undefined;
   }
 
   // Depth-first pre-order (parent before children) over the persisted task tree.
@@ -239,10 +290,14 @@ export class TaskRunner {
 
   // test-only method
   async waitFor(taskId: string) {
-    const targets = this.collectCancelTargets(taskId);
-    await Promise.all(targets.map(async (id) => {
-      const promise = this.activePromises.get(id);
-      if (promise) await promise;
-    }));
+    for (;;) {
+      const targets = this.collectCancelTargets(taskId);
+      await Promise.all(targets.map(async (id) => {
+        const promise = this.activePromises.get(id);
+        if (promise) await promise;
+      }));
+      if (!targets.some((id) => this.activeTasks.has(id))) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
   }
 }

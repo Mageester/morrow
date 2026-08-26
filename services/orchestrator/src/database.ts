@@ -1926,6 +1926,13 @@ export const migrations:Migration[]=[
     -- "keep this alive" can be honoured without becoming invisible again.
     ALTER TABLE processes ADD COLUMN keep_alive INTEGER NOT NULL DEFAULT 0;
   `}
+  ,{id:68,name:"processes_termination_metadata",sql:`
+    -- A process status alone cannot distinguish a normal nonzero exit from a
+    -- timeout, a signal, or an explicit cancellation. Keep the exit code and
+    -- add the lifecycle cause so clients can report what actually happened.
+    ALTER TABLE processes ADD COLUMN termination_reason TEXT;
+    ALTER TABLE processes ADD COLUMN signal TEXT;
+  `}
 ];
 /**
  * Durability mode for committed writes.

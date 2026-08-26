@@ -34,6 +34,34 @@ function seedTask(db: ReturnType<typeof openDatabase>, id: string, status: strin
 }
 
 describe("cancellation lifecycle — subagent propagation (reproduction)", () => {
+  it("cancelAndWait waits for the parent and every active descendant to settle", async () => {
+    const db = openDatabase(":memory:");
+    seedProject(db);
+    seedTask(db, "parent", "running");
+    seedTask(db, "child", "running", "parent");
+    const tasks = taskRepository(db);
+    const delayedAbort: TaskExecutor = ({ abortSignal }) =>
+      new Promise<void>((resolve) => {
+        const finish = () => setTimeout(resolve, 40);
+        if (abortSignal?.aborted) return finish();
+        abortSignal?.addEventListener("abort", finish, { once: true });
+      });
+    const runner = new TaskRunner(db, delayedAbort);
+    runner.run("parent");
+    runner.run("child");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const startedAt = Date.now();
+    await runner.cancelAndWait("parent", "mission_terminal");
+
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(30);
+    expect(runner.isActive("parent")).toBe(false);
+    expect(runner.isActive("child")).toBe(false);
+    expect(tasks.getTaskById("parent")?.status).toBe("cancelled");
+    expect(tasks.getTaskById("child")?.status).toBe("cancelled");
+    db.close();
+  });
+
   it("cancelling a running parent cancels its running child", () => {
     const db = openDatabase(":memory:");
     seedProject(db);

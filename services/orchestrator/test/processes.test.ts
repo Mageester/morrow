@@ -75,6 +75,8 @@ describe("ProcessSupervisor (real child processes)", () => {
     });
     expect(done.status).toBe("exited");
     expect(done.exitCode).toBe(0);
+    expect(done.terminationReason).toBe("completed");
+    expect(done.signal).toBeNull();
     expect(done.endedAt).toBeTruthy();
 
     const out = supervisor.readOutput(record.id, "stdout");
@@ -169,6 +171,7 @@ describe("ProcessSupervisor (real child processes)", () => {
     });
     expect(done.status).toBe("failed");
     expect(done.detail).toMatch(/timeout/);
+    expect(done.terminationReason).toBe("timeout");
   });
 
   it("bounds output capture and flags truncation", async () => {

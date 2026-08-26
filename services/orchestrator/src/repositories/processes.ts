@@ -11,6 +11,7 @@ import { redactJsonText } from "../provider/credentials.js";
  * process is alive.
  */
 export type ProcessStatus = "running" | "exited" | "failed" | "cancelled" | "lost";
+export type ProcessTerminationReason = "completed" | "timeout" | "cancelled" | "signal" | "error" | "lost";
 
 export interface ProcessRecord {
   id: string;
@@ -24,6 +25,8 @@ export interface ProcessRecord {
   pid: number | null;
   status: ProcessStatus;
   exitCode: number | null;
+  terminationReason: ProcessTerminationReason | null;
+  signal: string | null;
   runId: string;
   detail: string | null;
   startedAt: string;
@@ -53,6 +56,8 @@ function mapRow(row: any): ProcessRecord {
     pid: row.pid,
     status: row.status,
     exitCode: row.exit_code,
+    terminationReason: row.termination_reason ?? null,
+    signal: row.signal ?? null,
     runId: row.run_id,
     detail: row.detail,
     keepAlive: row.keep_alive === 1,
@@ -115,10 +120,18 @@ export function processesRepository(db: Database.Database) {
     },
 
     /** Transition a running row to a terminal state. Returns false when it was not running. */
-    finish(id: string, status: Exclude<ProcessStatus, "running">, exitCode: number | null, detail: string | null, now = new Date().toISOString()): boolean {
+    finish(
+      id: string,
+      status: Exclude<ProcessStatus, "running">,
+      exitCode: number | null,
+      detail: string | null,
+      now = new Date().toISOString(),
+      terminationReason: ProcessTerminationReason | null = null,
+      signal: string | null = null,
+    ): boolean {
       const res = db
-        .prepare("UPDATE processes SET status = ?, exit_code = ?, detail = ?, ended_at = ? WHERE id = ? AND status = 'running'")
-        .run(status, exitCode, detail, now, id);
+        .prepare("UPDATE processes SET status = ?, exit_code = ?, detail = ?, ended_at = ?, termination_reason = ?, signal = ? WHERE id = ? AND status = 'running'")
+        .run(status, exitCode, detail, now, terminationReason, signal, id);
       return res.changes > 0;
     },
   };

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { filterEnv, resolveExecutable, SHELL_META_CHARS } from "../tools/command-executor.js";
-import type { ProcessRecord, ProcessStatus } from "../repositories/processes.js";
+import type { ProcessRecord, ProcessStatus, ProcessTerminationReason } from "../repositories/processes.js";
 import { detectEndpoints, type ProcessEndpoint } from "./endpoints.js";
 
 /**
@@ -59,6 +59,7 @@ interface LiveChild {
   timeout: NodeJS.Timeout | null;
   truncated: boolean;
   killRequested?: boolean;
+  timedOut?: boolean;
 }
 
 const DEFAULT_MAX_LOG_BYTES = 1024 * 1024; // 1 MB per stream
@@ -97,12 +98,21 @@ interface ProcessesRepo {
   get(id: string): ProcessRecord | undefined;
   listByProject(projectId: string, status?: ProcessStatus): ProcessRecord[];
   listRunning(): ProcessRecord[];
-  finish(id: string, status: Exclude<ProcessStatus, "running">, exitCode: number | null, detail: string | null): boolean;
+  finish(
+    id: string,
+    status: Exclude<ProcessStatus, "running">,
+    exitCode: number | null,
+    detail: string | null,
+    now?: string,
+    terminationReason?: ProcessTerminationReason | null,
+    signal?: string | null,
+  ): boolean;
 }
 
 export class ProcessSupervisor {
   readonly runId: string;
   private readonly live = new Map<string, LiveChild>();
+  private readonly waiters = new Map<string, Set<() => void>>();
   private readonly onExitCallbacks: Array<(record: ProcessRecord) => void> = [];
 
   constructor(
@@ -197,27 +207,28 @@ export class ProcessSupervisor {
       try { writeSync(stderrFd, slice); } catch { /* ignore */ }
     });
 
-    let timedOut = false;
     if (options.timeoutMs && options.timeoutMs > 0) {
       entry.timeout = setTimeout(() => {
-        timedOut = true;
+        entry.timedOut = true;
         this.killTree(entry);
       }, options.timeoutMs);
       entry.timeout.unref?.();
     }
 
     child.on("error", (err) => {
-      this.settle(id, entry, "failed", null, `spawn error: ${err.message}`, [stdoutFd, stderrFd]);
+      this.settle(id, entry, "failed", null, `spawn error: ${err.message}`, "error", null, [stdoutFd, stderrFd]);
     });
     child.on("exit", (code, signal) => {
-      if (timedOut) {
-        this.settle(id, entry, "failed", code, `timeout after ${options.timeoutMs} ms`, [stdoutFd, stderrFd]);
+      if (entry.timedOut) {
+        this.settle(id, entry, "failed", code, `timeout after ${options.timeoutMs} ms`, "timeout", signal, [stdoutFd, stderrFd]);
       } else if (entry.killRequested) {
-        this.settle(id, entry, "cancelled", code, `terminated by user${signal ? ` (${signal})` : ""}`, [stdoutFd, stderrFd]);
+        this.settle(id, entry, "cancelled", code, `terminated by user${signal ? ` (${signal})` : ""}`, "cancelled", signal, [stdoutFd, stderrFd]);
       } else if (code === 0) {
-        this.settle(id, entry, "exited", 0, entry.truncated ? "output truncated at capture limit" : null, [stdoutFd, stderrFd]);
+        this.settle(id, entry, "exited", 0, entry.truncated ? "output truncated at capture limit" : null, "completed", null, [stdoutFd, stderrFd]);
+      } else if (signal) {
+        this.settle(id, entry, "failed", code, `signal ${signal}`, "signal", signal, [stdoutFd, stderrFd]);
       } else {
-        this.settle(id, entry, "failed", code, signal ? `signal ${signal}` : entry.truncated ? "output truncated at capture limit" : null, [stdoutFd, stderrFd]);
+        this.settle(id, entry, "failed", code, entry.truncated ? "output truncated at capture limit" : null, "completed", null, [stdoutFd, stderrFd]);
       }
     });
 
@@ -279,15 +290,16 @@ export class ProcessSupervisor {
     });
     if (options.timeoutMs && options.timeoutMs > 0) {
       entry.timeout = setTimeout(() => {
-        entry.killRequested = true;
+        entry.timedOut = true;
         try { ptyProc.kill(); } catch { /* already gone */ }
         // onExit below persists the terminal state.
       }, options.timeoutMs);
       entry.timeout.unref?.();
     }
     ptyProc.onExit(({ exitCode }: { exitCode: number }) => {
-      const status = entry.killRequested ? "cancelled" : exitCode === 0 ? "exited" : "failed";
-      this.settle(id, entry, status, exitCode, entry.truncated ? "output truncated at capture limit" : null, [fd]);
+      const status = entry.timedOut || entry.killRequested ? (entry.timedOut ? "failed" : "cancelled") : exitCode === 0 ? "exited" : "failed";
+      const reason: ProcessTerminationReason = entry.timedOut ? "timeout" : entry.killRequested ? "cancelled" : "completed";
+      this.settle(id, entry, status, exitCode, entry.timedOut ? `timeout after ${options.timeoutMs} ms` : entry.truncated ? "output truncated at capture limit" : null, reason, null, [fd]);
     });
     return record;
   }
@@ -298,16 +310,39 @@ export class ProcessSupervisor {
     status: Exclude<ProcessStatus, "running">,
     exitCode: number | null,
     detail: string | null,
+    terminationReason: ProcessTerminationReason,
+    signal: string | null,
     fds: number[]
   ): void {
     if (entry.timeout) clearTimeout(entry.timeout);
     for (const fd of fds) { try { closeSync(fd); } catch { /* already closed */ } }
-    const changed = this.repo.finish(id, status, exitCode, detail);
+    const changed = this.repo.finish(id, status, exitCode, detail, undefined, terminationReason, signal);
     this.live.delete(id);
+    const waiters = this.waiters.get(id);
+    this.waiters.delete(id);
+    if (waiters) for (const resolve of waiters) resolve();
     if (changed) {
       const record = this.repo.get(id);
       if (record) for (const cb of this.onExitCallbacks) { try { cb(record); } catch { /* listener errors never break the supervisor */ } }
     }
+  }
+
+  /** Resolve when an owned process has reached a durable terminal state. */
+  async waitFor(id: string): Promise<void> {
+    const record = this.repo.get(id);
+    if (!record || record.status !== "running" || !this.live.has(id)) return;
+    await new Promise<void>((resolve) => {
+      const waiters = this.waiters.get(id) ?? new Set<() => void>();
+      waiters.add(resolve);
+      this.waiters.set(id, waiters);
+      // Close the race between the state check above and registering the
+      // waiter if the child exited synchronously on another callback.
+      const current = this.repo.get(id);
+      if (!this.live.has(id) || current?.status !== "running") {
+        this.waiters.get(id)?.delete(resolve);
+        resolve();
+      }
+    });
   }
 
   /**
@@ -434,7 +469,7 @@ export class ProcessSupervisor {
       const detail = pidAlive
         ? `lost on orchestrator restart; pid ${record.pid} still responds but is no longer controlled — terminate it manually if needed`
         : "lost on orchestrator restart; pid no longer exists";
-      if (this.repo.finish(record.id, "lost", null, detail)) lost++;
+      if (this.repo.finish(record.id, "lost", null, detail, undefined, "lost", null)) lost++;
     }
     return { lost };
   }
@@ -443,7 +478,7 @@ export class ProcessSupervisor {
   stopAll(): void {
     for (const [id, entry] of this.live) {
       this.killTree(entry);
-      this.repo.finish(id, "cancelled", null, "orchestrator shutdown");
+      this.repo.finish(id, "cancelled", null, "orchestrator shutdown", undefined, "cancelled", null);
     }
     this.live.clear();
   }
