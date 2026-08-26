@@ -1,4 +1,6 @@
 import {
+  OAuthFindingSchema,
+  OAuthProviderStatusSchema,
   ProviderIdSchema,
   ProviderStatusSchema,
   ProviderTestResultSchema,
@@ -10,6 +12,7 @@ import { api } from "./client.js";
 
 export const providerKeys = {
   all: ["providers"] as const,
+  oauth: ["providers", "oauth"] as const,
 };
 
 export const providerQueries = {
@@ -23,7 +26,23 @@ export const providerQueries = {
       staleTime: 15_000,
     });
   },
+  /** Honest, static findings on which providers support subscription OAuth
+   * and the ToS/security caveat to show before someone signs in — see
+   * services/orchestrator/src/provider/oauth.ts. Rarely changes. */
+  oauthFindings() {
+    return queryOptions({
+      queryKey: providerKeys.oauth,
+      queryFn: () => api.get("/api/providers/oauth", OAuthFindingSchema.array()),
+      staleTime: 5 * 60_000,
+    });
+  },
 };
+
+const OAuthStartResponseSchema = z
+  .object({ authorizeUrl: z.string(), redirectUri: z.string(), manual: z.literal(true) })
+  .passthrough();
+
+const OAuthSignOutResponseSchema = z.object({ ok: z.boolean(), provider: ProviderIdSchema }).passthrough();
 
 const ConfigureProviderResponseSchema = z
   .object({
@@ -79,6 +98,19 @@ export function providerApi(id: ProviderId) {
     },
     disconnect() {
       return api.delete(`/api/providers/${id}/credentials`, DisconnectProviderResponseSchema);
+    },
+    /** Begin subscription sign-in: returns the authorization URL to open in a
+     * new tab. The PKCE verifier stays server-side until exchange. */
+    startOAuth() {
+      return api.post(`/api/providers/${id}/oauth/start`, {}, OAuthStartResponseSchema);
+    },
+    /** Complete sign-in with the code (or full redirect URL) the provider
+     * showed after the user signed in. */
+    exchangeOAuth(code: string) {
+      return api.post(`/api/providers/${id}/oauth/exchange`, { code }, OAuthProviderStatusSchema);
+    },
+    oauthSignOut() {
+      return api.post(`/api/providers/${id}/oauth/signout`, {}, OAuthSignOutResponseSchema);
     },
   };
 }

@@ -39,6 +39,24 @@ export async function isRunning(ctx: Context): Promise<boolean> {
  * server stops (so the calling process stays alive while listening).
  */
 export async function serveForeground(ctx: Context): Promise<number> {
+  // The agent's find_skill/load_skill tools (execution/agent.ts's
+  // agentSkillRoots) only ever scan the workspace, MORROW_HOME, and
+  // MORROW_SKILLS_DIR — nothing resolves the bundled skills directory on its
+  // own. In a packaged install this process (`morrow serve`, spawned by
+  // serveDetached or run directly) is the actual server: it calls into
+  // @morrow/orchestrator in-process rather than ever executing that
+  // package's own src/index.ts, so index.ts's dev-only MORROW_SKILLS_DIR
+  // fallback never runs either. Nothing was ever setting this for a packaged
+  // install, so every agent turn saw zero bundled skills regardless of what
+  // was enabled. Same depth-relative trick `commands/skills.ts`'s
+  // `localSkillsRoot()` already uses: four levels up from this file's own
+  // directory lands on the skills/ that sits beside it in both layouts —
+  // repo-root/skills in a dev checkout, app/skills in a packaged install.
+  if (!process.env.MORROW_SKILLS_DIR) {
+    const packagedSkills = resolve(here, "../../../../skills");
+    if (existsSync(packagedSkills)) process.env.MORROW_SKILLS_DIR = packagedSkills;
+  }
+
   // Every symbol from the orchestrator is imported here rather than at the top
   // of the file, and `migrateLegacyDatabase` belongs in this list for the same
   // reason as the rest: a static import pulls the entire agent runtime — the
