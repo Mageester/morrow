@@ -578,7 +578,7 @@ export function App({
 
       {streaming && overlay === null && !pendingApproval ? (
         <Box marginTop={1}>
-          <ActivityLine quiet={quiet} state={state} unicode={unicode} width={width} />
+          <ActivityLine quiet={quiet} responding={Boolean(live)} state={state} unicode={unicode} width={width} />
         </Box>
       ) : null}
 

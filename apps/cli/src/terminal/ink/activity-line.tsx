@@ -47,9 +47,16 @@ function runningLabel(tool: ToolCard): string {
 
 /**
  * What to say Morrow is doing, in order of how specific the answer is: a tool
- * actually in flight, else the last thing it recorded doing, else thinking.
+ * actually in flight, else the last thing it recorded doing, else "Thinking"
+ * (nothing visible yet) or "Responding" (prose is on screen right now).
+ *
+ * Before this, the fallback was always "Thinking" — including while real
+ * assistant text was actively streaming onto the screen below this very
+ * line. That reads as a contradiction a reader can see for themselves: the
+ * words are right there, so the line claiming Morrow is still thinking looks
+ * stuck or wrong, even though nothing has actually failed.
  */
-export function activityLabel(state: TerminalState): string {
+export function activityLabel(state: TerminalState, responding = false): string {
   for (let index = state.tools.length - 1; index >= 0; index -= 1) {
     const tool = state.tools[index];
     if (tool?.status === "running") return runningLabel(tool);
@@ -59,7 +66,17 @@ export function activityLabel(state: TerminalState): string {
     const label = PRESENT_ACTIVITY[latest.kind] ?? "Working";
     return latest.detail ? `${label} ${latest.detail}` : label;
   }
-  return "Thinking";
+  return responding ? "Responding" : "Thinking";
+}
+
+/** Output tokens per second, once there is enough elapsed time for a rate to
+ *  mean anything — under a second, a token count divided by a fraction of a
+ *  second swings wildly and reads as noise, not a measurement. */
+export function tokenRateLabel(tokens: number | undefined, elapsedMs: number): string | null {
+  if (tokens === undefined || !Number.isFinite(tokens) || tokens <= 0) return null;
+  if (elapsedMs < 1000) return null;
+  const perSecond = tokens / (elapsedMs / 1000);
+  return `${perSecond >= 10 ? Math.round(perSecond) : perSecond.toFixed(1)} tok/s`;
 }
 
 /** Wall time, at the granularity a person reads it. */
@@ -95,6 +112,10 @@ export function ActivityLine({
   /** The runtime has reported that it cannot see progress. Said here, softly,
    *  rather than as a separate amber notice contradicting this very line. */
   quiet = false,
+  /** True once real assistant prose is visible on screen for this turn — see
+   *  app.tsx's `live`. Distinguishes "Responding" from "Thinking" so the line
+   *  never claims Morrow is still thinking while its words are on screen. */
+  responding = false,
   /** Injected by tests so a frame can be asserted without waiting on a clock. */
   now = Date.now,
 }: {
@@ -102,6 +123,7 @@ export function ActivityLine({
   unicode: boolean;
   width: number;
   quiet?: boolean;
+  responding?: boolean;
   now?: () => number;
 }) {
   const active = state.status === "streaming";
@@ -135,6 +157,7 @@ export function ActivityLine({
   const chips = [
     elapsedLabel(elapsed),
     tokenLabel(state.activeUsage?.outputTokens),
+    tokenRateLabel(state.activeUsage?.outputTokens, elapsed),
     quiet ? "no new output yet" : null,
   ].filter((chip): chip is string => chip !== null);
   const meta = chips.length > 0 ? ` ${dot} ${chips.join(` ${dot} `)}` : "";
@@ -143,7 +166,7 @@ export function ActivityLine({
   // "esc to interrupt" off the line — that hint is the one piece of the line a
   // stuck user is looking for.
   const room = Math.max(8, width - hint.length - meta.length - 4);
-  const label = truncate(activityLabel(state), room);
+  const label = truncate(activityLabel(state, responding), room);
 
   return (
     <Box>
