@@ -380,7 +380,7 @@ export class ProcessSupervisor {
       this.killTree(entry);
       return { ok: true };
     }
-    // Graceful attempt, then escalate if still alive.
+    // Graceful attempt, then escalate.
     if (entry.ptyProc) {
       try { entry.ptyProc.kill(); } catch { /* already gone */ }
     } else if (entry.child) {
@@ -389,14 +389,39 @@ export class ProcessSupervisor {
         this.killTree(entry);
         return { ok: true };
       }
-      try { entry.child.kill("SIGTERM"); } catch { /* already gone */ }
+      // Signal the whole process group, not just the leader. A child spawned
+      // detached is its own group leader, so its descendants share the group
+      // and would otherwise never be asked to stop at all.
+      this.signalGroup(entry.child, "SIGTERM");
     }
     const graceMs = options.graceMs ?? 3000;
-    const escalate = setTimeout(() => {
-      if (this.live.has(id)) this.killTree(entry);
-    }, graceMs);
+    // The escalation is NOT gated on the entry still being live. A leader that
+    // exits promptly on SIGTERM removes itself from `this.live`, and gating
+    // here meant the group sweep was skipped precisely when the leader behaved
+    // well — leaving its descendants running while the kill reported clean.
+    const escalate = setTimeout(() => { this.killTree(entry); }, graceMs);
     escalate.unref?.();
     return { ok: true };
+  }
+
+  /**
+   * Signal a child's process group, falling back to the child alone when the
+   * group is gone or was never established. Returns whether anything was
+   * signalled. POSIX only — callers handle Windows separately.
+   */
+  private signalGroup(child: ChildProcess, signal: NodeJS.Signals): boolean {
+    if (!child.pid) return false;
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch {
+      try {
+        child.kill(signal);
+        return true;
+      } catch {
+        return false;
+      }
+    }
   }
 
   private killTree(entry: LiveChild): void {
@@ -411,7 +436,10 @@ export class ProcessSupervisor {
       const r = spawnSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { shell: false, windowsHide: true });
       if (r.status !== 0) { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
     } else {
-      try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
+      // Probe the group first: if no member remains there is nothing to sweep,
+      // and skipping the signal avoids acting on a recycled group id.
+      try { process.kill(-child.pid, 0); } catch { return; }
+      this.signalGroup(child, "SIGKILL");
     }
   }
 
