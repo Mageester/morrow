@@ -1463,7 +1463,7 @@ export class MissionService {
       review: current.finalReview,
       changedFiles: this.changedFilesFor(current),
       humanInterventions: 0,
-      tasksCompleted: 0,
+      tasksCompleted: this.safeCompletedTaskCount(missionId),
       elapsedMs: current.startedAt ? Date.parse(this.now()) - Date.parse(current.startedAt) : null,
       spentUsd: current.budget.spentUsd || null,
       finalStatus: terminalStatus,
