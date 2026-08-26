@@ -69,6 +69,34 @@ A narrow compatibility layer for importing supported Hermes configuration, skill
 - A typed event stream handles live progress.
 - Every meaningful task transition is persisted before it is presented as complete.
 
+## Task and process lifetime
+
+The CLI is an observer of durable mission state, not the owner of the mission.
+Attached mission and build commands therefore have an explicit lifetime
+contract:
+
+- `morrow mission` and `morrow build` observe by default. `--detach` is the
+  explicit choice to leave a durable mission running after the CLI exits.
+- An attached timeout, `SIGINT`, or `SIGTERM` calls the mission cancellation API.
+  The API persists the cancellation, stops the controller, cancels the complete
+  descendant task tree, and waits for active workers to settle before returning
+  a terminal cancelled result. A CLI timeout never means "stop observing and
+  leave the work running."
+- Provider requests receive the task cancellation signal. Structured foreground
+  commands have bounded timeouts and report whether they completed, timed out,
+  were cancelled, or ended by signal, together with stdout, stderr, and exit
+  status.
+- Background commands are owned by the task that started them. They are
+  reaped before a task runner settles unless a successfully completing task has
+  explicitly requested `keepAlive`; cancellation and failure always reap them.
+  Process-tree termination is used so descendants do not retain ports or file
+  locks.
+
+This boundary is implemented by `MissionControllerRunner`, `TaskRunner`, the
+agent execution cleanup funnel, and `ProcessSupervisor`. Durable rows remain
+the audit source of truth, while an in-memory supervisor only claims liveness
+for processes owned by the current orchestrator instance.
+
 ## Trust boundaries
 
 - The browser client is not trusted with provider secrets.

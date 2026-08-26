@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-25
 
-**Status:** Approved in chat; implementation pending written-plan review.
+**Status:** Implemented on `fix/provider-gauntlet`; retained as the design record.
 
 **Goal:** Make Morrow's durable mission, worker, command, provider, model, and CLI surfaces agree about lifecycle, progress, evidence, and permissions under the Provider Gauntlet scenarios.
 

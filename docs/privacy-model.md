@@ -79,6 +79,13 @@ external network access outright. See
 
 - No silent telemetry
 - No secret values in prompts or logs
+- Secret-shaped workspace paths remain protected: `create_file`, `append_file`,
+  patch application, and direct safe reads reject real `.env`, credential-store,
+  and private-key conventions. Security tests that need such a path must have
+  a harness or user provision a synthetic fixture in an isolated workspace
+  before the worker starts. The worker may run a test against that fixture, but
+  it must not create or modify the fixture through Morrow file tools, and real
+  credentials must never be placed in it.
 - Provider credential candidates remain server-only and are authenticated before
   persistence or promotion; a failed OpenRouter replacement cannot overwrite the
   last known-good credential.

@@ -20,6 +20,29 @@ The shell needs an interactive terminal. When stdout is redirected, `TERM=dumb`
 is set, `--json` is passed, or `MORROW_TUI=0` is set, Morrow falls back to a
 line-based surface that offers **the same commands**, rendered as plain text.
 
+### Attached durable missions
+
+Mission and build commands attach to durable work unless told otherwise:
+
+```bash
+morrow mission "<objective>" --timeout 900
+morrow build "<what you want built>" --timeout 900
+morrow mission "<objective>" --detach
+```
+
+The timeout is an observation deadline. When it expires, or when the attached
+terminal receives `Ctrl+C`/`SIGTERM`, Morrow cancels the mission and waits for
+the controller, descendant workers, provider request, and task-owned processes
+to settle before returning. The command exits with the cancelled status; it
+does not report a timeout while leaving a mission running. `--detach` is the
+explicit opt-in for durable continuation, after which `morrow mission resume`
+can reconnect later.
+
+Help flags are handled before configuration and onboarding, so
+`morrow providers --help`, `morrow build --help`, and `morrow run --help` are
+safe in CI, pipes, and fresh homes. They do not require a TTY or a configured
+provider.
+
 ## The screen
 
 Top to bottom:

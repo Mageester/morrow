@@ -174,6 +174,22 @@ successful replacement, configure the prior key again (it will be authenticated
 before promotion), or use `morrow providers remove openrouter` to remove the
 stored OpenRouter route entirely.
 
+### Account discovery is one shared source of truth
+
+Configured credentials and account model availability are different facts. A
+successful provider refresh stores one normalized discovery snapshot in the
+local `provider_model_discovery` repository, keyed by provider and auth mode.
+The provider status projection, `GET /api/providers`, `GET /api/models`,
+`GET /api/models/budgets`, and the CLI model picker all read that same snapshot.
+The snapshot is loaded on restart, so a cached TokenRouter or NVIDIA model does
+not vanish merely because the service was restarted. A model that is only known
+from the account remains selectable with `custom` lifecycle metadata and
+provider-reported availability; it is not silently replaced by a bundled model.
+
+Refresh failures preserve the last successful model list for diagnosis while
+marking availability honestly. No discovery request is made during local-only
+capability resolution or merely to render a model list.
+
 ## Credential reference
 
 | Provider | API key env | Base URL env (optional) | Default endpoint |
