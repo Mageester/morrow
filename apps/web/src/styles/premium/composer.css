@@ -614,6 +614,15 @@
 .morrow-chat-composer .morrow-chat-composer__stop {
   display: inline-flex;
   height: var(--morrow-chip-height);
+  /* app.css floors __stop and __send at 44px square — a touch target from the
+     pre-chip composer. `min-height` beats `height`, so Stop silently ignored
+     the chip height and rendered 44px next to a 28px Queue, misaligning the
+     pair by 8px. __queue is newer and was never in that rule, which is why
+     only Stop was affected. Reset here so both siblings are one chip tall.
+     A coarse-pointer target belongs on the whole chip row under a pointer
+     query, not on this one button. */
+  min-width: 0;
+  min-height: 0;
   flex-direction: row;
   align-items: center;
   padding: 0 12px;
@@ -694,8 +703,12 @@
     background: var(--morrow-product-field);
   }
 
-  .morrow-chat-composer__send,
-  .morrow-chat-composer__stop {
+  /* Send only. Stop must stay a flex child of __actions, which is already
+     absolutely positioned in this lane and already lays its children out in a
+     row with a gap. Pinning Stop here too took it out of that flow and dropped
+     it on top of Queue at a higher z-index, hiding the queue action entirely
+     and offsetting the two by the duplicated `top`. */
+  .morrow-chat-composer__send {
     position: absolute;
     top: 8px;
     right: 0;

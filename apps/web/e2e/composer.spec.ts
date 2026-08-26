@@ -330,3 +330,45 @@ test("mobile keeps provider and context status touch-reachable", async ({ isMobi
   await trigger.tap();
   await expect(page.getByRole("dialog", { name: /Capability and context status/ })).toBeVisible();
 });
+
+// Stop was absolutely positioned by a media-query rule written for the Send
+// button, which pulled it out of the __actions flex row and dropped it on top
+// of Queue at a higher z-index — the queue action was invisible and
+// unclickable. A separate 44px touch-target floor in app.css applied to Stop
+// but not to Queue, leaving the pair 8px out of line. Both are layout facts no
+// unit test can see, so they are asserted here on real geometry.
+test("stop and queue sit side by side without overlapping", async ({ page }) => {
+  await page.goto(HARNESS);
+  await page.getByRole("button", { name: "Simulate active task" }).click();
+  const input = page.getByRole("textbox", { name: /Message Morrow|queue/i });
+  await input.fill("a follow-up so the queue action renders");
+
+  const stop = page.getByRole("button", { name: "Stop generation" });
+  const queue = page.getByRole("button", { name: "Queue message" });
+  await expect(stop).toBeVisible();
+  await expect(queue).toBeVisible();
+
+  const stopBox = await stop.boundingBox();
+  const queueBox = await queue.boundingBox();
+  expect(stopBox).not.toBeNull();
+  expect(queueBox).not.toBeNull();
+  if (!stopBox || !queueBox) return;
+
+  // No horizontal intersection.
+  const overlap = Math.min(stopBox.x + stopBox.width, queueBox.x + queueBox.width)
+    - Math.max(stopBox.x, queueBox.x);
+  expect(overlap).toBeLessThanOrEqual(0);
+
+  // One row, one chip height.
+  expect(Math.abs(stopBox.y - queueBox.y)).toBeLessThanOrEqual(1);
+  expect(Math.abs(stopBox.height - queueBox.height)).toBeLessThanOrEqual(1);
+
+  // Queue is genuinely hittable, not covered by Stop.
+  await expect(queue).toBeEnabled();
+  const covering = await queue.evaluate((node) => {
+    const r = node.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    return hit === node || node.contains(hit) ? null : (hit as HTMLElement | null)?.className ?? "unknown";
+  });
+  expect(covering).toBeNull();
+});

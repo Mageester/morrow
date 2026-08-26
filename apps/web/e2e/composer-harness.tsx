@@ -142,6 +142,9 @@ function ComposerHarness() {
           </select>
         </label>
         <button disabled={!pending} onClick={finishPending} type="button">Resolve pending</button>
+        {/* Forces the active-task branch of the composer, which is the only
+            state that renders Stop and Queue together. */}
+        <button onClick={() => { setActiveTaskId("harness-task"); }} type="button">Simulate active task</button>
       </div>
       <p data-testid="scope">{projectId}:{conversationId}</p>
       <pre
@@ -160,6 +163,7 @@ function ComposerHarness() {
           { id: "direct", label: "Direct model", providerId: "openrouter", model: "vendor/model-a" },
         ]}
         onProjectChange={setProjectId}
+        onQueueMessage={async () => {}}
         onStop={async () => { setActiveTaskId(undefined); }}
         onReasoningConfigChange={() => {}}
         onShowReasoningChange={() => {}}
