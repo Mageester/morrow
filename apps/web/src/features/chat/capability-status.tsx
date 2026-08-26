@@ -223,28 +223,35 @@ export function CapabilityStatus({ taskId, route, reasoningConfig, disabled = fa
             <h3>Reasoning</h3>
             <dl className="morrow-capability-status__list">
               <StatRow label="Configured" value={activeReasoningLabel} />
-              {appliedReasoningLabel ? <StatRow label="Sent last turn" value={appliedReasoningLabel} /> : null}
-              {reasoningSupported !== null ? (
-                <StatRow label="Supported" value={reasoningSupported ? "Yes" : `No — ${reasoningApplication?.unsupportedReason ?? "fell back to route default"}`} />
-              ) : null}
-              {wireLines.length > 0 ? (
-                <div className="morrow-capability-status__row">
-                  <dt>Applied on the wire</dt>
-                  <dd>
-                    <code className="morrow-capability-status__wire">{wireLines.join("\n")}</code>
-                  </dd>
-                </div>
-              ) : reasoningApplication ? (
-                <StatRow label="Applied on the wire" value="No explicit reasoning parameter sent" />
-              ) : null}
-              <StatRow
-                label="Capability source"
-                value={humanize(reasoningApplication?.source ?? reasoningCapability?.source ?? null)}
-              />
               {!reasoningCapability && !reasoningApplication ? (
                 <p className="morrow-capability-status__note">Select a model to see its reasoning controls.</p>
               ) : null}
             </dl>
+            {appliedReasoningLabel || reasoningSupported !== null || wireLines.length > 0 || reasoningApplication ? (
+              <details className="morrow-capability-status__details">
+                <summary>More detail</summary>
+                <dl className="morrow-capability-status__list">
+                  {appliedReasoningLabel ? <StatRow label="Sent last turn" value={appliedReasoningLabel} /> : null}
+                  {reasoningSupported !== null ? (
+                    <StatRow label="Supported" value={reasoningSupported ? "Yes" : `No — ${reasoningApplication?.unsupportedReason ?? "fell back to route default"}`} />
+                  ) : null}
+                  {wireLines.length > 0 ? (
+                    <div className="morrow-capability-status__row">
+                      <dt>Applied on the wire</dt>
+                      <dd>
+                        <code className="morrow-capability-status__wire">{wireLines.join("\n")}</code>
+                      </dd>
+                    </div>
+                  ) : reasoningApplication ? (
+                    <StatRow label="Applied on the wire" value="No explicit reasoning parameter sent" />
+                  ) : null}
+                  <StatRow
+                    label="Capability source"
+                    value={humanize(reasoningApplication?.source ?? reasoningCapability?.source ?? null)}
+                  />
+                </dl>
+              </details>
+            ) : null}
           </section>
 
           <section aria-label="Context">
@@ -267,54 +274,59 @@ export function CapabilityStatus({ taskId, route, reasoningConfig, disabled = fa
                         : "No request yet"
                 }
               />
-              <StatRow
-                label="Usable input budget"
-                value={context?.maxInputTokens != null ? formatTokens(context.maxInputTokens) : null}
-              />
-              <StatRow
-                label="Native model window"
-                value={context?.nativeContextWindowTokens != null ? formatTokens(context.nativeContextWindowTokens) : null}
-                source={context?.nativeContextWindowSource}
-              />
-              <StatRow
-                label="Provider / route cap"
-                value={
-                  capabilityLoading
-                    ? "Loading…"
-                    : context?.routeLimitTokens != null
-                      ? formatTokens(context.routeLimitTokens)
-                      // "Not separately capped" is itself a claim the backend
-                      // must have earned: routeLimitSource says where that
-                      // absence was established (provider metadata, the
-                      // endpoint's own config, …). A source of "unknown" — or
-                      // no context record at all — means Morrow never actually
-                      // checked, and the honest answer is "Unknown", not a
-                      // confident negative.
-                      : routeCapKnown
-                        ? "Not separately capped"
-                        : "Unknown"
-                }
-                source={context?.routeLimitTokens != null ? context?.routeLimitSource : routeCapKnown ? context?.routeLimitSource : null}
-              />
-              <StatRow
-                label="Effective context window"
-                value={context?.effectiveContextWindowTokens != null ? formatTokens(context.effectiveContextWindowTokens) : (capacity != null ? formatTokens(capacity) : null)}
-                source={context?.contextWindowSource}
-              />
-              <StatRow
-                label="Reserved (output + system/tool)"
-                value={context?.totalReserveTokens != null
-                  ? `${formatTokens(context.totalReserveTokens)}${context?.harnessReserveTokens != null ? ` (${formatTokens(context.harnessReserveTokens)} system/tool)` : ""}`
-                  : null}
-              />
-              <StatRow
-                label="Compaction threshold"
-                value={context?.compactionThresholdTokens != null
-                  ? `${formatTokens(context.compactionThresholdTokens)}${context?.compactionThresholdRatio != null ? ` (${Math.round(context.compactionThresholdRatio * 100)}%)` : ""}`
-                  : null}
-              />
-              <StatRow label="Token count" value={context?.countingMethod ? humanize(context.countingMethod) : null} />
             </dl>
+            <details className="morrow-capability-status__details">
+              <summary>More detail</summary>
+              <dl className="morrow-capability-status__list">
+                <StatRow
+                  label="Usable input budget"
+                  value={context?.maxInputTokens != null ? formatTokens(context.maxInputTokens) : null}
+                />
+                <StatRow
+                  label="Native model window"
+                  value={context?.nativeContextWindowTokens != null ? formatTokens(context.nativeContextWindowTokens) : null}
+                  source={context?.nativeContextWindowSource}
+                />
+                <StatRow
+                  label="Provider / route cap"
+                  value={
+                    capabilityLoading
+                      ? "Loading…"
+                      : context?.routeLimitTokens != null
+                        ? formatTokens(context.routeLimitTokens)
+                        // "Not separately capped" is itself a claim the backend
+                        // must have earned: routeLimitSource says where that
+                        // absence was established (provider metadata, the
+                        // endpoint's own config, …). A source of "unknown" — or
+                        // no context record at all — means Morrow never actually
+                        // checked, and the honest answer is "Unknown", not a
+                        // confident negative.
+                        : routeCapKnown
+                          ? "Not separately capped"
+                          : "Unknown"
+                  }
+                  source={context?.routeLimitTokens != null ? context?.routeLimitSource : routeCapKnown ? context?.routeLimitSource : null}
+                />
+                <StatRow
+                  label="Effective context window"
+                  value={context?.effectiveContextWindowTokens != null ? formatTokens(context.effectiveContextWindowTokens) : (capacity != null ? formatTokens(capacity) : null)}
+                  source={context?.contextWindowSource}
+                />
+                <StatRow
+                  label="Reserved (output + system/tool)"
+                  value={context?.totalReserveTokens != null
+                    ? `${formatTokens(context.totalReserveTokens)}${context?.harnessReserveTokens != null ? ` (${formatTokens(context.harnessReserveTokens)} system/tool)` : ""}`
+                    : null}
+                />
+                <StatRow
+                  label="Compaction threshold"
+                  value={context?.compactionThresholdTokens != null
+                    ? `${formatTokens(context.compactionThresholdTokens)}${context?.compactionThresholdRatio != null ? ` (${Math.round(context.compactionThresholdRatio * 100)}%)` : ""}`
+                    : null}
+                />
+                <StatRow label="Token count" value={context?.countingMethod ? humanize(context.countingMethod) : null} />
+              </dl>
+            </details>
           </section>
         </div>,
         document.body,
