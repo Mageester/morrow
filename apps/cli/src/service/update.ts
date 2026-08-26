@@ -13,7 +13,7 @@
  * root `package.json` version, the README status line, or the latest CHANGELOG
  * entry. See ADR-0005.
  */
-export const MORROW_VERSION = "0.7.1";
+export const MORROW_VERSION = "0.7.2";
 
 export interface SemverParts {
   major: number;
