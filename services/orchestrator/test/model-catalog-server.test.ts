@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/database.js";
@@ -153,6 +153,70 @@ describe("model catalog server boundary", () => {
       expect(models.find((item: any) => item.model.id === bundled.id)?.model.contextWindow).toBe(888_888);
     } finally {
       warning.mockRestore();
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("retains the active runtime and last-known-good cache when a refresh cannot be installed", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "morrow-model-catalog-projection-failure-"));
+    roots.push(cacheDir);
+    const bundled = resolveModelMetadata("openai", "gpt-5.6-sol");
+    const cached = {
+      ...bundled,
+      contextWindow: 888_888,
+      metadataSource: "remote-catalog" as const,
+      capabilitySource: "remote-catalog" as const,
+      metadataVersion: "cached-before-refresh",
+      fetchedAt: "2026-07-25T00:00:00.000Z",
+      builtIn: false,
+    };
+    const poisoned = {
+      ...cached,
+      id: "gpt-5.6",
+      providerModelId: "gpt-5.6",
+      canonicalId: "gpt-5.6",
+      aliases: ["gpt-5.4"],
+      contextWindow: 777_777,
+      metadataVersion: "projection-conflict",
+    };
+    const response = (catalogVersion: string, model: typeof cached) => new Response(JSON.stringify({
+      schemaVersion: 1,
+      catalogVersion,
+      generatedAt: "2026-07-25T00:00:00.000Z",
+      models: [model],
+    }), { status: 200 });
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response("cached-before-refresh", cached))
+      .mockResolvedValueOnce(response("projection-conflict", poisoned));
+    const catalog = new ModelCatalog({
+      cacheDir,
+      remoteUrl: "https://models.dev/api.json",
+      bundledModels: [bundled],
+      fetcher: fetcher as typeof fetch,
+    });
+    await catalog.refresh();
+    const cacheBefore = readFileSync(join(cacheDir, "model-catalog.json"), "utf8");
+
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const db = openDatabase(":memory:");
+    const app = buildServer({
+      db,
+      runner: new TaskRunner(db, async () => {}),
+      modelCatalog: catalog,
+      backgroundModelCatalog: true,
+      backgroundModelDiscovery: false,
+    });
+    try {
+      await app.ready();
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(resolveModelMetadata("openai", "gpt-5.6-sol").contextWindow).toBe(888_888));
+      expect(readFileSync(join(cacheDir, "model-catalog.json"), "utf8")).toBe(cacheBefore);
+      expect(warning).toHaveBeenCalledWith("Model catalog refresh unavailable; keeping current metadata.");
+    } finally {
+      warning.mockRestore();
+      error.mockRestore();
       await app.close();
       db.close();
     }

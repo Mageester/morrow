@@ -504,10 +504,18 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
    * stops the UI and the request builder from resolving against different
    * vintages of the same data.
    */
+  const installModelCatalogSnapshot = (snapshot: ReturnType<ModelCatalog["current"]>) => {
+    const models = mergeModelCatalog(BUILT_IN_MODELS, snapshot.models);
+    const external = externalCatalogFromSnapshot(snapshot);
+    // installModelCatalog owns canonical identity validation. Build both
+    // projections before changing either global view so a rejected candidate
+    // cannot partially replace the active snapshot.
+    installModelCatalog(models);
+    installExternalModelCatalog(external);
+  };
   const applyModelCatalogSnapshot = (snapshot: ReturnType<ModelCatalog["current"]>) => {
     try {
-      installModelCatalog(mergeModelCatalog(BUILT_IN_MODELS, snapshot.models));
-      installExternalModelCatalog(externalCatalogFromSnapshot(snapshot));
+      installModelCatalogSnapshot(snapshot);
     } catch (error) {
       // A third-party database can publish an identity Morrow's catalog graph
       // rejects. That is a reason to fall back to bundled metadata, never a
@@ -526,12 +534,32 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   // Local state is available synchronously. Production startup callers opt into
   // the public refresh below; the refresh is queued so it cannot delay server
   // readiness, and a failed request never replaces the active snapshot.
-  const refreshModelCatalog = async () => applyModelCatalogSnapshot(await modelCatalog.refresh());
+  const refreshModelCatalog = async () => {
+    const previous = modelCatalog.current();
+    try {
+      return await modelCatalog.refresh((snapshot) => {
+        installModelCatalogSnapshot(snapshot);
+        return () => { applyModelCatalogSnapshot(previous); };
+      });
+    } catch (error) {
+      applyModelCatalogSnapshot(previous);
+      throw error;
+    }
+  };
   if (deps.backgroundModelCatalog) {
     queueMicrotask(() => {
+      const previous = modelCatalog.current();
       modelCatalog.refreshInBackground(
-        (snapshot) => { applyModelCatalogSnapshot(snapshot); },
-        () => console.warn("Model catalog refresh unavailable; keeping current metadata."),
+        undefined,
+        () => {
+          applyModelCatalogSnapshot(previous);
+          console.warn("Model catalog refresh unavailable; keeping current metadata.");
+        },
+        (snapshot) => {
+          const rollback = () => { applyModelCatalogSnapshot(previous); };
+          installModelCatalogSnapshot(snapshot);
+          return rollback;
+        },
       );
     });
   }

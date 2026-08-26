@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ModelInfoSchema, type ModelInfo } from "@morrow/contracts";
 import { z } from "zod";
@@ -129,6 +129,8 @@ export interface ModelCatalogSnapshot {
   models: ModelInfo[];
 }
 
+type BeforeCommit = (snapshot: ModelCatalogSnapshot) => (() => void) | void;
+
 /**
  * Project a snapshot into the indexed external metadata source the exact-route
  * capability resolver consults.
@@ -183,8 +185,12 @@ export class ModelCatalog {
     };
   }
 
-  async refresh(): Promise<ModelCatalogSnapshot> {
-    if (!this.options.remoteUrl) return this.current();
+  async refresh(beforeCommit?: BeforeCommit): Promise<ModelCatalogSnapshot> {
+    if (!this.options.remoteUrl) {
+      const snapshot = this.current();
+      beforeCommit?.(snapshot);
+      return snapshot;
+    }
     const cached = this.readCache();
     const headers: Record<string, string> = { Accept: "application/json" };
     if (cached?.etag) headers["If-None-Match"] = cached.etag;
@@ -195,7 +201,11 @@ export class ModelCatalog {
       // Catalog metadata is untrusted remote input. Do not let it turn this
       // fixed public request into a request to an attacker-selected host.
       const response = await this.fetcher(this.options.remoteUrl, { method: "GET", headers, signal: controller.signal, redirect: "error" });
-      if (response.status === 304) return this.current();
+      if (response.status === 304) {
+        const snapshot = this.current();
+        beforeCommit?.(snapshot);
+        return snapshot;
+      }
       if (!response.ok) throw new Error(`Model catalog refresh returned HTTP ${response.status}`);
       const length = Number(response.headers.get("content-length"));
       if (Number.isFinite(length) && length > MAX_CATALOG_BYTES) throw new Error("Model catalog response exceeds the size limit");
@@ -204,6 +214,7 @@ export class ModelCatalog {
       try { raw = JSON.parse(text); } catch { throw new Error("Invalid model catalog JSON"); }
       const document = parseCatalog(raw, response);
       validateCanonicalModelCatalog(document.models);
+      const snapshot = this.snapshot(document, "remote-cache");
       const cache = {
         schemaVersion: 1 as const,
         document,
@@ -212,9 +223,18 @@ export class ModelCatalog {
       };
       mkdirSync(this.options.cacheDir, { recursive: true });
       const temporary = `${this.path}.tmp`;
-      writeFileSync(temporary, `${JSON.stringify(cache, null, 2)}\n`, "utf8");
-      renameSync(temporary, this.path);
-      return this.snapshot(document, "remote-cache");
+      let rollback: (() => void) | undefined;
+      try {
+        writeFileSync(temporary, `${JSON.stringify(cache, null, 2)}\n`, "utf8");
+        const maybeRollback = beforeCommit?.(snapshot);
+        rollback = typeof maybeRollback === "function" ? maybeRollback : undefined;
+        renameSync(temporary, this.path);
+      } catch (error) {
+        try { rollback?.(); } catch { /* preserve the refresh failure */ }
+        try { unlinkSync(temporary); } catch { /* the rename may have consumed it */ }
+        throw error;
+      }
+      return snapshot;
     } finally {
       clearTimeout(timer);
     }
@@ -223,9 +243,10 @@ export class ModelCatalog {
   refreshInBackground(
     onSuccess?: (snapshot: ModelCatalogSnapshot) => void,
     onFailure?: () => void,
+    beforeCommit?: BeforeCommit,
   ): void {
     if (this.inFlight || !this.options.remoteUrl) return;
-    this.inFlight = this.refresh()
+    this.inFlight = this.refresh(beforeCommit)
       .then((snapshot) => {
         onSuccess?.(snapshot);
         return snapshot;
