@@ -338,6 +338,8 @@ export type ServerDependencies = {
   /** Idle heartbeat cadence for the web mission stream; injectable for tests. */
   webStreamHeartbeatMs?: number;
   modelCatalog?: ModelCatalog;
+  /** Opt into the public metadata refresh after local catalog state is applied. */
+  backgroundModelCatalog?: boolean;
   /** Injectable account-model discovery transport for deterministic tests. */
   providerConnectivityTest?: typeof testProviderConnectivity;
   /** Defaults on outside tests; discovery failures never block server startup. */
@@ -521,9 +523,18 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return snapshot;
   };
   applyModelCatalogSnapshot(modelCatalog.current());
-  // Catalog refresh is operator-triggered. Starting a Private Local session
-  // must not make an outbound metadata request before any routing choice.
+  // Local state is available synchronously. Production startup callers opt into
+  // the public refresh below; the refresh is queued so it cannot delay server
+  // readiness, and a failed request never replaces the active snapshot.
   const refreshModelCatalog = async () => applyModelCatalogSnapshot(await modelCatalog.refresh());
+  if (deps.backgroundModelCatalog) {
+    queueMicrotask(() => {
+      modelCatalog.refreshInBackground(
+        (snapshot) => { applyModelCatalogSnapshot(snapshot); },
+        () => console.warn("Model catalog refresh unavailable; keeping current metadata."),
+      );
+    });
+  }
   const intelligenceRepo = intelligenceRepository(deps.db);
   const cortexService = new CortexService({
     repo: intelligenceRepo,
@@ -3948,8 +3959,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return resolveModelStatuses(statuses, providerModelDiscovery.list());
   });
 
-  // Explicit refresh makes public catalog egress visible to the operator. It
-  // is deliberately not a startup side effect so local-only mode stays local.
+  // Explicit refresh makes public catalog egress visible to the operator and
+  // bypasses the startup refresh's background scheduling.
   app.post("/api/models/refresh", async () => {
     try {
       const snapshot = await refreshModelCatalog();

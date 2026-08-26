@@ -12,7 +12,7 @@ const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
 describe("model catalog server boundary", () => {
-  it("keeps startup local and refreshes only through the explicit endpoint", async () => {
+  it("keeps deterministic startup local and refreshes through the explicit endpoint", async () => {
     const cacheDir = mkdtempSync(join(tmpdir(), "morrow-model-catalog-server-"));
     roots.push(cacheDir);
     const fetcher = vi.fn(async () => new Response(JSON.stringify({
@@ -45,6 +45,114 @@ describe("model catalog server boundary", () => {
       expect(response.json()).toMatchObject({ refreshed: true, catalogVersion: "catalog-test" });
       expect(fetcher).toHaveBeenCalledOnce();
     } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("applies bundled metadata before an opted-in background refresh completes", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "morrow-model-catalog-background-"));
+    roots.push(cacheDir);
+    const bundled = resolveModelMetadata("openai", "gpt-5.6-sol");
+    const remote = {
+      ...bundled,
+      contextWindow: 999_999,
+      metadataSource: "remote-catalog" as const,
+      capabilitySource: "remote-catalog" as const,
+      metadataVersion: "startup-refresh",
+      fetchedAt: "2026-07-25T00:00:00.000Z",
+      builtIn: false,
+    };
+    let release!: (response: Response) => void;
+    const pendingResponse = new Promise<Response>((resolve) => { release = resolve; });
+    const fetcher = vi.fn(async () => pendingResponse);
+    const catalog = new ModelCatalog({
+      cacheDir,
+      remoteUrl: "https://models.dev/api.json",
+      bundledModels: [bundled],
+      fetcher: fetcher as typeof fetch,
+    });
+    const db = openDatabase(":memory:");
+    const app = buildServer({
+      db,
+      runner: new TaskRunner(db, async () => {}),
+      modelCatalog: catalog,
+      backgroundModelCatalog: true,
+      backgroundModelDiscovery: false,
+    });
+    try {
+      await app.ready();
+      await Promise.resolve();
+      expect(fetcher).toHaveBeenCalledOnce();
+
+      const before = JSON.parse((await app.inject({ method: "GET", url: "/api/models" })).body);
+      expect(before.find((item: any) => item.model.id === bundled.id)?.model.contextWindow).toBe(bundled.contextWindow);
+
+      release(new Response(JSON.stringify({
+        schemaVersion: 1,
+        catalogVersion: "startup-refresh",
+        generatedAt: "2026-07-25T00:00:00.000Z",
+        models: [remote],
+      }), { status: 200 }));
+      await vi.waitFor(async () => {
+        const models = JSON.parse((await app.inject({ method: "GET", url: "/api/models" })).body);
+        expect(models.find((item: any) => item.model.id === bundled.id)?.model.contextWindow).toBe(999_999);
+      });
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("keeps the current metadata and logs a generic warning when startup refresh fails", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "morrow-model-catalog-failure-"));
+    roots.push(cacheDir);
+    const bundled = resolveModelMetadata("openai", "gpt-5.6-sol");
+    const cached = {
+      ...bundled,
+      contextWindow: 888_888,
+      metadataSource: "remote-catalog" as const,
+      capabilitySource: "remote-catalog" as const,
+      metadataVersion: "cached-before-startup",
+      fetchedAt: "2026-07-25T00:00:00.000Z",
+      builtIn: false,
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        schemaVersion: 1,
+        catalogVersion: "cached-before-startup",
+        generatedAt: "2026-07-25T00:00:00.000Z",
+        models: [cached],
+      }), { status: 200 }))
+      .mockRejectedValueOnce(new Error("catalog endpoint leaked-secret is unavailable"));
+    const catalog = new ModelCatalog({
+      cacheDir,
+      remoteUrl: "https://models.dev/api.json",
+      bundledModels: [bundled],
+      fetcher: fetcher as typeof fetch,
+    });
+    await catalog.refresh();
+
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const db = openDatabase(":memory:");
+    const app = buildServer({
+      db,
+      runner: new TaskRunner(db, async () => {}),
+      modelCatalog: catalog,
+      backgroundModelCatalog: true,
+      backgroundModelDiscovery: false,
+    });
+    try {
+      await app.ready();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(warning).toHaveBeenCalledWith("Model catalog refresh unavailable; keeping current metadata.");
+      expect(warning.mock.calls.flat()).not.toContain("catalog endpoint leaked-secret is unavailable");
+
+      const models = JSON.parse((await app.inject({ method: "GET", url: "/api/models" })).body);
+      expect(models.find((item: any) => item.model.id === bundled.id)?.model.contextWindow).toBe(888_888);
+    } finally {
+      warning.mockRestore();
       await app.close();
       db.close();
     }

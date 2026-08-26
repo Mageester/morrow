@@ -36,6 +36,11 @@ that launched it, while preserving local-first privacy and provider choice.
 - Provider discovery, refresh status, model selection, and cached model data
   now use one consistent source of truth and remain usable across restarts,
   including when a refresh is unavailable.
+- Public model metadata now applies bundled or cached state synchronously and
+  refreshes models.dev in the background during service startup without delaying
+  readiness. Failed refreshes retain current metadata and emit only a generic
+  warning; this public HTTPS request may occur before provider selection and
+  carries no credentials or task data.
 - Help flags bypass onboarding and work in TTY, pipe, and CI environments;
   optional stdin lifecycle methods are guarded when a non-TTY stream does not
   provide them.

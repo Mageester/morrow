@@ -220,9 +220,21 @@ export class ModelCatalog {
     }
   }
 
-  refreshInBackground(): void {
+  refreshInBackground(
+    onSuccess?: (snapshot: ModelCatalogSnapshot) => void,
+    onFailure?: () => void,
+  ): void {
     if (this.inFlight || !this.options.remoteUrl) return;
-    this.inFlight = this.refresh().finally(() => { this.inFlight = null; });
+    this.inFlight = this.refresh()
+      .then((snapshot) => {
+        onSuccess?.(snapshot);
+        return snapshot;
+      })
+      .catch((error: unknown) => {
+        onFailure?.();
+        throw error;
+      })
+      .finally(() => { this.inFlight = null; });
     void this.inFlight.catch(() => undefined);
   }
 

@@ -74,7 +74,7 @@ export async function serveForeground(ctx: Context): Promise<number> {
   // A packaged launcher sets MORROW_WEB_ROOT to the bundled web bundle so the
   // in-process service serves the local app at /app; unset in source dev.
   const webRoot = process.env.MORROW_WEB_ROOT?.trim();
-  const app = buildServer({ db, runner, missionControllerRunner, supervisor, secretsFile: ctx.paths.secretsFile, ...(webRoot ? { webRoot } : {}) });
+  const app = buildServer({ db, runner, missionControllerRunner, supervisor, backgroundModelCatalog: true, secretsFile: ctx.paths.secretsFile, ...(webRoot ? { webRoot } : {}) });
 
   await app.listen({ host: ctx.service.host, port: ctx.service.port });
 

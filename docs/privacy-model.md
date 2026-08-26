@@ -36,7 +36,9 @@ Each category requires an explicit scope and retention rule.
 - Local inference
 - No external model providers
 - No external tools or telemetry
-- Network-deny tests must pass
+- The startup metadata refresh below may contact models.dev, but sends no
+  credentials, conversation content, project paths, memory, or provider keys
+- Network-deny tests for inference and tool execution must pass
 - Remote provider selection is rejected before dispatch, and browser/MCP tools
   plus likely network shell commands are blocked at execution time
 
@@ -49,14 +51,17 @@ Each category requires an explicit scope and retention rule.
 
 ### Public model metadata refresh
 
-Morrow refreshes the public models.dev catalog only when an operator explicitly
-requests a model-metadata refresh. This request sends no Morrow credentials,
-conversation content, project paths, memory, or provider keys; normal network
-metadata such as the client IP reaches models.dev. The normalized response is
-cached locally and a last-known-good cache is retained on refresh failure.
-Provider account availability remains a separate authenticated provider request.
-Redirects are rejected, so catalog metadata cannot select a second network
-destination. Private Local startup never triggers this request.
+Morrow synchronously applies bundled or cached public metadata, then may refresh
+the public models.dev catalog in the background during orchestrator startup.
+This is an intentional public metadata request and may occur before a provider
+or model is selected, including when the eventual session uses Private Local.
+It sends no Morrow credentials, conversation content, project paths, memory, or
+provider keys; normal network metadata such as the client IP reaches models.dev.
+The normalized response is cached locally and a last-known-good cache is
+retained on refresh failure. Provider account availability remains a separate
+authenticated provider request. Redirects are rejected, so catalog metadata
+cannot select a second network destination. Private Local still keeps inference,
+credentials, task data, and external tools on the local side of its boundary.
 
 ### Custom
 

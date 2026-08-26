@@ -61,15 +61,17 @@ Provider status exposes only `configured`, the default model, and the endpoint
 Provider discovery and model metadata are separate facts. A successful
 authenticated provider `/models` response proves that a model is available to
 that account; it does not supply context or output limits when that endpoint
-omits them. On startup Morrow loads a local cache. An operator can explicitly
-refresh normalized capability metadata from `https://models.dev/api.json` over
-HTTPS through `POST /api/models/refresh`; redirects are rejected. That snapshot
-covers every provider Morrow can route to, so a model Morrow's own catalog has
-never heard of still resolves real capabilities. Bundled metadata remains
-offline seed data plus a small set of Morrow-verified corrections. Cached
-catalog data is atomically updated and retained when refresh fails, and Morrow
-never reaches the network during capability resolution — an unreachable
-models.dev degrades to "no external layer", never to a broken route.
+omits them. On startup Morrow synchronously applies bundled or cached metadata,
+then refreshes normalized capability metadata from
+`https://models.dev/api.json` in the background over HTTPS. Startup is not
+blocked by this public request; an operator can also force a refresh through
+`POST /api/models/refresh`. Redirects are rejected. That snapshot covers every
+provider Morrow can route to, so a model Morrow's own catalog has never heard of
+still resolves real capabilities. Bundled metadata remains offline seed data
+plus a small set of Morrow-verified corrections. Cached catalog data is
+atomically updated and retained when refresh fails, and Morrow never reaches
+the network during capability resolution — an unreachable models.dev degrades
+to "no external layer", never to a broken route.
 
 ### Capability resolution order
 

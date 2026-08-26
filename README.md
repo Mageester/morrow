@@ -58,8 +58,9 @@ before they execute. Run `morrow doctor` for consumer-readable checks,
 redacted diagnostic bundle.
 
 Morrow binds its service to loopback by default. Conversations, project state,
-memory, provider credentials, logs, and diagnostics remain local unless a tool
-or configured model provider is explicitly used. See
+memory, provider credentials, logs, and diagnostics remain local unless a tool,
+configured model provider, or the documented public model-metadata refresh is
+used. See
 [the privacy model](docs/privacy-model.md) for data-flow details.
 
 **Official website:** https://morrowproject.getaxiom.ca
@@ -236,7 +237,9 @@ Morrow runs a conversation-first agent through a provider-neutral runtime:
   streaming/tool-call/typed-error contract.
 - **Presets & routing:** seven real presets (Best Quality, Balanced, Fast,
   Cheap, Coding, Research, Private Local) resolve to a configured provider+model
-  and disclose the decision. `Private Local` never leaves the machine.
+  and disclose the decision. `Private Local` keeps inference, credentials, and
+  task data on the machine; startup may still fetch the documented public model
+  metadata, which contains no user data.
 - **Read-only tools:** `inspect_workspace`, `list_files`, `read_file`,
   `search_files` behind a shared containment layer (traversal/symlink/secret/
   binary rejection, byte and depth limits, evidence for every read).
@@ -265,11 +268,12 @@ credential reference, honest OAuth findings, and manual verification steps.
 
 ## Current alpha limitations
 - Live provider discovery determines account availability. Morrow loads public
-  model capabilities from a local cache and refreshes models.dev only through
-  explicit operator action; bundled metadata remains an offline seed plus a
-  small set of Morrow-verified corrections. Until a refresh has run, models
-  outside that seed resolve to unknown capabilities rather than guessed ones,
-  and unknown route limits stay explicitly unverified.
+  model capabilities from bundled or cached metadata synchronously, then
+  refreshes `https://models.dev/api.json` in the background during service
+  startup; explicit operator refresh remains available. Startup may make this
+  public HTTPS request before a provider or model is selected. A failed refresh
+  retains the current metadata, and models outside the bundled seed resolve to
+  unknown capabilities rather than guessed ones.
 - Write and terminal tools are intentionally not enabled (architecture and UI
   are sketched but gated until their full safety boundaries are implemented).
 - Subscription sign-in is implemented for Claude (Anthropic) and Codex/ChatGPT

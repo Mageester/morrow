@@ -67,6 +67,7 @@ const app = buildServer({
   runner,
   missionControllerRunner,
   supervisor,
+  backgroundModelCatalog: true,
   secretsFile,
   entitlementPoller,
   ...(webRoot ? { webRoot } : {}),

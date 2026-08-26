@@ -54,7 +54,8 @@ release-manifest.json
 - Node.js is bundled in every release package; source fallback requires Node.js 22+
 - No admin privileges required for default install
 - ~200 MB disk space for application + data
-- Network access only for provider API calls (user-configured)
+- Network access for user-configured provider API calls and the documented public
+  `models.dev` metadata refresh; the latter sends no credentials or task data
 
 ## Data Directories
 
