@@ -35,7 +35,13 @@ export function useMissionStream(missionId: string) {
       url: () => `/api/web/missions/${encodeURIComponent(missionId)}/stream?after=${lastCursor}`,
       eventTypes: streamEventTypes,
       onStatus: setStatus,
-      onEvent: (eventType, event) => {
+      onLifecycle: (lifecycleEvent) => {
+        if (lifecycleEvent.type === "visible") {
+          invalidate();
+          return;
+        }
+        if (lifecycleEvent.type !== "event") return;
+        const { eventType, event } = lifecycleEvent;
         try {
           const parsed = WebMissionStreamEnvelopeSchema.safeParse(
             JSON.parse(String(event.data)),
@@ -54,9 +60,6 @@ export function useMissionStream(missionId: string) {
           // Malformed or private internal data never enters application state.
         }
       },
-      // A backgrounded tab can silently stall an EventSource without ever
-      // firing "error"; reconcile when it becomes visible again.
-      onVisible: invalidate,
     });
     lifecycle.start();
     return () => lifecycle.stop();

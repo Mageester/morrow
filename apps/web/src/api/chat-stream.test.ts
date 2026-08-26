@@ -34,6 +34,10 @@ function wrapper(queryClient: QueryClient) {
     createElement(QueryClientProvider, { client: queryClient }, children);
 }
 
+function setOnline(online: boolean) {
+  Object.defineProperty(navigator, "onLine", { configurable: true, value: online });
+}
+
 beforeEach(() => {
   FakeEventSource.instances = [];
   sessionStorage.clear();
@@ -142,6 +146,63 @@ describe("useChatTaskStream", () => {
     await act(async () => { reconcile(); await pending; });
     await waitFor(() => expect(result.current.terminal).toBe(true));
     expect(sessionStorage.getItem(chatStreamCursorKey(identity))).toBeNull();
+  });
+
+  it("keeps a failed terminal reconciliation closed and retries after offline cancellation", async () => {
+    vi.useFakeTimers();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+    let refetchCalls = 0;
+    const refetch = vi.spyOn(queryClient, "refetchQueries").mockImplementation(() => {
+      const attempt = Math.floor(refetchCalls++ / 2);
+      return attempt < 3
+        ? Promise.reject(new Error("canonical state is temporarily unavailable"))
+        : Promise.resolve();
+    });
+    const identity = { projectId: "p-failure", conversationId: "c-failure", taskId: "t-failure" };
+    const { result } = renderHook(() => useChatTaskStream(identity), { wrapper: wrapper(queryClient) });
+    const source = FakeEventSource.instances[0]!;
+
+    act(() => source.emit("task.terminal", {
+      version: 1, cursor: 6, taskId: identity.taskId, conversationId: identity.conversationId,
+      eventType: "task.terminal", emittedAt: "2026-07-22T12:00:00.000Z", payload: { eventId: "event-6" },
+    }));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(source.closed).toBe(true);
+    expect(result.current.terminal).toBe(false);
+    expect(JSON.parse(sessionStorage.getItem(chatStreamCursorKey(identity))!)).toMatchObject({ cursor: 6, terminal: true });
+    expect(refetch).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(1);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(999); });
+    expect(refetch).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(refetch).toHaveBeenCalledTimes(4);
+    expect(vi.getTimerCount()).toBe(1);
+
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await act(async () => { await Promise.resolve(); });
+    expect(refetch).toHaveBeenCalledTimes(6);
+    expect(source.closed).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+
+    setOnline(false);
+    act(() => window.dispatchEvent(new Event("offline")));
+    expect(vi.getTimerCount()).toBe(0);
+    expect(result.current.status).toBe("offline");
+    expect(JSON.parse(sessionStorage.getItem(chatStreamCursorKey(identity))!)).toMatchObject({ cursor: 6, terminal: true });
+
+    setOnline(true);
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+      await Promise.resolve();
+    });
+    expect(result.current.terminal).toBe(true);
+    expect(refetch).toHaveBeenCalledTimes(8);
+    expect(sessionStorage.getItem(chatStreamCursorKey(identity))).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   /**

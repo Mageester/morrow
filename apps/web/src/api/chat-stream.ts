@@ -2,7 +2,11 @@ import { ChatStreamEnvelopeSchema } from "@morrow/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { conversationKeys } from "./conversations.js";
-import { createEventSourceLifecycle, type EventStreamStatus } from "./event-stream.js";
+import {
+  createEventSourceLifecycle,
+  type EventSourceLifecycleEvent,
+  type EventStreamStatus,
+} from "./event-stream.js";
 import { taskQueryKey } from "./task-keys.js";
 
 const eventTypes = [
@@ -141,7 +145,7 @@ export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
         finished = true;
         terminalPending = false;
         setTerminal(true);
-        lifecycle.close();
+        lifecycle.stop();
       } catch {
         if (stopped || finished) return;
         terminalPending = true;
@@ -160,51 +164,58 @@ export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
       url: () => `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/tasks/${encodeURIComponent(taskId)}/stream?after=${cursor}`,
       eventTypes,
       onStatus: setStatus,
-      canConnect: () => !finished && !terminalPending,
-      shouldHandleOnline: () => !finished && terminalRetryTimer === null,
-      onOpen: () => scheduleReconcile(true),
-      onReconnect: () => { void reconcile(); },
-      onOffline: () => {
-        clearReconcileTimer();
-        clearTerminalRetryTimer();
-        void reconcile();
-      },
-      onOnline: () => {
-        if (terminalPending) void completeTerminal();
-      },
-      // A backgrounded tab can silently stall an EventSource without firing
-      // "error"; reconcile when it becomes visible again.
-      onVisible: () => {
-        if (finished) return;
-        if (terminalPending) void completeTerminal();
-        else void reconcile();
-      },
-      onEvent: (eventType, event, stream) => {
-        try {
-          const parsed = ChatStreamEnvelopeSchema.safeParse(
-            JSON.parse(String(event.data)),
-          );
-          if (
-            !parsed.success ||
-            parsed.data.conversationId !== conversationId ||
-            parsed.data.taskId !== taskId ||
-            parsed.data.eventType !== eventType ||
-            parsed.data.cursor <= cursor
-          ) return;
-          cursor = parsed.data.cursor;
-          persistCursor(identity, cursor, eventType === "task.terminal");
-          if (eventType === "task.terminal") {
-            terminalPending = true;
-            stream.close();
-            void completeTerminal();
+      onLifecycle: (lifecycleEvent: EventSourceLifecycleEvent) => {
+        switch (lifecycleEvent.type) {
+          case "open":
+            scheduleReconcile(true);
+            return;
+          case "reconnect":
+            void reconcile();
+            return;
+          case "offline":
+            clearReconcileTimer();
+            clearTerminalRetryTimer();
+            void reconcile();
+            return;
+          case "online":
+            if (terminalPending) void completeTerminal();
+            return;
+          case "visible":
+            if (finished) return;
+            if (terminalPending) void completeTerminal();
+            else void reconcile();
+            return;
+          case "event": {
+            const { eventType, event, lifecycle: stream } = lifecycleEvent;
+            try {
+              const parsed = ChatStreamEnvelopeSchema.safeParse(
+                JSON.parse(String(event.data)),
+              );
+              if (
+                !parsed.success ||
+                parsed.data.conversationId !== conversationId ||
+                parsed.data.taskId !== taskId ||
+                parsed.data.eventType !== eventType ||
+                parsed.data.cursor <= cursor
+              ) return;
+              cursor = parsed.data.cursor;
+              persistCursor(identity, cursor, eventType === "task.terminal");
+              if (eventType === "task.terminal") {
+                terminalPending = true;
+                stream.pause();
+                void completeTerminal();
+                return;
+              }
+              scheduleReconcile(false);
+            } catch {
+              // Invalid or private stream data is ignored and never enters UI state.
+            }
             return;
           }
-          scheduleReconcile(false);
-        } catch {
-          // Invalid or private stream data is ignored and never enters UI state.
         }
       },
     });
+    if (terminalPending) lifecycle.pause();
     lifecycle.start();
     if (terminalPending && navigator.onLine) void completeTerminal();
 
