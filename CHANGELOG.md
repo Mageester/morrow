@@ -6,6 +6,50 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-26
+
+The provider-gauntlet follow-up makes long-running work bounded, observable,
+and safe to stop. Morrow now reconciles durable mission state with the CLI
+that launched it, while preserving local-first privacy and provider choice.
+
+### Fixed
+
+- CLI timeout and cancellation now produce an unambiguous terminal result and
+  clean up the durable mission, descendant workers, process groups, and active
+  provider requests before returning. A timed-out command no longer leaves a
+  reviewing mission or live worker behind.
+- Foreground and background commands have explicit lifecycle semantics for
+  timeouts, signals, exit status, process groups, and cleanup. Repeated
+  identical long-running commands now surface a bounded stall instead of
+  retrying forever.
+- Provider loops track meaningful progress and terminate clearly after a
+  bounded run with none. Provider rate limits and billing failures remain
+  distinct from Morrow execution stalls.
+- Review cycles reconcile newer verification evidence before dispatching a
+  revision worker and stop at the configured review budget, preserving the
+  reviewer’s exact missing evidence in the terminal result.
+- `run_command` supports an intentional `expectedExitCode` from 0 through 255.
+  Expected nonzero results retain stdout, stderr, exit status, and the
+  expected-versus-actual match without being retried as worker failures.
+- The advertised `write_plan` tool now matches the live worker catalog and
+  permission profile, without widening unrelated permissions.
+- Provider discovery, refresh status, model selection, and cached model data
+  now use one consistent source of truth and remain usable across restarts,
+  including when a refresh is unavailable.
+- Help flags bypass onboarding and work in TTY, pipe, and CI environments;
+  optional stdin lifecycle methods are guarded when a non-TTY stream does not
+  provide them.
+- Secret-shaped paths remain protected. Security tests that need an isolated
+  `.env` fixture can provision it outside the worker boundary instead of
+  weakening real-secret protections.
+
+### Verified
+
+- Provider and model operation was verified through the controlled-cloud
+  profile on OpenCode `x-preview-f-free`, TokenRouter’s free route, and NVIDIA
+  NIM `nvidia/nemotron-3-ultra-550b-a55b`. Local-only profiles continue to
+  block remote routes and network tools.
+
 ## [0.7.0] - 2026-08-25
 
 Morrow can run a live server and let you reach it. Background jobs — dev
