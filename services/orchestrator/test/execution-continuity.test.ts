@@ -9,6 +9,10 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import { missionsRepository } from "../src/repositories/missions.js";
 import { providerRouteFingerprint } from "../src/routing/effective-context.js";
+import {
+  boundExecutionCheckpointSnapshot,
+  MAX_EXECUTION_CHECKPOINT_BYTES,
+} from "../src/execution/checkpoint-snapshot.js";
 
 const at = "2026-07-13T00:00:00.000Z";
 
@@ -41,6 +45,39 @@ function checkpointSnapshot(taskId = "t") {
     providerRouting: {},
     providerContinuationRefs: [] as string[],
     evidenceRequired: [] as string[],
+  };
+}
+
+const ESSENTIAL_CHECKPOINT_CATEGORIES = [
+  "originalMission",
+  "hardRequirements",
+  "acceptanceCriteria",
+  "decisions",
+  "completedWork",
+  "filesChanged",
+  "unresolvedFailures",
+  "recoveryAttempts",
+  "approvals",
+  "providerRouting",
+  "pendingWork",
+] as const;
+
+function oversizedCheckpointSnapshot() {
+  const item = (category: string, index: number) => `${category}-semantic-${index} ${"durable context ".repeat(180)}`;
+  const entries = (category: string) => Array.from({ length: 180 }, (_, index) => item(category, index));
+  return {
+    ...checkpointSnapshot(),
+    originalMission: `objective-semantic-marker ${"mission context ".repeat(4_000)}`,
+    hardRequirements: entries("requirement"),
+    acceptanceCriteria: entries("criteria"),
+    decisions: entries("decision"),
+    completedWork: entries("completed"),
+    filesChanged: entries("changed-file"),
+    unresolvedFailures: entries("failure"),
+    recoveryAttempts: entries("recovery"),
+    pendingWork: entries("pending"),
+    approvals: { state: "authorized", records: entries("approval") },
+    providerRouting: { providerId: "deepseek", model: "deepseek-reasoner", route: { host: "api.deepseek.com", details: entries("route") } },
   };
 }
 
@@ -103,6 +140,132 @@ describe("durable segmented execution migration", () => {
 });
 
 describe("execution continuity repository", () => {
+  it("keeps every essential category loss-aware when an oversized checkpoint is bounded", () => {
+    const bounded = boundExecutionCheckpointSnapshot(oversizedCheckpointSnapshot() as any) as any;
+
+    expect(Buffer.byteLength(JSON.stringify(bounded), "utf8")).toBeLessThanOrEqual(MAX_EXECUTION_CHECKPOINT_BYTES);
+    expect(bounded.originalMission).toContain("objective-semantic-marker");
+    const failures: string[] = [];
+    if (bounded.compaction?.version !== 1 || bounded.compaction?.compacted !== true) {
+      failures.push("compaction metadata is missing or not marked compacted");
+    }
+    for (const category of ESSENTIAL_CHECKPOINT_CATEGORIES) {
+      const metadata = bounded.compaction?.categories?.[category];
+      if (metadata?.compacted !== true || !/^[a-f0-9]{24}$/.test(metadata?.digest ?? "")) {
+        failures.push(`${category}: missing deterministic loss metadata`);
+      }
+      if (!JSON.stringify(bounded[category]).includes(`checkpoint-compacted:${category}`)) {
+        failures.push(`${category}: bounded value does not carry its loss marker`);
+      }
+    }
+    expect(failures).toEqual([]);
+    expect(boundExecutionCheckpointSnapshot(bounded)).toEqual(bounded);
+  });
+
+  it("preserves the bounded fidelity metadata after checkpoint restart reconstruction", () => {
+    const db = seeded();
+    const repo = executionContinuityRepository(db);
+    const segment = repo.openSegment({ taskId: "t", missionId: null, providerId: "deepseek", model: "deepseek-reasoner", routeJson: {}, ownerId: "worker-a", now: at });
+    const snapshot = boundExecutionCheckpointSnapshot(oversizedCheckpointSnapshot() as any) as any;
+    repo.saveCheckpoint({ id: "oversized-checkpoint", taskId: "t", missionId: null, segmentId: segment.id, cursor: 73, snapshot, ownerId: "worker-a", generation: segment.generation, now: at });
+
+    const reloaded = executionContinuityRepository(db).latestCheckpoint("t")!;
+    expect(reloaded.cursor).toBe(73);
+    expect(Buffer.byteLength(JSON.stringify(reloaded.snapshot), "utf8")).toBeLessThanOrEqual(MAX_EXECUTION_CHECKPOINT_BYTES);
+    expect(reloaded.snapshot.originalMission).toContain("objective-semantic-marker");
+    expect((reloaded.snapshot as any).compaction).toEqual((snapshot as any).compaction);
+    for (const category of ESSENTIAL_CHECKPOINT_CATEGORIES) {
+      expect(JSON.stringify((reloaded.snapshot as any)[category])).toContain(`checkpoint-compacted:${category}`);
+    }
+    db.close();
+  });
+
+  it("normalizes malformed legacy checkpoint fields without throwing or exceeding the byte bound", () => {
+    const malformed = {
+      version: 0,
+      originalMission: null,
+      hardRequirements: "legacy requirement",
+      acceptanceCriteria: undefined,
+      decisions: { unexpected: true },
+      completedWork: ["valid", 42, null],
+      currentPhase: 17,
+      filesChanged: null,
+      gitStatus: undefined,
+      tests: [{ command: 42, exitCode: "failed", result: null }, null],
+      unresolvedFailures: undefined,
+      recoveryAttempts: { old: true },
+      pendingWork: ["resume"],
+      approvals: ["legacy"],
+      taskId: "legacy-task",
+      missionId: 42,
+      providerRouting: "legacy-route",
+      providerContinuationRefs: null,
+      evidenceRequired: undefined,
+      requirementBaselinePaths: ["src/existing.ts"],
+      requirementBaselinePathCount: Number.MAX_SAFE_INTEGER,
+      requirementBaselineIdentityHash: "not-a-digest",
+      executionRequirements: [{
+        id: "invalid-waiver",
+        kind: null,
+        sourceExcerpt: "legacy requirement",
+        parameters: {},
+        authoritative: true,
+        status: "waived",
+        waiver: { authorizedBy: "attacker", reason: "not authorized", evidenceRefs: ["legacy-proof"] },
+      }],
+    } as any;
+
+    expect(() => boundExecutionCheckpointSnapshot(malformed)).not.toThrow();
+    const bounded = boundExecutionCheckpointSnapshot(malformed) as any;
+    expect(Buffer.byteLength(JSON.stringify(bounded), "utf8")).toBeLessThanOrEqual(MAX_EXECUTION_CHECKPOINT_BYTES);
+    expect(bounded.version).toBe(1);
+    expect(bounded.originalMission).toBe("");
+    expect(bounded.hardRequirements).toEqual([]);
+    expect(bounded.acceptanceCriteria).toEqual([]);
+    expect(bounded.decisions).toEqual([]);
+    expect(bounded.completedWork).toEqual(["valid"]);
+    expect(bounded.tests).toEqual([{ command: "42", exitCode: null, result: "" }]);
+    expect(bounded.approvals).toEqual({});
+    expect(bounded.providerRouting).toEqual({});
+    expect(bounded.requirementBaselinePathCount).toBe(1);
+    expect(bounded.requirementBaselineIdentityHash).toMatch(/^[a-f0-9]{24}$/);
+    expect(bounded.executionRequirements[0]).toMatchObject({ id: "invalid-waiver", status: "unevaluated" });
+    expect(bounded.executionRequirements[0]).not.toHaveProperty("waiver");
+  });
+
+  it("digests the complete normalized optional ledgers before retaining the tail", () => {
+    const checkpoint = (prefix: string) => ({
+      ...checkpointSnapshot(),
+      executionRequirements: Array.from({ length: 257 }, (_, index) => ({
+        id: `requirement-${index}`,
+        kind: null,
+        sourceExcerpt: `${prefix}-requirement-${index}`,
+        parameters: {},
+        authoritative: false,
+        status: "unevaluated" as const,
+      })),
+      requirementEvaluations: Array.from({ length: 257 }, (_, index) => ({
+        requirementId: `requirement-${index}`,
+        kind: null,
+        status: "unevaluated" as const,
+        evidence: [`${prefix}-evidence-${index}`],
+      })),
+      taskArtifactFingerprints: Array.from({ length: 257 }, (_, index) => ({
+        path: `src/${prefix}-${index}.ts`,
+        contentHash: `hash-${index}`,
+      })),
+    });
+    const before = boundExecutionCheckpointSnapshot(checkpoint("before")) as any;
+    const after = boundExecutionCheckpointSnapshot(checkpoint("after")) as any;
+
+    expect(before.compaction.categories.executionRequirements.digest)
+      .not.toBe(after.compaction.categories.executionRequirements.digest);
+    expect(before.compaction.categories.requirementEvaluations.digest)
+      .not.toBe(after.compaction.categories.requirementEvaluations.digest);
+    expect(before.compaction.categories.taskArtifactFingerprints.digest)
+      .not.toBe(after.compaction.categories.taskArtifactFingerprints.digest);
+  });
+
   it("rolls segments forward without changing mission/task identity", () => {
     const db = seeded();
     const repo = executionContinuityRepository(db);

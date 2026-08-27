@@ -7,6 +7,36 @@ import { sanitizeExecutionRequirement, sanitizeRequirementEvaluation, type Execu
 export const MAX_EXECUTION_CHECKPOINT_BYTES = 131_072;
 
 const MAX_ARRAY_ENTRIES = 256;
+const INITIAL_CATEGORY_BYTES = 8_192;
+const COMPACTED_MARKER_PREFIX = "checkpoint-compacted";
+
+interface ExecutionCheckpointCategoryCompaction {
+  compacted: boolean;
+  originalCount: number;
+  retainedCount: number;
+  digest: string;
+}
+
+interface ExecutionCheckpointCompaction {
+  version: 1;
+  compacted: boolean;
+  originalBytes: number;
+  categories: Record<string, ExecutionCheckpointCategoryCompaction>;
+}
+
+type CategoryStates = Record<string, ExecutionCheckpointCategoryCompaction>;
+
+interface NormalizedSnapshot {
+  snapshot: ExecutionCheckpointSnapshot;
+  categories: CategoryStates;
+  originalBytes: number;
+}
+
+function safeString(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
 
 export interface CheckpointToolCallProjection {
   id?: string;
@@ -33,15 +63,25 @@ export interface CheckpointSnapshotProjectionInput {
 }
 
 function hash(value: unknown): string {
-  const serialized = typeof value === "string" ? value : JSON.stringify(value) ?? "null";
+  let serialized: string;
+  try {
+    serialized = typeof value === "string" ? value : JSON.stringify(value) ?? "null";
+  } catch {
+    serialized = String(value);
+  }
   return createHash("sha256").update(serialized, "utf8").digest("hex").slice(0, 24);
 }
 
 function boundedString(value: string, maxBytes = 8_192): string {
+  if (maxBytes <= 0) return "";
   if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  const suffix = `…[truncated:${hash(value)}]`;
+  if (Buffer.byteLength(suffix, "utf8") >= maxBytes) {
+    return Buffer.from(suffix, "utf8").subarray(0, maxBytes).toString("utf8");
+  }
   let end = Math.max(0, Math.floor(maxBytes * 0.75));
-  while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes - 32) end -= 16;
-  return `${value.slice(0, end)}…[truncated:${hash(value)}]`;
+  while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes - Buffer.byteLength(suffix, "utf8")) end -= 1;
+  return `${value.slice(0, end)}${suffix}`;
 }
 
 function sanitizeActionableText(value: string, maxBytes = 480): string {
@@ -153,11 +193,31 @@ export function summarizeCheckpointRecovery(attempt: CheckpointRecoveryProjectio
   return `${attempt.type}:payload#${hash(attempt.payload)}`;
 }
 
-function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values)].map((value) => boundedString(redactSecrets(value))).slice(-MAX_ARRAY_ENTRIES);
+function safeRedactedString(value: unknown): string {
+  const text = safeString(value);
+  try {
+    return redactSecrets(text);
+  } catch {
+    return "";
+  }
 }
 
-function boundedArtifactFingerprints(values: unknown): Array<{ path: string; contentHash: string }> {
+function stringArrayValues(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const values: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const safe = boundedString(safeRedactedString(item));
+    if (!values.includes(safe)) values.push(safe);
+  }
+  return values;
+}
+
+function uniqueStrings(values: unknown): string[] {
+  return stringArrayValues(values).slice(-MAX_ARRAY_ENTRIES);
+}
+
+function normalizedArtifactFingerprints(values: unknown): Array<{ path: string; contentHash: string }> {
   if (!Array.isArray(values)) return [];
   return values
     .flatMap((value) => {
@@ -165,15 +225,18 @@ function boundedArtifactFingerprints(values: unknown): Array<{ path: string; con
       const entry = value as Record<string, unknown>;
       if (typeof entry.path !== "string" || typeof entry.contentHash !== "string") return [];
       return [{
-        path: boundedString(redactSecrets(entry.path), 1_024),
-        contentHash: boundedString(redactSecrets(entry.contentHash), 160),
+        path: boundedString(safeRedactedString(entry.path), 1_024),
+        contentHash: boundedString(safeRedactedString(entry.contentHash), 160),
       }];
-    })
-    .slice(-MAX_ARRAY_ENTRIES);
+    });
 }
 
-function boundedBaselinePaths(values: string[], maxBytes = 24 * 1024): { paths: string[]; complete: boolean; count: number; identityHash: string } {
-  const unique = [...new Set(values)].map((value) => boundedString(redactSecrets(value)));
+function boundedArtifactFingerprints(values: unknown): Array<{ path: string; contentHash: string }> {
+  return normalizedArtifactFingerprints(values).slice(-MAX_ARRAY_ENTRIES);
+}
+
+function boundedBaselinePaths(values: unknown, maxBytes = 24 * 1024): { paths: string[]; complete: boolean; count: number; identityHash: string } {
+  const unique = stringArrayValues(values);
   const paths: string[] = [];
   let bytes = 2;
   for (const path of unique) {
@@ -187,6 +250,150 @@ function boundedBaselinePaths(values: string[], maxBytes = 24 * 1024): { paths: 
     complete: paths.length === unique.length,
     count: unique.length,
     identityHash: hash(unique),
+  };
+}
+
+function serializedBytes(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value) ?? "null", "utf8");
+  } catch {
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
+function safeSerializedBytes(value: unknown): number {
+  try {
+    return serializedBytes(redactSecretsDeep(value));
+  } catch {
+    return 0;
+  }
+}
+
+function priorCategoryState(value: unknown, category: string): ExecutionCheckpointCategoryCompaction | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const compaction = (value as Record<string, unknown>).compaction;
+  if (!compaction || typeof compaction !== "object" || Array.isArray(compaction)) return undefined;
+  const categories = (compaction as Record<string, unknown>).categories;
+  if (!categories || typeof categories !== "object" || Array.isArray(categories)) return undefined;
+  const state = (categories as Record<string, unknown>)[category];
+  if (!state || typeof state !== "object" || Array.isArray(state)) return undefined;
+  const entry = state as Record<string, unknown>;
+  if (typeof entry.digest !== "string" || !/^[a-f0-9]{24}$/.test(entry.digest)) return undefined;
+  const originalCount = entry.originalCount;
+  const retainedCount = entry.retainedCount;
+  if (!Number.isSafeInteger(originalCount) || (originalCount as number) < 0) return undefined;
+  if (!Number.isSafeInteger(retainedCount) || (retainedCount as number) < 0) return undefined;
+  if (typeof entry.compacted !== "boolean") return undefined;
+  return {
+    compacted: entry.compacted,
+    originalCount: originalCount as number,
+    retainedCount: retainedCount as number,
+    digest: entry.digest,
+  };
+}
+
+function priorOriginalBytes(value: unknown): number | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const compaction = (value as Record<string, unknown>).compaction;
+  if (!compaction || typeof compaction !== "object" || Array.isArray(compaction)) return undefined;
+  const bytes = (compaction as Record<string, unknown>).originalBytes;
+  return Number.isSafeInteger(bytes) && (bytes as number) >= 0 ? bytes as number : undefined;
+}
+
+function checkpointCompactedMarker(category: string, state: ExecutionCheckpointCategoryCompaction): string {
+  return `[${COMPACTED_MARKER_PREFIX}:${category} count=${state.originalCount} digest=${state.digest}]`;
+}
+
+function isCompactedMarker(value: unknown, category: string): boolean {
+  return typeof value === "string" && value.startsWith(`[${COMPACTED_MARKER_PREFIX}:${category} `) && value.endsWith("]");
+}
+
+function isCompactedEntry(value: unknown, category: string): boolean {
+  if (isCompactedMarker(value, category)) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  return [entry.command, entry.id, entry.requirementId, entry.path, entry.summary].some((field) => isCompactedMarker(field, category));
+}
+
+function updateCategoryState(
+  state: ExecutionCheckpointCategoryCompaction,
+  updates: Partial<ExecutionCheckpointCategoryCompaction>,
+): ExecutionCheckpointCategoryCompaction {
+  return {
+    ...state,
+    ...updates,
+    compacted: state.compacted || updates.compacted === true,
+  };
+}
+
+function compactStringCategory(
+  values: string[],
+  category: string,
+  state: ExecutionCheckpointCategoryCompaction,
+  maxBytes: number,
+): { values: string[]; state: ExecutionCheckpointCategoryCompaction } {
+  if (!state.compacted && serializedBytes(values) <= maxBytes) {
+    return { values, state: updateCategoryState(state, { retainedCount: values.length }) };
+  }
+
+  const marker = checkpointCompactedMarker(category, state);
+  const itemLimit = Math.max(64, Math.floor(Math.max(0, maxBytes - serializedBytes([marker])) / 2));
+  const head = values.length > 0 && values[0] !== marker ? boundedString(values[0]!, itemLimit) : "";
+  const tail = values.length > 1 && values.at(-1) !== marker ? boundedString(values.at(-1)!, itemLimit) : "";
+  const candidates = [
+    [head, marker, tail].filter(Boolean),
+    [head, marker].filter(Boolean),
+    [marker, tail].filter(Boolean),
+    [marker],
+  ];
+  const selected = candidates.find((candidate) => serializedBytes(candidate) <= maxBytes) ?? [marker];
+  return {
+    values: selected,
+    state: updateCategoryState(state, {
+      compacted: true,
+      retainedCount: selected.filter((item) => !isCompactedMarker(item, category)).length,
+    }),
+  };
+}
+
+function compactScalarCategory(
+  value: string,
+  category: string,
+  state: ExecutionCheckpointCategoryCompaction,
+  maxBytes: number,
+): { value: string; state: ExecutionCheckpointCategoryCompaction } {
+  if (!state.compacted && serializedBytes(value) <= maxBytes) {
+    return { value, state: updateCategoryState(state, { retainedCount: value ? 1 : 0 }) };
+  }
+  const marker = checkpointCompactedMarker(category, state);
+  const available = Math.max(0, maxBytes - serializedBytes(marker) - 3);
+  // Rebound an already-compacted scalar from its retained prefix. Keeping the
+  // marker as a suffix makes repeated rollover/restart normalization stable
+  // instead of appending a fresh marker on every pass.
+  const retainedSource = value.endsWith(marker)
+    ? value.slice(0, -marker.length).replace(/\n$/, "")
+    : value;
+  const retained = boundedString(retainedSource, available);
+  const compacted = retained ? `${retained}\n${marker}` : marker;
+  return {
+    value: serializedBytes(compacted) <= maxBytes ? compacted : boundedString(marker, maxBytes),
+    state: updateCategoryState(state, { compacted: true, retainedCount: retained ? 1 : 0 }),
+  };
+}
+
+function compactRecordCategory(
+  value: Record<string, unknown>,
+  category: string,
+  state: ExecutionCheckpointCategoryCompaction,
+  maxBytes: number,
+): { value: Record<string, unknown>; state: ExecutionCheckpointCategoryCompaction } {
+  if (!state.compacted && serializedBytes(value) <= maxBytes) {
+    return { value, state: updateCategoryState(state, { retainedCount: Object.keys(value).length }) };
+  }
+  const marker = checkpointCompactedMarker(category, state);
+  return {
+    value: { summaryHash: state.digest, summary: marker },
+    state: updateCategoryState(state, { compacted: true, retainedCount: 0 }),
   };
 }
 
@@ -205,25 +412,64 @@ function redactStructured(value: unknown): unknown {
 }
 
 function compactRecord(value: Record<string, unknown>, maxBytes: number): Record<string, unknown> {
-  const sanitized = redactStructured(value) as Record<string, unknown>;
-  const serialized = JSON.stringify(sanitized) ?? "{}";
-  if (Buffer.byteLength(serialized, "utf8") <= maxBytes) return sanitized;
-  return { summaryHash: hash(serialized), summary: "large structured checkpoint field omitted" };
+  const sanitizedValue = redactStructured(value);
+  const sanitized = sanitizedValue && typeof sanitizedValue === "object" && !Array.isArray(sanitizedValue)
+    ? sanitizedValue as Record<string, unknown>
+    : {};
+  if (serializedBytes(sanitized) <= maxBytes) return sanitized;
+  return { summaryHash: hash(sanitized), summary: "large structured checkpoint field omitted" };
 }
 
-function compactExecutionRequirement(requirement: ExecutionRequirement): ExecutionRequirement {
-  const sanitized = sanitizeExecutionRequirement(requirement);
+function compactExecutionRequirement(requirement: ExecutionRequirement, sourceLimit = 2_000, parameterLimit = 2_048): ExecutionRequirement {
+  const { waiver, ...requirementFields } = requirement;
+  const waiverAuthority = waiver && typeof waiver === "object" && (waiver.authorizedBy === "user" || waiver.authorizedBy === "mission_ledger")
+    ? waiver.authorizedBy
+    : undefined;
+  const waiverAuthorityInvalid = waiver !== undefined && waiverAuthority === undefined;
+  const candidate = {
+    ...requirementFields,
+    id: safeRedactedString(requirement.id),
+    sourceExcerpt: safeRedactedString(requirement.sourceExcerpt),
+    ...(waiverAuthorityInvalid ? { status: "unevaluated" as const } : {}),
+    parameters: requirement.parameters && typeof requirement.parameters === "object" && !Array.isArray(requirement.parameters)
+      ? requirement.parameters
+      : {},
+    ...(waiver && typeof waiver === "object" && waiverAuthority
+      ? {
+          waiver: {
+            authorizedBy: waiverAuthority,
+            reason: safeRedactedString(waiver.reason),
+            evidenceRefs: uniqueStrings(waiver.evidenceRefs),
+          },
+        }
+      : {}),
+  };
+  let sanitized: ExecutionRequirement;
+  try {
+    sanitized = sanitizeExecutionRequirement(candidate);
+  } catch {
+    sanitized = {
+      id: safeRedactedString(requirement.id),
+      kind: null,
+      sourceExcerpt: safeRedactedString(requirement.sourceExcerpt),
+      parameters: {},
+      authoritative: requirement.authoritative === true,
+      status: waiverAuthorityInvalid
+        ? "unevaluated"
+        : requirement.status === "failed" || requirement.status === "verified" || requirement.status === "waived" ? requirement.status : "unevaluated",
+    };
+  }
   return {
     id: boundedString(sanitized.id, 128),
     kind: sanitized.kind,
-    sourceExcerpt: boundedString(sanitized.sourceExcerpt, 128),
-    parameters: compactRecord(sanitized.parameters, 256),
-    authoritative: sanitized.authoritative,
-    status: sanitized.status,
+    sourceExcerpt: boundedString(sanitized.sourceExcerpt, sourceLimit),
+    parameters: compactRecord(sanitized.parameters, parameterLimit),
+    authoritative: sanitized.authoritative === true,
+    status: sanitized.status === "failed" || sanitized.status === "verified" || sanitized.status === "waived" ? sanitized.status : "unevaluated",
     ...(sanitized.waiver
       ? {
           waiver: {
-            authorizedBy: sanitized.waiver.authorizedBy,
+            authorizedBy: sanitized.waiver.authorizedBy === "mission_ledger" ? "mission_ledger" as const : "user" as const,
             reason: boundedString(sanitized.waiver.reason, 160),
             evidenceRefs: uniqueStrings(sanitized.waiver.evidenceRefs).slice(-16),
           },
@@ -232,188 +478,440 @@ function compactExecutionRequirement(requirement: ExecutionRequirement): Executi
   };
 }
 
-function compactRequirementEvaluation(evaluation: RequirementEvaluation): RequirementEvaluation {
-  const sanitized = sanitizeRequirementEvaluation(evaluation);
+function compactRequirementEvaluation(evaluation: RequirementEvaluation, evidenceLimit = 4): RequirementEvaluation {
+  const candidate = {
+    ...evaluation,
+    requirementId: safeRedactedString(evaluation.requirementId),
+    evidence: uniqueStrings(evaluation.evidence),
+  };
+  let sanitized: RequirementEvaluation;
+  try {
+    sanitized = sanitizeRequirementEvaluation(candidate);
+  } catch {
+    sanitized = {
+      requirementId: safeRedactedString(evaluation.requirementId),
+      kind: null,
+      status: "unevaluated",
+      evidence: [],
+    };
+  }
   return {
     requirementId: boundedString(sanitized.requirementId, 128),
     kind: sanitized.kind,
-    status: sanitized.status,
-    evidence: uniqueStrings(sanitized.evidence).slice(-4),
+    status: sanitized.status === "failed" || sanitized.status === "verified" || sanitized.status === "waived" ? sanitized.status : "unevaluated",
+    evidence: uniqueStrings(sanitized.evidence).slice(-evidenceLimit),
     ...(sanitized.observedFileType ? { observedFileType: sanitized.observedFileType } : {}),
   };
 }
 
-function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionCheckpointSnapshot {
-  // Checkpoints written before the loop simplification may still carry an
-  // untyped convergence field. Ignore that legacy payload instead of
-  // preserving an obsolete controller state in newly bounded snapshots.
-  const currentSnapshot = { ...snapshot } as ExecutionCheckpointSnapshot & Record<string, unknown>;
-  delete currentSnapshot.convergence;
-  const baseline = snapshot.requirementBaselinePaths ? boundedBaselinePaths(snapshot.requirementBaselinePaths) : undefined;
+function normalizeTests(value: unknown): Array<{ command: string; exitCode: number | null; result: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const test = item as Record<string, unknown>;
+    const command = sanitizeActionableText(safeString(test.command), 4_096);
+    const result = sanitizeActionableText(safeString(test.result), 4_096);
+    const exitCode = typeof test.exitCode === "number" && Number.isFinite(test.exitCode) ? test.exitCode : null;
+    return [{ command, exitCode, result }];
+  }).slice(-MAX_ARRAY_ENTRIES);
+}
+
+function safeRecord(value: unknown): Record<string, unknown> {
+  try {
+    const sanitized = redactSecretsDeep(value);
+    return sanitized && typeof sanitized === "object" && !Array.isArray(sanitized)
+      ? sanitized as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function categoryState(
+  rawValue: unknown,
+  normalizedValue: unknown,
+  category: string,
+  prior: ExecutionCheckpointCategoryCompaction | undefined,
+  originalCount: number,
+  digestValue: unknown = rawValue,
+  compactedOverride?: boolean,
+): ExecutionCheckpointCategoryCompaction {
+  // A previously bounded snapshot is already canonical. Preserve its loss
+  // accounting while re-reading it; recomputing retainedCount from a marker
+  // sample would make the same checkpoint drift after restart.
+  if (prior) return { ...prior };
   return {
-    ...currentSnapshot,
-    originalMission: boundedString(redactSecrets(snapshot.originalMission)),
-    hardRequirements: uniqueStrings(snapshot.hardRequirements),
-    prohibitedActions: uniqueStrings(snapshot.prohibitedActions),
-    acceptanceCriteria: uniqueStrings(snapshot.acceptanceCriteria),
-    decisions: uniqueStrings(snapshot.decisions),
-    completedWork: uniqueStrings(snapshot.completedWork),
-    currentPhase: boundedString(redactSecrets(snapshot.currentPhase)),
-    filesChanged: uniqueStrings(snapshot.filesChanged),
-    gitStatus: boundedString(redactSecrets(snapshot.gitStatus)),
-    tests: snapshot.tests.slice(-MAX_ARRAY_ENTRIES).map((test) => ({
-      command: sanitizeActionableText(test.command, 4_096),
-      exitCode: test.exitCode,
-      result: sanitizeActionableText(test.result, 4_096),
-    })),
-    unresolvedFailures: uniqueStrings(snapshot.unresolvedFailures),
-    recoveryAttempts: uniqueStrings(snapshot.recoveryAttempts),
-    pendingWork: uniqueStrings(snapshot.pendingWork),
-    approvals: compactRecord(snapshot.approvals, 8_192),
-    providerRouting: compactRecord(snapshot.providerRouting, 8_192),
-    providerContinuationRefs: uniqueStrings(snapshot.providerContinuationRefs),
-    evidenceRequired: uniqueStrings(snapshot.evidenceRequired),
-    ...(baseline
-      ? {
-          requirementBaselinePaths: baseline.paths,
-          requirementBaselinePathCount: snapshot.requirementBaselinePathCount ?? baseline.count,
-          requirementBaselineIdentityHash: snapshot.requirementBaselineIdentityHash ?? baseline.identityHash,
-          requirementBaselineComplete: snapshot.requirementBaselineComplete === false ? false : baseline.complete,
-        }
-      : {}),
-    ...(snapshot.executionRequirements
-      ? {
-          executionRequirements: snapshot.executionRequirements.slice(-MAX_ARRAY_ENTRIES).map((requirement) => {
-            const sanitized = sanitizeExecutionRequirement(requirement);
-            return {
-              ...sanitized,
-              id: boundedString(sanitized.id, 160),
-              sourceExcerpt: boundedString(sanitized.sourceExcerpt, 2_000),
-              parameters: compactRecord(sanitized.parameters, 2_048),
-              ...(sanitized.waiver
-                ? {
-                    waiver: {
-                      authorizedBy: sanitized.waiver.authorizedBy,
-                      reason: boundedString(sanitized.waiver.reason, 1_000),
-                      evidenceRefs: uniqueStrings(sanitized.waiver.evidenceRefs),
-                    },
-                  }
-                : {}),
-            };
-          }),
-        }
-      : {}),
-    ...(snapshot.requirementEvaluations
-      ? {
-          requirementEvaluations: snapshot.requirementEvaluations.slice(-MAX_ARRAY_ENTRIES).map((evaluation) => {
-            const sanitized = sanitizeRequirementEvaluation(evaluation);
-            return {
-              ...sanitized,
-              requirementId: boundedString(sanitized.requirementId, 160),
-              evidence: uniqueStrings(sanitized.evidence).slice(-8),
-            };
-          }),
-        }
-      : {}),
-    ...(snapshot.taskArtifactFingerprints
-      ? { taskArtifactFingerprints: boundedArtifactFingerprints(snapshot.taskArtifactFingerprints) }
-      : {}),
-    // Live task-owned processes are small, bounded, and load-bearing: losing
-    // one leaves the model unable to stop a server it started. Deliberately
-    // absent from the shrink list below for that reason.
-    ...(snapshot.runningProcesses && snapshot.runningProcesses.length > 0
-      ? {
-          runningProcesses: snapshot.runningProcesses.slice(-10).map((item) => ({
-            processId: boundedString(redactSecrets(String(item.processId)), 100),
-            command: boundedString(redactSecrets(String(item.command)), 300),
-          })),
-        }
-      : {}),
+    compacted: compactedOverride ?? (safeSerializedBytes(rawValue) !== serializedBytes(normalizedValue)),
+    originalCount,
+    retainedCount: Array.isArray(normalizedValue) ? normalizedValue.length : normalizedValue ? 1 : 0,
+    digest: hash(digestValue),
   };
 }
 
-function serializedBytes(snapshot: ExecutionCheckpointSnapshot): number {
-  return Buffer.byteLength(JSON.stringify(snapshot), "utf8");
+function normalizeStringCategory(
+  rawValue: unknown,
+  category: string,
+  prior: ExecutionCheckpointCategoryCompaction | undefined,
+): { values: string[]; state: ExecutionCheckpointCategoryCompaction } {
+  const source = stringArrayValuesWithChange(rawValue);
+  const values = source.values.slice(-MAX_ARRAY_ENTRIES);
+  const rawCount = Array.isArray(rawValue) ? rawValue.length : 0;
+  const changed = prior ? prior.compacted : source.changed || source.values.length > MAX_ARRAY_ENTRIES;
+  const state = categoryState(rawValue, values, category, prior, rawCount, source.values, changed);
+  const result = compactStringCategory(values, category, updateCategoryState(state, { compacted: changed }), INITIAL_CATEGORY_BYTES);
+  return result;
+}
+
+function stringArrayValuesWithChange(value: unknown): { values: string[]; changed: boolean } {
+  if (!Array.isArray(value)) return { values: [], changed: false };
+  const values: string[] = [];
+  let changed = false;
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const redacted = safeRedactedString(item);
+    const bounded = boundedString(redacted);
+    changed ||= bounded !== redacted;
+    if (!values.includes(bounded)) values.push(bounded);
+  }
+  return { values, changed };
+}
+
+function normalizeRecordCategory(
+  rawValue: unknown,
+  category: string,
+  prior: ExecutionCheckpointCategoryCompaction | undefined,
+): { value: Record<string, unknown>; state: ExecutionCheckpointCategoryCompaction } {
+  const full = safeRecord(rawValue);
+  const bounded = redactStructured(full);
+  const boundedRecord = bounded && typeof bounded === "object" && !Array.isArray(bounded)
+    ? bounded as Record<string, unknown>
+    : {};
+  const rawRecord = !!rawValue && typeof rawValue === "object" && !Array.isArray(rawValue);
+  const compacted = prior
+    ? prior.compacted
+    : rawRecord && (serializedBytes(full) > INITIAL_CATEGORY_BYTES || serializedBytes(full) !== serializedBytes(boundedRecord));
+  const state = categoryState(rawValue, boundedRecord, category, prior, Object.keys(full).length, full, compacted);
+  const result = compactRecordCategory(boundedRecord, category, updateCategoryState(state, { compacted }), INITIAL_CATEGORY_BYTES);
+  return result;
+}
+
+function normalizeRequirements(value: unknown, prior: ExecutionCheckpointCategoryCompaction | undefined): { values: ExecutionRequirement[]; state: ExecutionCheckpointCategoryCompaction } | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const normalizedValues = value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const requirement = item as ExecutionRequirement;
+    if (typeof requirement.id !== "string" || typeof requirement.sourceExcerpt !== "string") return [];
+    try {
+      return [compactExecutionRequirement(requirement)];
+    } catch {
+      return [];
+    }
+  });
+  const values = normalizedValues.slice(-MAX_ARRAY_ENTRIES);
+  const state = categoryState(value, values, "executionRequirements", prior, value.length, normalizedValues);
+  return { values, state: updateCategoryState(state, { compacted: prior?.compacted === true || value.length > MAX_ARRAY_ENTRIES }) };
+}
+
+function normalizeEvaluations(value: unknown, prior: ExecutionCheckpointCategoryCompaction | undefined): { values: RequirementEvaluation[]; state: ExecutionCheckpointCategoryCompaction } | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const normalizedValues = value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const evaluation = item as RequirementEvaluation;
+    if (typeof evaluation.requirementId !== "string") return [];
+    return [compactRequirementEvaluation(evaluation, 8)];
+  });
+  const values = normalizedValues.slice(-MAX_ARRAY_ENTRIES);
+  const state = categoryState(value, values, "requirementEvaluations", prior, value.length, normalizedValues);
+  return { values, state: updateCategoryState(state, { compacted: prior?.compacted === true || value.length > MAX_ARRAY_ENTRIES }) };
+}
+
+function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): NormalizedSnapshot {
+  const raw = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)
+    ? snapshot as unknown as Record<string, unknown>
+    : {};
+  const originalBytes = priorOriginalBytes(raw) ?? safeSerializedBytes(raw);
+  const categories: CategoryStates = {};
+  const prior = (category: string) => priorCategoryState(raw, category);
+
+  const missionRaw = safeRedactedString(raw.originalMission);
+  const missionBound = boundedString(missionRaw);
+  const missionState = categoryState(raw.originalMission, missionBound, "originalMission", prior("originalMission"), missionRaw ? 1 : 0, missionRaw, missionBound !== missionRaw);
+  const mission = compactScalarCategory(missionBound, "originalMission", updateCategoryState(missionState, { compacted: missionState.compacted || missionBound !== missionRaw }), INITIAL_CATEGORY_BYTES);
+  categories.originalMission = mission.state;
+
+  const stringFields = [
+    "hardRequirements", "prohibitedActions", "acceptanceCriteria", "decisions", "completedWork",
+    "filesChanged", "unresolvedFailures", "recoveryAttempts", "pendingWork", "providerContinuationRefs", "evidenceRequired",
+  ] as const;
+  const strings = Object.fromEntries(stringFields.map((field) => {
+    const result = normalizeStringCategory(raw[field], field, prior(field));
+    categories[field] = result.state;
+    return [field, result.values];
+  })) as Record<(typeof stringFields)[number], string[]>;
+
+  const phaseRaw = safeRedactedString(raw.currentPhase);
+  const phaseBound = boundedString(phaseRaw);
+  const phaseState = categoryState(raw.currentPhase, phaseBound, "currentPhase", prior("currentPhase"), phaseRaw ? 1 : 0, phaseRaw, phaseBound !== phaseRaw);
+  const phase = compactScalarCategory(phaseBound, "currentPhase", updateCategoryState(phaseState, { compacted: phaseState.compacted || phaseBound !== phaseRaw }), INITIAL_CATEGORY_BYTES);
+  categories.currentPhase = phase.state;
+
+  const gitRaw = safeRedactedString(raw.gitStatus);
+  const gitBound = boundedString(gitRaw);
+  const gitState = categoryState(raw.gitStatus, gitBound, "gitStatus", prior("gitStatus"), gitRaw ? 1 : 0, gitRaw, gitBound !== gitRaw);
+  const git = compactScalarCategory(gitBound, "gitStatus", updateCategoryState(gitState, { compacted: gitState.compacted || gitBound !== gitRaw }), INITIAL_CATEGORY_BYTES);
+  categories.gitStatus = git.state;
+
+  const tests = normalizeTests(raw.tests);
+  const testsNeedCompaction = Array.isArray(raw.tests) && (
+    raw.tests.length > MAX_ARRAY_ENTRIES || raw.tests.some((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+      const test = item as Record<string, unknown>;
+      return Buffer.byteLength(safeRedactedString(test.command), "utf8") > 4_096
+        || Buffer.byteLength(safeRedactedString(test.result), "utf8") > 4_096;
+    })
+  );
+  const testsState = categoryState(raw.tests, tests, "tests", prior("tests"), Array.isArray(raw.tests) ? raw.tests.length : 0, tests, testsNeedCompaction);
+  const boundedTests = compactTests(tests, "tests", updateCategoryState(testsState, { compacted: prior("tests")?.compacted === true || testsNeedCompaction }), INITIAL_CATEGORY_BYTES);
+  categories.tests = boundedTests.state;
+
+  const approvals = normalizeRecordCategory(raw.approvals, "approvals", prior("approvals"));
+  const providerRouting = normalizeRecordCategory(raw.providerRouting, "providerRouting", prior("providerRouting"));
+  categories.approvals = approvals.state;
+  categories.providerRouting = providerRouting.state;
+
+  const baseline = Array.isArray(raw.requirementBaselinePaths) ? boundedBaselinePaths(raw.requirementBaselinePaths) : undefined;
+  const priorBaseline = prior("requirementBaselinePaths");
+  if (baseline) {
+    const baselineState = updateCategoryState(
+      categoryState(raw.requirementBaselinePaths, baseline.paths, "requirementBaselinePaths", priorBaseline, baseline.count, baseline.identityHash),
+      { digest: priorBaseline?.digest ?? baseline.identityHash },
+    );
+    categories.requirementBaselinePaths = updateCategoryState(baselineState, {
+      compacted: prior("requirementBaselinePaths")?.compacted === true || !baseline.complete,
+      retainedCount: baseline.paths.length,
+    });
+  }
+
+  const requirements = normalizeRequirements(raw.executionRequirements, prior("executionRequirements"));
+  const evaluations = normalizeEvaluations(raw.requirementEvaluations, prior("requirementEvaluations"));
+  if (requirements) categories.executionRequirements = requirements.state;
+  if (evaluations) categories.requirementEvaluations = evaluations.state;
+
+  const rawArtifacts = raw.taskArtifactFingerprints;
+  const artifactInput = Array.isArray(rawArtifacts) ? rawArtifacts as unknown[] : undefined;
+  const normalizedArtifacts = artifactInput ? normalizedArtifactFingerprints(artifactInput) : undefined;
+  const artifacts = normalizedArtifacts ? normalizedArtifacts.slice(-MAX_ARRAY_ENTRIES) : undefined;
+  if (artifacts && artifactInput && normalizedArtifacts) {
+    const state = categoryState(artifactInput, artifacts, "taskArtifactFingerprints", prior("taskArtifactFingerprints"), artifactInput.length, normalizedArtifacts);
+    categories.taskArtifactFingerprints = updateCategoryState(state, { compacted: prior("taskArtifactFingerprints")?.compacted === true || artifacts.length !== artifactInput.length });
+  }
+
+  const processValues = Array.isArray(raw.runningProcesses)
+    ? raw.runningProcesses.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const process = item as Record<string, unknown>;
+        return [{ processId: boundedString(safeRedactedString(process.processId), 100), command: boundedString(safeRedactedString(process.command), 300) }];
+      }).slice(-10)
+    : undefined;
+
+  const result: ExecutionCheckpointSnapshot = {
+    version: 1,
+    originalMission: mission.value,
+    hardRequirements: strings.hardRequirements,
+    prohibitedActions: strings.prohibitedActions,
+    acceptanceCriteria: strings.acceptanceCriteria,
+    decisions: strings.decisions,
+    completedWork: strings.completedWork,
+    currentPhase: phase.value,
+    filesChanged: strings.filesChanged,
+    gitStatus: git.value,
+    tests: boundedTests.values,
+    unresolvedFailures: strings.unresolvedFailures,
+    recoveryAttempts: strings.recoveryAttempts,
+    pendingWork: strings.pendingWork,
+    approvals: approvals.value,
+    taskId: boundedString(safeRedactedString(raw.taskId), 256),
+    missionId: raw.missionId === null || raw.missionId === undefined ? null : boundedString(safeRedactedString(raw.missionId), 256),
+    providerRouting: providerRouting.value,
+    providerContinuationRefs: strings.providerContinuationRefs,
+    evidenceRequired: strings.evidenceRequired,
+    ...(baseline
+      ? {
+          requirementBaselinePaths: baseline.paths,
+          requirementBaselinePathCount: priorBaseline?.compacted ? priorBaseline.originalCount : baseline.count,
+          requirementBaselineIdentityHash: priorBaseline?.compacted ? priorBaseline.digest : baseline.identityHash,
+          requirementBaselineComplete: raw.requirementBaselineComplete === false ? false : baseline.complete,
+        }
+      : {}),
+    ...(requirements ? { executionRequirements: requirements.values } : {}),
+    ...(evaluations ? { requirementEvaluations: evaluations.values } : {}),
+    ...(artifacts ? { taskArtifactFingerprints: artifacts } : {}),
+    ...(processValues && processValues.length > 0 ? { runningProcesses: processValues } : {}),
+  };
+  return { snapshot: result, categories, originalBytes };
+}
+
+function compactTests(
+  values: Array<{ command: string; exitCode: number | null; result: string }>,
+  category: string,
+  state: ExecutionCheckpointCategoryCompaction,
+  maxBytes: number,
+): { values: Array<{ command: string; exitCode: number | null; result: string }>; state: ExecutionCheckpointCategoryCompaction } {
+  if (!state.compacted && serializedBytes(values) <= maxBytes) return { values, state: updateCategoryState(state, { retainedCount: values.length }) };
+  const marker = checkpointCompactedMarker(category, state);
+  const markerEntry = { command: marker, exitCode: null, result: marker };
+  const selected = [values[0], markerEntry, values.at(-1)].filter((value, index, array) => value !== undefined && (index === 0 || serializedBytes(value) > 0 && JSON.stringify(value) !== JSON.stringify(array[index - 1]))) as Array<{ command: string; exitCode: number | null; result: string }>;
+  const bounded = serializedBytes(selected) <= maxBytes ? selected : [markerEntry];
+  return { values: bounded, state: updateCategoryState(state, { compacted: true, retainedCount: bounded.filter((item) => !isCompactedEntry(item, category)).length }) };
+}
+
+function compactRequirementList(
+  values: ExecutionRequirement[],
+  category: string,
+  state: ExecutionCheckpointCategoryCompaction,
+  maxBytes: number,
+  sourceLimit: number,
+  parameterLimit: number,
+): { values: ExecutionRequirement[]; state: ExecutionCheckpointCategoryCompaction } {
+  const compactedValues = values.map((value) => compactExecutionRequirement(value, sourceLimit, parameterLimit));
+  const entryChanged = serializedBytes(compactedValues) !== serializedBytes(values);
+  const nextState = updateCategoryState(state, { compacted: state.compacted || entryChanged });
+  if (serializedBytes(compactedValues) <= maxBytes && !nextState.compacted) return { values: compactedValues, state: updateCategoryState(nextState, { retainedCount: compactedValues.length }) };
+  if (serializedBytes(compactedValues) <= maxBytes && nextState.compacted && values.length <= MAX_ARRAY_ENTRIES) return { values: compactedValues, state: updateCategoryState(nextState, { retainedCount: compactedValues.length }) };
+  const marker = checkpointCompactedMarker(category, nextState);
+  const markerEntry: ExecutionRequirement = { id: marker, kind: null, sourceExcerpt: marker, parameters: {}, authoritative: false, status: "unevaluated" };
+  const selected = [compactedValues[0], markerEntry, compactedValues.at(-1)].filter((value, index, array) => value !== undefined && (index === 0 || JSON.stringify(value) !== JSON.stringify(array[index - 1]))) as ExecutionRequirement[];
+  const bounded = serializedBytes(selected) <= maxBytes ? selected : [markerEntry];
+  return { values: bounded, state: updateCategoryState(nextState, { compacted: true, retainedCount: bounded.filter((item) => !isCompactedEntry(item, category)).length }) };
+}
+
+function compactEvaluationList(
+  values: RequirementEvaluation[],
+  category: string,
+  state: ExecutionCheckpointCategoryCompaction,
+  maxBytes: number,
+  evidenceLimit: number,
+): { values: RequirementEvaluation[]; state: ExecutionCheckpointCategoryCompaction } {
+  const compactedValues = values.map((value) => compactRequirementEvaluation(value, evidenceLimit));
+  const entryChanged = serializedBytes(compactedValues) !== serializedBytes(values);
+  const nextState = updateCategoryState(state, { compacted: state.compacted || entryChanged });
+  if (serializedBytes(compactedValues) <= maxBytes && (!nextState.compacted || values.length <= MAX_ARRAY_ENTRIES)) return { values: compactedValues, state: updateCategoryState(nextState, { retainedCount: compactedValues.length }) };
+  const marker = checkpointCompactedMarker(category, nextState);
+  const markerEntry: RequirementEvaluation = { requirementId: marker, kind: null, status: "unevaluated", evidence: [marker] };
+  const selected = [compactedValues[0], markerEntry, compactedValues.at(-1)].filter((value, index, array) => value !== undefined && (index === 0 || JSON.stringify(value) !== JSON.stringify(array[index - 1]))) as RequirementEvaluation[];
+  const bounded = serializedBytes(selected) <= maxBytes ? selected : [markerEntry];
+  return { values: bounded, state: updateCategoryState(nextState, { compacted: true, retainedCount: bounded.filter((item) => !isCompactedEntry(item, category)).length }) };
+}
+
+function compactArtifactList(
+  values: Array<{ path: string; contentHash: string }>,
+  category: string,
+  state: ExecutionCheckpointCategoryCompaction,
+  maxBytes: number,
+): { values: Array<{ path: string; contentHash: string }>; state: ExecutionCheckpointCategoryCompaction } {
+  if (!state.compacted && serializedBytes(values) <= maxBytes) return { values, state: updateCategoryState(state, { retainedCount: values.length }) };
+  const marker = checkpointCompactedMarker(category, state);
+  const markerEntry = { path: marker, contentHash: state.digest };
+  const selected = [values[0], markerEntry, values.at(-1)].filter((value, index, array) => value !== undefined && (index === 0 || JSON.stringify(value) !== JSON.stringify(array[index - 1]))) as Array<{ path: string; contentHash: string }>;
+  const bounded = serializedBytes(selected) <= maxBytes ? selected : [markerEntry];
+  return { values: bounded, state: updateCategoryState(state, { compacted: true, retainedCount: bounded.filter((item) => !isCompactedEntry(item, category)).length }) };
+}
+
+function compactToLevel(
+  bounded: ExecutionCheckpointSnapshot,
+  categories: CategoryStates,
+  level: number,
+): void {
+  const arrayLimits = level === 1 ? 8_192 : level === 2 ? 4_096 : level === 3 ? 2_048 : 1_024;
+  const stringFields = [
+    "hardRequirements", "prohibitedActions", "acceptanceCriteria", "decisions", "completedWork",
+    "filesChanged", "unresolvedFailures", "recoveryAttempts", "pendingWork", "providerContinuationRefs", "evidenceRequired",
+  ] as const;
+  for (const field of stringFields) {
+    const result = compactStringCategory(bounded[field], field, categories[field]!, arrayLimits);
+    bounded[field] = result.values;
+    categories[field] = result.state;
+  }
+  for (const field of ["originalMission", "currentPhase", "gitStatus"] as const) {
+    const result = compactScalarCategory(bounded[field], field, categories[field]!, arrayLimits);
+    bounded[field] = result.value;
+    categories[field] = result.state;
+  }
+  for (const field of ["approvals", "providerRouting"] as const) {
+    const result = compactRecordCategory(bounded[field], field, categories[field]!, arrayLimits);
+    bounded[field] = result.value;
+    categories[field] = result.state;
+  }
+  const testResult = compactTests(bounded.tests, "tests", categories.tests!, arrayLimits);
+  bounded.tests = testResult.values;
+  categories.tests = testResult.state;
+
+  if (bounded.executionRequirements && categories.executionRequirements) {
+    const result = compactRequirementList(
+      bounded.executionRequirements,
+      "executionRequirements",
+      categories.executionRequirements,
+      level >= 3 ? 8_192 : MAX_EXECUTION_CHECKPOINT_BYTES,
+      level >= 2 ? 64 : 128,
+      level >= 2 ? 128 : 256,
+    );
+    bounded.executionRequirements = result.values;
+    categories.executionRequirements = result.state;
+  }
+  if (bounded.requirementEvaluations && categories.requirementEvaluations) {
+    const result = compactEvaluationList(
+      bounded.requirementEvaluations,
+      "requirementEvaluations",
+      categories.requirementEvaluations,
+      level >= 3 ? 8_192 : MAX_EXECUTION_CHECKPOINT_BYTES,
+      level >= 2 ? 2 : 4,
+    );
+    bounded.requirementEvaluations = result.values;
+    categories.requirementEvaluations = result.state;
+  }
+  if (bounded.taskArtifactFingerprints && categories.taskArtifactFingerprints) {
+    const result = compactArtifactList(bounded.taskArtifactFingerprints, "taskArtifactFingerprints", categories.taskArtifactFingerprints, level >= 3 ? 4_096 : 16_384);
+    bounded.taskArtifactFingerprints = result.values;
+    categories.taskArtifactFingerprints = result.state;
+  }
+  if (bounded.requirementBaselinePaths && categories.requirementBaselinePaths && level >= 3) {
+    bounded.requirementBaselinePaths = bounded.requirementBaselinePaths.slice(0, 8);
+    categories.requirementBaselinePaths = updateCategoryState(categories.requirementBaselinePaths, { compacted: true, retainedCount: bounded.requirementBaselinePaths.length });
+    bounded.requirementBaselineComplete = false;
+  }
+}
+
+function compactionMetadata(originalBytes: number, categories: CategoryStates): ExecutionCheckpointCompaction {
+  const ordered = Object.fromEntries(Object.entries(categories).map(([key, value]) => [key, value]));
+  return {
+    version: 1,
+    compacted: Object.values(categories).some((category) => category.compacted),
+    originalBytes,
+    categories: ordered,
+  };
 }
 
 /**
- * Deterministically shrink a checkpoint projection while preserving the
- * newest history entries. Full raw arguments/results are never introduced by
- * this function; older authoritative audit rows remain untouched.
+ * Deterministically shrink a checkpoint projection while preserving a
+ * semantic value or an explicit category digest for every field. Full raw
+ * arguments/results remain in append-only audit rows; this function only
+ * prepares the restart/provider projection.
  */
 export function boundExecutionCheckpointSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionCheckpointSnapshot {
-  let bounded = normalizeSnapshot(snapshot);
-  const arrayKeys: Array<keyof ExecutionCheckpointSnapshot> = [
-    "completedWork",
-    "tests",
-    "recoveryAttempts",
-    "unresolvedFailures",
-    "pendingWork",
-    "decisions",
-    "hardRequirements",
-    "acceptanceCriteria",
-    "prohibitedActions",
-    "filesChanged",
-    "providerContinuationRefs",
-    "evidenceRequired",
-    "taskArtifactFingerprints",
-  ];
-
-  while (serializedBytes(bounded) > MAX_EXECUTION_CHECKPOINT_BYTES) {
-    const largestKey = arrayKeys
-      .filter((key) => Array.isArray(bounded[key]) && (bounded[key] as unknown[]).length > 0)
-      .sort((left, right) => JSON.stringify(bounded[right]).length - JSON.stringify(bounded[left]).length)[0];
-    if (!largestKey) break;
-    const values = bounded[largestKey] as unknown[];
-    bounded = { ...bounded, [largestKey]: values.slice(1) } as ExecutionCheckpointSnapshot;
+  const normalized = normalizeSnapshot(snapshot);
+  const bounded = normalized.snapshot;
+  const categories = normalized.categories;
+  for (let level = 0; level <= 4; level += 1) {
+    const candidate = { ...bounded, compaction: compactionMetadata(normalized.originalBytes, categories) };
+    if (serializedBytes(candidate) <= MAX_EXECUTION_CHECKPOINT_BYTES) return candidate;
+    if (level < 4) compactToLevel(bounded, categories, level + 1);
   }
-
-  if (serializedBytes(bounded) > MAX_EXECUTION_CHECKPOINT_BYTES) {
-    bounded = {
-      ...bounded,
-      originalMission: boundedString(bounded.originalMission, 2_048),
-      hardRequirements: [],
-      prohibitedActions: [],
-      acceptanceCriteria: [],
-      decisions: [],
-      completedWork: [],
-      filesChanged: [],
-      ...(bounded.requirementBaselinePaths
-        ? {
-            requirementBaselinePaths: bounded.requirementBaselinePaths,
-            ...(bounded.requirementBaselinePathCount !== undefined ? { requirementBaselinePathCount: bounded.requirementBaselinePathCount } : {}),
-            ...(bounded.requirementBaselineIdentityHash ? { requirementBaselineIdentityHash: bounded.requirementBaselineIdentityHash } : {}),
-            ...(bounded.requirementBaselineComplete !== undefined ? { requirementBaselineComplete: bounded.requirementBaselineComplete } : {}),
-          }
-        : {}),
-      gitStatus: boundedString(bounded.gitStatus, 2_048),
-      tests: [],
-      unresolvedFailures: [],
-      recoveryAttempts: [],
-      pendingWork: [],
-      approvals: {},
-      providerRouting: {},
-      providerContinuationRefs: [],
-      evidenceRequired: [],
-      ...(bounded.executionRequirements
-        ? { executionRequirements: bounded.executionRequirements.map(compactExecutionRequirement) }
-        : {}),
-      ...(bounded.requirementEvaluations
-        ? { requirementEvaluations: bounded.requirementEvaluations.map(compactRequirementEvaluation) }
-        : {}),
-      ...(bounded.runningProcesses && bounded.runningProcesses.length > 0
-        ? { runningProcesses: bounded.runningProcesses }
-        : {}),
-      ...(bounded.taskArtifactFingerprints
-        ? { taskArtifactFingerprints: bounded.taskArtifactFingerprints }
-        : {}),
-    };
-  }
-
-  if (serializedBytes(bounded) > MAX_EXECUTION_CHECKPOINT_BYTES) {
-    throw new Error(`Execution checkpoint projection exceeds ${MAX_EXECUTION_CHECKPOINT_BYTES} bytes after deterministic truncation`);
-  }
-  return bounded;
+  // All known fields have fixed limits at level four. Keep this defensive
+  // branch so malformed future additions cannot reintroduce silent loss or an
+  // unbounded persistence write.
+  const candidate = { ...bounded, compaction: compactionMetadata(normalized.originalBytes, categories) };
+  if (serializedBytes(candidate) <= MAX_EXECUTION_CHECKPOINT_BYTES) return candidate;
+  throw new Error(`Execution checkpoint projection exceeds ${MAX_EXECUTION_CHECKPOINT_BYTES} bytes after loss-aware compaction`);
 }
 
 /** Build a bounded snapshot from append-only call/event records. */
