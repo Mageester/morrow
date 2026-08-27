@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import { TaskRunner } from "./runner.js";
 import { reconcileMissionsOnStartup } from "./recovery.js";
 import { createDefaultMissionControllerRunner } from "./mission/controller-runner.js";
+import { createWorkGraphIntegration } from "./mission/work-graph-integration.js";
 import { SchedulerTicker } from "./schedule/ticker.js";
 import { loadAdaptersFromEnv } from "./messaging/adapter.js";
 import { ProcessSupervisor } from "./processes/supervisor.js";
@@ -39,15 +40,26 @@ const db = openDatabase(dbPath);
 const supervisor = new ProcessSupervisor(processesRepository(db), join(resolveMorrowHome(process.env), "process-logs"));
 const runner = new TaskRunner(db, undefined, supervisor);
 const missionControllerRunner = createDefaultMissionControllerRunner({ db, taskRunner: runner });
+// The durable work-graph seam shares this process's runner and mission
+// controller: children start through the same fenced runner path, and a
+// completed fan-in wakes the controller that owns the mission.
+const workGraphs = createWorkGraphIntegration({
+  db,
+  runner,
+  wakeMission: (missionId) => missionControllerRunner.wake(missionId),
+});
 
-// Reclaim durable missions first, then reconcile their checkpoint-aware tasks.
-// Both standalone and packaged startup use this exact path.
-const reconciliation = await reconcileMissionsOnStartup({ db, runner, controllerRunner: missionControllerRunner });
-if (reconciliation.missionsResumed || reconciliation.interrupted || reconciliation.requeued || reconciliation.cancelledOrphans) {
+// Reclaim durable missions first, then reconcile their checkpoint-aware tasks,
+// then replay unfinished work graphs. Both standalone and packaged startup use
+// this exact path.
+const reconciliation = await reconcileMissionsOnStartup({ db, runner, controllerRunner: missionControllerRunner, workGraphs });
+if (reconciliation.missionsResumed || reconciliation.interrupted || reconciliation.requeued
+  || reconciliation.cancelledOrphans || reconciliation.workGraphsReconciled) {
   console.log(
     `Startup reconciliation: ${reconciliation.missionsResumed} mission(s) resumed, ` +
     `${reconciliation.interrupted} interrupted, ` +
-    `${reconciliation.requeued} re-dispatched, ${reconciliation.cancelledOrphans} orphan(s) cancelled`
+    `${reconciliation.requeued} re-dispatched, ${reconciliation.cancelledOrphans} orphan(s) cancelled, ` +
+    `${reconciliation.workGraphsReconciled} work graph(s) reconciled`
   );
 }
 // In a packaged install the launcher points MORROW_WEB_ROOT at the bundled web

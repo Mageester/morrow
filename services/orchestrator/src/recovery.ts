@@ -33,6 +33,8 @@ export interface ReconcileSummary {
 export interface MissionReconcileSummary extends ReconcileSummary {
   /** Non-terminal durable mission controllers scheduled for recovery. */
   missionsResumed: number;
+  /** Work graphs whose unfinished fan-in was replayed from durable state. */
+  workGraphsReconciled: number;
 }
 
 const TERMINAL_STATUSES = new Set(["completed", "verified", "failed", "cancelled"]);
@@ -233,13 +235,19 @@ export function reconcileTasksOnStartup(
  * A final wake observes any task state reconciled in the second phase.
  */
 export async function reconcileMissionsOnStartup(
-  { db, runner, controllerRunner, records, now = () => new Date().toISOString() }:
+  { db, runner, controllerRunner, workGraphs, records, now = () => new Date().toISOString() }:
     {
       db: Database.Database;
       runner: ReconcilableRunner;
       controllerRunner: Pick<MissionControllerRunner, "run" | "wake" | "isActive"> & {
         reconcileTerminalOutcome?: (missionId: string, input: MissionTerminalOutcomeInput) => Promise<void>;
       };
+      /**
+       * Durable work-graph seam. Omitted by hosts that do not run graphs; when
+       * present, every graph whose fan-in has not completed is replayed from
+       * durable state before the final controller wake observes it.
+       */
+      workGraphs?: { reconcileStartup(): Promise<unknown[]> };
       records?: ReturnType<typeof taskRecordsRepository>;
       now?: () => string;
     },
@@ -278,6 +286,20 @@ export async function reconcileMissionsOnStartup(
   await Promise.all(terminalReconciliations);
 
   const taskSummary = reconcileTasksOnStartup({ db, runner, ...(records ? { records } : {}), now });
+
+  // Work-graph reconciliation runs after task recovery so a child requeued
+  // above is already visible, and before the final wake so the controller
+  // observes any aggregate this pass completed. A failure here must not strand
+  // mission recovery: the same durable state is replayed on the next start.
+  let workGraphsReconciled = 0;
+  if (workGraphs) {
+    try {
+      workGraphsReconciled = (await workGraphs.reconcileStartup()).length;
+    } catch (error) {
+      console.error("Work graph startup reconciliation failed", error);
+    }
+  }
+
   for (const row of missions) controllerRunner.wake(row.missionId);
-  return { missionsResumed, ...taskSummary };
+  return { missionsResumed, workGraphsReconciled, ...taskSummary };
 }

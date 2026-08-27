@@ -83,6 +83,12 @@ export {
   type WorkGraphChildDispatchResult,
 } from "./mission/work-graph-task-adapter.js";
 export {
+  WorkGraphIntegration,
+  createWorkGraphIntegration,
+  type WorkGraphIntegrationDependencies,
+  type WorkGraphReconciliation,
+} from "./mission/work-graph-integration.js";
+export {
   taskStartClaimsRepository,
   type TaskStartClaim,
   type TaskStartClaimAttempt,

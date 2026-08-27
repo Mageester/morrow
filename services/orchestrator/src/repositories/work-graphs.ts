@@ -724,6 +724,27 @@ export function workGraphsRepository(db: Database.Database) {
       const row = db.prepare("SELECT id FROM work_graphs WHERE parent_task_id=?").get(parentTaskId) as { id?: string } | undefined;
       return row?.id ? graph(row.id) : undefined;
     },
+    /**
+     * Resolve the graph that owns a child task. `work_graph_units.child_task_id`
+     * is uniquely indexed, so a settled child maps to at most one graph.
+     */
+    getByChildTask(childTaskId: string): WorkGraph | undefined {
+      const row = db.prepare("SELECT graph_id FROM work_graph_units WHERE child_task_id=?")
+        .get(childTaskId) as { graph_id?: string } | undefined;
+      return row?.graph_id ? graph(row.graph_id) : undefined;
+    },
+    /**
+     * Graphs whose fan-in has not completed, oldest first. Startup
+     * reconciliation replays exactly these; a completed aggregate is durable
+     * and must never be re-synthesized.
+     */
+    listUnsettled(): WorkGraph[] {
+      return (db.prepare(`SELECT g.id FROM work_graphs AS g
+        LEFT JOIN work_graph_barriers AS b ON b.graph_id=g.id
+        WHERE COALESCE(b.state,'open') <> 'completed'
+        ORDER BY g.created_at ASC, g.id ASC`).all() as Array<{ id: string }>)
+        .map((row) => graph(row.id));
+    },
     createUnit,
     createWorkUnit: createUnit,
     createUnits(graphId: string, inputs: readonly CreateWorkUnitInput[]): WorkUnit[] {
