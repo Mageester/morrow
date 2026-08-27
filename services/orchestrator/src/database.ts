@@ -2057,6 +2057,14 @@ export const migrations:Migration[]=[
       AND OLD.result_json IS NOT NEW.result_json
     BEGIN SELECT RAISE(ABORT,'terminal work graph result is immutable'); END;
   `}
+  ,{id:71,name:"work_graph_spawn_roles_and_aggregate_results",sql:`
+    ALTER TABLE work_graph_units ADD COLUMN role TEXT NOT NULL DEFAULT 'work' CHECK(role IN ('work','review'));
+    ALTER TABLE work_graph_units ADD COLUMN spawn_claim_id TEXT;
+    ALTER TABLE work_graph_units ADD COLUMN spawn_claim_owner TEXT;
+    ALTER TABLE work_graph_units ADD COLUMN spawn_claimed_at TEXT;
+    ALTER TABLE work_graph_units ADD COLUMN spawn_claim_lease_expires_at TEXT;
+    ALTER TABLE work_graph_barriers ADD COLUMN aggregate_result_json TEXT;
+  `}
 ];
 /**
  * Durability mode for committed writes.

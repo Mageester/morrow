@@ -378,4 +378,43 @@ describe("workGraphsRepository", () => {
     expect(tasks.getTaskById("child")?.status).toBe("queued");
     expect(() => graphs.attachChild("graph-1", "a", "parent", createdAt)).toThrow(/child|parent/i);
   });
+
+  it("persists an explicit role and serializes pre-spawn claims across connections", () => {
+    const root = mkdtempSync(join(tmpdir(), "morrow-work-graph-claim-"));
+    const file = join(root, "graph.db");
+    const firstDb = openDatabase(file);
+    const secondDb = openDatabase(file);
+    try {
+      seed(firstDb);
+      const first = workGraphsRepository(firstDb);
+      const second = workGraphsRepository(secondDb);
+      first.create({ id: "graph-1", parentTaskId: "parent", maxConcurrency: 1, createdAt });
+      first.createUnit({ id: "review:quality", graphId: "graph-1", parentTaskId: "parent", position: 1, idempotencyKey: "review:quality", ownerId: "reviewer", ownerProfileHash: "hash-reviewer", policyFingerprint: "policy-reviewer", objective: "Review", role: "review", createdAt });
+      first.admit("graph-1", "review:quality", "dispatcher", createdAt, "admission:graph-1:review:quality");
+
+      const claim = first.claimSpawn("graph-1", "review:quality", "dispatcher-a", createdAt, 60_000);
+      expect(claim?.spawnClaimId).toBeTruthy();
+      expect(claim?.role).toBe("review");
+      expect(second.claimSpawn("graph-1", "review:quality", "dispatcher-b", createdAt, 60_000)).toBeNull();
+      expect(second.claimSpawn("graph-1", "review:quality", "dispatcher-b", "2026-08-27T12:01:01.000Z", 60_000)?.spawnClaimId).toBeTruthy();
+    } finally {
+      firstDb.close();
+      secondDb.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("persists the aggregate result so completed synthesis replays without a callback", () => {
+    const graphs = workGraphsRepository(db);
+    graphs.create({ id: "graph-1", parentTaskId: "parent", maxConcurrency: 1, createdAt });
+    graphs.createUnit({ id: "a", graphId: "graph-1", parentTaskId: "parent", position: 1, idempotencyKey: "a", ownerId: "owner-a", ownerProfileHash: "hash-a", policyFingerprint: "policy-a", objective: "A", createdAt });
+    graphs.markTerminal("graph-1", "a", "verified", { answer: "a" }, createdAt);
+    graphs.recordResult("graph-1", "a", { answer: "a" }, createdAt);
+    const claim = graphs.claimAggregate("graph-1", "aggregator", createdAt);
+    expect(claim).toBeTruthy();
+    const result = { answer: "aggregate", source: "graph-1" };
+    const completed = graphs.completeAggregate("graph-1", claim!.claimId, claim!.ownerId, createdAt, result);
+    expect(completed?.aggregateResult).toEqual(result);
+    expect(graphs.get("graph-1")?.aggregateResult).toEqual(result);
+  });
 });

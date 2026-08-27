@@ -25,6 +25,7 @@ export interface WorkGraph {
   aggregateClaimedAt: string | null;
   aggregateClaimLeaseExpiresAt: string | null;
   aggregateCompletedAt: string | null;
+  aggregateResult: unknown | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -40,10 +41,15 @@ export interface WorkUnit {
   ownerProfileHash: string;
   policyFingerprint: string;
   objective: string;
+  role: "work" | "review";
   required: boolean;
   status: WorkUnitStatus;
   terminalDisposition: WorkUnitTerminalDisposition | null;
   childTaskId: string | null;
+  spawnClaimId: string | null;
+  spawnClaimOwner: string | null;
+  spawnClaimedAt: string | null;
+  spawnClaimLeaseExpiresAt: string | null;
   admissionOwnerId: string | null;
   admissionId: string | null;
   admittedAt: string | null;
@@ -75,6 +81,7 @@ export interface CreateWorkUnitInput {
   ownerProfileHash?: string;
   policyFingerprint?: string;
   objective: string;
+  role?: "work" | "review";
   required?: boolean;
   dependsOn?: readonly string[];
   dependencyIds?: readonly string[];
@@ -146,6 +153,7 @@ function mapGraph(row: Record<string, unknown>, barrier: Record<string, unknown>
     aggregateClaimedAt: barrier.aggregate_claimed_at ? String(barrier.aggregate_claimed_at) : null,
     aggregateClaimLeaseExpiresAt: barrier.aggregate_claim_lease_expires_at ? String(barrier.aggregate_claim_lease_expires_at) : null,
     aggregateCompletedAt: barrier.aggregate_completed_at ? String(barrier.aggregate_completed_at) : null,
+    aggregateResult: barrier.aggregate_result_json === null || barrier.aggregate_result_json === undefined ? null : decodeJson(barrier.aggregate_result_json, "aggregate result"),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -163,10 +171,15 @@ function mapUnit(row: Record<string, unknown>): WorkUnit {
     ownerProfileHash: String(row.owner_profile_hash),
     policyFingerprint: String(row.policy_fingerprint),
     objective: safeText(row.objective),
+    role: String(row.role ?? "work") as "work" | "review",
     required: Number(row.required) !== 0,
     status: String(row.status) as WorkUnitStatus,
     terminalDisposition: row.terminal_disposition ? String(row.terminal_disposition) as WorkUnitTerminalDisposition : null,
     childTaskId: row.child_task_id ? String(row.child_task_id) : null,
+    spawnClaimId: row.spawn_claim_id ? String(row.spawn_claim_id) : null,
+    spawnClaimOwner: row.spawn_claim_owner ? String(row.spawn_claim_owner) : null,
+    spawnClaimedAt: row.spawn_claimed_at ? String(row.spawn_claimed_at) : null,
+    spawnClaimLeaseExpiresAt: row.spawn_claim_lease_expires_at ? String(row.spawn_claim_lease_expires_at) : null,
     admissionOwnerId: row.admission_owner_id ? String(row.admission_owner_id) : null,
     admissionId: row.admission_id ? String(row.admission_id) : null,
     admittedAt: row.admitted_at ? String(row.admitted_at) : null,
@@ -328,22 +341,22 @@ export function workGraphsRepository(db: Database.Database) {
     const inserted = db.prepare(`
       INSERT INTO work_graph_units(
         id,schema_version,graph_id,parent_task_id,position,idempotency_key,owner_id,owner_profile_hash,policy_fingerprint,
-        objective,required,status,terminal_disposition,child_task_id,admission_owner_id,admission_id,admitted_at,started_at,
+        objective,role,required,status,terminal_disposition,child_task_id,admission_owner_id,admission_id,admitted_at,started_at,
         terminal_at,result_cursor,result_json,created_at,updated_at
       )
-      SELECT ?,1,g.id,g.parent_task_id,?,?,?,?,?,?,?, ?,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,?,?
+      SELECT @id,1,g.id,g.parent_task_id,@position,@idempotencyKey,@ownerId,@ownerProfileHash,@policyFingerprint,
+        @objective,@role,@required,@status,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,@createdAt,@updatedAt
       FROM work_graphs g
       JOIN work_graph_barriers barrier ON barrier.graph_id=g.id
-      WHERE g.id=?
-        AND (? IS NULL OR g.parent_task_id=?)
+      WHERE g.id=@graphId
+        AND (@parentTaskId IS NULL OR g.parent_task_id=@parentTaskId)
         AND g.max_concurrency>0 AND g.active_count<=g.max_concurrency
         AND barrier.state IN ('open','ready')
       ON CONFLICT DO NOTHING
-    `).run(
-      input.id, input.position, input.idempotencyKey, ownerId, ownerProfileHash, policyFingerprint,
-      objective, input.required === false ? 0 : 1, status, timestamp, input.updatedAt ?? timestamp,
-      graphId, requestedParentTaskId, requestedParentTaskId,
-    );
+    `).run({ id: input.id, position: input.position, idempotencyKey: input.idempotencyKey,
+      ownerId, ownerProfileHash, policyFingerprint, objective, role: input.role ?? "work",
+      required: input.required === false ? 0 : 1, status, createdAt: timestamp,
+      updatedAt: input.updatedAt ?? timestamp, parentTaskId: requestedParentTaskId, graphId });
 
     if (inserted.changes !== 1) {
       const existing = db.prepare("SELECT * FROM work_graph_units WHERE graph_id=? AND idempotency_key=?")
@@ -361,11 +374,13 @@ export function workGraphsRepository(db: Database.Database) {
           parentTaskId: String(existing.parent_task_id), position: Number(existing.position),
           ownerId: String(existing.owner_id), ownerProfileHash: String(existing.owner_profile_hash),
           policyFingerprint: String(existing.policy_fingerprint), objective: String(existing.objective),
+          role: String(existing.role ?? "work"),
           required: Number(existing.required) !== 0, dependencies: dependenciesFor(String(existing.id)).sort(),
         },
         {
           parentTaskId: requestedParentTaskId ?? parentTaskId, position: input.position, ownerId, ownerProfileHash,
           policyFingerprint, objective, required: input.required !== false, dependencies: [...requestedDependencyIds].sort(),
+          role: input.role ?? "work",
         },
       );
       if (!same) throw new Error(`Work unit idempotency conflict for key ${input.idempotencyKey}`);
@@ -638,14 +653,34 @@ export function workGraphsRepository(db: Database.Database) {
     };
   })();
 
-  const completeAggregate = (graphId: string, claimId: string, ownerId: string, completedAt = new Date().toISOString()): WorkGraph | null => db.transaction(() => {
+  const completeAggregate = (graphId: string, claimId: string, ownerId: string, completedAt = new Date().toISOString(), result?: unknown): WorkGraph | null => db.transaction(() => {
+    const resultJson = result === undefined ? undefined : encodeJson(result);
     const updated = db.prepare(`
       UPDATE work_graph_barriers
-      SET state='completed',aggregate_completed_at=?,updated_at=?
+      SET state='completed',aggregate_completed_at=?,aggregate_result_json=COALESCE(?,aggregate_result_json),updated_at=?
       WHERE graph_id=? AND state='claimed' AND aggregate_claim_id=? AND aggregate_claim_owner=?
         AND (aggregate_claim_lease_expires_at IS NULL OR aggregate_claim_lease_expires_at>?)
-    `).run(completedAt, completedAt, graphId, claimId, safeText(ownerId), completedAt);
+    `).run(completedAt, resultJson ?? null, completedAt, graphId, claimId, safeText(ownerId), completedAt);
     return updated.changes === 1 ? graph(graphId) : null;
+  })();
+
+  const claimSpawn = (graphId: string, unitId: string, ownerId: string, claimedAt = new Date().toISOString(), leaseMs = 60_000): WorkUnit | null => db.transaction(() => {
+    if (!Number.isInteger(leaseMs) || leaseMs < 1) throw new Error("Spawn claim lease must be a positive integer");
+    const claimedTime = Date.parse(claimedAt);
+    if (!Number.isFinite(claimedTime)) throw new Error("Spawn claim timestamp must be an ISO date");
+    const current = unitRow(graphId, unitId);
+    if (current.child_task_id) return mapUnit(current);
+    if (!ACTIVE_STATUSES.has(String(current.status)) || !current.admission_id) return null;
+    const claimId = `spawn-${randomUUID()}`;
+    const expires = new Date(claimedTime + leaseMs).toISOString();
+    const updated = db.prepare(`
+      UPDATE work_graph_units
+      SET spawn_claim_id=?,spawn_claim_owner=?,spawn_claimed_at=?,spawn_claim_lease_expires_at=?,updated_at=?
+      WHERE graph_id=? AND id=? AND child_task_id IS NULL
+        AND status IN ('admitted','running') AND admission_id IS NOT NULL
+        AND (spawn_claim_id IS NULL OR spawn_claim_lease_expires_at IS NULL OR spawn_claim_lease_expires_at<=?)
+    `).run(claimId, safeText(ownerId), claimedAt, expires, claimedAt, graphId, unitId, claimedAt);
+    return updated.changes === 1 ? mapUnit(unitRow(graphId, unitId)) : null;
   })();
 
   const attachChild = (graphId: string, unitId: string, childTaskId: string, updatedAt = new Date().toISOString()): WorkUnit => db.transaction(() => {
@@ -659,7 +694,7 @@ export function workGraphsRepository(db: Database.Database) {
     if (current.child_task_id && current.child_task_id !== childTaskId) {
       throw new Error(`Work unit ${unitId} already owns child task ${current.child_task_id}`);
     }
-    db.prepare("UPDATE work_graph_units SET child_task_id=?,updated_at=? WHERE graph_id=? AND id=? AND (child_task_id IS NULL OR child_task_id=?)")
+    db.prepare("UPDATE work_graph_units SET child_task_id=?,spawn_claim_id=NULL,spawn_claim_owner=NULL,spawn_claimed_at=NULL,spawn_claim_lease_expires_at=NULL,updated_at=? WHERE graph_id=? AND id=? AND (child_task_id IS NULL OR child_task_id=?)")
       .run(childTaskId, updatedAt, graphId, unitId, childTaskId);
     return mapUnit(unitRow(graphId, unitId));
   })();
@@ -741,6 +776,7 @@ export function workGraphsRepository(db: Database.Database) {
     claimAggregate,
     claimFanIn: claimAggregate,
     completeAggregate,
+    claimSpawn,
     attachChild,
   };
 }
