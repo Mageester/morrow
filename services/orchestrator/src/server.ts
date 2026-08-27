@@ -237,6 +237,13 @@ import { WorktreeManager, WorktreeError } from "./workspace/worktrees.js";
 import { integrationsRepository } from "./repositories/integrations.js";
 import { contextSummariesRepository } from "./repositories/context-summaries.js";
 import { createExecutionLeaseOwnerId, executionContinuityRepository, executionLeaseOwnerStatus } from "./repositories/execution-continuity.js";
+import { taskStartClaimsRepository } from "./repositories/task-start-claims.js";
+/**
+ * Bounds how long one orchestrator may hold the start fence for a child it has
+ * not yet driven out of a startable status. A crashed owner is recovered
+ * sooner than this through its provably dead process id.
+ */
+const TASK_START_CLAIM_LEASE_MS = 60_000;
 import { symbolIndexRepository } from "./repositories/symbols.js";
 import { IntegrationManager, IntegrationError } from "./workspace/integrations.js";
 import { SymbolIndex } from "./workspace/symbol-index.js";
@@ -424,6 +431,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   // do not expose an active-task query; a restart intentionally starts with an
   // empty set and can therefore reclaim queued children from durable state.
   const delegatedRunnerStarts = new Set<string>();
+  const taskStartClaims = taskStartClaimsRepository(deps.db);
+  const taskStartClaimOwnerId = createExecutionLeaseOwnerId();
 
   /**
    * Delegation ids are opaque database identifiers, not authorization. The
@@ -459,11 +468,34 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const active = delegatedRunnerStarts.has(taskId)
       || (typeof deps.runner.isActive === "function" && deps.runner.isActive(taskId));
     if (active) return;
-    deps.runner.run(taskId, task.status === "interrupted" ? { recovered: true } : {});
+    // Two orchestrators can wake the same queued child from durable state.
+    // The claim is the cross-process fence for the start side effect: it is
+    // granted atomically, bound to the authoritative parent, and only from a
+    // startable status, so an expired-lease takeover cannot start twice.
+    const claim = taskStartClaims.claim({
+      taskId,
+      ownerId: taskStartClaimOwnerId,
+      now: new Date().toISOString(),
+      leaseMs: TASK_START_CLAIM_LEASE_MS,
+      expectedParentTaskId: task.parentTaskId ?? null,
+    });
+    if (!claim.acquired) return;
+    try {
+      deps.runner.run(taskId, task.status === "interrupted" ? { recovered: true } : {});
+    } catch (error) {
+      // A start that never happened must not hold the durable fence, or no
+      // other owner could ever recover this child.
+      taskStartClaims.settle(taskId);
+      throw error;
+    }
     delegatedRunnerStarts.add(taskId);
   }
   deps.runner.onSettled?.((taskId) => {
     delegatedRunnerStarts.delete(taskId);
+    // Settlement terminalizes the start fence. The durable status gate keeps a
+    // finished task unstartable; a legitimately requeued child can be claimed
+    // again by whichever owner reclaims it.
+    taskStartClaims.settle(taskId);
     const task = tasks.getTaskById(taskId);
     if (task) delegations.reconcileChildSettlement(taskId, task.status, new Date().toISOString());
   });

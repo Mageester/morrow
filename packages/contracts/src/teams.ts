@@ -241,6 +241,8 @@ export type AcceptanceCriterionStatus = z.infer<typeof AcceptanceCriterionStatus
 
 export const HandoffArtifactRefSchema = z.object({
   id: z.string(),
+  // Optional for legacy callers; when present it is bound to durable evidence.
+  role: z.string().trim().min(1).max(120).optional(),
   path: z.string().min(1).max(1024),
   contentHash: z.string().min(1).max(128),
 }).strict();

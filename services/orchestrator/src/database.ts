@@ -2065,6 +2065,20 @@ export const migrations:Migration[]=[
     ALTER TABLE work_graph_units ADD COLUMN spawn_claim_lease_expires_at TEXT;
     ALTER TABLE work_graph_barriers ADD COLUMN aggregate_result_json TEXT;
   `}
+  ,{id:72,name:"task_start_claim_leases",sql:`
+    -- A child task can be replayed by more than one orchestrator after a
+    -- restart. This task-keyed lease fences the side effect of starting the
+    -- runner while retaining enough state for an expired/dead owner takeover.
+    CREATE TABLE task_start_claims (
+      task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+      claim_id TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      claimed_at TEXT NOT NULL,
+      lease_expires_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX task_start_claims_lease_idx ON task_start_claims(lease_expires_at);
+  `}
 ];
 /**
  * Durability mode for committed writes.

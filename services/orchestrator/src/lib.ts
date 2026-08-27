@@ -27,6 +27,68 @@ export {
 } from "./repositories/execution-continuity.js";
 export { projectRepository } from "./repositories/projects.js";
 export { taskRepository } from "./repositories/tasks.js";
+export {
+  workGraphsRepository,
+  type WorkGraphBarrierState,
+  type WorkUnitTerminalDisposition,
+  type WorkUnitStatus,
+  type WorkGraph,
+  type WorkUnit,
+  type CreateWorkGraphInput,
+  type CreateWorkUnitInput,
+  type FanInReadiness,
+  type WorkGraphAggregateClaim,
+} from "./repositories/work-graphs.js";
+
+export {
+  WorkGraphOrchestrator,
+  WorkGraphOrchestrationError,
+  workGraphOrchestrator,
+  readAuthoritativeChildTask,
+  type WorkGraphRepository,
+  type WorkGraphUnitRole,
+  type ReviewVerdict,
+  type WorkGraphUnitDefinition,
+  type ReviewerDefinition,
+  type WorkGraphDecompositionInput,
+  type WorkGraphDecomposition,
+  type AgentProfileSnapshot,
+  type SpawnChildRequest,
+  type SpawnChildResult,
+  type SpawnChild,
+  type ChildCanonicalAnswer,
+  type ChildVerification,
+  type ChildEvidence,
+  type ChildArtifact,
+  type ChildTaskSnapshot,
+  type ReadChild,
+  type SynthesisInput,
+  type Synthesize,
+  type WorkGraphOrchestratorDependencies,
+  type ChildSettlement,
+  type SynthesisOutcome,
+} from "./mission/work-graph-orchestrator.js";
+
+export {
+  WorkGraphTaskAdapter,
+  WorkGraphTaskAdapterError,
+  createWorkGraphTaskAdapter,
+  workGraphTaskAdapter,
+  findChildByAdmissionId,
+  authoritativeChildReader,
+  readAuthoritativeWorkGraphChild,
+  type WorkGraphTaskRunner,
+  type WorkGraphTaskRunOptions,
+  type WorkGraphTaskAdapterDependencies,
+  type WorkGraphChildDispatchResult,
+} from "./mission/work-graph-task-adapter.js";
+export {
+  taskStartClaimsRepository,
+  type TaskStartClaim,
+  type TaskStartClaimAttempt,
+  type TaskStartClaimReason,
+  type TaskStartClaimsRepositoryOptions,
+} from "./repositories/task-start-claims.js";
 
 // Execution building blocks. Exposed so an embedding host (and integration
 // tests exercising the real CLI client path) can stand up a deterministic

@@ -86,12 +86,15 @@ describe("cancellation lifecycle — subagent propagation (reproduction)", () =>
     seedTask(db, "child", "queued", "parent");
     const tasks = taskRepository(db);
     const runner = new TaskRunner(db, parkUntilAborted);
+    const settled: string[] = [];
+    runner.onSettled((taskId) => settled.push(taskId));
     runner.run("parent");
 
     runner.cancel("parent");
 
     expect(tasks.getTaskById("parent")?.status).toBe("cancelled");
     expect(tasks.getTaskById("child")?.status).toBe("cancelled");
+    expect(settled).toContain("child");
     db.close();
   });
 
