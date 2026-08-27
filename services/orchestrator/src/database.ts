@@ -1933,6 +1933,130 @@ export const migrations:Migration[]=[
     ALTER TABLE processes ADD COLUMN termination_reason TEXT;
     ALTER TABLE processes ADD COLUMN signal TEXT;
   `}
+  ,{id:69,name:"durable_work_graphs",sql:`
+    -- Native team decomposition is a parent-owned graph. These tables are
+    -- additive: existing tasks, delegations, and handoffs remain the source
+    -- of truth for their own records and are never rewritten by this schema.
+    CREATE TABLE work_graphs (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      parent_task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+      max_concurrency INTEGER NOT NULL CHECK(max_concurrency > 0),
+      active_count INTEGER NOT NULL DEFAULT 0 CHECK(active_count >= 0),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX work_graphs_parent_task_idx ON work_graphs(parent_task_id);
+
+    CREATE TABLE work_graph_barriers (
+      graph_id TEXT PRIMARY KEY REFERENCES work_graphs(id) ON DELETE CASCADE,
+      state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','ready','claimed','completed')),
+      result_cursor INTEGER NOT NULL DEFAULT 0 CHECK(result_cursor >= 0),
+      aggregate_claim_id TEXT,
+      aggregate_claim_owner TEXT,
+      aggregate_claimed_at TEXT,
+      aggregate_completed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE work_graph_units (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      graph_id TEXT NOT NULL REFERENCES work_graphs(id) ON DELETE CASCADE,
+      parent_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL CHECK(position >= 0),
+      idempotency_key TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      owner_profile_hash TEXT NOT NULL,
+      policy_fingerprint TEXT NOT NULL,
+      objective TEXT NOT NULL,
+      required INTEGER NOT NULL DEFAULT 1 CHECK(required IN (0,1)),
+      status TEXT NOT NULL CHECK(status IN ('pending','ready','admitted','running','succeeded','completed','verified','failed','blocked','cancelled','rejected')),
+      terminal_disposition TEXT CHECK(terminal_disposition IS NULL OR terminal_disposition IN ('succeeded','completed','verified','failed','blocked','cancelled','rejected')),
+      child_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      admission_owner_id TEXT,
+      admission_id TEXT,
+      admitted_at TEXT,
+      started_at TEXT,
+      terminal_at TEXT,
+      result_cursor INTEGER NOT NULL DEFAULT 0 CHECK(result_cursor >= 0),
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(graph_id, idempotency_key)
+    );
+    CREATE INDEX work_graph_units_order_idx ON work_graph_units(graph_id, position, id);
+    CREATE INDEX work_graph_units_ready_idx ON work_graph_units(graph_id, status, position, id);
+    CREATE UNIQUE INDEX work_graph_units_child_task_idx
+      ON work_graph_units(child_task_id) WHERE child_task_id IS NOT NULL;
+
+    CREATE TABLE work_graph_dependencies (
+      work_unit_id TEXT NOT NULL REFERENCES work_graph_units(id) ON DELETE CASCADE,
+      depends_on_unit_id TEXT NOT NULL REFERENCES work_graph_units(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(work_unit_id, depends_on_unit_id),
+      CHECK(work_unit_id <> depends_on_unit_id)
+    );
+    CREATE INDEX work_graph_dependencies_dependency_idx
+      ON work_graph_dependencies(depends_on_unit_id, work_unit_id);
+
+    CREATE TRIGGER work_graph_dependencies_graph_insert_guard
+    BEFORE INSERT ON work_graph_dependencies
+    WHEN (SELECT graph_id FROM work_graph_units WHERE id=NEW.work_unit_id) IS NULL
+      OR (SELECT graph_id FROM work_graph_units WHERE id=NEW.depends_on_unit_id) IS NULL
+      OR (SELECT graph_id FROM work_graph_units WHERE id=NEW.work_unit_id)
+         <> (SELECT graph_id FROM work_graph_units WHERE id=NEW.depends_on_unit_id)
+    BEGIN SELECT RAISE(ABORT,'work graph dependency crosses graph boundary'); END;
+    CREATE TRIGGER work_graph_dependencies_graph_update_guard
+    BEFORE UPDATE OF work_unit_id,depends_on_unit_id ON work_graph_dependencies
+    WHEN (SELECT graph_id FROM work_graph_units WHERE id=NEW.work_unit_id) IS NULL
+      OR (SELECT graph_id FROM work_graph_units WHERE id=NEW.depends_on_unit_id) IS NULL
+      OR (SELECT graph_id FROM work_graph_units WHERE id=NEW.work_unit_id)
+         <> (SELECT graph_id FROM work_graph_units WHERE id=NEW.depends_on_unit_id)
+    BEGIN SELECT RAISE(ABORT,'work graph dependency crosses graph boundary'); END;
+
+    -- A graph unit cannot claim a parent other than the graph's owner. This
+    -- keeps the parent task edge authoritative even if a future caller writes
+    -- directly through a lower-level repository.
+    CREATE TRIGGER work_graph_units_parent_insert_guard
+    BEFORE INSERT ON work_graph_units
+    WHEN (SELECT parent_task_id FROM work_graphs WHERE id=NEW.graph_id) IS NULL
+      OR NEW.parent_task_id <> (SELECT parent_task_id FROM work_graphs WHERE id=NEW.graph_id)
+    BEGIN SELECT RAISE(ABORT,'work graph unit parent does not match graph owner'); END;
+    CREATE TRIGGER work_graph_units_parent_update_guard
+    BEFORE UPDATE OF graph_id,parent_task_id ON work_graph_units
+    WHEN (SELECT parent_task_id FROM work_graphs WHERE id=NEW.graph_id) IS NULL
+      OR NEW.parent_task_id <> (SELECT parent_task_id FROM work_graphs WHERE id=NEW.graph_id)
+    BEGIN SELECT RAISE(ABORT,'work graph unit parent does not match graph owner'); END;
+    CREATE TRIGGER work_graph_units_result_cursor_guard
+    BEFORE UPDATE OF result_cursor ON work_graph_units
+      WHEN NEW.result_cursor < OLD.result_cursor
+      OR (NEW.result_cursor > OLD.result_cursor AND NEW.status NOT IN ('succeeded','completed','verified','failed','blocked','cancelled','rejected'))
+    BEGIN SELECT RAISE(ABORT,'work graph result cursor requires a terminal unit'); END;
+  `}
+  ,{id:70,name:"work_graph_result_and_claim_leases",sql:`
+    -- Terminal results are immutable evidence. Result import may repeat the
+    -- same encoded value, but a later write cannot replace it or terminalize
+    -- a unit without a non-null result.
+    ALTER TABLE work_graph_barriers ADD COLUMN aggregate_claim_lease_expires_at TEXT;
+    CREATE TRIGGER work_graph_units_terminal_result_required_insert
+    BEFORE INSERT ON work_graph_units
+    WHEN NEW.status IN ('succeeded','completed','verified','failed','blocked','cancelled','rejected')
+      AND NEW.result_json IS NULL
+    BEGIN SELECT RAISE(ABORT,'terminal work graph unit requires a result'); END;
+    CREATE TRIGGER work_graph_units_terminal_result_required_update
+    BEFORE UPDATE OF status,result_json ON work_graph_units
+    WHEN NEW.status IN ('succeeded','completed','verified','failed','blocked','cancelled','rejected')
+      AND NEW.result_json IS NULL
+    BEGIN SELECT RAISE(ABORT,'terminal work graph unit requires a result'); END;
+    CREATE TRIGGER work_graph_units_terminal_result_immutable
+    BEFORE UPDATE OF result_json ON work_graph_units
+    WHEN OLD.status IN ('succeeded','completed','verified','failed','blocked','cancelled','rejected')
+      AND OLD.result_json IS NOT NULL
+      AND OLD.result_json IS NOT NEW.result_json
+    BEGIN SELECT RAISE(ABORT,'terminal work graph result is immutable'); END;
+  `}
 ];
 /**
  * Durability mode for committed writes.
