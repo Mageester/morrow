@@ -28,6 +28,8 @@ export interface WorkGraphIntegrationDependencies {
   db: Database.Database;
   runner: WorkGraphTaskRunner;
   now?: () => string;
+  /** Provider routing environment handed to the child dispatcher. */
+  env?: NodeJS.ProcessEnv;
   /** Stable identity for durable start and synthesis claims. */
   ownerId?: string;
   /**
@@ -81,6 +83,7 @@ export class WorkGraphIntegration {
       db: dependencies.db,
       runner: dependencies.runner,
       startClaimOwnerId: this.ownerId,
+      ...(dependencies.env !== undefined ? { env: dependencies.env } : {}),
       ...(dependencies.now !== undefined ? { now: dependencies.now } : {}),
       ...(dependencies.synthesize !== undefined ? { synthesize: dependencies.synthesize } : {}),
     });

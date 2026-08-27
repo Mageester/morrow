@@ -104,6 +104,25 @@ export { runBrowserSiteAcceptance, MORROW_COMPANY_SITE_PROMPT, type BrowserSiteA
 export { runCortexLearningAcceptance, type CortexLearningAcceptanceResult } from "./acceptance/cortex-learning.js";
 export { runSustainedAutonomyAcceptance, type SustainedAutonomyAcceptanceResult } from "./acceptance/sustained-autonomy.js";
 export { runLongSessionAcceptance, type LongSessionAcceptanceResult } from "./acceptance/long-session.js";
+export {
+  runWorkGraphAcceptance,
+  runWorkGraphGauntlet,
+  verifyProductionBoundary,
+  WORK_GRAPH_ACCEPTANCE_BOUNDARY,
+  WORK_GRAPH_GAUNTLET_BUDGETS,
+  WORK_GRAPH_GAUNTLET_SPEC,
+  type WorkGraphAcceptanceAdapter,
+  type WorkGraphAcceptanceBoundary,
+  type WorkGraphAcceptanceResult,
+  type WorkGraphGauntletSpec,
+  type WorkGraphProductionEvidence,
+} from "./acceptance/work-graph.js";
+export {
+  createProductionWorkGraphGauntlet,
+  runProductionWorkGraphGauntlet,
+  PRODUCTION_WORK_GRAPH_MODULES,
+  type ProductionWorkGraphGauntlet,
+} from "./acceptance/work-graph-production.js";
 export { MockProvider } from "./provider/mock.js";
 
 export { listProviderStatuses, getProviderStatus, isProviderConfigured, createProvider, PROVIDER_IDS } from "./provider/registry.js";

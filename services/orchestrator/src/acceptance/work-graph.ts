@@ -1,3 +1,4 @@
+import Database from "better-sqlite3";
 import { WORKING_SET_DEFAULTS } from "../execution/conversation-working-set.js";
 
 /** Semantic fields that must survive an oversized execution checkpoint. */
@@ -18,8 +19,30 @@ export const REQUIRED_RECOVERY_CAPSULE_CATEGORIES = [
 
 export type RecoveryCapsuleCategory = (typeof REQUIRED_RECOVERY_CAPSULE_CATEGORIES)[number];
 
-/** The fixed topology exercised by this gate. */
-export const WORK_GRAPH_GAUNTLET_SPEC = {
+/** One owner-attributed participant in the gauntlet topology. */
+export interface WorkGraphGauntletParticipant {
+  key: string;
+  ownerId: string;
+  ownerProfileHash: string;
+  objective: string;
+}
+
+/**
+ * The topology this gate exercises. It is a structural type, not a literal:
+ * a production run supplies the same shape with its own durable agent
+ * identities and profile hashes.
+ */
+export interface WorkGraphGauntletSpec {
+  scenarioId: string;
+  parentTaskId: string;
+  objective: string;
+  maxConcurrency: number;
+  workers: readonly WorkGraphGauntletParticipant[];
+  reviewer: WorkGraphGauntletParticipant;
+}
+
+/** The fixed topology exercised by the deterministic foundation gate. */
+export const WORK_GRAPH_GAUNTLET_SPEC: WorkGraphGauntletSpec = {
   scenarioId: "work-graph-gauntlet-v1",
   parentTaskId: "mission-parent",
   objective: "Assemble a verified result from two parallel workers and an independent review.",
@@ -34,9 +57,7 @@ export const WORK_GRAPH_GAUNTLET_SPEC = {
     ownerProfileHash: "profile:quality",
     objective: "Review the workers' result independently.",
   },
-} as const;
-
-export type WorkGraphGauntletSpec = typeof WORK_GRAPH_GAUNTLET_SPEC;
+};
 
 export interface WorkGraphUnitObservation {
   id: string;
@@ -185,16 +206,16 @@ export interface EfficiencyObservation {
 }
 
 /**
- * The current gate is intentionally honest about its seam. It proves the
- * report contract and failure attribution using a deterministic adapter; it
- * does not claim that the production controller, repository, API, or CLI is
- * wired to this scenario yet.
+ * The seam an acceptance run was actually produced through.
+ *
+ * `injected-adapter` proves the report contract and failure attribution with a
+ * deterministic adapter and claims nothing about production wiring.
+ * `production` may only be reported after this module independently re-reads
+ * the durable database the run wrote; the adapter cannot assert it.
  */
-export interface WorkGraphAcceptanceBoundary {
-  kind: "injected-adapter";
-  productionIntegrated: false;
-  limitations: readonly string[];
-}
+export type WorkGraphAcceptanceBoundary =
+  | { kind: "injected-adapter"; productionIntegrated: false; limitations: readonly string[] }
+  | { kind: "production"; productionIntegrated: true; limitations: readonly string[]; modules: readonly string[] };
 
 export const WORK_GRAPH_ACCEPTANCE_BOUNDARY: WorkGraphAcceptanceBoundary = {
   kind: "injected-adapter",
@@ -205,6 +226,119 @@ export const WORK_GRAPH_ACCEPTANCE_BOUNDARY: WorkGraphAcceptanceBoundary = {
     "SQLite integrity covers only the adapter-owned acceptance fixture database",
   ],
 };
+
+/**
+ * What an adapter must hand over to claim the production boundary. Only the
+ * database path and identities are trusted as *pointers*; every fact is
+ * re-read from that file by this module through its own connection.
+ */
+export interface WorkGraphProductionEvidence {
+  /** Absolute path to the file-backed SQLite database production wrote. */
+  databasePath: string;
+  graphId: string;
+  parentTaskId: string;
+  /** Child task ids the run claims were imported, in fan-in order. */
+  workerChildTaskIds: readonly string[];
+  /** Production modules the run drove. Reported, never trusted as proof. */
+  modules: readonly string[];
+  limitations?: readonly string[];
+}
+
+/**
+ * Independently confirm that a claimed production run left the durable state
+ * it reported. This opens its own read-only connection: an adapter cannot
+ * satisfy it by returning fabricated observations.
+ */
+export function verifyProductionBoundary(
+  evidence: WorkGraphProductionEvidence,
+  reported: { fanInOrder: readonly string[]; canonicalAnswerPresent: boolean },
+): string[] {
+  const diagnostics: string[] = [];
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(evidence.databasePath, { readonly: true, fileMustExist: true });
+  } catch (error) {
+    return [`production evidence database could not be opened: ${error instanceof Error ? error.message : String(error)}`];
+  }
+  try {
+    const table = (name: string): boolean => Boolean(db!.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+    ).get(name));
+    // The durable schema itself must be the production one.
+    for (const required of [
+      "work_graphs", "work_graph_units", "work_graph_barriers", "task_start_claims",
+      "tasks", "canonical_task_answers", "agent_execution_checkpoints", "mission_recovery_decisions",
+    ]) {
+      if (!table(required)) diagnostics.push(`production database is missing durable table ${required}`);
+    }
+    if (diagnostics.length > 0) return diagnostics;
+
+    const graph = db.prepare("SELECT id,parent_task_id FROM work_graphs WHERE id=?")
+      .get(evidence.graphId) as { id: string; parent_task_id: string } | undefined;
+    if (!graph) diagnostics.push(`production database has no work graph ${evidence.graphId}`);
+    else if (graph.parent_task_id !== evidence.parentTaskId) diagnostics.push("production work graph is not owned by the reported parent task");
+
+    const barrier = db.prepare("SELECT state,aggregate_result_json,aggregate_completed_at FROM work_graph_barriers WHERE graph_id=?")
+      .get(evidence.graphId) as { state: string; aggregate_result_json: string | null; aggregate_completed_at: string | null } | undefined;
+    if (barrier?.state !== "completed") diagnostics.push(`production fan-in barrier is ${barrier?.state ?? "missing"}, expected completed`);
+    if (!barrier?.aggregate_result_json) diagnostics.push("production fan-in completed without a durable aggregate result");
+    if (!barrier?.aggregate_completed_at) diagnostics.push("production fan-in has no durable completion timestamp");
+    if (!reported.canonicalAnswerPresent) diagnostics.push("production run reported no canonical answer");
+
+    const units = db.prepare(
+      "SELECT id,status,result_cursor,child_task_id FROM work_graph_units WHERE graph_id=? ORDER BY position ASC,id ASC",
+    ).all(evidence.graphId) as Array<{ id: string; status: string; result_cursor: number; child_task_id: string | null }>;
+    const durableOrder = units.map((unit) => unit.id);
+    if (durableOrder.length !== reported.fanInOrder.length || durableOrder.some((id, index) => id !== reported.fanInOrder[index])) {
+      diagnostics.push("reported fan-in order does not match the durable work-unit order");
+    }
+    for (const unit of units) {
+      if (unit.status !== "verified") diagnostics.push(`durable unit ${unit.id} is ${unit.status}, expected verified`);
+      if (unit.result_cursor < 1) diagnostics.push(`durable unit ${unit.id} has no imported result`);
+      if (!unit.child_task_id) diagnostics.push(`durable unit ${unit.id} has no attached child task`);
+    }
+    if (barrier?.aggregate_result_json) {
+      try {
+        const aggregate = JSON.parse(barrier.aggregate_result_json) as { units?: Array<{ id?: unknown }> };
+        const aggregateOrder = (aggregate.units ?? []).map((unit) => String(unit.id));
+        if (aggregateOrder.length !== durableOrder.length || aggregateOrder.some((id, index) => id !== durableOrder[index])) {
+          diagnostics.push("durable aggregate does not carry the ordered durable work units");
+        }
+      } catch {
+        diagnostics.push("durable aggregate result is not readable JSON");
+      }
+    }
+
+    // Every claimed child must be a real terminal task with durable canonical
+    // evidence, read straight from the production tables.
+    const attached = new Set(units.map((unit) => unit.child_task_id).filter((id): id is string => Boolean(id)));
+    for (const childTaskId of evidence.workerChildTaskIds) {
+      if (!attached.has(childTaskId)) diagnostics.push(`claimed child ${childTaskId} is not attached to a durable work unit`);
+      const task = db.prepare("SELECT id,status FROM tasks WHERE id=?").get(childTaskId) as { id: string; status: string } | undefined;
+      if (!task) diagnostics.push(`claimed child ${childTaskId} is not a durable task`);
+      else if (!["completed", "verified"].includes(task.status)) diagnostics.push(`claimed child ${childTaskId} is ${task.status}, expected a terminal success`);
+      const canonical = db.prepare("SELECT task_id FROM canonical_task_answers WHERE task_id=?").get(childTaskId);
+      if (!canonical) diagnostics.push(`claimed child ${childTaskId} has no durable canonical answer`);
+    }
+
+    // The other production subsystems this gate claims to have exercised.
+    const checkpoints = db.prepare("SELECT COUNT(*) AS count FROM agent_execution_checkpoints WHERE task_id=?")
+      .get(evidence.parentTaskId) as { count: number };
+    if (checkpoints.count < 1) diagnostics.push("production run left no durable execution checkpoint for the parent task");
+    const recoveries = db.prepare("SELECT COUNT(*) AS count FROM mission_recovery_decisions") as unknown as { get(): { count: number } };
+    if (recoveries.get().count < 1) diagnostics.push("production run left no durable controller recovery decision");
+    const startClaims = db.prepare("SELECT COUNT(*) AS count FROM task_start_claims").get() as { count: number };
+    if (startClaims.count !== 0) diagnostics.push("production run left an unsettled durable child-start claim");
+
+    const integrity = db.prepare("PRAGMA integrity_check").get() as Record<string, unknown>;
+    if (String(Object.values(integrity)[0]) !== "ok") diagnostics.push("production database failed its own integrity check");
+  } catch (error) {
+    diagnostics.push(`production evidence verification failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    db?.close();
+  }
+  return diagnostics;
+}
 
 /** Explicit deterministic budgets for the injected failure campaign. */
 export const WORK_GRAPH_GAUNTLET_BUDGETS = {
@@ -222,6 +356,12 @@ export const WORK_GRAPH_GAUNTLET_BUDGETS = {
  * making this acceptance module own route, CLI, or database wiring.
  */
 export interface WorkGraphAcceptanceAdapter {
+  /**
+   * Supplied only by an adapter that drove real production paths. The boundary
+   * it names is not taken on trust: `runWorkGraphAcceptance` re-reads the
+   * durable database before reporting `productionIntegrated: true`.
+   */
+  readonly productionEvidence?: WorkGraphProductionEvidence | undefined;
   reset(spec: WorkGraphGauntletSpec): Promise<void> | void;
   decompose(spec: WorkGraphGauntletSpec): Promise<WorkGraphDecompositionObservation> | WorkGraphDecompositionObservation;
   dispatch(input: { graphId: string }): Promise<DelegationObservation> | DelegationObservation;
@@ -368,6 +508,17 @@ function exactIds(actual: readonly string[], expected: readonly string[]): boole
   return actual.length === expected.length && unique(actual).length === actual.length && sameIds(actual, expected);
 }
 
+/**
+ * Identity-equal without ordering. Dependency edges are canonicalized by the
+ * durable store, so their order carries no meaning — unlike fan-in order,
+ * which stays strictly ordered.
+ */
+function exactIdSet(actual: readonly string[], expected: readonly string[]): boolean {
+  return actual.length === expected.length
+    && unique(actual).length === actual.length
+    && expected.every((id) => actual.includes(id));
+}
+
 function eventIds(events: readonly ImmutableWorkGraphEvent[]): string[] {
   return events.map((event) => event.id);
 }
@@ -429,7 +580,7 @@ function matchesManifest(units: readonly WorkGraphUnitObservation[], expected: r
       && unit.position === manifest.position
       && unit.ownerId === manifest.ownerId
       && unit.ownerProfileHash === manifest.ownerProfileHash
-      && exactIds(unit.dependsOn, manifest.dependsOn);
+      && exactIdSet(unit.dependsOn, manifest.dependsOn);
   });
 }
 
@@ -969,12 +1120,37 @@ export async function runWorkGraphAcceptance(input: {
     for (const phase of PHASES.slice(1)) phases[phase] = phaseReport({}, ["phase skipped because decomposition produced no graph"]);
   }
 
+  // Boundary resolution is deliberately last and deliberately independent: a
+  // claimed production run is only reported as production after this module
+  // re-reads the durable database through its own read-only connection.
+  let boundary: WorkGraphAcceptanceBoundary = WORK_GRAPH_ACCEPTANCE_BOUNDARY;
+  const evidence = input.adapter.productionEvidence;
+  if (evidence) {
+    const boundaryDiagnostics = verifyProductionBoundary(evidence, {
+      fanInOrder: fanIn?.orderedUnitIds ?? [],
+      canonicalAnswerPresent: Boolean(fanIn?.canonicalAnswer),
+    });
+    if (boundaryDiagnostics.length === 0) {
+      boundary = {
+        kind: "production",
+        productionIntegrated: true,
+        modules: evidence.modules,
+        limitations: evidence.limitations ?? [
+          "provider and model output quality are out of scope; the scenario drives deterministic durable state through production code paths",
+        ],
+      };
+    } else {
+      diagnostics.push(...boundaryDiagnostics.map((entry) => `production boundary rejected: ${entry}`));
+    }
+  }
+  const boundaryRejected = Boolean(evidence) && boundary.kind !== "production";
+
   const failedPhases = PHASES.filter((phase) => !phases[phase].passed);
-  const passed = failedPhases.length === 0 && sqliteIntegrity === "ok" && Boolean(fanIn?.canonicalAnswer);
+  const passed = failedPhases.length === 0 && sqliteIntegrity === "ok" && Boolean(fanIn?.canonicalAnswer) && !boundaryRejected;
   return {
     scenarioId: "work-graph-gauntlet-v1",
     passed,
-    message: passed ? null : `Failed phases: ${failedPhases.join(", ")}${sqliteIntegrity !== "ok" ? "; sqliteIntegrity=failed" : ""}. ${diagnostics.join(" ")}`,
+    message: passed ? null : `Failed phases: ${failedPhases.join(", ")}${sqliteIntegrity !== "ok" ? "; sqliteIntegrity=failed" : ""}${boundaryRejected ? "; productionBoundary=rejected" : ""}. ${diagnostics.join(" ")}`,
     graphId,
     parentTaskId: spec.parentTaskId,
     maxConcurrency: spec.maxConcurrency,
@@ -986,8 +1162,8 @@ export async function runWorkGraphAcceptance(input: {
     terminalState: fanIn?.terminalState ?? null,
     canonicalAnswer: fanIn?.canonicalAnswer ?? null,
     sqliteIntegrity,
-    boundary: WORK_GRAPH_ACCEPTANCE_BOUNDARY,
-    limitations: WORK_GRAPH_ACCEPTANCE_BOUNDARY.limitations,
+    boundary,
+    limitations: boundary.limitations,
   };
 }
 
