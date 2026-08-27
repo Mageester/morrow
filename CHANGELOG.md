@@ -6,6 +6,64 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-08-26
+
+Post-release validation of the published 0.7.1 package against real
+multi-provider, long-running agent workloads found three defects. Two of them
+are failures of behaviour 0.7.1 itself claimed to have fixed. All three are
+closed here, each with a regression test that fails against 0.7.1.
+
+This release also carries the distribution and interface fixes found in the
+first half of that validation, which had not yet shipped.
+
+### Fixed
+
+- Stopping a supervised process now reaps its descendants. The graceful path
+  signalled the leader process alone and skipped its escalation whenever the
+  leader was still registered as live — so a leader that exited promptly on
+  SIGTERM had its children orphaned while the record reported a clean cancel.
+  The better-behaved the process, the more certainly its descendants leaked.
+  The group is now signalled directly and the escalation always sweeps it.
+  Automatic cleanup at task end and at service shutdown already forced a tree
+  kill and were never affected; this was the user-initiated stop path — the
+  `stop_process` tool, `morrow processes kill`, and the web Stop button.
+- A mission whose review-cycle budget is exhausted now terminates on every
+  verdict. The budget was consulted only when the reviewer asked for
+  revisions; any other non-approved verdict asked for a further review that
+  the budget then refused, leaving the mission in `reviewing` and cycling
+  execute → validate → recover indefinitely. Measured against the 0.7.1
+  package, one mission ran a further 13 minutes past its budget, created 115
+  tasks and spent 5.4M input tokens with no mission-level progress, and
+  stopped only when cancelled by hand.
+- `MORROW_HOME` now isolates the CLI, not only the database. The service
+  honoured it while the client fell through to the default port, so commands
+  run against an isolated home silently drove whichever service owned that
+  port. The endpoint a service binds is recorded in its own home and consulted
+  before the default; explicit flags, config and `MORROW_SERVICE_URL` keep
+  their precedence, and a home that never ran a service is unchanged.
+- A mission's terminal result reports the number of tasks it actually
+  completed. It was hard-coded to zero, so a mission that ran 110 tasks
+  summarised itself as "0 task(s)" — understating the work, and hiding exactly
+  the kind of runaway described above.
+- `--help` prints help instead of running the command. `morrow stop --help`
+  stopped a running service and `morrow start --help` started one; the flag was
+  parsed but never short-circuited the command.
+- Reasoning is no longer disabled by missing model metadata. A fresh install
+  with no models.dev snapshot reported that every model outside the small
+  bundled catalogue exposes no reasoning controls, and the depth was silently
+  dropped. The refresh that fixes it had no caller either, so `morrow models
+  --refresh` and a `refresh` subcommand now expose it.
+- The composer's Stop button no longer renders on top of Queue.
+
+### Verified
+
+- Confirmed against the published 0.7.1 artifact and re-verified against the
+  0.7.2 package: `write_plan`, intentional `expectedExitCode`, `keepAlive`,
+  background-process cleanup at task end, foreground timeout kills, address
+  parsing, cancellation during active work, restart and resume, provider
+  rate-limit and upstream-failure reporting, and refusal to record completion
+  for work that does not satisfy the stated requirements.
+
 ## [0.7.1] - 2026-08-26
 
 The provider-gauntlet follow-up makes long-running work bounded, observable,

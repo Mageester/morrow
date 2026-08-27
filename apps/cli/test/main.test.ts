@@ -195,6 +195,33 @@ describe("morrow root command", () => {
     expect(help).not.toContain("provider/model");
   });
 
+  // `--help` used to be handled for an allowlist of commands only, so every
+  // command outside it fell through and RAN: `morrow start --help` started the
+  // service on the default port, `morrow stop --help` stopped whatever the pid
+  // file named, and `morrow ps --help` dropped into the onboarding wizard. A
+  // help flag must never have side effects, on any command.
+  it.each([["start"], ["stop"], ["ps"], ["ask"], ["models"]])(
+    "prints %s help without executing the command",
+    async (command) => {
+      await expect(run([command, "--help"])).resolves.toBe(0);
+      const help = stdout.mock.calls.map(([value]) => String(value)).join("");
+      const err = stderr.mock.calls.map(([value]) => String(value)).join("");
+      expect(help).toContain(`Morrow ${command}`);
+      // None of the side effects the old fall-through produced.
+      expect(err).not.toContain("service start requested");
+      expect(err).not.toContain("service stop requested");
+      expect(err).not.toContain("spawned service process");
+      expect(err).not.toContain("Let's complete the quick setup");
+    },
+  );
+
+  it("documents the model metadata refresh in models help", async () => {
+    await expect(run(["models", "--help"])).resolves.toBe(0);
+    const help = stdout.mock.calls.map(([value]) => String(value)).join("");
+    expect(help).toContain("morrow models refresh");
+    expect(help).toContain("--refresh");
+  });
+
   it("exposes cortex help without starting the service", async () => {
     await expect(run(["cortex", "--help"])).resolves.toBe(0);
     const help = stdout.mock.calls.map(([value]) => String(value)).join("");

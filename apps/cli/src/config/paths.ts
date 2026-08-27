@@ -20,6 +20,9 @@ export interface MorrowPaths {
   projectConfigFile: string | null;
   secretsFile: string;
   pidFile: string;
+  /** Endpoint this home's service last bound, so CLI clients in the same
+   *  MORROW_HOME target it instead of the global default port. */
+  serviceFile: string;
   logFile: string;
   defaultDbPath: string;
 }
@@ -49,6 +52,7 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env, cwd: string =
     projectConfigFile,
     secretsFile: join(home, "secrets.env"),
     pidFile: join(home, "orchestrator.pid"),
+    serviceFile: join(home, "service.json"),
     logFile: join(home, "orchestrator.log"),
     defaultDbPath,
   };

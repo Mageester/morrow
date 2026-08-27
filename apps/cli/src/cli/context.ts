@@ -3,6 +3,7 @@ import { ConfigStore } from "../config/config.js";
 import type { MorrowPaths } from "../config/paths.js";
 import { Output } from "./output.js";
 import { flagString } from "./args.js";
+import { readServiceRecord } from "../service/record.js";
 
 export interface ServiceConfig {
   host: string;
@@ -55,9 +56,14 @@ export class Context {
 
 function resolveService(config: ConfigStore, flags: Record<string, string | boolean>, paths: MorrowPaths, explicitBaseUrl?: string): ServiceConfig {
   const svc = config.merged.service ?? {};
-  const host = flagString(flags, "host") ?? svc.host ?? process.env.MORROW_BIND_HOST ?? "127.0.0.1";
+  // The endpoint this MORROW_HOME's service last bound, consulted before the
+  // global default. Without it an isolated home resolved to 4317 and every
+  // client command silently targeted whichever service owned that port —
+  // MORROW_HOME isolated the database while the CLI still drove production.
+  const recorded = readServiceRecord(paths.serviceFile);
+  const host = flagString(flags, "host") ?? svc.host ?? process.env.MORROW_BIND_HOST ?? recorded?.host ?? "127.0.0.1";
   const portRaw = flagString(flags, "port") ?? (svc.port !== undefined ? String(svc.port) : undefined) ?? process.env.PORT;
-  const port = portRaw ? Number(portRaw) : 4317;
+  const port = portRaw ? Number(portRaw) : (recorded?.port ?? 4317);
   // No CLI flag resolves the target Morrow service's own base URL: `--url` is
   // already the documented, tested flag for `providers configure`'s provider
   // endpoint (e.g. `providers configure openai-compatible --url <endpoint>`),

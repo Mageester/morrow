@@ -126,6 +126,56 @@ describe("mission Guardian", () => {
     }));
   });
 
+  // Regression: the budget was consulted only on the `revisions_required`
+  // path. Every other non-approved verdict fell through to
+  // `run_independent_review`, which assertReviewApplicable then rejects once
+  // the budget is spent — so the mission cycled validate -> review -> recover
+  // forever, burning provider spend while mission state never advanced.
+  it.each(["insufficient_evidence", "approved_with_risks", null] as const)(
+    "terminates instead of asking for another review when verdict %s meets an exhausted budget",
+    (verdict) => {
+      const decision = evaluateGuardian(fixture({
+        reviewVerdict: verdict,
+        reviewMissingVerification: ["npm test execution and results"],
+        reviewConcerns: ["Unresolved patch_context_mismatch."],
+        reviewCyclesUsed: 2,
+        maxReviewCycles: 2,
+      }));
+
+      expect(decision.nextActions).toContain("review_cycle_exhausted");
+      expect(decision.nextActions).not.toContain("run_independent_review");
+      expect(decision.failed).toContainEqual(expect.objectContaining({
+        kind: "review",
+        detail: expect.stringContaining("npm test execution and results"),
+      }));
+    },
+  );
+
+  it("still asks for a review on a non-approved verdict while budget remains", () => {
+    const decision = evaluateGuardian(fixture({
+      reviewVerdict: "insufficient_evidence",
+      reviewCyclesUsed: 1,
+      maxReviewCycles: 2,
+    }));
+
+    expect(decision.nextActions).toContain("run_independent_review");
+    expect(decision.nextActions).not.toContain("review_cycle_exhausted");
+  });
+
+  it("does not refresh a stale review once the budget is exhausted", () => {
+    const decision = evaluateGuardian(fixture({
+      reviewVerdict: "revisions_required",
+      reviewCreatedAt: "2026-08-25T10:00:00.000Z",
+      latestEvidenceAt: "2026-08-25T10:01:00.000Z",
+      reviewMissingVerification: ["npm test"],
+      reviewCyclesUsed: 2,
+      maxReviewCycles: 2,
+    }));
+
+    expect(decision.nextActions).toContain("review_cycle_exhausted");
+    expect(decision.nextActions).not.toContain("run_independent_review");
+  });
+
   it("stops review recovery at the configured cycle budget and preserves findings", () => {
     const decision = evaluateGuardian(fixture({
       reviewVerdict: "revisions_required",

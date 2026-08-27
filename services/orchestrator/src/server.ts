@@ -579,6 +579,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     completion: buildMissionCompletion({ env: process.env }),
     backupDir: join(resolveMorrowHome(process.env), "mission-checkpoints"),
     cortex: cortexService,
+    countCompletedTasks: (missionId) =>
+      (deps.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE mission_id = ? AND status = 'completed'").get(missionId) as { n: number } | undefined)?.n ?? 0,
   });
   const missionProjection = (missionId: string) => {
     const mission = missionService.get(missionId);

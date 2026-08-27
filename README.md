@@ -4,7 +4,7 @@
 
 Morrow is a self-hosted, deeply customizable personal AI agent. Local-first, provider-neutral, with visible execution, explicit permissions, and persistent memory.
 
-> **Status:** v0.7.1 beta. Windows 10/11 x64, Linux x64/arm64, and macOS x64/arm64 packages are supported.
+> **Status:** v0.7.2 beta. Windows 10/11 x64, Linux x64/arm64, and macOS x64/arm64 packages are supported.
 
 ## Quick Install (Windows)
 
@@ -37,7 +37,11 @@ page, verifies the credential, and lets you pick a default model from the models
 that key can actually reach. Credentials are stored locally and take effect
 without a restart. See [the provider reference](docs/providers.md).
 
-The 0.7.1 release hardens long-running provider work: CLI timeouts and
+The 0.7.2 release closes three defects found by post-release validation of the
+0.7.1 package: a graceful process stop now reaps the whole process group
+instead of leaving descendants behind, a mission whose review budget is spent
+terminates instead of looping, and MORROW_HOME now isolates the CLI's service
+target as well as its database. The 0.7.1 release hardened long-running provider work: CLI timeouts and
 cancellation now clean up durable missions, descendant processes, and provider
 requests; foreground and background commands report bounded, observable
 lifecycle outcomes; and provider loops stop after a clear no-progress bound.

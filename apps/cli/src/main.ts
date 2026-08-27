@@ -150,6 +150,11 @@ const VALUE_FLAGS = [
   "transport",
 ];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
+
+/** Commands that print their own `--help` and are verified to do so without
+ * executing anything. Every other command is intercepted by the generic help
+ * path, so `--help` can never trigger the action. */
+const SELF_DOCUMENTING_COMMANDS = new Set(["uninstall"]);
 export const COMMANDS = new Set([
   "ask",
   "fix",
@@ -285,22 +290,23 @@ export async function run(argv: string[]): Promise<number> {
     }),
   });
   try {
-    if (flagBool(parsed.flags, "help") && parsed.positionals.length === 0)
-      return printHelp(out);
-    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "cortex")
-      return (await load.printCortexHelp())(out);
-    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "mission")
-      return (await load.printMissionHelp())(out);
-    if (
-      flagBool(parsed.flags, "help") &&
-      parsed.positionals[0] === "acceptance"
-    )
-      return (await load.printAcceptanceHelp())(out);
-    if (
-      flagBool(parsed.flags, "help")
-      && ["providers", "build", "run"].includes(parsed.positionals[0] ?? "")
-    ) {
-      return printCommandHelp(out, parsed.positionals[0]!);
+    // `--help` must never reach a command. This was previously an allowlist,
+    // so `morrow start --help` started the service, `morrow stop --help`
+    // stopped it, and `morrow ps --help` opened the onboarding wizard — a help
+    // flag with side effects, on the one idiom every user reaches for first.
+    // Any command with `--help` describes itself and exits here instead.
+    if (flagBool(parsed.flags, "help")) {
+      const command = parsed.positionals[0];
+      if (!command) return printHelp(out);
+      if (command === "cortex") return (await load.printCortexHelp())(out);
+      if (command === "mission") return (await load.printMissionHelp())(out);
+      if (command === "acceptance") return (await load.printAcceptanceHelp())(out);
+      // Commands that render their own, richer help and are verified to do it
+      // without side effects fall through to their handler. Everything else is
+      // intercepted above. The polarity matters: intercepting by default means
+      // a newly added command is safe under `--help` without anyone
+      // remembering to register it.
+      if (!SELF_DOCUMENTING_COMMANDS.has(command)) return printCommandHelp(out, command);
     }
     if (parsed.positionals[0] === "help") return printHelp(out);
     if (flagBool(parsed.flags, "version")) return printVersion(out);
@@ -766,8 +772,48 @@ function printCommandHelp(out: Output, command: string): number {
       "",
       "Ctrl+C cancels the active task. Use morrow mission or morrow build for durable, timeout-bounded execution.",
     ].join("\n"),
+    start: [
+      "Morrow start — start the background service",
+      "",
+      "Usage:",
+      "  morrow start [--port <port>] [--host <host>]",
+    ].join("\n"),
+    stop: [
+      "Morrow stop — stop the background service",
+      "",
+      "Usage:",
+      "  morrow stop [--port <port>]",
+    ].join("\n"),
+    ps: [
+      "Morrow ps — list background processes Morrow owns",
+      "",
+      "Usage:",
+      "  morrow ps [--json]",
+    ].join("\n"),
+    ask: [
+      "Morrow ask — inspect and answer; never writes",
+      "",
+      "Usage:",
+      "  morrow ask \"<question>\" [--provider <id>] [--model <id>] [--in <directory>]",
+      "  morrow ask --message \"<question>\"   (non-interactive)",
+    ].join("\n"),
+    models: [
+      "Morrow models — inspect and select model routes",
+      "",
+      "Usage:",
+      "  morrow models [list] [--all] [--refresh]",
+      "  morrow models refresh",
+      "  morrow models select [<model-id>]",
+      "  morrow models info <model-id>",
+      "",
+      "--refresh fetches public model metadata (context windows, reasoning capability).",
+      "Morrow never fetches it on its own, so a fresh install shows \"?\" until you do.",
+    ].join("\n"),
   };
-  const help = helpByCommand[command] ?? `Morrow ${command}`;
+  // A command with no dedicated entry still must not fall through to running:
+  // name it, and point at the command list rather than printing a bare title.
+  const help = helpByCommand[command]
+    ?? [`Morrow ${command}`, "", "Run `morrow --help` for the full command list."].join("\n");
   if (out.json) out.data({ version: VERSION, command, help });
   else out.print(help);
   return EXIT.OK;

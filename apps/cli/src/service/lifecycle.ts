@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { Context } from "../cli/context.js";
 import { CliError, EXIT } from "../cli/errors.js";
 import { MorrowApi } from "../client/api.js";
+import { writeServiceRecord } from "./record.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const BIN_PATH = resolve(here, "../../bin/morrow.mjs");
@@ -80,6 +81,7 @@ export async function serveForeground(ctx: Context): Promise<number> {
 
   mkdirSync(ctx.paths.home, { recursive: true });
   writeFileSync(ctx.paths.pidFile, String(process.pid));
+  writeServiceRecord(ctx.paths.serviceFile, ctx.service.host, ctx.service.port);
 
   ctx.out.success(`Morrow orchestrator listening at http://${ctx.service.host}:${ctx.service.port}`);
   ctx.out.info(`Database: ${ctx.service.dbPath}`);
@@ -165,6 +167,7 @@ export async function serveDetached(ctx: Context): Promise<void> {
   });
   child.unref();
   if (child.pid) writeFileSync(ctx.paths.pidFile, String(child.pid));
+  writeServiceRecord(ctx.paths.serviceFile, ctx.service.host, ctx.service.port);
   ctx.out.diag(`[${lifecycleTimestamp()}] spawned service process pid ${child.pid ?? "unknown"}; polling health`);
 
   const api = new MorrowApi(ctx.service.baseUrl);

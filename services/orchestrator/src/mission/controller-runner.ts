@@ -343,6 +343,9 @@ export function createDefaultMissionControllerRunner(
     backupDir: join(resolveMorrowHome(env), "mission-checkpoints"),
     now,
     cortex,
+    countCompletedTasks: (missionId) =>
+      (dependencies.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE mission_id = ? AND status = 'completed'").get(missionId) as { n: number } | undefined)?.n ?? 0,
+
     runOptions: {
       // Browser gates render the mission's own service, so the policy is opened
       // exactly as far as loopback and no further. `isLoopbackUrl` in the

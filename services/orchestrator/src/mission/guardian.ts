@@ -172,16 +172,23 @@ export function evaluateGuardian(input: GuardianInput): GuardianDecision {
   }
 
   if (input.reviewVerdict !== "approved") {
+    // The budget gates EVERY path that would ask for another review, not just
+    // the revisions path. `run_independent_review` is rejected downstream by
+    // assertReviewApplicable once the budget is spent, so emitting it here
+    // after exhaustion left the mission cycling through validate -> review ->
+    // recover forever, burning provider spend while the mission-level state
+    // never advanced. Any non-approved verdict must terminate instead.
+    const budgetExhausted = reviewBudgetExhausted(input);
     if (input.reviewVerdict === "revisions_required") {
       const reviewIsStale = isLaterTimestamp(input.latestEvidenceAt, input.reviewCreatedAt);
-      if (reviewIsStale) {
+      if (reviewIsStale && !budgetExhausted) {
         failed.push({
           kind: "review",
           id: input.missionId,
           detail: "Independent review is stale because newer evidence was recorded; refresh the review before dispatching revisions.",
         });
         nextActions.add("run_independent_review");
-      } else if (reviewBudgetExhausted(input)) {
+      } else if (budgetExhausted) {
         failed.push({
           kind: "review",
           id: input.missionId,
@@ -192,6 +199,9 @@ export function evaluateGuardian(input: GuardianInput): GuardianDecision {
         failed.push({ kind: "review", id: input.missionId, detail: "Independent review requires revisions." });
         nextActions.add("apply_review_revisions");
       }
+    } else if (budgetExhausted) {
+      failed.push({ kind: "review", id: input.missionId, detail: reviewBudgetDetail(input) });
+      nextActions.add("review_cycle_exhausted");
     } else {
       missing.push({ kind: "review", id: input.missionId, detail: "Independent approval is missing." });
       nextActions.add("run_independent_review");
@@ -273,8 +283,11 @@ function reviewBudgetDetail(input: GuardianInput): string {
     ...(input.reviewMissingVerification ?? []).map((item) => `Missing verification: ${item}`),
     ...(input.reviewConcerns ?? []).map((item) => `Concern: ${item}`),
   ];
+  const lead = input.reviewVerdict === "revisions_required"
+    ? "Independent review requires revisions"
+    : `Independent review did not approve (${input.reviewVerdict ?? "no verdict"})`;
   return [
-    `Independent review requires revisions, but the review-cycle budget is exhausted (${used}/${max}).`,
+    `${lead}, but the review-cycle budget is exhausted (${used}/${max}).`,
     ...findings,
   ].join(" ");
 }
