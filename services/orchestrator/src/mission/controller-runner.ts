@@ -54,6 +54,17 @@ export interface MissionControllerRunnerDependencies {
   leaseMs?: number;
 }
 
+/**
+ * One controller generation's external worker wait. `promise` stays null while
+ * a waiter has reserved the slot but the drive has not yet registered a
+ * detached callback for it.
+ */
+interface DetachedWorkerWait {
+  generation: number;
+  promise: Promise<void> | null;
+  waiters: number;
+}
+
 type ControllerFailurePhase = "drive" | "tick" | "prepare" | "closeout";
 
 type DispatchEffect =
@@ -91,14 +102,18 @@ export interface DefaultMissionControllerRunnerDependencies {
  * follow-up run.
  */
 export class MissionControllerRunner {
-  private readonly activePromises = new Map<string, Promise<void>>();
+  private readonly activePromises = new Map<string, {
+    generation: number;
+    promise: Promise<void>;
+  }>();
   // External worker waits outlive the fenced drive promise. Keep their
   // classification promise attached to the mission so waitFor() cannot report
   // success before a detached callback has durably handled its failure.
-  private readonly detachedPromises = new Map<string, {
-    promise: Promise<void>;
-    waiters: number;
-  }>();
+  // Keyed by controller generation: a waiter reserves its generation's slot
+  // before awaiting, so the callback that drive is about to register cannot
+  // settle, wake, and self-clean inside the waiter's blind window.
+  private readonly detachedPromises = new Map<string, Map<number, DetachedWorkerWait>>();
+  private nextGeneration = 0;
   private readonly pendingWakes = new Set<string>();
   private readonly cancelled = new Set<string>();
   private readonly now: () => string;
@@ -115,13 +130,15 @@ export class MissionControllerRunner {
       this.pendingWakes.add(missionId);
       return;
     }
-    const promise = this.drive(missionId).finally(() => {
-      this.activePromises.delete(missionId);
+    const generation = ++this.nextGeneration;
+    const promise = this.drive(missionId, generation).finally(() => {
+      const active = this.activePromises.get(missionId);
+      if (active?.generation === generation) this.activePromises.delete(missionId);
       if (this.pendingWakes.delete(missionId) && !this.cancelled.has(missionId)) {
         this.run(missionId);
       }
     });
-    this.activePromises.set(missionId, promise);
+    this.activePromises.set(missionId, { generation, promise });
     // `drive` classifies expected controller failures durably. Keep this last
     // catch as a process-level guard for persistence/runtime failures in that
     // classifier itself; a rejected promise must never be mistaken for a
@@ -178,7 +195,7 @@ export class MissionControllerRunner {
     // its detached promise remains available to a subsequent waitFor() call
     // for truthful callback-path failure reporting.
     const active = this.activePromises.get(missionId);
-    if (active) await active;
+    if (active) await active.promise;
   }
 
   isActive(missionId: string): boolean {
@@ -186,24 +203,82 @@ export class MissionControllerRunner {
   }
 
   async waitFor(missionId: string): Promise<void> {
-    while (true) {
-      const active = this.activePromises.get(missionId);
-      if (active) {
-        await active;
-        continue;
-      }
-      const detached = this.detachedPromises.get(missionId);
-      if (!detached) return;
-      detached.waiters += 1;
-      try {
-        await detached.promise;
-      } finally {
-        detached.waiters -= 1;
-        if (detached.waiters === 0 && this.detachedPromises.get(missionId) === detached) {
-          this.detachedPromises.delete(missionId);
-        }
-      }
+    // A caller waits for the generation visible at the boundary. Do not loop
+    // back through a wake that settles this generation: acceptance callers
+    // must get a chance to inspect their completion predicate before an
+    // external worker starts a new controller revision.
+    const active = this.activePromises.get(missionId);
+    if (!active) {
+      // No drive owns this mission, so no generation can register a new
+      // detached callback. Adopt the newest one still tracked, if any.
+      const latest = this.latestDetached(missionId);
+      if (!latest) return;
+      await this.awaitDetached(missionId, latest);
+      return;
     }
+    // Reserve this generation's detached slot *before* awaiting the drive.
+    // The reservation is what makes adoption independent of whether the
+    // worker settles before or after the drive promise resolves.
+    const entry = this.reserveDetached(missionId, active.generation);
+    try {
+      await active.promise;
+      if (entry.promise) await entry.promise;
+    } finally {
+      this.releaseDetached(missionId, entry);
+    }
+  }
+
+  /** Await an already-registered detached callback without adopting a newer one. */
+  private async awaitDetached(missionId: string, entry: DetachedWorkerWait): Promise<void> {
+    entry.waiters += 1;
+    try {
+      if (entry.promise) await entry.promise;
+    } finally {
+      this.releaseDetached(missionId, entry);
+    }
+  }
+
+  private detachedEntries(missionId: string): Map<number, DetachedWorkerWait> {
+    const existing = this.detachedPromises.get(missionId);
+    if (existing) return existing;
+    const created = new Map<number, DetachedWorkerWait>();
+    this.detachedPromises.set(missionId, created);
+    return created;
+  }
+
+  /** Claim interest in one generation's detached callback, present or not yet. */
+  private reserveDetached(missionId: string, generation: number): DetachedWorkerWait {
+    const entries = this.detachedEntries(missionId);
+    const existing = entries.get(generation);
+    if (existing) {
+      existing.waiters += 1;
+      return existing;
+    }
+    const entry: DetachedWorkerWait = { generation, promise: null, waiters: 1 };
+    entries.set(generation, entry);
+    return entry;
+  }
+
+  private releaseDetached(missionId: string, entry: DetachedWorkerWait): void {
+    entry.waiters -= 1;
+    this.cleanupDetached(missionId, entry);
+  }
+
+  private latestDetached(missionId: string): DetachedWorkerWait | undefined {
+    const entries = this.detachedPromises.get(missionId);
+    return entries ? [...entries.values()].at(-1) : undefined;
+  }
+
+  private cleanupDetached(missionId: string, entry: DetachedWorkerWait): void {
+    if (entry.waiters > 0) return;
+    // A reserved slot with no callback yet still belongs to a live drive that
+    // may register one; only an unheld, registered (or abandoned) slot is
+    // safe to drop.
+    if (!entry.promise && this.activePromises.get(missionId)?.generation === entry.generation) return;
+    const entries = this.detachedPromises.get(missionId);
+    if (entries?.get(entry.generation) !== entry) return;
+    entries.delete(entry.generation);
+    if (entries.size === 0) this.detachedPromises.delete(missionId);
   }
 
   /** Reconcile a terminal mission whose runtime is already terminal and cannot
@@ -260,7 +335,7 @@ export class MissionControllerRunner {
     }
   }
 
-  private async drive(missionId: string): Promise<void> {
+  private async drive(missionId: string, generation: number): Promise<void> {
     const claimedAt = this.now();
     let fence: MissionRuntimeLeaseFence | null = null;
     try {
@@ -336,26 +411,33 @@ export class MissionControllerRunner {
           this.dependencies.runtime.releaseLease({ missionId, fence, now: this.now() });
           leaseHeld = false;
           if (taskActive && taskId) {
+            // Publish into this generation's slot, which a waiter may already
+            // hold. Registering before the chain is attached is what lets a
+            // waiter adopt this callback regardless of settle order.
+            const entries = this.detachedEntries(missionId);
+            const entry = entries.get(generation)
+              ?? ((): DetachedWorkerWait => {
+                const created: DetachedWorkerWait = { generation, promise: null, waiters: 0 };
+                entries.set(generation, created);
+                return created;
+              })();
             const detached = this.dependencies.taskRunner.waitFor(taskId)
               .then(() => {
-                if (!this.cancelled.has(missionId)) this.wake(missionId);
+                // An observer waiting on this generation owns the caller
+                // boundary; it will explicitly wake the next generation.
+                if (!this.cancelled.has(missionId) && entry.waiters === 0) this.wake(missionId);
               })
               .then(undefined, async (error: unknown) => {
                 if (error instanceof MissionRuntimeLeaseFenceError) return;
                 await this.handleReleasedLeaseFailure(missionId, error);
               });
-            const entry = { promise: detached, waiters: 0 };
-            this.detachedPromises.set(missionId, entry);
+            entry.promise = detached;
             void detached.then(
               () => {
-                if (entry.waiters === 0 && this.detachedPromises.get(missionId) === entry) {
-                  this.detachedPromises.delete(missionId);
-                }
+                this.cleanupDetached(missionId, entry);
               },
               () => {
-                if (entry.waiters === 0 && this.detachedPromises.get(missionId) === entry) {
-                  this.detachedPromises.delete(missionId);
-                }
+                this.cleanupDetached(missionId, entry);
               },
             );
           }

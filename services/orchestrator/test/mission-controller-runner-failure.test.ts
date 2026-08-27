@@ -187,16 +187,21 @@ describe("mission controller runner failure recovery", () => {
     const { runtime } = fixture();
     let resolveWait!: () => void;
     let active = true;
+    let releaseTick!: () => void;
+    const tickGate = new Promise<void>((resolve) => { releaseTick = resolve; });
     const waitingTaskRunner = {
       isActive: () => active,
       waitFor: () => new Promise<void>((resolve) => { resolveWait = resolve; }),
     };
     const controllerRunner = new MissionControllerRunner({
       runtime,
-      controller: { tick: vi.fn(async () => ({
-        runtime: { ...runtime.get("mission-1")!, activeTaskId: "task-1" },
-        action: "wait:task-1", immediate: false, waitingForExternal: true,
-      })) },
+      controller: { tick: vi.fn(async () => {
+        await tickGate;
+        return {
+          runtime: { ...runtime.get("mission-1")!, activeTaskId: "task-1" },
+          action: "wait:task-1", immediate: false, waitingForExternal: true,
+        };
+      }) },
       taskRunner: waitingTaskRunner,
       ownerId: "controller-test",
       now: () => now,
@@ -206,11 +211,161 @@ describe("mission controller runner failure recovery", () => {
     const waiting = controllerRunner.waitFor("mission-1");
     let settled = false;
     void waiting.then(() => { settled = true; });
+    releaseTick();
     await Promise.resolve();
+    expect(settled).toBe(false);
+    await vi.waitFor(() => expect((controllerRunner as unknown as {
+      detachedPromises: Map<string, unknown>;
+    }).detachedPromises.size).toBe(1));
+    await vi.waitFor(() => expect(controllerRunner.isActive("mission-1")).toBe(false));
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(settled).toBe(false);
     active = false;
     resolveWait();
     await waiting;
+  });
+
+  it("adopts the awaited generation's detached callback even when the worker settles first", async () => {
+    // Regression: waitFor() snapshotted the detached map *before* the drive it
+    // is awaiting registered its detached recovery callback. A worker that
+    // settles inside that window fired a spontaneous wake (because it saw no
+    // waiter) and self-cleaned, so the caller returned having adopted nothing
+    // while a fresh controller generation was already running.
+    const { runtime } = fixture();
+    let ticks = 0;
+    const controllerRunner = new MissionControllerRunner({
+      runtime,
+      controller: {
+        tick: vi.fn(async () => {
+          ticks += 1;
+          return {
+            runtime: { ...runtime.get("mission-1")!, activeTaskId: "task-1" },
+            action: "wait:task-1",
+            immediate: false,
+            waitingForExternal: true,
+          };
+        }),
+      },
+      taskRunner: {
+        isActive: () => true,
+        // Already settled: the detached chain races the drive promise.
+        waitFor: () => Promise.resolve(),
+      },
+      ownerId: "controller-test",
+      now: () => now,
+    });
+
+    controllerRunner.run("mission-1");
+    await controllerRunner.waitFor("mission-1");
+
+    expect(ticks).toBe(1);
+    expect(controllerRunner.isActive("mission-1")).toBe(false);
+    expect((controllerRunner as unknown as {
+      detachedPromises: Map<string, unknown>;
+    }).detachedPromises.size).toBe(0);
+
+    // The caller — not the settled worker — owns advancing the mission.
+    controllerRunner.wake("mission-1");
+    await controllerRunner.waitFor("mission-1");
+    expect(ticks).toBe(2);
+  });
+
+  it("keeps a detached callback failure observable to the generation that registered it", async () => {
+    const { runtime } = fixture();
+    const recovered: string[] = [];
+    const controllerRunner = new MissionControllerRunner({
+      runtime,
+      controller: {
+        tick: vi.fn(async () => ({
+          runtime: { ...runtime.get("mission-1")!, activeTaskId: "task-1" },
+          action: "wait:task-1",
+          immediate: false,
+          waitingForExternal: true,
+        })),
+      },
+      taskRunner: {
+        isActive: () => true,
+        waitFor: () => Promise.reject(new Error("worker classification failed")),
+      },
+      ownerId: "controller-test",
+      now: () => now,
+    });
+    controllerRunner.run("mission-1");
+    await controllerRunner.waitFor("mission-1");
+
+    recovered.push(...runtime.listRecoveryDecisions("mission-1").map((decision) => decision.diagnosis));
+    expect(recovered.some((diagnosis) => diagnosis.includes("worker classification failed"))).toBe(true);
+  });
+
+  it("stops at a rejection boundary instead of following a detached revision", async () => {
+    const { runtime } = fixture();
+    let resolveWorker!: () => void;
+    let workerSettled = false;
+    const worker = new Promise<void>((resolve) => {
+      resolveWorker = () => {
+        workerSettled = true;
+        resolve();
+      };
+    });
+    let ticks = 0;
+    let rejected = false;
+    const controllerRunner = new MissionControllerRunner({
+      runtime,
+      controller: {
+        tick: vi.fn(async () => {
+          ticks += 1;
+          await Promise.resolve();
+          if (ticks === 1) {
+            rejected = true;
+            return {
+              runtime: { ...runtime.get("mission-1")!, activeTaskId: "task-1" },
+              action: "guardian_rejected",
+              immediate: false,
+              waitingForExternal: true,
+            };
+          }
+          return {
+            runtime: runtime.get("mission-1")!,
+            action: "revision_dispatch",
+            immediate: false,
+            waitingForExternal: false,
+          };
+        }),
+      },
+      taskRunner: {
+        isActive: () => !workerSettled,
+        waitFor: vi.fn(async () => worker),
+      },
+      ownerId: "controller-test",
+      now: () => now,
+    });
+
+    const caller = (async () => {
+      controllerRunner.run("mission-1");
+      while (!rejected) {
+        await controllerRunner.waitFor("mission-1");
+        if (!rejected && !controllerRunner.isActive("mission-1")) {
+          controllerRunner.run("mission-1");
+        }
+      }
+      await controllerRunner.stop("mission-1");
+    })();
+
+    await vi.waitFor(() => expect(ticks).toBe(1));
+    await vi.waitFor(() => expect((controllerRunner as unknown as {
+      detachedPromises: Map<string, unknown>;
+    }).detachedPromises.size).toBe(1));
+    resolveWorker();
+    await caller;
+
+    expect(ticks).toBe(1);
+    await vi.waitFor(() => expect((controllerRunner as unknown as {
+      detachedPromises: Map<string, unknown>;
+    }).detachedPromises.size).toBe(0));
+
+    controllerRunner.wake("mission-1");
+    await controllerRunner.waitFor("mission-1");
+    expect(ticks).toBe(2);
   });
 
   it("does not terminal-mutate after repeated drive failures without a lease", async () => {
