@@ -6,6 +6,96 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-08-27
+
+A reliability release for long-running, multi-agent work. Missions that
+delegate to a team now keep their state in the database rather than in the
+process that happened to start them, so a crash, a restart, or a second
+orchestrator on the same database no longer duplicates work, loses a finished
+child's result, or leaves a mission spinning.
+
+The headline change is a durable work graph: a parent task can decompose work
+into a persisted graph of units with bounded concurrency, dependency ordering,
+and an independent reviewer, and that graph is now driven by the running
+orchestrator instead of only existing as a library.
+
+### Added
+
+- Durable work-graph orchestration. A parent task can now own a persisted graph
+  of work units with atomic bounded admission, dependency ordering, and an
+  independent reviewer whose owner and profile must differ from every producing
+  unit. Child results are imported only from the child's own durable terminal
+  record — a canonical answer, a passed verification, and hashed evidence — so a
+  worker cannot assert its own completion. A rejected review blocks synthesis,
+  and fan-in runs once, in a deterministic order, under a claim that survives a
+  crash mid-synthesis.
+- The work graph is wired into the running orchestrator, not just available as a
+  library. Settled children are reconciled into their parent's graph on the same
+  callback that settles a delegation; startup replays every graph whose fan-in
+  has not completed; and a completed fan-in wakes the mission controller, which
+  reads the persisted aggregate rather than being handed a result.
+- Public model metadata now applies bundled or cached state synchronously and
+  refreshes models.dev in the background during service startup without delaying
+  readiness. Failed refreshes retain current metadata and emit only a generic
+  warning; this public HTTPS request may occur before provider selection and
+  carries no credentials or task data.
+
+### Fixed
+
+- Two orchestrators can no longer both start the same queued child. Start
+  tracking was process-local, and a restart deliberately begins with an empty
+  set, so a child reclaimed from durable state could be started twice — running
+  the same delegated work, and its side effects, concurrently. A child's start
+  is now fenced by a task-keyed lease that checks the child's identity, its
+  parent binding, and its startable status inside the same database transaction
+  that grants the lease. A crashed owner is recovered through its provably dead
+  process id; a lease that merely expired can never restart a child some owner
+  already began.
+- A mission no longer burns its Guardian revision budget waiting on a controller
+  it can never regain control of. An internal wait could follow controller
+  generations created by later wakes indefinitely; it now waits for exactly the
+  generation it started with, while still reporting failures raised by that
+  generation's detached recovery work.
+- Controller failures outside a tick are now classified and persisted instead of
+  being logged and dropped. Unexpected drive, preparation, and close-out
+  failures record a durable, bounded retry decision that survives a restart, so
+  a broken controller action reaches an evidenced blocked state rather than
+  looping in one process.
+- A context rollover no longer empties the recovery checkpoint. Bounding an
+  oversized checkpoint discarded whole categories, so a mission resumed after a
+  rollover could lose its objective, requirements, decisions, completed work,
+  changed files, unresolved failures, approvals, routing, or pending work. Each
+  category is now compacted deterministically and carries a loss-aware digest
+  when it is shortened.
+- Delegated admission is atomic and delegated handoffs are verified. Counting
+  admitted delegations and then starting one could over-admit past a team's
+  concurrency limit, and a retried spawn could fork a second child; admission is
+  now a single transactional operation with a stable idempotency key, and a
+  handoff is bound to the child's authoritative terminal evidence rather than to
+  what the caller asserts.
+- A mission that ends blocked reports the number of tasks it actually completed.
+  The terminal close-out path still hard-coded the count to zero, so a mission
+  that ran two tasks summarised itself as "0 task(s)".
+- A model catalog refresh no longer commits partial or unusable metadata.
+- The web client now surfaces an event-stream failure while offline instead of
+  leaving the stream silently stalled.
+
+### Verified
+
+- A production-integrated acceptance gauntlet drives the real repositories,
+  orchestrator, task adapter, start fence, startup reconciliation, checkpoint
+  compaction, Guardian, and worker-recovery classifier against a real database,
+  then re-reads that database through an independent read-only connection before
+  it will report itself as production-integrated. It covers controller crash and
+  recovery, process restart, checkpoint rollover fidelity, refusal of a false
+  completion claim, bounded parallel fan-out, cross-process spawn and start
+  idempotency, authoritative result import, independent reviewer identity,
+  rejection blocking synthesis, ordered fan-in, crash-safe synthesis, restart
+  reconciliation, failure attribution by subsystem, and provider, tool, token
+  and retry budgets.
+- Full repository suite green at this commit: 2750 orchestrator tests, 841 CLI,
+  448 web, 7 dashboard; type checks and builds pass across all workspaces.
+
 ## [0.7.2] - 2026-08-26
 
 Post-release validation of the published 0.7.1 package against real
@@ -94,11 +184,6 @@ that launched it, while preserving local-first privacy and provider choice.
 - Provider discovery, refresh status, model selection, and cached model data
   now use one consistent source of truth and remain usable across restarts,
   including when a refresh is unavailable.
-- Public model metadata now applies bundled or cached state synchronously and
-  refreshes models.dev in the background during service startup without delaying
-  readiness. Failed refreshes retain current metadata and emit only a generic
-  warning; this public HTTPS request may occur before provider selection and
-  carries no credentials or task data.
 - Help flags bypass onboarding and work in TTY, pipe, and CI environments;
   optional stdin lifecycle methods are guarded when a non-TTY stream does not
   provide them.

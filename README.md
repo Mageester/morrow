@@ -4,7 +4,7 @@
 
 Morrow is a self-hosted, deeply customizable personal AI agent. Local-first, provider-neutral, with visible execution, explicit permissions, and persistent memory.
 
-> **Status:** v0.7.2 beta. Windows 10/11 x64, Linux x64/arm64, and macOS x64/arm64 packages are supported.
+> **Status:** v0.7.3 beta. Windows 10/11 x64, Linux x64/arm64, and macOS x64/arm64 packages are supported.
 
 ## Quick Install (Windows)
 
@@ -37,7 +37,14 @@ page, verifies the credential, and lets you pick a default model from the models
 that key can actually reach. Credentials are stored locally and take effect
 without a restart. See [the provider reference](docs/providers.md).
 
-The 0.7.2 release closes three defects found by post-release validation of the
+The 0.7.3 release makes long-running delegated work durable. A parent task can
+decompose work into a persisted graph of units with bounded concurrency,
+dependency ordering, and an independent reviewer, and the running orchestrator
+now drives that graph across restarts: a settled child's result is imported
+from its own terminal record, a rejected review blocks synthesis, and fan-in
+happens once in a deterministic order. Starting a delegated child is fenced by
+a durable lease, so two orchestrators on one database cannot both run it. The
+0.7.2 release closed three defects found by post-release validation of the
 0.7.1 package: a graceful process stop now reaps the whole process group
 instead of leaving descendants behind, a mission whose review budget is spent
 terminates instead of looping, and MORROW_HOME now isolates the CLI's service
