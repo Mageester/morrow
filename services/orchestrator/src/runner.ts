@@ -74,6 +74,12 @@ export class TaskRunner {
     return () => this.settledListeners.delete(listener);
   }
 
+  private notifySettled(taskId: string): void {
+    for (const listener of this.settledListeners) {
+      try { listener(taskId); } catch { /* observers never break runner cleanup */ }
+    }
+  }
+
   run(taskId: string, opts: { recovered?: boolean; resumeCheckpoint?: boolean; checkpointCursor?: number; executionLease?: ExecutionLeaseClaim } = {}) {
     if (this.activeTasks.has(taskId)) {
       throw new Error("Duplicate execution rejected");
@@ -160,9 +166,7 @@ export class TaskRunner {
           this.activeTasks.delete(taskId);
           this.activePromises.delete(taskId);
           this.abortControllers.delete(taskId);
-          for (const listener of this.settledListeners) {
-            try { listener(taskId); } catch { /* observers never break runner cleanup */ }
-          }
+          this.notifySettled(taskId);
           resolve();
         }
       }, 0);
@@ -284,6 +288,11 @@ export class TaskRunner {
           );
         }
       }
+
+      // A queued task has no runner promise whose finally block can emit the
+      // settlement notification. Notify synchronously so delegated admission
+      // is reconciled even when cancellation happens before dispatch.
+      if (!this.activePromises.has(taskId)) this.notifySettled(taskId);
     }
 
   }

@@ -71,6 +71,8 @@ export interface AgentTaskDispatcherDependencies {
 export interface SpawnAgentChatSubagentOptions {
   deferRun?: boolean;
   delegationId?: string;
+  /** Client-supplied retry key for REST child admission. */
+  idempotencyKey?: string;
   /** Present only for model-authored ask_teammate calls. */
   toolCallId?: string;
   /** Model-authored calls must use the standalone-target refusal rules. */
@@ -156,17 +158,21 @@ export function spawnAgentChatSubagent(
       throw new AgentTaskDispatchError(409, "Team agents must be started through the delegation API", "TEAM_AGENT_REQUIRES_DELEGATION");
     }
 
-    const idempotencyKey = options.toolCallId
+    const idempotencyKey = options.idempotencyKey
+      ?? (options.toolCallId
       ? `ask_teammate:${parent.id}:${options.toolCallId}`
       : options.delegationId
         ? `delegation:${parent.id}:${options.delegationId}`
-        : undefined;
+        : undefined);
     const content = label ?? `Delegated task for ${agent.name}`;
     const tasks = taskRepository(dependencies.db);
     let conversationId: string | undefined;
     if (idempotencyKey) {
       const existing = tasks.findByIdempotencyKey(parent.projectId, idempotencyKey);
       if (existing) {
+        if (existing.parentTaskId !== parent.id || existing.agentId !== agent.id) {
+          throw new AgentTaskDispatchError(409, "Idempotency key was reused for a different parent or agent", "IDEMPOTENCY_CONFLICT");
+        }
         const row = dependencies.db.prepare(
           "SELECT conversation_id FROM conversation_messages WHERE task_id=? ORDER BY rowid ASC LIMIT 1",
         ).get(existing.id) as { conversation_id?: string } | undefined;
@@ -238,6 +244,13 @@ export function spawnAgentChatSubagent(
           refs: contextRefs,
           now: new Date().toISOString(),
         });
+      }
+      // A concurrent process can win the idempotency insert after this caller
+      // created its fresh shell conversation. Replay the winner's messages and
+      // remove that empty shell so a retry cannot leave an orphan conversation.
+      if (result.replayed && createdConversationId
+        && result.userMessage.conversationId !== createdConversationId) {
+        conversations.deleteConversation(createdConversationId, parent.projectId);
       }
       // dispatchAgentTask already starts ordinary children. Context-bearing
       // children are deliberately deferred above so their validated handles
@@ -321,9 +334,16 @@ function assertReplayMatches(
   }
 }
 
-function requestFingerprint(conversationId: string, request: SendMessageInput): string {
+function requestFingerprint(
+  conversationId: string,
+  request: SendMessageInput,
+  parentTaskId: string | null = null,
+  delegationId: string | null = null,
+): string {
   const canonical = {
     conversationId,
+    parentTaskId,
+    delegationId,
     content: request.content,
     missionId: request.missionId ?? null,
     worktreeId: request.worktreeId ?? null,
@@ -469,14 +489,15 @@ export function dispatchAgentTask(
     if (delegationId && (!delegation
       || delegation.parentTaskId !== parentTaskId
       || delegation.agentId !== agent.id
-      || delegation.status !== (deferRun ? "pending_approval" : "running"))) {
+      || !((deferRun && (delegation.status === "pending_approval" || delegation.status === "approved"))
+        || (!deferRun && delegation.status === "running")))) {
       throw new AgentTaskDispatchError(409, "Agent dispatch is not authorized by the delegation", "DELEGATION_POLICY_REQUIRED");
     }
     if (agent.teamId && (!delegation || delegation.parentTaskId !== parentTaskId)) {
       throw new AgentTaskDispatchError(409, "Team agents must be started through an approved delegation", "TEAM_AGENT_REQUIRES_DELEGATION");
     }
   }
-  const idempotencyFingerprint = requestFingerprint(conversationId, body);
+  const idempotencyFingerprint = requestFingerprint(conversationId, body, parentTaskId ?? null, delegationId ?? null);
 
   if (body.idempotencyKey) {
     const existing = tasks.findByIdempotencyKey(conversation.projectId, body.idempotencyKey);
@@ -577,7 +598,17 @@ export function dispatchAgentTask(
       : undefined;
     if (!winner) throw error;
     assertReplayMatches(dependencies.db, winner, idempotencyFingerprint);
-    return replayResult(dependencies.db, conversationId, winner);
+    const winnerConversation = dependencies.db.prepare(
+      "SELECT conversation_id FROM conversation_messages WHERE task_id=? ORDER BY rowid ASC LIMIT 1",
+    ).get(winner.id) as { conversation_id?: unknown } | undefined;
+    if (typeof winnerConversation?.conversation_id !== "string" || !winnerConversation.conversation_id) {
+      throw new AgentTaskDispatchError(
+        409,
+        "Idempotent request exists without a complete committed dispatch bundle",
+        "IDEMPOTENCY_INCOMPLETE",
+      );
+    }
+    return replayResult(dependencies.db, winnerConversation.conversation_id, winner);
   }
   if (!deferRun) dependencies.runner.run(bundle.task.id);
 

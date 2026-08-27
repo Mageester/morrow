@@ -12,6 +12,53 @@ import { teammateProfileFingerprint } from "../src/tools/teammate-delegation.js"
 
 function ts() { return new Date().toISOString(); }
 
+function seedAuthoritativeChild(db: any, taskId: string, options: {
+  evidenceMetadata?: Record<string, unknown>;
+  completion?: unknown;
+  verification?: Record<string, unknown>;
+} = {}): void {
+  const records = taskRecordsRepository(db);
+  const base = Date.now();
+  const at = (offset: number) => new Date(base + offset).toISOString();
+  records.transitionTask(taskId, "running", { id: `${taskId}-running`, createdAt: at(100), payload: {} });
+  records.appendEvidence({
+    id: "artifact-1", taskId, type: "file", path: "README.md",
+    metadata: options.evidenceMetadata ?? { role: "verified", contentHash: "sha256:abc" }, createdAt: at(200),
+  });
+  const verificationEvent = records.appendEvent({
+    id: `${taskId}-verification`, taskId, type: "tool.completed",
+    payload: { id: "verify-call", toolName: "run_command", status: "completed", exitCode: 0 }, createdAt: at(300),
+  });
+  db.prepare(`INSERT INTO agent_execution_segments(
+    id,task_id,mission_id,sequence,status,boundary_reason,provider_id,model,route_json,
+    owner_id,lease_generation,lease_expires_at,started_at,closed_at
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    `${taskId}-segment`, taskId, null, 1, "completed", "task_complete", "mock", "mock-model", "{}",
+    null, 1, null, at(250), at(400),
+  );
+  db.prepare(`INSERT INTO agent_provider_turns(
+    id,task_id,segment_id,turn_key,ordinal,assistant_text,tool_calls_json,created_at
+  ) VALUES(?,?,?,?,?,?,?,?)`).run(
+    `${taskId}-turn`, taskId, `${taskId}-segment`, "verified-turn", 1, "README summarized and verified.",
+    JSON.stringify({ version: 1, toolCalls: [{ id: "verify-call", name: "run_command" }], isFinal: true }), at(350),
+  );
+  db.prepare(`INSERT INTO canonical_task_answers(id,task_id,mission_id,content,evidence_json,created_at)
+    VALUES(?,?,?,?,?,?)`).run(
+    `${taskId}-answer`, taskId, null, "README summarized and verified.",
+    JSON.stringify({
+      sourceTurnKey: "verified-turn",
+      durableEventCursor: verificationEvent.sequence,
+      completion: options.completion ?? null,
+      verification: options.verification ?? { status: "passed", toolCallId: "verify-call", exitCode: 0 },
+      unresolvedBlocker: null,
+      unresolvedFailures: [],
+      requirementsSatisfied: true,
+      status: "completed",
+    }), at(500),
+  );
+  records.transitionTask(taskId, "completed", { id: `${taskId}-completed`, createdAt: at(600), payload: {} });
+}
+
 describe("Teams API — Research and verify preset", () => {
   let db: any;
   let app: any;
@@ -233,10 +280,7 @@ describe("Delegation API — objective to handoff", () => {
     const child = taskRepository(db).getTaskById(running.childTaskId);
     expect(child?.parentTaskId).toBe("parent");
     expect(child?.agentId).toBe(researcherId);
-    taskRecordsRepository(db).appendEvidence({
-      id: "verified-readme", taskId: running.childTaskId, type: "file", path: "README.md",
-      metadata: { role: "verified", contentHash: "sha256:abc" }, createdAt: ts(),
-    });
+    seedAuthoritativeChild(db, running.childTaskId);
 
     const handoff = await app.inject({
       method: "POST", url: `/api/delegations/${delegation.id}/handoff`,
@@ -255,6 +299,47 @@ describe("Delegation API — objective to handoff", () => {
     const after = await app.inject({ method: "GET", url: `/api/delegations/${delegation.id}?parentTaskId=parent` });
     expect(after.json().delegation.status).toBe("completed");
     expect(after.json().handoff.id).toBe(handoff.json().id);
+  });
+
+  it("wakes a committed child when the first runner start fails and the process restarts", async () => {
+    await app.close();
+    let firstStarts = 0;
+    const crashingRunner = {
+      run: (_taskId: string) => {
+        firstStarts += 1;
+        throw new Error("simulated runner crash");
+      },
+      isActive: (_taskId: string) => false,
+    };
+    app = buildServer({ db, runner: crashingRunner as any });
+
+    const create = (await app.inject({
+      method: "POST", url: "/api/tasks/parent/delegations",
+      payload: { teamId, agentId: researcherId, objective: "Summarize README" },
+    })).json();
+    const firstResolve = await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/resolve`,
+      payload: { parentTaskId: "parent", decision: "approve" },
+    });
+    expect(firstResolve.statusCode).toBe(500);
+    expect(firstStarts).toBe(1);
+    const stranded = (await app.inject({ method: "GET", url: `/api/delegations/${create.id}?parentTaskId=parent` })).json().delegation;
+    expect(stranded.status).toBe("running");
+    expect(taskRepository(db).getTaskById(stranded.childTaskId)?.status).toBe("queued");
+
+    await app.close();
+    const restarted: string[] = [];
+    const recoveryRunner = {
+      run: (taskId: string) => { restarted.push(taskId); },
+      isActive: (_taskId: string) => false,
+    };
+    app = buildServer({ db, runner: recoveryRunner as any });
+    const retry = await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/resolve`,
+      payload: { parentTaskId: "parent", decision: "approve" },
+    });
+    expect(retry.statusCode).toBe(200);
+    expect(restarted).toEqual([stranded.childTaskId]);
   });
 
   it("reject stops the flow with no child task spawned", async () => {
@@ -335,6 +420,235 @@ describe("Delegation API — objective to handoff", () => {
     expect((await app.inject({ method: "GET", url: `/api/delegations/${create.id}?parentTaskId=parent` })).json().delegation.status)
       .toBe("running");
     expect(approved.childTaskId).toBeTruthy();
+  });
+
+  it("rejects a handoff when the child is not terminal even if artifact evidence matches", async () => {
+    const create = (await app.inject({
+      method: "POST", url: "/api/tasks/parent/delegations",
+      payload: { teamId, agentId: researcherId, objective: "Summarize README", acceptanceCriteria: ["cites README.md"] },
+    })).json();
+    const approved = (await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/resolve`,
+      payload: { parentTaskId: "parent", decision: "approve" },
+    })).json();
+    taskRecordsRepository(db).appendEvidence({
+      id: "matching-running-child-evidence", taskId: approved.childTaskId, type: "file", path: "README.md",
+      metadata: { contentHash: "sha256:matching" }, createdAt: ts(),
+    });
+
+    const handoff = await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/handoff`,
+      payload: {
+        parentTaskId: "parent",
+        resultSummary: "done",
+        acceptanceCriteriaStatus: [{ criterion: "cites README.md", met: true }],
+        artifactRefs: [{ id: "artifact-1", path: "README.md", contentHash: "sha256:matching" }],
+        verificationEvidence: "verified",
+        targetAgentId: verifierId,
+      },
+    });
+    expect(handoff.statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: `/api/delegations/${create.id}?parentTaskId=parent` })).json().delegation.status)
+      .toBe("running");
+  });
+
+  it("rejects a terminal child without an authoritative canonical answer", async () => {
+    const create = (await app.inject({
+      method: "POST", url: "/api/tasks/parent/delegations",
+      payload: { teamId, agentId: researcherId, objective: "Summarize README", acceptanceCriteria: ["cites README.md"] },
+    })).json();
+    const approved = (await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/resolve`,
+      payload: { parentTaskId: "parent", decision: "approve" },
+    })).json();
+    taskRecordsRepository(db).appendEvidence({
+      id: "matching-terminal-child-evidence", taskId: approved.childTaskId, type: "file", path: "README.md",
+      metadata: { contentHash: "sha256:terminal" }, createdAt: ts(),
+    });
+    taskRecordsRepository(db).transitionTask(approved.childTaskId, "running", { id: "child-running", createdAt: ts(), payload: {} });
+    taskRecordsRepository(db).transitionTask(approved.childTaskId, "completed", { id: "child-completed", createdAt: ts(), payload: {} });
+
+    const handoff = await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/handoff`,
+      payload: {
+        parentTaskId: "parent",
+        resultSummary: "done",
+        acceptanceCriteriaStatus: [{ criterion: "cites README.md", met: true }],
+        artifactRefs: [{ id: "artifact-1", path: "README.md", contentHash: "sha256:terminal" }],
+        verificationEvidence: "verified",
+        targetAgentId: verifierId,
+      },
+    });
+    expect(handoff.statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: `/api/delegations/${create.id}?parentTaskId=parent` })).json().delegation.status)
+      .toBe("running");
+  });
+
+  it("rejects a canonical answer that reports incomplete work", async () => {
+    const create = (await app.inject({
+      method: "POST", url: "/api/tasks/parent/delegations",
+      payload: { teamId, agentId: researcherId, objective: "Summarize README", acceptanceCriteria: ["cites README.md"] },
+    })).json();
+    const approved = (await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/resolve`,
+      payload: { parentTaskId: "parent", decision: "approve" },
+    })).json();
+    seedAuthoritativeChild(db, approved.childTaskId, { completion: { complete: false, blockers: ["missing citation"] } });
+
+    const handoff = await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/handoff`,
+      payload: {
+        parentTaskId: "parent",
+        resultSummary: "done",
+        acceptanceCriteriaStatus: [{ criterion: "cites README.md", met: true }],
+        artifactRefs: [{ id: "artifact-1", path: "README.md", contentHash: "sha256:abc" }],
+        verificationEvidence: "verified",
+        targetAgentId: verifierId,
+      },
+    });
+    expect(handoff.statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: `/api/delegations/${create.id}?parentTaskId=parent` })).json().delegation.status)
+      .toBe("running");
+  });
+
+  it("accepts the durable sha256 artifact hash representation", async () => {
+    const create = (await app.inject({
+      method: "POST", url: "/api/tasks/parent/delegations",
+      payload: { teamId, agentId: researcherId, objective: "Summarize README", acceptanceCriteria: ["cites README.md"] },
+    })).json();
+    const approved = (await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/resolve`,
+      payload: { parentTaskId: "parent", decision: "approve" },
+    })).json();
+    seedAuthoritativeChild(db, approved.childTaskId, { evidenceMetadata: { role: "verified", sha256: "abc" } });
+
+    const handoff = await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/handoff`,
+      payload: {
+        parentTaskId: "parent",
+        resultSummary: "done",
+        acceptanceCriteriaStatus: [{ criterion: "cites README.md", met: true }],
+        artifactRefs: [{ id: "artifact-1", path: "README.md", contentHash: "sha256:abc" }],
+        verificationEvidence: "verified",
+        targetAgentId: verifierId,
+      },
+    });
+    expect(handoff.statusCode).toBe(201);
+  });
+
+  it("rejects canonical evidence with malformed provider or event timestamps", async () => {
+    const create = (await app.inject({
+      method: "POST", url: "/api/tasks/parent/delegations",
+      payload: { teamId, agentId: researcherId, objective: "Summarize README", acceptanceCriteria: ["cites README.md"] },
+    })).json();
+    const approved = (await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/resolve`,
+      payload: { parentTaskId: "parent", decision: "approve" },
+    })).json();
+    seedAuthoritativeChild(db, approved.childTaskId);
+    db.prepare("UPDATE agent_provider_turns SET created_at='not-a-timestamp' WHERE task_id=?").run(approved.childTaskId);
+    db.prepare("UPDATE task_events SET created_at='not-a-timestamp' WHERE task_id=? AND type='tool.completed'").run(approved.childTaskId);
+
+    const handoff = await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/handoff`,
+      payload: {
+        parentTaskId: "parent",
+        resultSummary: "done",
+        acceptanceCriteriaStatus: [{ criterion: "cites README.md", met: true }],
+        artifactRefs: [{ id: "artifact-1", path: "README.md", contentHash: "sha256:abc" }],
+        verificationEvidence: "verified",
+        targetAgentId: verifierId,
+      },
+    });
+    expect(handoff.statusCode).toBe(400);
+  });
+
+  it("redacts secret-shaped handoff notes before they become durable evidence", async () => {
+    const create = (await app.inject({
+      method: "POST", url: "/api/tasks/parent/delegations",
+      payload: { teamId, agentId: researcherId, objective: "Summarize README", acceptanceCriteria: ["cites README.md"] },
+    })).json();
+    const approved = (await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/resolve`,
+      payload: { parentTaskId: "parent", decision: "approve" },
+    })).json();
+    seedAuthoritativeChild(db, approved.childTaskId);
+    const secretNote = "verified with token=sk-live-abcdef1234567890abcdef1234567890";
+    db.prepare("UPDATE canonical_task_answers SET content=? WHERE task_id=?")
+      .run(`README summarized with token=sk-live-abcdef1234567890abcdef1234567890`, approved.childTaskId);
+
+    const handoff = await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/handoff`,
+      payload: {
+        parentTaskId: "parent",
+        resultSummary: "caller text is advisory",
+        acceptanceCriteriaStatus: [{ criterion: "cites README.md", met: true, note: secretNote }],
+        artifactRefs: [{ id: "artifact-1", path: "README.md", contentHash: "sha256:abc" }],
+        verificationEvidence: secretNote,
+        unresolvedRisks: [secretNote],
+        targetAgentId: verifierId,
+      },
+    });
+    expect(handoff.statusCode).toBe(201);
+    const stored = (await app.inject({ method: "GET", url: `/api/delegations/${create.id}?parentTaskId=parent` })).json().handoff;
+    expect(stored.resultSummary).toContain("README summarized with token=");
+    expect(stored.resultSummary).not.toContain("sk-live-abcdef1234567890abcdef1234567890");
+    expect(JSON.stringify(stored)).not.toContain(secretNote);
+    expect(JSON.stringify(stored)).toContain("***redacted***");
+  });
+
+  it("rejects a passed verification record with a nonzero exit code", async () => {
+    const create = (await app.inject({
+      method: "POST", url: "/api/tasks/parent/delegations",
+      payload: { teamId, agentId: researcherId, objective: "Summarize README", acceptanceCriteria: ["cites README.md"] },
+    })).json();
+    const approved = (await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/resolve`,
+      payload: { parentTaskId: "parent", decision: "approve" },
+    })).json();
+    seedAuthoritativeChild(db, approved.childTaskId, {
+      verification: { status: "passed", toolCallId: "verify-call", exitCode: 1 },
+    });
+
+    const handoff = await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/handoff`,
+      payload: {
+        parentTaskId: "parent",
+        resultSummary: "done",
+        acceptanceCriteriaStatus: [{ criterion: "cites README.md", met: true }],
+        artifactRefs: [{ id: "artifact-1", path: "README.md", contentHash: "sha256:abc" }],
+        verificationEvidence: "verified",
+        targetAgentId: verifierId,
+      },
+    });
+    expect(handoff.statusCode).toBe(400);
+  });
+
+  it("rejects contradictory failed flags in an otherwise passed verification", async () => {
+    const create = (await app.inject({
+      method: "POST", url: "/api/tasks/parent/delegations",
+      payload: { teamId, agentId: researcherId, objective: "Summarize README", acceptanceCriteria: ["cites README.md"] },
+    })).json();
+    const approved = (await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/resolve`,
+      payload: { parentTaskId: "parent", decision: "approve" },
+    })).json();
+    seedAuthoritativeChild(db, approved.childTaskId, {
+      verification: { status: "passed", passed: false, toolCallId: "verify-call", exitCode: 0 },
+    });
+
+    const handoff = await app.inject({
+      method: "POST", url: `/api/delegations/${create.id}/handoff`,
+      payload: {
+        parentTaskId: "parent",
+        resultSummary: "done",
+        acceptanceCriteriaStatus: [{ criterion: "cites README.md", met: true }],
+        artifactRefs: [{ id: "artifact-1", path: "README.md", contentHash: "sha256:abc" }],
+        verificationEvidence: "verified",
+        targetAgentId: verifierId,
+      },
+    });
+    expect(handoff.statusCode).toBe(400);
   });
 });
 

@@ -142,6 +142,31 @@ describe("subagent API — kind:\"agent_chat\" real delegation", () => {
     expect(tree.json().children.map((c: any) => c.task.id)).toEqual([childId]);
   });
 
+  it("replays a REST agent_chat spawn with the supplied idempotency key and rejects a fingerprint mismatch", async () => {
+    const headers = { "idempotency-key": "rest-agent-chat-spawn-1" };
+    const first = await app.inject({
+      method: "POST", url: "/api/tasks/parent/subagents", headers,
+      payload: { kind: "agent_chat", agentId: "agent-researcher", label: "Summarize the README" },
+    });
+    expect(first.statusCode).toBe(202);
+
+    const replay = await app.inject({
+      method: "POST", url: "/api/tasks/parent/subagents", headers,
+      payload: { kind: "agent_chat", agentId: "agent-researcher", label: "Summarize the README" },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().taskId).toBe(first.json().taskId);
+    expect(taskRepository(db).listChildren("parent")).toHaveLength(1);
+
+    const conflict = await app.inject({
+      method: "POST", url: "/api/tasks/parent/subagents", headers,
+      payload: { kind: "agent_chat", agentId: "agent-researcher", label: "Summarize a different file" },
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json().error?.code ?? conflict.json().code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(taskRepository(db).listChildren("parent")).toHaveLength(1);
+  });
+
   it("requires the delegation API before a team agent can be spawned directly", async () => {
     const team = teamsRepository(db).create({ id: "team-1", projectId: "p1", name: "Team", createdAt: new Date().toISOString() });
     const teamAgent = agentsRepository(db).create({ id: "team-agent", projectId: "p1", name: "Team agent", role: "researcher", teamId: team.id });

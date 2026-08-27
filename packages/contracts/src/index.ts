@@ -25,6 +25,9 @@ export const SpawnSubagentSchema=z.object({kind:z.enum(["inspect_workspace","age
   // so kind:"inspect_workspace" keeps its exact existing shape). Identifies
   // which persistent named agent this delegated child runs as.
   agentId:z.string().trim().min(1).optional(),
+  // Retry-safe REST admission. The server combines this with the canonical
+  // dispatch fingerprint and never uses it as authority by itself.
+  idempotencyKey:z.string().trim().min(1).max(200).optional(),
 }).strict();
 export type SpawnSubagentInput=z.infer<typeof SpawnSubagentSchema>;
 export const CreateCheckpointSchema=z.object({name:z.string().trim().min(1).max(100),files:z.array(z.string().min(1).max(1024)).min(1).max(500).optional(),taskId:z.string().optional()}).strict();
