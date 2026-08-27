@@ -485,7 +485,6 @@ describe("mission controller restart continuity", () => {
     });
 
     controllerRunner.run("mission-1");
-    await controllerRunner.waitFor("mission-1");
     await controllerRunner.stop("mission-1");
     settleTask();
     await taskSettled;

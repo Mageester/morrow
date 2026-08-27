@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
-import type { MissionRuntime } from "@morrow/contracts";
+import type { MissionRuntime, MissionStatus } from "@morrow/contracts";
 import { resolveMorrowHome } from "../home.js";
 import { buildMissionCompletion } from "./completion.js";
 import { conversationsRepository } from "../repositories/conversations.js";
@@ -48,9 +48,26 @@ export interface MissionControllerRunnerDependencies {
   taskRunner: ObservableTaskRunner;
   ownerId: string;
   concludeTerminalOutcome?(missionId: string, input: MissionTerminalOutcomeInput): Promise<unknown> | unknown;
+  /** Read the mission aggregate status when close-out failed after a durable write. */
+  getMissionStatus?(missionId: string): MissionStatus | null | undefined;
   now?: () => string;
   leaseMs?: number;
 }
+
+type ControllerFailurePhase = "drive" | "tick" | "prepare" | "closeout";
+
+type DispatchEffect =
+  | { kind: "none" }
+  | { kind: "completed"; taskId: string }
+  | { kind: "unknown"; operationId: string };
+
+/**
+ * Controller failures are intentionally bounded. The durable recovery row is
+ * the retry ledger, so a process restart cannot turn one broken controller
+ * action into an unbounded in-process loop.
+ */
+const MAX_CONTROLLER_FAILURE_ATTEMPTS = 2;
+const CONTROLLER_FAILURE_STRATEGY_PREFIX = "controller-failure";
 
 export interface DefaultMissionControllerRunnerDependencies {
   db: Database.Database;
@@ -75,6 +92,13 @@ export interface DefaultMissionControllerRunnerDependencies {
  */
 export class MissionControllerRunner {
   private readonly activePromises = new Map<string, Promise<void>>();
+  // External worker waits outlive the fenced drive promise. Keep their
+  // classification promise attached to the mission so waitFor() cannot report
+  // success before a detached callback has durably handled its failure.
+  private readonly detachedPromises = new Map<string, {
+    promise: Promise<void>;
+    waiters: number;
+  }>();
   private readonly pendingWakes = new Set<string>();
   private readonly cancelled = new Set<string>();
   private readonly now: () => string;
@@ -98,9 +122,10 @@ export class MissionControllerRunner {
       }
     });
     this.activePromises.set(missionId, promise);
-    // The promise remains observable through waitFor. An escaped error must
-    // never disappear silently — the mission would look alive while nothing
-    // drives it — so it is at minimum logged with its mission id.
+    // `drive` classifies expected controller failures durably. Keep this last
+    // catch as a process-level guard for persistence/runtime failures in that
+    // classifier itself; a rejected promise must never be mistaken for a
+    // still-running mission.
     void promise.catch((error) => {
       console.error(`Mission controller run failed for ${missionId}:`, error);
     });
@@ -149,7 +174,11 @@ export class MissionControllerRunner {
   async stop(missionId: string): Promise<void> {
     this.cancelled.add(missionId);
     this.pendingWakes.delete(missionId);
-    await this.waitFor(missionId);
+    // Stopping a driver intentionally does not wait for the external worker;
+    // its detached promise remains available to a subsequent waitFor() call
+    // for truthful callback-path failure reporting.
+    const active = this.activePromises.get(missionId);
+    if (active) await active;
   }
 
   isActive(missionId: string): boolean {
@@ -157,8 +186,23 @@ export class MissionControllerRunner {
   }
 
   async waitFor(missionId: string): Promise<void> {
-    while (this.activePromises.has(missionId)) {
-      await this.activePromises.get(missionId);
+    while (true) {
+      const active = this.activePromises.get(missionId);
+      if (active) {
+        await active;
+        continue;
+      }
+      const detached = this.detachedPromises.get(missionId);
+      if (!detached) return;
+      detached.waiters += 1;
+      try {
+        await detached.promise;
+      } finally {
+        detached.waiters -= 1;
+        if (detached.waiters === 0 && this.detachedPromises.get(missionId) === detached) {
+          this.detachedPromises.delete(missionId);
+        }
+      }
     }
   }
 
@@ -181,43 +225,139 @@ export class MissionControllerRunner {
         throw new MissionError(`Terminal mission runtime lease could not be fenced for ${missionId}`, "finalization_integrity_error");
       }
     }
-    const runtime = this.dependencies.runtime.get(missionId);
-    if (runtime?.activeTaskId) {
-      await this.cancelTaskAndWait(runtime.activeTaskId);
+    const runtimeBeforeCloseout = this.dependencies.runtime.get(missionId);
+    const runtimeWasTerminal = runtimeBeforeCloseout ? isMissionRuntimeTerminal(runtimeBeforeCloseout) : false;
+    try {
+      const runtime = runtimeBeforeCloseout ?? this.dependencies.runtime.get(missionId);
+      if (runtime?.activeTaskId) {
+        await this.cancelTaskAndWait(runtime.activeTaskId);
+      }
+      const closed = await this.dependencies.concludeTerminalOutcome?.(missionId, input);
+      const status = typeof (closed as { status?: unknown } | undefined)?.status === "string"
+        ? (closed as { status: Parameters<typeof terminalDispositionForMission>[0] }).status
+        : input.preserveStatus ?? "blocked";
+      this.settleTerminalRuntime(missionId, status, input, fence);
+    } catch (error) {
+      // Integrity contradictions and a lost terminal lease must remain
+      // visible to startup reconciliation; converting either into a blocked
+      // result would weaken canonical completion/fencing invariants.
+      if (error instanceof MissionRuntimeLeaseFenceError) throw error;
+      if (error instanceof MissionError && error.code === "finalization_integrity_error") throw error;
+      await this.handleControllerFailure(missionId, error, "closeout", fence);
+      // A first failure is durable but still non-terminal, so callers must see
+      // the rejection and can retry on the next startup. Once the bounded
+      // handler has settled the runtime, returning is safe and idempotent.
+      const latest = this.dependencies.runtime.get(missionId);
+      if (runtimeWasTerminal || !latest || !isMissionRuntimeTerminal(latest)) throw error;
+    } finally {
+      // A terminal-recovery lease is still a normal runtime lease. Release it
+      // after both success and a classified failure so a retry does not wait
+      // for the lease timeout (and so another claimant cannot be fenced out by
+      // a process that already returned an error).
+      if (fence) {
+        this.dependencies.runtime.releaseLease({ missionId, fence, now: this.now() });
+      }
     }
-    const closed = await this.dependencies.concludeTerminalOutcome?.(missionId, input);
-    const status = typeof (closed as { status?: unknown } | undefined)?.status === "string"
-      ? (closed as { status: Parameters<typeof terminalDispositionForMission>[0] }).status
-      : input.preserveStatus ?? "blocked";
-    this.settleTerminalRuntime(missionId, status, input, fence);
   }
 
   private async drive(missionId: string): Promise<void> {
     const claimedAt = this.now();
-    const fence = this.dependencies.runtime.claimLease({
-      missionId,
-      ownerId: this.dependencies.ownerId,
-      now: claimedAt,
-      expiresAt: this.expiresAt(claimedAt),
-    });
+    let fence: MissionRuntimeLeaseFence | null = null;
+    try {
+      fence = this.dependencies.runtime.claimLease({
+        missionId,
+        ownerId: this.dependencies.ownerId,
+        now: claimedAt,
+        expiresAt: this.expiresAt(claimedAt),
+      });
+    } catch (error) {
+      if (error instanceof MissionRuntimeLeaseFenceError) return;
+      await this.handleControllerFailure(missionId, error, "drive");
+      return;
+    }
     if (!fence) return;
 
     let leaseHeld = true;
     try {
       while (!this.cancelled.has(missionId)) {
-        const result = await this.dependencies.controller.tick(missionId, fence);
+        const runtimeBeforeTick = this.dependencies.runtime.get(missionId);
+        const priorControllerFailure = typeof this.dependencies.runtime.listRecoveryDecisions === "function"
+          ? this.dependencies.runtime.listRecoveryDecisions(missionId)
+            .filter((decision) => decision.failedStrategyFingerprint?.startsWith(`${CONTROLLER_FAILURE_STRATEGY_PREFIX}:`))
+            .at(-1)
+          : undefined;
+        if (priorControllerFailure?.exhausted) {
+          this.settleTerminalRuntime(missionId, "blocked", {
+            kind: "controller_exhausted",
+            reason: priorControllerFailure.diagnosis,
+            preserveStatus: "blocked",
+          }, fence);
+          return;
+        }
+        const stateBeforeTick = runtimeBeforeTick?.state;
+        const operationSequenceBeforeTick = runtimeBeforeTick?.operationSequence;
+        const activeTaskIdBeforeTick = runtimeBeforeTick?.activeTaskId;
+        let result: ControllerTickResult;
+        try {
+          result = await this.dependencies.controller.tick(missionId, fence);
+        } catch (error) {
+          if (error instanceof MissionRuntimeLeaseFenceError) return;
+          await this.handleControllerFailure(
+            missionId,
+            error,
+            stateBeforeTick === "planning" ? "prepare" : "tick",
+            fence,
+            operationSequenceBeforeTick,
+            activeTaskIdBeforeTick,
+          );
+          return;
+        }
         if (result.terminalOutcome) {
-          await this.coordinateTerminalOutcome(missionId, result.terminalOutcome, fence);
+          try {
+            await this.coordinateTerminalOutcome(missionId, result.terminalOutcome, fence);
+          } catch (error) {
+            if (error instanceof MissionRuntimeLeaseFenceError) return;
+            await this.handleControllerFailure(missionId, error, "closeout", fence);
+          }
           return;
         }
         if (!result.immediate) {
           const taskId = result.runtime.activeTaskId;
+          let taskActive = false;
+          if (result.waitingForExternal && taskId) {
+            try {
+              taskActive = this.dependencies.taskRunner.isActive(taskId);
+            } catch (error) {
+              if (error instanceof MissionRuntimeLeaseFenceError) return;
+              await this.handleControllerFailure(missionId, error, "drive", fence);
+              return;
+            }
+          }
           this.dependencies.runtime.releaseLease({ missionId, fence, now: this.now() });
           leaseHeld = false;
-          if (result.waitingForExternal && taskId && this.dependencies.taskRunner.isActive(taskId)) {
-            void this.dependencies.taskRunner.waitFor(taskId).then(() => {
-              if (!this.cancelled.has(missionId)) this.wake(missionId);
-            });
+          if (taskActive && taskId) {
+            const detached = this.dependencies.taskRunner.waitFor(taskId)
+              .then(() => {
+                if (!this.cancelled.has(missionId)) this.wake(missionId);
+              })
+              .then(undefined, async (error: unknown) => {
+                if (error instanceof MissionRuntimeLeaseFenceError) return;
+                await this.handleReleasedLeaseFailure(missionId, error);
+              });
+            const entry = { promise: detached, waiters: 0 };
+            this.detachedPromises.set(missionId, entry);
+            void detached.then(
+              () => {
+                if (entry.waiters === 0 && this.detachedPromises.get(missionId) === entry) {
+                  this.detachedPromises.delete(missionId);
+                }
+              },
+              () => {
+                if (entry.waiters === 0 && this.detachedPromises.get(missionId) === entry) {
+                  this.detachedPromises.delete(missionId);
+                }
+              },
+            );
           }
           return;
         }
@@ -233,11 +373,296 @@ export class MissionControllerRunner {
       }
     } catch (error) {
       if (error instanceof MissionRuntimeLeaseFenceError) return;
-      throw error;
+      await this.handleControllerFailure(missionId, error, "drive", fence);
     } finally {
       if (leaseHeld) {
-        this.dependencies.runtime.releaseLease({ missionId, fence, now: this.now() });
+        try {
+          this.dependencies.runtime.releaseLease({ missionId, fence, now: this.now() });
+        } catch (error) {
+          if (!(error instanceof MissionRuntimeLeaseFenceError)) {
+            await this.handleControllerFailure(missionId, error, "drive", fence);
+          }
+        }
       }
+    }
+  }
+
+  /** Convert an arbitrary escaped controller error into durable recovery. */
+  private async handleControllerFailure(
+    missionId: string,
+    error: unknown,
+    phase: ControllerFailurePhase,
+    fence?: MissionRuntimeLeaseFence,
+    operationSequenceBeforeTick?: number,
+    activeTaskIdBeforeTick?: string | null,
+  ): Promise<void> {
+    if (this.cancelled.has(missionId)) return;
+
+    const message = error instanceof Error ? error.message : String(error);
+    const strategyFingerprint = `${CONTROLLER_FAILURE_STRATEGY_PREFIX}:${phase}`;
+    let runtime: MissionRuntime | null;
+    let decisions: ReturnType<MissionRuntimeRepository["listRecoveryDecisions"]>;
+    try {
+      runtime = this.dependencies.runtime.get(missionId);
+      if (!runtime || isMissionRuntimeTerminal(runtime)) return;
+      decisions = typeof this.dependencies.runtime.listRecoveryDecisions === "function"
+        ? this.dependencies.runtime.listRecoveryDecisions(missionId)
+          .filter((decision) => decision.failedStrategyFingerprint?.startsWith(`${CONTROLLER_FAILURE_STRATEGY_PREFIX}:`))
+        : [];
+    } catch (persistenceError) {
+      // There is no safe state transition if the runtime itself cannot be
+      // read. Preserve the original failure and make the process-level catch
+      // visible rather than pretending recovery was recorded.
+      console.error(`Mission controller failure could not be classified for ${missionId}:`, persistenceError);
+      throw persistenceError;
+    }
+
+    // A controller tick can persist a worker dispatch and then fail while
+    // recording the active task. Re-entering through recovery would advance
+    // the transition sequence and issue a second dispatch key. Reconcile the
+    // operation created by this tick before deciding whether a retry is safe.
+    let dispatchEffect: DispatchEffect = { kind: "none" };
+    if (phase === "tick" && operationSequenceBeforeTick !== undefined) {
+      try {
+        const dispatches = this.dependencies.runtime.listOperations(missionId)
+          .filter((operation) => operation.kind === "dispatch_worker" && operation.sequence > operationSequenceBeforeTick);
+        const dispatch = dispatches.at(-1);
+        if (dispatch) {
+          const taskId = typeof dispatch.result?.taskId === "string" ? dispatch.result.taskId : null;
+          dispatchEffect = dispatch.status === "completed" && taskId
+            ? { kind: "completed", taskId }
+            : dispatch.status === "failed" || dispatch.status === "cancelled"
+              ? { kind: "none" }
+              : { kind: "unknown", operationId: dispatch.id };
+        }
+      } catch (inspectionError) {
+        // If the operation ledger cannot be inspected, no retry can prove that
+        // dispatch did not happen. Surface the persistence fault instead of
+        // manufacturing a recovery decision from missing evidence.
+        console.error(`Mission controller dispatch effect could not be inspected for ${missionId}:`, inspectionError);
+        throw inspectionError;
+      }
+    }
+
+    const attempt = decisions.length + 1;
+    const exhausted = dispatchEffect.kind === "unknown" || attempt >= MAX_CONTROLLER_FAILURE_ATTEMPTS;
+    const decisionId = `${strategyFingerprint}:${missionId}:attempt:${attempt}`;
+    const operationIdempotencyKey = `operation:${decisionId}`;
+    let operationId: string | null = null;
+
+    try {
+      // A lease is required for operation state transitions. A drive failure
+      // before claimLease therefore still gets a recovery decision, but does
+      // not manufacture an unfenced operation row.
+      if (fence) {
+        if (dispatchEffect.kind === "unknown" && dispatchEffect.operationId !== "unavailable") {
+          try {
+            const dispatchOperation = this.dependencies.runtime.listOperations(missionId)
+              .find((operation) => operation.id === dispatchEffect.operationId);
+            if (dispatchOperation?.status === "pending" || dispatchOperation?.status === "running") {
+              if (dispatchOperation.status === "pending") {
+                this.dependencies.runtime.startOperation({
+                  missionId,
+                  operationId: dispatchOperation.id,
+                  fence,
+                  now: this.now(),
+                });
+              }
+              this.dependencies.runtime.failOperation({
+                missionId,
+                operationId: dispatchOperation.id,
+                fence,
+                result: { phase, message: message.slice(0, 2_000) },
+                unknownEffect: true,
+                now: this.now(),
+              });
+            }
+          } catch (dispatchPersistenceError) {
+            if (dispatchPersistenceError instanceof MissionRuntimeLeaseFenceError) return;
+            console.error(`Mission controller dispatch effect could not be marked unknown for ${missionId}:`, dispatchPersistenceError);
+            throw dispatchPersistenceError;
+          }
+        }
+        const operation = this.dependencies.runtime.enqueueOperation({
+          missionId,
+          idempotencyKey: operationIdempotencyKey,
+          kind: "recover",
+          strategyFingerprint,
+          input: { phase },
+          fence,
+          now: this.now(),
+        });
+        operationId = operation.id;
+        if (operation.status === "pending" || operation.status === "failed") {
+          const started = operation.status === "pending"
+            ? this.dependencies.runtime.startOperation({ missionId, operationId: operation.id, fence, now: this.now() })
+            : operation;
+          if (started.status === "running") {
+            this.dependencies.runtime.failOperation({
+              missionId,
+              operationId: operation.id,
+              fence,
+              result: { phase, message: message.slice(0, 2_000) },
+              unknownEffect: phase === "closeout",
+              now: this.now(),
+            });
+          }
+        }
+      }
+
+      if (!decisions.some((decision) => decision.id === decisionId)) {
+        this.dependencies.runtime.recordRecovery({
+          id: decisionId,
+          missionId,
+          operationId,
+          category: phase === "closeout" || dispatchEffect.kind === "unknown" ? "unknown_effect" : "process_interruption",
+          diagnosis: `Mission controller ${phase} failed: ${message}`.slice(0, 2_000),
+          failedStrategyFingerprint: strategyFingerprint,
+          nextStrategyFingerprint: exhausted ? null : strategyFingerprint,
+          action: exhausted ? "block_precisely" : "await_retry_condition",
+          retryCondition: exhausted ? null : "The fenced controller retries this phase once after the failure is recorded.",
+          exhausted,
+          ...(fence ? { fence } : {}),
+          now: this.now(),
+        });
+      }
+    } catch (persistenceError) {
+      if (persistenceError instanceof MissionRuntimeLeaseFenceError) return;
+      console.error(`Mission controller failure could not be persisted for ${missionId}:`, persistenceError);
+      throw persistenceError;
+    }
+
+    const latest = this.dependencies.runtime.get(missionId);
+    if (!latest || isMissionRuntimeTerminal(latest)) return;
+
+    if (!exhausted) {
+      if (phase === "tick" && (dispatchEffect.kind === "completed" || activeTaskIdBeforeTick)) {
+        const current = this.dependencies.runtime.get(missionId);
+        if (dispatchEffect.kind === "completed" && current && !current.activeTaskId && fence) {
+          try {
+            this.dependencies.runtime.setActiveTask({
+              missionId,
+              taskId: dispatchEffect.taskId,
+              fence,
+              now: this.now(),
+            });
+          } catch (reconciliationError) {
+            if (reconciliationError instanceof MissionRuntimeLeaseFenceError) return;
+            console.error(`Mission controller completed dispatch could not be reconciled for ${missionId}:`, reconciliationError);
+            throw reconciliationError;
+          }
+        }
+        this.queueRetry(missionId);
+        return;
+      }
+      // Close-out and preparation must be retried while the controller is
+      // still on the same phase. Moving either through `replanning` would
+      // dispatch a new worker (or skip preparation) and could turn an
+      // uncertain/failed boundary into duplicate or unprepared work.
+      // A callback that runs after the lease was released must not mutate the
+      // runtime without a fresh fence; queueing a wake lets the next driver
+      // acquire one before choosing the recovery transition.
+      const preserveRecoveryPhase = latest.state === "orienting" || latest.state === "waiting_for_approval";
+      if (fence && !preserveRecoveryPhase && phase !== "closeout" && phase !== "prepare" && latest.state !== "recovering") {
+        try {
+          this.dependencies.runtime.transition({
+            missionId,
+            from: latest.state,
+            to: "recovering",
+            cause: "controller_failure_recovery",
+            actor: "controller",
+            details: { phase, message: message.slice(0, 2_000), attempt },
+            ...(fence ? { fence } : {}),
+            now: this.now(),
+          });
+        } catch (transitionError) {
+          if (transitionError instanceof MissionRuntimeLeaseFenceError) return;
+          console.error(`Mission controller retry could not be staged for ${missionId}:`, transitionError);
+          throw transitionError;
+        }
+      }
+      this.queueRetry(missionId);
+      return;
+    }
+
+    // Exhaustion is terminal for the controller. Try to close the mission
+    // aggregate through its existing terminal-outcome service, but always
+    // settle the fenced runtime even if close-out itself is unavailable.
+    let status: Parameters<typeof terminalDispositionForMission>[0] = "blocked";
+    if (phase === "closeout" && this.dependencies.getMissionStatus) {
+      try {
+        const authoritativeStatus = this.dependencies.getMissionStatus(missionId);
+        if (authoritativeStatus) status = authoritativeStatus;
+      } catch (statusError) {
+        console.error(`Mission controller could not read authoritative mission status for ${missionId}:`, statusError);
+        throw statusError;
+      }
+    }
+    if (fence && phase !== "closeout" && this.dependencies.concludeTerminalOutcome) {
+      try {
+        await this.dependencies.concludeTerminalOutcome(missionId, {
+          kind: "controller_exhausted",
+          reason: `Mission controller ${phase} failed twice: ${message}`.slice(0, 2_000),
+          preserveStatus: "blocked",
+        });
+      } catch (closeoutError) {
+        console.error(`Mission controller exhaustion close-out failed for ${missionId}:`, closeoutError);
+      }
+    }
+    try {
+      if (fence) {
+        this.settleTerminalRuntime(missionId, status, {
+          kind: "controller_exhausted",
+          reason: `Mission controller ${phase} failed twice: ${message}`.slice(0, 2_000),
+          preserveStatus: phase === "closeout" ? status : "blocked",
+        }, fence);
+      } else {
+        // No lease means no runtime mutation. The exhausted recovery row is
+        // the durable health signal; a later driver/startup pass can claim a
+        // fresh fence and settle the terminal disposition safely.
+        console.error(`Mission controller exhaustion awaits a fresh lease for ${missionId}`);
+      }
+    } catch (settlementError) {
+      if (!(settlementError instanceof MissionRuntimeLeaseFenceError)) {
+        console.error(`Mission controller exhaustion could not settle runtime for ${missionId}:`, settlementError);
+        throw settlementError;
+      }
+    }
+  }
+
+  /** Reclaim ownership before classifying an asynchronous post-lease fault. */
+  private async handleReleasedLeaseFailure(missionId: string, error: unknown): Promise<void> {
+    let fence: MissionRuntimeLeaseFence | null = null;
+    try {
+      const claimedAt = this.now();
+      fence = this.dependencies.runtime.claimLease({
+        missionId,
+        ownerId: this.dependencies.ownerId,
+        now: claimedAt,
+        expiresAt: this.expiresAt(claimedAt),
+      });
+    } catch (claimError) {
+      if (claimError instanceof MissionRuntimeLeaseFenceError) return;
+      await this.handleControllerFailure(missionId, claimError, "drive");
+      return;
+    }
+    if (!fence) {
+      await this.handleControllerFailure(missionId, error, "drive");
+      return;
+    }
+    try {
+      await this.handleControllerFailure(missionId, error, "drive", fence);
+    } finally {
+      this.dependencies.runtime.releaseLease({ missionId, fence, now: this.now() });
+    }
+  }
+
+  private queueRetry(missionId: string): void {
+    if (this.cancelled.has(missionId)) return;
+    if (this.activePromises.has(missionId)) {
+      this.pendingWakes.add(missionId);
+    } else {
+      this.run(missionId);
     }
   }
 
@@ -451,13 +876,12 @@ export function createDefaultMissionControllerRunner(
       // it falls back to deterministic heuristic criteria, so planning never
       // hard-depends on a provider. Auto-approve missions move straight to
       // `running`; the rest wait for the human plan approval.
-      try {
-        const mission = await missionService.generateCriteria(missionId, "");
-        return { awaitingApproval: mission.status === "awaiting_criteria_approval" };
-      } catch (error) {
-        console.error(`Mission ${missionId}: criteria generation failed`, error);
-        return { awaitingApproval: false };
-      }
+      // Exceptions are intentionally allowed to reach MissionControllerRunner,
+      // which records a durable preparation failure and applies its bounded
+      // retry/blocked policy. Returning `awaitingApproval: false` after an
+      // exception would falsely report a successful plan and start execution.
+      const mission = await missionService.generateCriteria(missionId, "");
+      return { awaitingApproval: mission.status === "awaiting_criteria_approval" };
     },
     recordDispatchFailure: (missionId, message) => {
       missions.appendEvent(
@@ -531,6 +955,7 @@ export function createDefaultMissionControllerRunner(
     controller,
     taskRunner: dependencies.taskRunner,
     concludeTerminalOutcome: (missionId, input) => missionService.concludeTerminalOutcome(missionId, input),
+    getMissionStatus: (missionId) => missionService.get(missionId).status,
     ownerId: dependencies.ownerId ?? `mission-controller:${process.pid}:${randomUUID()}`,
     now,
     ...(dependencies.leaseMs === undefined ? {} : { leaseMs: dependencies.leaseMs }),
