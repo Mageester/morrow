@@ -1,5 +1,25 @@
 # Project Progress
 
+## Active package: REL-ARCH - Reliability-first architecture sprint
+
+**State:** active on `codex/ruthless-simplification` after merging `origin/main` at `1bd1e8b`.
+
+**Goal:** Harden controller recovery and checkpoint fidelity, then deliver durable verified native team orchestration and an attributable autonomy gauntlet without weakening existing completion, Guardian, restart, rollover, idempotency, privacy, or permission guarantees.
+
+**Plan:** `docs/superpowers/plans/2026-08-27-reliability-first-architecture.md`
+
+| ID | Role | Package | Dependency | Status |
+| --- | --- | --- | --- | --- |
+| REL-CTRL | Luna Max executor + reviewer | Durable controller error recovery | none | starting |
+| REL-CTX | Luna Max executor + reviewer | Loss-aware checkpoint fidelity | none | starting |
+| REL-TEAM | Luna Max executor + reviewer | Durable native team work graph | stable REL-CTRL/REL-CTX interfaces | pending |
+| REL-DELEG | Luna Max executor + reviewer | Atomic admission and verified handoff | REL-TEAM identity/import contract | pending |
+| REL-GAUNTLET | Luna Max executor + adversarial reviewers | Attributable integrated autonomy gauntlet | REL-CTRL/CTX/TEAM/DELEG | pending |
+
+**Acceptance:** focused RED/GREEN evidence, independent review and repairs per package, relevant regressions, coherent commits, integrated deterministic gauntlet, repository checks, strongest practical full suite, explicit unresolved weaknesses and next work.
+
+---
+
 ## Completed package: TEAM-2 - Agentic teammate core parity
 
 **State:** complete on `feat/agent-teammates`, preserving the clean handoff at
