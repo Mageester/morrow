@@ -1,22 +1,23 @@
 # Project Progress
 
-## Active package: REL-ARCH - Reliability-first architecture sprint
+## Active package: TURN-RUNTIME - Authoritative runtime and lifecycle
 
-**State:** active on `codex/ruthless-simplification` after merging `origin/main` at `1bd1e8b`.
+**State:** planned on `codex/trustworthy-runtime` from `main` at `5b100fc` (`v0.7.3`). The prior REL-ARCH controller, checkpoint, work-graph, delegation, and gauntlet packages are already integrated into this baseline.
 
-**Goal:** Harden controller recovery and checkpoint fidelity, then deliver durable verified native team orchestration and an attributable autonomy gauntlet without weakening existing completion, Guardian, restart, rollover, idempotency, privacy, or permission guarantees.
+**Goal:** Make CLI and direct startup compose the same runtime, make skill activation/discovery authoritative across agent/API/CLI/web, and remove the remaining production task-status bypass before general-purpose workspace and product-model changes.
 
-**Plan:** `docs/superpowers/plans/2026-08-27-reliability-first-architecture.md`
+**Spec:** `docs/superpowers/specs/2026-08-28-authoritative-runtime-lifecycle-design.md`
+**Plan:** `docs/superpowers/plans/2026-08-28-authoritative-runtime-lifecycle.md`
 
 | ID | Role | Package | Dependency | Status |
 | --- | --- | --- | --- | --- |
-| REL-CTRL | Luna Max executor + reviewer | Durable controller error recovery | none | starting |
-| REL-CTX | Luna Max executor + reviewer | Loss-aware checkpoint fidelity | none | starting |
-| REL-TEAM | Luna Max executor + reviewer | Durable native team work graph | stable REL-CTRL/REL-CTX interfaces | pending |
-| REL-DELEG | Luna Max executor + reviewer | Atomic admission and verified handoff | REL-TEAM identity/import contract | pending |
-| REL-GAUNTLET | Luna Max executor + adversarial reviewers | Attributable integrated autonomy gauntlet | REL-CTRL/CTX/TEAM/DELEG | pending |
+| TURN-R1 | Luna Max executor + reviewer | Durable skill catalog, migration 73, activation authority | none | pending |
+| TURN-R2 | Luna Max executor + reviewer | Catalog API and agent enforcement | TURN-R1 | pending |
+| TURN-R3 | Luna Max executor + reviewer | CLI/web skill truthfulness | TURN-R2 | pending |
+| TURN-R4 | Luna Max executor + reviewer | Shared runtime host and health truth | TURN-R1/R2 | pending |
+| TURN-R5 | Luna Max executor + security reviewer | Canonical scheduled transitions and integrated gates | TURN-R1-R4 | pending |
 
-**Acceptance:** focused RED/GREEN evidence, independent review and repairs per package, relevant regressions, coherent commits, integrated deterministic gauntlet, repository checks, strongest practical full suite, explicit unresolved weaknesses and next work.
+**Acceptance:** both production entrypoints share one component list and reconciliation order; skill state is restart-safe and identical across runtime/client surfaces; invalid, disabled, conflicting, and unavailable skills fail closed with actionable diagnostics; production task transitions are evented; focused and package suites, repository checks, build, startup benchmark, and independent security review pass after the last relevant change.
 
 ---
 
