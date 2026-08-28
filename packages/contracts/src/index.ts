@@ -475,7 +475,17 @@ export const PresetSchema=z.object({
   costDescription:z.string(),
   requiresLocal:z.boolean(),
 }).strict();
-export const PresetResolutionSchema=z.object({providerId:ProviderIdSchema,model:z.string()}).strict();
+export const PresetResolutionSchema=z.object({
+  providerId:ProviderIdSchema,
+  model:z.string(),
+  /** What reasoning control the resolved model exposes, with provenance —
+   * mirrors ModelInfoSchema.reasoning. Without this, a route selected via
+   * preset (the default) carries no reasoning capability at all, and the
+   * composer's reasoning control has nothing to show even though the
+   * resolved model itself supports one. Optional for the same reason as
+   * ModelInfoSchema.reasoning: existing construction sites stay valid. */
+  reasoning:RouteReasoningCapabilitySchema.optional(),
+}).strict();
 export const PresetStatusSchema=z.object({
   preset:PresetSchema,
   available:z.boolean(),

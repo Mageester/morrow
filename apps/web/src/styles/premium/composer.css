@@ -554,6 +554,48 @@
   color: #85877e;
 }
 
+/*
+ * Progressive disclosure for the panel's provenance rows (wire params,
+ * capacity provenance, compaction thresholds, …). Two or three headline facts
+ * stay always visible above; the rest — real, useful, but not what a glance
+ * needs — sits one click away instead of all fourteen rows shouting at once.
+ */
+.morrow-capability-status__details {
+  margin-top: 2px;
+}
+
+.morrow-capability-status__details summary {
+  cursor: pointer;
+  color: var(--morrow-product-faint, #85877e);
+  font-size: 11px;
+  list-style: none;
+}
+
+.morrow-capability-status__details summary::-webkit-details-marker {
+  display: none;
+}
+
+.morrow-capability-status__details summary::before {
+  content: "▸ ";
+}
+
+.morrow-capability-status__details[open] summary::before {
+  content: "▾ ";
+}
+
+.morrow-capability-status__details summary:hover {
+  color: var(--morrow-product-copy-soft, #c4c0b7);
+}
+
+.morrow-capability-status__details[open] summary {
+  margin-bottom: 6px;
+}
+
+.morrow-capability-status__details .morrow-capability-status__list {
+  padding-top: 4px;
+  border-top: 1px solid rgb(255 255 255 / 0.06);
+}
+
 .morrow-capability-status__note {
   margin: 0;
   padding: 6px 8px;

@@ -48,6 +48,9 @@ export interface MorrowConfig {
     onboardingStep?: string;
     useCase?: string;
   };
+  /** Per-skill enablement, keyed by skill id — written by `morrow onboard`'s
+   * skills step and `morrow skills enable/disable` (see skills.ts, onboard.ts). */
+  skills?: Record<string, { enabled?: boolean }>;
   presets?: CustomPreset[];
 }
 
@@ -86,6 +89,15 @@ function deepMerge(base: MorrowConfig, over: MorrowConfig): MorrowConfig {
     service: { ...base.service, ...over.service },
     ui: { ...base.ui, ...over.ui },
     user: { ...base.user, ...over.user },
+    // Without this, `skills` — present on the raw parsed config (`this.user`/
+    // `this.project`) — was dropped from every merged view, because this
+    // function rebuilds a fixed-shape object that never named the key. `get()`
+    // reads `this.merged` exclusively, so every `skills.<id>.enabled` lookup
+    // resolved to undefined in a *freshly started* process even when
+    // `morrow onboard` (or `skills enable`) had genuinely persisted it to
+    // disk — `set()` only patches `this.merged` in the process that called
+    // it, which does not survive to the CLI's next invocation.
+    skills: { ...base.skills, ...over.skills },
     ...((over.presets ?? base.presets) !== undefined ? { presets: over.presets ?? base.presets } : {}),
   };
 }
