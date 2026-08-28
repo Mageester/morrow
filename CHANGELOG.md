@@ -6,6 +6,70 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-28
+
+Morrow had two ways to start and they were not the same product. A packaged
+install runs the service in-process behind `morrow start`, and that path built
+a shorter runtime than the standalone entrypoint: no scheduler, so a scheduled
+routine silently never fired; no work graph, so durable child fan-out was never
+reconciled; and no shared skill catalog, so what the Skills page listed and what
+the agent could load were two different answers. Nobody can see which entrypoint
+launched their service, so none of that was something a person could reason
+about.
+
+Both entrypoints now compose one runtime, and the surfaces that describe
+Morrow's state report what it actually did rather than what the code hoped for.
+
+### Added
+
+- One composition root for a running Morrow. Both startup paths build the same
+  component list in the same order — database, supervisor, skill catalog,
+  runner, mission controller, work graphs, startup reconciliation, server,
+  scheduler, entitlement poller — and tear it down through one idempotent
+  shutdown. Background work starts only after the service is actually serving,
+  so a failed bind leaves no timer behind.
+- A required `runtime` block on `GET /api/health` reporting what this process
+  composed: whether startup reconciliation ran, whether work graphs and the
+  scheduler are managed, and the skill catalog's entry, loadable, and issue
+  counts. A server constructed directly by a test owns none of it and says so
+  rather than reporting a readiness it never established.
+- Skill activation from both clients. `morrow skills enable|disable` and the
+  Skills page write through the service's catalog, and the CLI gained
+  `morrow skills list|inspect|verify` backed by the same authority.
+- `morrow settings privacy [local-only|controlled-cloud|custom]`, and a prompt
+  during CLI onboarding once a provider is configured.
+- A repository check that keeps raw task-status writes out of production code.
+
+### Fixed
+
+- The CLI kept its own opinion of which skills were enabled in local config, so
+  `morrow skills list` could show a skill as enabled that the agent would refuse
+  to load. Both clients now read the runtime catalog; an unreadable skill root
+  reads as a fault instead of an empty cabinet, and an install reports the
+  disabled entry it produced rather than a directory.
+- The privacy mode is a hard gate — under local-only the service refuses every
+  remote provider — but it could only be changed from the web settings page. A
+  terminal-first person who connected a cloud provider had every request blocked
+  with no terminal way to unblock it. The web getting-started card also
+  described the setting as advisory, which sent people looking for a bug when
+  Morrow declined a request it was configured to decline.
+- Guided setup ran even with no terminal to answer it, so a scripted or piped
+  invocation hung on a prompt that could never arrive.
+- The terminal rendered every internal progress signal as "No new observable
+  progress yet." — printed alongside the successful tool calls it was denying.
+  Each reason now reads as what it is, pure telemetry is not shown, and the
+  stall warning appears only as the threshold nears.
+- A file Morrow had just created was reported as one it had read, because only
+  a patch counted as a write.
+- A scheduled task whose dispatch failed was marked failed by a raw status
+  write, leaving a status nothing could explain. The transition now goes through
+  the canonical facade and records a durable event with a bounded reason.
+- A never-used skill root is no longer reported as a fault, so a fresh install's
+  catalog stops reading as broken.
+- A stored subscription OAuth token no longer overrides an explicitly
+  configured API key when testing provider connectivity, and background model
+  discovery keeps the effective home in its isolated environment snapshot.
+
 ## [0.7.3] - 2026-08-27
 
 A reliability release for long-running, multi-agent work. Missions that
