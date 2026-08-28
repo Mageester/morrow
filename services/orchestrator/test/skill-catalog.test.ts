@@ -222,6 +222,7 @@ describe("skill catalog", () => {
     const catalog = createSkillCatalog({ db: database, bundledRoot, userRoot: null, now: () => NOW });
 
     const entry = catalog.list()[0];
+    if (!entry) throw new Error("catalog did not expose the invalid declared ID");
     expect(entry).toMatchObject({ id: "../declared-id", key: "bundled:../declared-id", validation: "invalid", loadable: false });
     expect(entry.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "invalid_manifest" })]));
     database.close();
