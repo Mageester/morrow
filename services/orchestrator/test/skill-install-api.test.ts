@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDatabase } from "../src/database.js";
 import { buildServer } from "../src/server.js";
 import { TaskRunner } from "../src/runner.js";
 import { skillInstallRoot } from "../src/skills/install.js";
+import { createSkillCatalog } from "../src/skills/catalog.js";
 
 /**
  * The install endpoints are the one write path into the skill root, shared by
@@ -20,6 +21,7 @@ describe("skill install API", () => {
   let home: string;
   let workspace: string;
   let previousHome: string | undefined;
+  let previousSkillsRoot: string | undefined;
 
   const SKILL_MD = "---\nname: Release Notes\ndescription: Draft release notes from a changelog.\n---\n\n# Release Notes\n\nSteps.\n";
 
@@ -29,9 +31,15 @@ describe("skill install API", () => {
     // The endpoints resolve the skill root from the environment, the same way
     // every other surface does.
     previousHome = process.env.MORROW_HOME;
+    previousSkillsRoot = process.env.MORROW_SKILLS_DIR;
     process.env.MORROW_HOME = home;
+    process.env.MORROW_SKILLS_DIR = resolve(process.cwd(), "../../skills");
     db = openDatabase(join(home, "morrow.db"));
-    app = buildServer({ db, runner: new TaskRunner(db) });
+    app = buildServer({
+      db,
+      runner: new TaskRunner(db),
+      skillCatalog: createSkillCatalog({ db, bundledRoot: process.env.MORROW_SKILLS_DIR ?? null, userRoot: skillInstallRoot(process.env) }),
+    });
   });
 
   afterEach(() => {
@@ -39,6 +47,8 @@ describe("skill install API", () => {
     db.close();
     if (previousHome === undefined) delete process.env.MORROW_HOME;
     else process.env.MORROW_HOME = previousHome;
+    if (previousSkillsRoot === undefined) delete process.env.MORROW_SKILLS_DIR;
+    else process.env.MORROW_SKILLS_DIR = previousSkillsRoot;
     rmSync(home, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });
   });
@@ -71,8 +81,20 @@ describe("skill install API", () => {
 
     const installed = await app.inject({ method: "POST", url: "/api/skills/install", payload: { handle: body.handle } });
     expect(installed.statusCode).toBe(201);
-    expect(installed.json()).toMatchObject({ id: "release-notes", enabled: false });
+    expect(installed.json()).toMatchObject({ key: "user:release-notes", id: "release-notes", enabled: false, loadable: false });
+    expect(installed.json()).not.toHaveProperty("directory");
     expect(readFileSync(join(skillInstallRoot(process.env), "release-notes", "SKILL.md"), "utf8")).toBe(SKILL_MD);
+
+    const listed = await app.inject({ method: "GET", url: "/api/skills" });
+    expect(listed.json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "user:release-notes", id: "release-notes", enabled: false, loadable: false }),
+    ]));
+    expect(listed.body).not.toContain("directory");
+
+    const enabled = await app.inject({ method: "PATCH", url: "/api/skills/user%3Arelease-notes", payload: { enabled: true } });
+    expect(enabled.statusCode).toBe(200);
+    expect(enabled.json()).toMatchObject({ key: "user:release-notes", enabled: true, loadable: true });
+    expect(enabled.body).not.toContain("directory");
   });
 
   it("reports the skills in a source that holds several, rather than guessing", async () => {
@@ -127,12 +149,12 @@ describe("skill install API", () => {
     const handle = (await preview({ source })).json().handle;
     await app.inject({ method: "POST", url: "/api/skills/install", payload: { handle } });
 
-    const removed = await app.inject({ method: "DELETE", url: "/api/skills/release-notes" });
+    const removed = await app.inject({ method: "DELETE", url: "/api/skills/user%3Arelease-notes" });
     expect(removed.statusCode).toBe(204);
     expect(existsSync(join(skillInstallRoot(process.env), "release-notes"))).toBe(false);
 
-    const bundled = await app.inject({ method: "DELETE", url: "/api/skills/accessibility" });
-    expect(bundled.statusCode).toBe(400);
+    const bundled = await app.inject({ method: "DELETE", url: "/api/skills/bundled%3Aaccessibility" });
+    expect(bundled.statusCode).toBe(409);
     expect(bundled.json().error.message).toMatch(/Bundled skills cannot be removed/);
   });
 

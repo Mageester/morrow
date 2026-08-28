@@ -46,6 +46,7 @@ import {
   UpdateScheduleSchema,
   ScheduleRunSchema,
   ScheduleNotificationOptionsSchema,
+  SetSkillActivationSchema,
   type PresetId,
   type ProviderId,
   type ProviderAuthMode,
@@ -56,7 +57,6 @@ import {
 } from "@morrow/contracts";
 import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { projectRepository } from "./repositories/projects.js";
 import { agentsRepository, AgentInFlightError, SoleExplicitAllowRuleError } from "./repositories/agents.js";
 import { teamsRepository } from "./repositories/teams.js";
@@ -75,7 +75,6 @@ import { skillUsageRepository } from "./repositories/skill-usage.js";
 import { learnedSkillsRepository } from "./repositories/learned-skills.js";
 import { AutomaticMemoryService } from "./cortex/automatic-memory.js";
 import { AutomaticSkillService } from "./cortex/automatic-skills.js";
-import { verifySkillDirectory } from "./skills/registry.js";
 import {
   applySkillInstall,
   discardSkillInstall,
@@ -84,6 +83,7 @@ import {
   removeInstalledSkill,
   SkillInstallError,
 } from "./skills/install.js";
+import { createSkillCatalog, SkillCatalogError, type SkillCatalog, type SkillCatalogScope } from "./skills/catalog.js";
 import { schedulesRepository } from "./repositories/schedules.js";
 import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
@@ -378,6 +378,8 @@ export type ServerDependencies = {
   webRoot?: string;
   /** Local OS folder chooser used by the web project-registration flow. */
   folderPicker?: FolderPicker;
+  /** Shared authority for skill discovery, activation, and instruction loading. */
+  skillCatalog?: SkillCatalog;
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
@@ -403,6 +405,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   });
 
   const projects = projectRepository(deps.db);
+  // Direct test/embedding callers may omit this optional dependency. Production
+  // startup injects one shared instance into both the runner and this server.
+  const skillCatalog = deps.skillCatalog ?? createSkillCatalog({ db: deps.db });
   const folderPicker = deps.folderPicker ?? createNativeFolderPicker();
   const agents = agentsRepository(deps.db);
   const teammateTrust = teammateTrustRepository(deps.db);
@@ -4751,90 +4756,49 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return { scheduleId, taskId, aggregateUrl: `/api/tasks/${taskId}` };
   });
 
-  // List installed/discoverable skills for the Skills Control Center. Reads the
-  // same directories the agent's find_skill/load_skill tools scan (the bundled
-  // MORROW_SKILLS_DIR plus MORROW_HOME/skills), parsing each skill's manifest
-  // and SKILL.md. No project context needed; this is the global skill registry.
-  app.get("/api/skills", async () => {
-    const dirs: string[] = [];
-    if (process.env.MORROW_SKILLS_DIR) dirs.push(process.env.MORROW_SKILLS_DIR);
-    const home = resolveMorrowHome(process.env);
-    if (home) dirs.push(join(home, "skills"));
-    const riskToTier: Record<string, string> = { low: "core", medium: "controlled", high: "experimental" };
-    const categorize = (id: string): string => {
-      if (/test/.test(id)) return "Testing";
-      if (/review|audit|security|secret|dependency|adversarial/.test(id)) return "Security & Review";
-      if (/git/.test(id)) return "Git";
-      if (/doc/.test(id)) return "Documentation";
-      if (/data|database/.test(id)) return "Data";
-      if (/refactor|migration|performance|architecture/.test(id)) return "Refactoring";
-      if (/debug|diagnostic|error|bug/.test(id)) return "Debugging";
-      if (/file|shell|config|template|input/.test(id)) return "Files & Ops";
-      if (/web-search|api|integration/.test(id)) return "Research & API";
-      return "Development";
-    };
-    // Skills use one of two metadata formats: a manifest.json, or YAML
-    // frontmatter at the top of SKILL.md. Support both.
-    const parseFrontmatter = (md: string): Record<string, string> => {
-      const fm: Record<string, string> = {};
-      if (!md.startsWith("---")) return fm;
-      const end = md.indexOf("\n---", 3);
-      if (end === -1) return fm;
-      for (const line of md.slice(3, end).split("\n")) {
-        const m = line.match(/^([a-zA-Z0-9_]+):\s*(.*)$/);
-        const key = m?.[1];
-        if (key) fm[key] = (m?.[2] ?? "").trim().replace(/^["']|["']$/g, "");
-      }
-      return fm;
-    };
-    const pretty = (s: string): string =>
-      /\s/.test(s) ? s : s.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-    const seen = new Set<string>();
-    const out: unknown[] = [];
-    for (const dir of dirs) {
-      if (!existsSync(dir)) continue;
-      let entries: string[] = [];
-      try { entries = readdirSync(dir); } catch { continue; }
-      for (const entry of entries) {
-        const sdir = join(dir, entry);
-        const mdPath = join(sdir, "SKILL.md");
-        if (seen.has(entry)) continue;
-        if (!existsSync(mdPath) || !lstatSync(sdir).isDirectory()) continue;
-        const manifestPath = join(sdir, "manifest.json");
-        if (!existsSync(manifestPath) && (!process.env.MORROW_SKILLS_DIR || resolve(dir) !== resolve(process.env.MORROW_SKILLS_DIR))) continue;
-        if (existsSync(manifestPath) && !verifySkillDirectory(sdir).ok) continue;
-        seen.add(entry);
-        let manifest: any = {};
-        try { manifest = JSON.parse(readFileSync(join(sdir, "manifest.json"), "utf8")); } catch {}
-        const md = readFileSync(mdPath, "utf8");
-        const fm = parseFrontmatter(md);
-        const body = md.startsWith("---") && md.indexOf("\n---", 3) !== -1 ? md.slice(md.indexOf("\n---", 3) + 4) : md;
-        const lines = body.split("\n").filter((l) => l.trim());
-        const mdName = (lines[0] ?? "").replace(/^#\s*/, "").trim();
-        const mdDesc = (lines.slice(1).find((l) => l.trim() && !l.startsWith("#")) ?? "").trim();
-        const riskClass: string = manifest.riskClass || fm.riskClass || "";
-        // Bundled high-risk red-team skills are intentionally not executable
-        // through the default catalog. Keep their source available for an
-        // explicit security-review workflow, but do not present them as
-        // ordinary installed capabilities beside trusted skills.
-        if (riskClass === "high") continue;
-        out.push({
-          id: manifest.id || fm.name || entry,
-          name: pretty(manifest.name || fm.name || mdName || entry),
-          description: manifest.description || fm.description || mdDesc || "",
-          category: manifest.category || fm.category || categorize(entry),
-          trustTier: riskToTier[riskClass] || "controlled",
-          enabled: true,
-          validation: "healthy",
-          tools: Array.isArray(manifest.requestedTools) ? manifest.requestedTools : [],
-          permissions: Array.isArray(manifest.requestedFilesystemScopes) ? manifest.requestedFilesystemScopes : [],
-          dependencies: [],
-          source: manifest.publisher || fm.publisher || "bundled",
-        });
-      }
+  function skillScope(request: FastifyRequest): SkillCatalogScope | undefined {
+    const query = z.object({ projectId: z.string().trim().min(1).optional() }).strict().parse(request.query ?? {});
+    if (!query.projectId) return undefined;
+    const project = projects.getProjectById(query.projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return { projectId: project.id, workspacePath: project.workspacePath };
+  }
+
+  function skillCatalogFailure(error: unknown): never {
+    if (!(error instanceof SkillCatalogError)) throw error;
+    if (error.code === "not_found") throw new ApiError(404, error.message, "SKILL_NOT_FOUND");
+    if (error.code === "conflict") throw new ApiError(409, error.message, "SKILL_CONFLICT");
+    if (error.code === "invalid_scope") throw new ApiError(400, error.message, "SKILL_INVALID_SCOPE");
+    throw new ApiError(409, error.message, "SKILL_NOT_LOADABLE");
+  }
+
+  // The catalog owns root scanning, validation, activation defaults, and the
+  // sanitized public projection. Both global and project-scoped requests use
+  // this same authority as agent discovery and instruction loading.
+  app.get("/api/skills", async (request) => {
+    try {
+      return skillCatalog.list(skillScope(request));
+    } catch (error) {
+      return skillCatalogFailure(error);
     }
-    (out as any[]).sort((a, b) => String(a.name).localeCompare(String(b.name)));
-    return out;
+  });
+
+  app.get("/api/skills/status", async (request) => {
+    try {
+      return skillCatalog.status(skillScope(request));
+    } catch (error) {
+      return skillCatalogFailure(error);
+    }
+  });
+
+  app.patch("/api/skills/:skillKey", async (request) => {
+    const { skillKey } = request.params as { skillKey: string };
+    const body = SetSkillActivationSchema.parse(request.body);
+    try {
+      return skillCatalog.setEnabled(skillKey, body.enabled, skillScope(request));
+    } catch (error) {
+      return skillCatalogFailure(error);
+    }
   });
 
   /**
@@ -4854,7 +4818,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const skillInstallFailure = (error: unknown): never => {
     if (error instanceof SkillInstallError) {
       const detail = error.issues.length ? `${error.message}: ${error.issues.join("; ")}` : error.message;
-      throw new ApiError(400, detail, "SKILL_INSTALL_REFUSED");
+      throw new ApiError(error.code === "SKILL_INSTALL_FAILED" ? 500 : 400, detail, error.code);
     }
     throw error;
   };
@@ -4878,11 +4842,21 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.post("/api/skills/install", async (request, reply) => {
     const body = z.object({ handle: z.string().trim().min(1).max(128) }).strict().parse((request.body ?? {}) as unknown);
     try {
-      const installed = applySkillInstall(body.handle);
+      const installed = applySkillInstall(body.handle, {
+        persistDisabled: (id) => {
+          const candidates = skillCatalog.list().filter((entry) => entry.source === "user" && entry.id === id);
+          const entry = candidates.find((candidate) => candidate.key === `user:${id}`) ?? candidates[0];
+          if (!entry) throw new SkillInstallError(`Installed skill "${id}" is not present in the authoritative catalog`, [], "SKILL_INSTALL_FAILED");
+          skillCatalog.setEnabled(entry.key, false);
+        },
+      });
       reply.status(201);
       // Installing never enables: the skill is on disk and inert until someone
       // turns it on, which is a separate and deliberate act.
-      return { ...installed, enabled: false };
+      const candidates = skillCatalog.list().filter((entry) => entry.source === "user" && entry.id === installed.id);
+      const entry = candidates.find((candidate) => candidate.key === `user:${installed.id}`) ?? candidates[0];
+      if (!entry) throw new SkillInstallError(`Installed skill "${installed.id}" is not present in the authoritative catalog`, [], "SKILL_INSTALL_FAILED");
+      return entry;
     } catch (error) {
       return skillInstallFailure(error);
     }
@@ -4896,13 +4870,24 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return null;
   });
 
-  app.delete("/api/skills/:skillId", async (request, reply) => {
-    const { skillId } = request.params as { skillId: string };
+  app.delete("/api/skills/:skillKey", async (request, reply) => {
+    const { skillKey } = request.params as { skillKey: string };
     try {
-      removeInstalledSkill(skillId);
+      const entry = skillCatalog.getByKey(skillKey, skillScope(request));
+      if (!entry) throw new ApiError(404, "Skill catalog entry was not found", "SKILL_NOT_FOUND");
+      if (entry.source !== "user") {
+        throw new ApiError(409, `${entry.source === "bundled" ? "Bundled" : "Workspace"} skills cannot be removed; disable it instead.`, "SKILL_REMOVE_NOT_ALLOWED");
+      }
+      removeInstalledSkill(entry.id, {
+        onRemoved: () => { skillCatalog.removeActivation(entry.key); },
+      });
       reply.status(204);
       return null;
     } catch (error) {
+      if (error instanceof SkillCatalogError || error instanceof ApiError) {
+        if (error instanceof ApiError) throw error;
+        return skillCatalogFailure(error);
+      }
       return skillInstallFailure(error);
     }
   });

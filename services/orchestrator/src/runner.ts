@@ -5,6 +5,7 @@ import { conversationsRepository } from "./repositories/conversations.js";
 import { ExecutionLeaseFenceError } from "./repositories/execution-continuity.js";
 import type { ProcessSupervisor } from "./processes/supervisor.js";
 import type { TeammateSpawner } from "./tools/teammate-delegation.js";
+import type { SkillCatalog } from "./skills/catalog.js";
 
 export interface ExecutionLeaseClaim {
   segmentId: string;
@@ -35,7 +36,7 @@ export class TaskRunner {
   private executor: TaskExecutor;
   private teammateSpawner: TeammateSpawner | undefined;
 
-  constructor(private db: Database.Database, executor?: TaskExecutor, supervisor?: ProcessSupervisor) {
+  constructor(private db: Database.Database, executor?: TaskExecutor, supervisor?: ProcessSupervisor, private skillCatalog?: SkillCatalog) {
     this.executor = executor || (async (deps) => {
       const task = taskRepository(db).getTaskById(deps.taskId);
       if (!task) throw new Error(`Task not found: ${deps.taskId}`);
@@ -51,6 +52,7 @@ export class TaskRunner {
           ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}),
           ...(deps.recovery ? { recovery: deps.recovery } : {}),
           ...(supervisor ? { supervisor } : {}),
+          ...(skillCatalog ? { skillCatalog } : {}),
           ...(this.teammateSpawner ? { teammateSpawner: this.teammateSpawner } : {}),
         });
       } else {

@@ -103,7 +103,11 @@ export type SkillInstallPreview =
   | { kind: "choices"; source: string; candidates: Array<{ subdir: string; id: string; name: string; description: string }> };
 
 export class SkillInstallError extends Error {
-  constructor(message: string, readonly issues: string[] = []) { super(message); }
+  constructor(
+    message: string,
+    readonly issues: string[] = [],
+    readonly code: "SKILL_INSTALL_REFUSED" | "SKILL_INSTALL_FAILED" = "SKILL_INSTALL_REFUSED",
+  ) { super(message); }
 }
 
 /* ── Sources ─────────────────────────────────────────────────────────────── */
@@ -689,7 +693,11 @@ function stagingPathFor(handle: string, env: NodeJS.ProcessEnv): string {
  * plan and apply, and re-checking costs one hash against the possibility of
  * installing something that changed in between.
  */
-export function applySkillInstall(handle: string, options: { env?: NodeJS.ProcessEnv } = {}): { id: string; directory: string } {
+export function applySkillInstall(handle: string, options: {
+  env?: NodeJS.ProcessEnv;
+  /** Persist the explicit disabled activation while the previous bundle is still recoverable. */
+  persistDisabled?: (id: string) => void;
+} = {}): { id: string; directory: string } {
   const env = options.env ?? process.env;
   const staging = stagingPathFor(handle, env);
   try {
@@ -703,15 +711,38 @@ export function applySkillInstall(handle: string, options: { env?: NodeJS.Proces
     const target = join(installRoot, id);
     // Replace by moving the old directory aside first, so a failure part-way
     // leaves the previous skill recoverable rather than half-deleted.
-    const displaced = existsSync(target) ? `${target}.replaced-${Date.now()}` : null;
+    // Keep the displaced directory hidden: a catalog scan during activation
+    // persistence must not mistake the recoverable copy for a second active
+    // skill with the same declared id.
+    let displaced = existsSync(target) ? join(installRoot, `.replaced-${id}-${Date.now()}`) : null;
     if (displaced) renameSync(target, displaced);
+    let promoted = false;
     try {
       renameSync(staging, target);
+      promoted = true;
+      try {
+        options.persistDisabled?.(id);
+      } catch (error) {
+        // Activation is part of installation success. Remove the new bundle
+        // and restore the prior one before surfacing the durable failure.
+        rmSync(target, { recursive: true, force: true });
+        promoted = false;
+        if (displaced && existsSync(displaced)) {
+          renameSync(displaced, target);
+          displaced = null;
+        }
+        const message = error instanceof Error ? error.message : "activation persistence failed";
+        throw new SkillInstallError("Skill installation could not persist its disabled activation", [message], "SKILL_INSTALL_FAILED");
+      }
     } catch (error) {
-      if (displaced) renameSync(displaced, target);
+      if (promoted && existsSync(target)) rmSync(target, { recursive: true, force: true });
+      if (displaced && existsSync(displaced) && !existsSync(target)) renameSync(displaced, target);
       throw error;
     }
-    if (displaced) rmSync(displaced, { recursive: true, force: true });
+    if (displaced) {
+      rmSync(displaced, { recursive: true, force: true });
+      displaced = null;
+    }
     return { id, directory: target };
   } finally {
     rmSync(staging, { recursive: true, force: true });
@@ -731,7 +762,11 @@ export function discardSkillInstall(handle: string, options: { env?: NodeJS.Proc
  * the installed product, and deleting one there would be undone by the next
  * upgrade while looking like it worked.
  */
-export function removeInstalledSkill(id: string, options: { env?: NodeJS.ProcessEnv } = {}): { removed: boolean; directory: string } {
+export function removeInstalledSkill(id: string, options: {
+  env?: NodeJS.ProcessEnv;
+  /** Delete the matching catalog activation only after the directory is gone. */
+  onRemoved?: () => void;
+} = {}): { removed: boolean; directory: string } {
   const env = options.env ?? process.env;
   if (!SKILL_ID.test(id)) throw new SkillInstallError(`"${id}" is not a valid skill id`);
   const directory = join(skillInstallRoot(env), id);
@@ -739,5 +774,11 @@ export function removeInstalledSkill(id: string, options: { env?: NodeJS.Process
     throw new SkillInstallError(`No installed skill named "${id}". Bundled skills cannot be removed; disable it instead.`);
   }
   rmSync(directory, { recursive: true, force: true });
+  try {
+    options.onRemoved?.();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "activation removal failed";
+    throw new SkillInstallError("Skill directory was removed but its activation could not be cleared", [message], "SKILL_INSTALL_FAILED");
+  }
   return { removed: true, directory };
 }

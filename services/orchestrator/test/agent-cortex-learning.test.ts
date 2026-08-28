@@ -17,6 +17,7 @@ import { AutomaticSkillService } from "../src/cortex/automatic-skills.js";
 import { CortexService } from "../src/cortex/service.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import { MockProvider } from "../src/provider/mock.js";
+import { createSkillCatalog } from "../src/skills/catalog.js";
 
 function learning(missionId: string): MissionLearning {
   return {
@@ -72,7 +73,10 @@ describe("agent automatic Cortex recall", () => {
       [{ type: "tool_call", toolCalls: [{ id: "load-1", index: 0, type: "function", function: { name: "load_skill", arguments: JSON.stringify({ skill_id: learned.id }) } }] }, { type: "done" }],
       [{ type: "text", text: "Applied the learned repository validation workflow." }, { type: "done" }],
     ] });
-    await executeAgentChatTask({ db, taskId: "t1", provider, maxTurns: 4 });
+    const skillCatalog = createSkillCatalog({ db, bundledRoot: null, userRoot: null });
+    const skillScope = { projectId: "p1", workspacePath: workspace };
+    skillCatalog.setEnabled(`workspace:p1:${learned.id}`, true, skillScope);
+    await executeAgentChatTask({ db, taskId: "t1", provider, maxTurns: 4, skillCatalog });
 
     const initialPrompt = provider.requests[0]!.map((message) => message.content).join("\n");
     expect(initialPrompt).toContain("Relevant saved memory");
