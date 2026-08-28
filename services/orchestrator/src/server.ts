@@ -431,6 +431,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   // do not expose an active-task query; a restart intentionally starts with an
   // empty set and can therefore reclaim queued children from durable state.
   const delegatedRunnerStarts = new Set<string>();
+  // Children this process handed to the runner and saw settle. Distinct from
+  // the start register, which is pruned on settlement so a child can be woken
+  // again. A restart intentionally begins empty: no memory means no claim that
+  // this process already ran the child.
+  const settledDelegatedChildren = new Set<string>();
   const taskStartClaims = taskStartClaimsRepository(deps.db);
   const taskStartClaimOwnerId = createExecutionLeaseOwnerId();
 
@@ -462,9 +467,33 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return { delegation, parent, project, team, agent, child };
   }
 
+  /**
+   * Whether a repeated approval may re-wake an existing child rather than
+   * being refused as a duplicate resolve.
+   *
+   * A child left startable can mean two different things, and the durable
+   * status alone cannot tell them apart: a child whose first runner start
+   * failed and was never begun, or one this process already ran. The
+   * discriminator is this process's own memory. A restart is precisely the
+   * case where that memory is empty, so re-approving after one is a recovery
+   * request; re-approving a child this process started, is running, or has
+   * already settled is a replayed write and must be refused. Answering it 200
+   * would report a second successful approval for work approved once.
+   */
+  function isReclaimableDelegatedChild(taskId: string): boolean {
+    if (delegatedRunnerStarts.has(taskId)) return false;
+    if (settledDelegatedChildren.has(taskId)) return false;
+    if (typeof deps.runner.isActive === "function" && deps.runner.isActive(taskId)) return false;
+    const status = tasks.getTaskById(taskId)?.status;
+    return status === "queued" || status === "interrupted";
+  }
+
   function wakeDelegatedChild(taskId: string): void {
     const task = tasks.getTaskById(taskId);
-    if (!task || !["queued", "running", "interrupted"].includes(task.status)) return;
+    // Only the statuses the durable start fence can actually grant. A running
+    // child is owned by whoever started it; claiming otherwise here would be a
+    // silent no-op rather than a wake.
+    if (!task || !["queued", "interrupted"].includes(task.status)) return;
     const active = delegatedRunnerStarts.has(taskId)
       || (typeof deps.runner.isActive === "function" && deps.runner.isActive(taskId));
     if (active) return;
@@ -491,7 +520,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     delegatedRunnerStarts.add(taskId);
   }
   deps.runner.onSettled?.((taskId) => {
-    delegatedRunnerStarts.delete(taskId);
+    if (delegatedRunnerStarts.delete(taskId)) settledDelegatedChildren.add(taskId);
     // Settlement terminalizes the start fence. The durable status gate keeps a
     // finished task unstartable; a legitimately requeued child can be claimed
     // again by whichever owner reclaims it.
@@ -1260,9 +1289,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       throw new ApiError(409, `Delegation is already ${delegation.status}`, "ALREADY_RESOLVED");
     }
     if (delegation.status === "running" && delegation.childTaskId) {
-      const childIsActive = delegatedRunnerStarts.has(delegation.childTaskId)
-        || (typeof deps.runner.isActive === "function" && deps.runner.isActive(delegation.childTaskId));
-      if (childIsActive) {
+      if (!isReclaimableDelegatedChild(delegation.childTaskId)) {
         throw new ApiError(409, "Delegation is already running", "ALREADY_RESOLVED");
       }
       wakeDelegatedChild(delegation.childTaskId);
@@ -1288,9 +1315,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     }
     const admitted = admission.delegation;
     if (admitted.status === "running" && admitted.childTaskId) {
-      const childIsActive = delegatedRunnerStarts.has(admitted.childTaskId)
-        || (typeof deps.runner.isActive === "function" && deps.runner.isActive(admitted.childTaskId));
-      if (childIsActive) {
+      if (!isReclaimableDelegatedChild(admitted.childTaskId)) {
         throw new ApiError(409, "Delegation is already running", "ALREADY_RESOLVED");
       }
       wakeDelegatedChild(admitted.childTaskId);

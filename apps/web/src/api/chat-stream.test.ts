@@ -191,26 +191,32 @@ describe("useChatTaskStream", () => {
     expect(result.current.terminal).toBe(false);
     expect(JSON.parse(sessionStorage.getItem(chatStreamCursorKey(identity))!)).toMatchObject({ cursor: 6, terminal: true });
     expect(refetch).toHaveBeenCalledTimes(2);
-    expect(vi.getTimerCount()).toBe(1);
+    // The retry is scheduled, and the paused stream stays closed. Asserted as
+    // "no second EventSource was ever opened" rather than an exact
+    // vi.getTimerCount(): that counter is global, so it also sees timers React
+    // and the query client schedule, which differ by environment. The exact
+    // refetch counts on either side of each backoff boundary below are what
+    // pin "exactly one retry per window".
+    expect(FakeEventSource.instances).toHaveLength(1);
 
     await act(async () => { await vi.advanceTimersByTimeAsync(999); });
     expect(refetch).toHaveBeenCalledTimes(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(refetch).toHaveBeenCalledTimes(4);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(FakeEventSource.instances).toHaveLength(1);
 
     await act(async () => { await vi.advanceTimersByTimeAsync(1_999); });
     expect(refetch).toHaveBeenCalledTimes(4);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(refetch).toHaveBeenCalledTimes(6);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(FakeEventSource.instances).toHaveLength(1);
 
     Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
     act(() => document.dispatchEvent(new Event("visibilitychange")));
     await act(async () => { await Promise.resolve(); });
     expect(refetch).toHaveBeenCalledTimes(8);
     expect(source.closed).toBe(true);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(FakeEventSource.instances).toHaveLength(1);
 
     setOnline(false);
     act(() => window.dispatchEvent(new Event("offline")));

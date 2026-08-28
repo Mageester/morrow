@@ -7,6 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import type { MemoryScope } from "@morrow/contracts";
 import { openDatabase } from "../src/database.js";
+import { buildServer } from "../src/server.js";
+import { TaskRunner } from "../src/runner.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { agentsRepository } from "../src/repositories/agents.js";
@@ -381,5 +383,71 @@ describe("memoryRepository — scope filtering for the memory vault", () => {
     // Crucially: project-scoped memory is never returned by listUserGlobal,
     // and listByScope("p2", "project") must never see p1's project memory.
     expect(memory.listByScope("p2", "project")).toEqual([]);
+  });
+});
+
+describe("delegation approval replay", () => {
+  let db: any;
+  let app: any;
+  let previousMockProvider: string | undefined;
+
+  beforeEach(() => {
+    previousMockProvider = process.env.MOCK_PROVIDER;
+    process.env.MOCK_PROVIDER = "true";
+    db = openDatabase(":memory:");
+    app = buildServer({ db, runner: new TaskRunner(db, async () => {}) });
+    projectRepository(db).createProject({ id: "p1", name: "P1", workspacePath: process.cwd(), createdAt: new Date().toISOString() });
+  });
+
+  afterEach(() => {
+    app.close();
+    db.close();
+    if (previousMockProvider === undefined) delete process.env.MOCK_PROVIDER;
+    else process.env.MOCK_PROVIDER = previousMockProvider;
+  });
+
+  async function approveOnce() {
+    const created = (await app.inject({ method: "POST", url: "/api/projects/p1/teams", payload: { preset: "research_and_verify" } })).json();
+    const researcher = created.members.find((a: any) => a.name === "Researcher");
+    taskRepository(db).createTask({ id: "parent", projectId: "p1", kind: "agent_chat", status: "running", createdAt: new Date().toISOString() });
+    const delegation = (await app.inject({
+      method: "POST", url: "/api/tasks/parent/delegations",
+      payload: { teamId: created.team.id, agentId: researcher.id, objective: "Summarize README" },
+    })).json();
+    const first = await app.inject({ method: "POST", url: `/api/delegations/${delegation.id}/resolve`, payload: { parentTaskId: "parent", decision: "approve" } });
+    expect(first.statusCode).toBe(200);
+    return { delegationId: delegation.id, childTaskId: first.json().childTaskId };
+  }
+
+  it("refuses a replayed approval once the child has settled instead of reporting a second success", async () => {
+    const { delegationId, childTaskId } = await approveOnce();
+    // Let the runner settle the child, which clears this process's start
+    // record. A duplicate approval arriving now must still be a duplicate.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const replay = await app.inject({ method: "POST", url: `/api/delegations/${delegationId}/resolve`, payload: { parentTaskId: "parent", decision: "approve" } });
+
+    expect(replay.statusCode).toBe(409);
+    expect(replay.json().error.code).toBe("ALREADY_RESOLVED");
+    expect(taskRepository(db).listChildren("parent").map((t: any) => t.id)).toEqual([childTaskId]);
+  });
+
+  it("re-wakes a child a crash left behind once the process has actually restarted", async () => {
+    const { delegationId, childTaskId } = await approveOnce();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // What startup recovery leaves behind when a child's owner died.
+    db.prepare("UPDATE tasks SET status='interrupted',updated_at=? WHERE id=?").run(new Date().toISOString(), childTaskId);
+    // A crash is a new process: the durable rows survive, the in-process
+    // record of having run this child does not.
+    await app.close();
+    const restarted: string[] = [];
+    app = buildServer({ db, runner: { run: (taskId: string) => { restarted.push(taskId); }, isActive: () => false } as any });
+
+    const recover = await app.inject({ method: "POST", url: `/api/delegations/${delegationId}/resolve`, payload: { parentTaskId: "parent", decision: "approve" } });
+
+    expect(recover.statusCode).toBe(200);
+    expect(restarted).toEqual([childTaskId]);
+    // Recovery re-wakes the same durable child; it never forks a second one.
+    expect(taskRepository(db).listChildren("parent").map((t: any) => t.id)).toEqual([childTaskId]);
   });
 });
