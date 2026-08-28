@@ -50,6 +50,14 @@ interface RootSpec {
   source: "bundled" | "user" | "workspace";
   kind: "bundled" | "user" | "workspace" | "learned";
   path: string;
+  /**
+   * Whether this root's absence is a fault.
+   *
+   * A missing bundled root means skills that shipped with Morrow are gone. A
+   * missing user or workspace root just means nobody has put a skill there
+   * yet, which is the normal state of a fresh install — reporting that as a
+   * fault would make every new user's catalog read as broken.
+   */
   required: boolean;
   learnedByDirectory?: Map<string, LearnedRecord>;
 }
@@ -387,8 +395,8 @@ function rootsForScope(
     roots.push(root);
   };
   if (configuredBundledRoot) add({ source: "bundled", kind: "bundled", path: canonicalPath(configuredBundledRoot), required: true });
-  if (configuredUserRoot) add({ source: "user", kind: "user", path: canonicalPath(configuredUserRoot), required: true });
-  if (scope.workspacePath) add({ source: "workspace", kind: "workspace", path: canonicalPath(join(scope.workspacePath, "skills")), required: true });
+  if (configuredUserRoot) add({ source: "user", kind: "user", path: canonicalPath(configuredUserRoot), required: false });
+  if (scope.workspacePath) add({ source: "workspace", kind: "workspace", path: canonicalPath(join(scope.workspacePath, "skills")), required: false });
   if (!scope.projectId) return { roots, learnedRecords: [] };
 
   const projectId = scope.projectId;

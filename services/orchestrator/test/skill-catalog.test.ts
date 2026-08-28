@@ -414,6 +414,34 @@ describe("skill catalog", () => {
     database.close();
   });
 
+  /**
+   * A fresh install has never had a user skill installed, so that directory
+   * does not exist yet. That is the normal state, not a fault — reporting it
+   * as one would make every new user's catalog read as broken.
+   */
+  it("does not call a never-used user root a fault", () => {
+    const root = tempDirectory();
+    const bundledRoot = join(root, "bundled");
+    mkdirSync(bundledRoot);
+    writeSkill(bundledRoot, "healthy");
+    const database = db();
+    const catalog = createSkillCatalog({ db: database, bundledRoot, userRoot: join(root, "never-created"), now: () => NOW });
+
+    expect(catalog.status()).toMatchObject({ healthy: true, entries: 1, loadable: 1, issues: [] });
+    database.close();
+  });
+
+  /** A bundled root that vanished means shipped skills are gone. */
+  it("still reports a missing bundled root", () => {
+    const root = tempDirectory();
+    const database = db();
+    const catalog = createSkillCatalog({ db: database, bundledRoot: join(root, "gone"), userRoot: null, now: () => NOW });
+
+    expect(catalog.status().healthy).toBe(false);
+    expect(catalog.status().issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "root_unavailable" })]));
+    database.close();
+  });
+
   it("persists bundled disablement and user enablement across a database reopen", () => {
     const root = tempDirectory();
     const bundledRoot = join(root, "bundled");

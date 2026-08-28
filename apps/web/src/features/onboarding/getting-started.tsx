@@ -68,9 +68,16 @@ export function GettingStarted() {
     {
       id: "privacy",
       title: "Review your privacy preference",
+      // This setting is a hard gate, not a preference: under local-only the
+      // service refuses every remote provider outright. Calling it advisory
+      // sent people looking for a bug when Morrow declined their request.
       body: profile.data
-        ? `${profile.data.defaultPrivacyMode === "local_only" ? "Prefer local providers" : profile.data.defaultPrivacyMode === "controlled_cloud" ? "Cloud providers available" : "Custom preference"} is saved. It does not enforce provider routing; review it any time in Settings.`
-        : "A local-first preference is saved. It does not enforce provider routing; review it any time in Settings.",
+        ? profile.data.defaultPrivacyMode === "local_only"
+          ? "Prefer local providers is saved. Morrow refuses every provider that runs off this machine until you choose Cloud providers available in Settings."
+          : profile.data.defaultPrivacyMode === "controlled_cloud"
+            ? "Cloud providers available is saved. The providers you configured may be used; change it any time in Settings."
+            : "Custom preference is saved. Review provider choices per project or task in Settings."
+        : "Review your privacy preference in Settings — it decides whether Morrow may use a provider that runs off this machine.",
       done: profile.isSuccess,
       optional: true,
       action: { label: "Review privacy settings", to: "/settings" },

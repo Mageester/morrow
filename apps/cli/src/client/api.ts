@@ -778,6 +778,19 @@ export class MorrowApi {
   }
 
   /**
+   * The privacy mode is a hard gate in the service: `local_only` refuses every
+   * remote provider outright. It lived only behind the web settings page, so a
+   * terminal-first user who connected a cloud provider hit a wall with no way
+   * to move it from the terminal.
+   */
+  getAssistantProfile() {
+    return this.req<{ defaultPrivacyMode: "local_only" | "controlled_cloud" | "custom" }>("GET", "/api/assistant-profile");
+  }
+  setPrivacyMode(mode: "local_only" | "controlled_cloud" | "custom") {
+    return this.req<{ defaultPrivacyMode: "local_only" | "controlled_cloud" | "custom" }>("PATCH", "/api/assistant-profile", { defaultPrivacyMode: mode });
+  }
+
+  /**
    * The service's catalog is the only authority on which skills exist and which
    * ones the agent can actually load. The CLI reads and writes that state
    * rather than keeping its own opinion in local config, so `morrow skills

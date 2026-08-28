@@ -449,6 +449,34 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
         ctx.out.success(
           `${configured.length} provider${configured.length === 1 ? "" : "s"} ready: ${configured.map((p) => p.label).join(", ")}.`,
         );
+        // Morrow defaults to refusing every remote provider. Someone who just
+        // connected one would otherwise have every request blocked by a
+        // setting they were never shown — so ask here, plainly, rather than
+        // letting them discover it as a failure later.
+        try {
+          const profile = await ctx.api().getAssistantProfile();
+          if (profile.defaultPrivacyMode === "local_only") {
+            ctx.out.print();
+            ctx.out.print(
+              "Morrow currently refuses every provider that runs off this machine.",
+            );
+            const allow = await confirm(
+              `Allow the provider${configured.length === 1 ? "" : "s"} you just connected to be used?`,
+              true,
+            );
+            if (allow) {
+              const updated = await ctx.api().setPrivacyMode("controlled_cloud");
+              ctx.out.success(`Privacy set to ${updated.defaultPrivacyMode}.`);
+            } else {
+              ctx.out.info(
+                "Left on local-only. Remote requests will be refused until you run `morrow settings privacy controlled-cloud`.",
+              );
+            }
+          }
+        } catch {
+          // The privacy gate is the service's; if it cannot be read now, the
+          // setting is still reachable from `morrow settings privacy`.
+        }
       }
       return true;
     }

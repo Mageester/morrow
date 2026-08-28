@@ -40,6 +40,46 @@ function reasoningConfig(v: unknown): ReasoningConfiguration | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+/**
+ * `task.progress_warning` is a mixed channel. Some reasons are things a person
+ * needs to know; most are internal bookkeeping that controls nothing.
+ * Rendering all of them as one alarming line printed "No new observable
+ * progress yet." directly alongside the successful tool calls it was denying —
+ * a warning that was not merely noisy but false.
+ *
+ * Each reason is shown as what it actually is, and pure telemetry is not shown
+ * at all. The web activity feed reached the same conclusion; this is the
+ * terminal's half of it.
+ */
+function progressWarningNotices(p: Record<string, unknown>): TerminalEvent[] {
+  const warn = (text: string): TerminalEvent[] => [{ type: "notice", level: "warn", text, transient: true }];
+  const reason = str(p.reason);
+
+  // Observed-only signals. Nothing acted on them and nobody can act on them.
+  if (reason === "execution_policy_observed" || reason === "mission_ledger_write_failed") return [];
+
+  if (reason === "no_progress_turn") {
+    // "No progress" here means no file or command changed this turn — reading
+    // and searching do not count. That is normal while Morrow is still looking
+    // around, so it is worth saying only as the stall threshold approaches.
+    const turns = num(p.turnsWithoutProgress) ?? 0;
+    const threshold = num(p.threshold) ?? 3;
+    if (turns < threshold - 1) return [];
+    return warn(`No files or commands have changed in ${turns} turn${turns === 1 ? "" : "s"}; Morrow stops at ${threshold}.`);
+  }
+
+  if (reason === "exact_repeat_advisory") {
+    const tool = str(p.toolName);
+    return warn(tool ? `Repeated ${tool}; the previous result was shown again.` : "Repeated a call; the previous result was shown again.");
+  }
+
+  if (reason === "empty_provider_response") return warn("The provider returned no answer; retrying.");
+
+  const message = str(p.message);
+  if (message) return warn(message);
+  return reason ? warn(`Recovery evaluated: ${reason.replaceAll("_", " ")}.`) : [];
+}
+
 /** Map one SSE task event to zero or more terminal events. */
 export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
   const p = event.payload ?? {};
@@ -74,11 +114,19 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       const path = str(p.path);
       if (path !== undefined) {
         const action = str(p.action);
-        // A persisted WRITE is a change, not a read — it feeds the changed-files
-        // list. Beta.28 rendered file writes as "reading <file>", which was wrong.
-        if (action === "patched") return withSource([{ type: "patch.applied", files: [path] }]);
         // Directory creation is already covered by the tool's own action line.
         if (action === "created_directory") return [];
+        // A persisted WRITE is a change, not a read — it feeds the changed-files
+        // list. This used to name only `patched`, so every other write action
+        // fell through to the read branch: a file Morrow had just created was
+        // reported as one it had read, on a line printed *before* the "Created"
+        // line that followed it.
+        if (action === "patched" || action === "create_file_overwrite") {
+          return withSource([{ type: "patch.applied", files: [path] }]);
+        }
+        // A browser artifact is something Morrow saved, not a workspace file it
+        // read; the tool's own line already says what it did.
+        if (action === "browser_download" || action === "browser_screenshot") return [];
         const size = num(p.size);
         return withSource([{ type: "activity", kind: "reading", detail: size !== undefined ? `${path} (${size} bytes)` : path }]);
       }
@@ -210,14 +258,7 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
     }
 
     case "task.progress_warning":
-      return withSource([
-        {
-          type: "notice",
-          level: "warn",
-          text: str(p.message) ?? "No new observable progress yet.",
-          transient: true,
-        },
-      ]);
+      return withSource(progressWarningNotices(p));
 
     case "task.failed":
       return withSource([{ type: "task.failed", message: str(p.message) ?? "unknown error" }]);

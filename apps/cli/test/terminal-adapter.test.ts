@@ -165,3 +165,77 @@ describe("task event adapter", () => {
     expect(mapTaskEvent({ type: "agent.state_changed", payload: { state: "planning" } })).toEqual([]);
   });
 });
+
+/**
+ * The old adapter turned every `task.progress_warning` into "No new observable
+ * progress yet." — printed next to the successful tool calls it was denying.
+ * A warning that contradicts what the person is watching is worse than silence.
+ */
+describe("progress warnings", () => {
+  const warn = (payload: Record<string, unknown>) => mapTaskEvent({ type: "task.progress_warning", payload });
+
+  it("says nothing about signals that control nothing", () => {
+    expect(warn({ reason: "execution_policy_observed", signal: "task_shape_inference" })).toEqual([]);
+    expect(warn({ reason: "mission_ledger_write_failed", message: "could not write" })).toEqual([]);
+  });
+
+  it("stays quiet while Morrow is still looking around", () => {
+    expect(warn({ reason: "no_progress_turn", turnsWithoutProgress: 1, threshold: 3 })).toEqual([]);
+  });
+
+  it("warns only as the stall threshold approaches, and says what it means", () => {
+    const notices = warn({ reason: "no_progress_turn", turnsWithoutProgress: 2, threshold: 3 });
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ type: "notice", level: "warn" });
+    expect((notices[0] as { text: string }).text).toBe("No files or commands have changed in 2 turns; Morrow stops at 3.");
+  });
+
+  it("names the repeated call rather than calling it a lack of progress", () => {
+    expect((warn({ reason: "exact_repeat_advisory", toolName: "read_file", count: 2 })[0] as { text: string }).text)
+      .toBe("Repeated read_file; the previous result was shown again.");
+  });
+
+  it("reports an empty provider response as what it is", () => {
+    expect((warn({ reason: "empty_provider_response" })[0] as { text: string }).text)
+      .toBe("The provider returned no answer; retrying.");
+  });
+
+  it("falls back to the reason rather than a fixed sentence", () => {
+    expect((warn({ reason: "some_new_signal" })[0] as { text: string }).text).toBe("Recovery evaluated: some new signal.");
+    expect(warn({})).toEqual([]);
+  });
+});
+
+/**
+ * The stream reports a file write and a file read through the same event. Only
+ * `patched` was recognised as a write, so a file Morrow had just created was
+ * announced as one it had read — on a line printed before the "Created" line
+ * that followed it.
+ */
+describe("persisted file evidence", () => {
+  const persisted = (payload: Record<string, unknown>) => mapTaskEvent({ type: "evidence.persisted", payload });
+
+  it("reports a created file as a change, not a read", () => {
+    expect(persisted({ path: "summary.txt", size: 41, action: "create_file_overwrite", changed: true }))
+      .toEqual([{ type: "patch.applied", files: ["summary.txt"] }]);
+  });
+
+  it("still reports a patch as a change", () => {
+    expect(persisted({ path: "src/a.ts", size: 10, action: "patched" }))
+      .toEqual([{ type: "patch.applied", files: ["src/a.ts"] }]);
+  });
+
+  it("reports a read as a read", () => {
+    expect(persisted({ path: "invoices/jan.csv", size: 56, action: "read" }))
+      .toEqual([{ type: "activity", kind: "reading", detail: "invoices/jan.csv (56 bytes)" }]);
+  });
+
+  it("does not claim a browser artifact was a workspace file it read", () => {
+    expect(persisted({ path: "shot.png", action: "browser_screenshot" })).toEqual([]);
+    expect(persisted({ path: "file.zip", action: "browser_download" })).toEqual([]);
+  });
+
+  it("leaves directory creation to the tool line", () => {
+    expect(persisted({ path: "out", size: 0, action: "created_directory" })).toEqual([]);
+  });
+});
