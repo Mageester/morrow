@@ -76,9 +76,16 @@ orchestrator instead of only existing as a library.
 - A mission that ends blocked reports the number of tasks it actually completed.
   The terminal close-out path still hard-coded the count to zero, so a mission
   that ran two tasks summarised itself as "0 task(s)".
+- A replayed delegation approval is refused instead of reporting a second
+  success. The re-wake path added for restart recovery could not distinguish a
+  child whose first runner start failed from one the process had already run,
+  so approving twice answered 200 both times. It never forked a second child.
+  Genuine crash recovery still re-wakes the same durable child.
 - A model catalog refresh no longer commits partial or unusable metadata.
 - The web client now surfaces an event-stream failure while offline instead of
   leaving the stream silently stalled.
+- Responsive layout is aligned across the chronicle, editorial, library,
+  providers and settings surfaces, with an end-to-end check covering them.
 
 ### Verified
 
@@ -93,7 +100,7 @@ orchestrator instead of only existing as a library.
   rejection blocking synthesis, ordered fan-in, crash-safe synthesis, restart
   reconciliation, failure attribution by subsystem, and provider, tool, token
   and retry budgets.
-- Full repository suite green at this commit: 2750 orchestrator tests, 841 CLI,
+- Full repository suite green at this commit: 2752 orchestrator tests, 841 CLI,
   448 web, 7 dashboard; type checks and builds pass across all workspaces.
 
 ## [0.7.2] - 2026-08-26
