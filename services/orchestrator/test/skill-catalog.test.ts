@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { openDatabase } from "../src/database.js";
 import { skillActivationsRepository } from "../src/repositories/skill-activations.js";
 import { learnedSkillsRepository } from "../src/repositories/learned-skills.js";
+import { projectRepository } from "../src/repositories/projects.js";
 import { createSkillCatalog } from "../src/skills/catalog.js";
 
 const NOW = "2026-08-28T00:00:00.000Z";
@@ -31,6 +32,7 @@ function writeSkill(root: string, directoryName: string, options: {
   missingSkillMd?: boolean;
   malformedEntrypoint?: boolean;
   tamperChecksum?: boolean;
+  missingChecksum?: boolean;
 } = {}): string {
   const directory = join(root, directoryName);
   mkdirSync(directory, { recursive: true });
@@ -49,19 +51,20 @@ function writeSkill(root: string, directoryName: string, options: {
       requiredSecrets: [],
     }));
     const checksum = createHash("sha256").update(markdown).digest("hex");
-    writeFileSync(join(directory, "manifest.json"), JSON.stringify({
+    const manifest = {
       id,
       name,
       description,
       publisher: options.publisher ?? "local",
       riskClass: options.riskClass ?? "low",
-      checksum: options.tamperChecksum ? "0".repeat(64) : checksum,
       requestedTools: ["filesystem-read"],
       requestedFilesystemScopes: ["workspace"],
       requestedNetworkDomains: [],
       requiredSecrets: [],
       ...(options.malformedEntrypoint ? { entrypoint: { nested: true } } : {}),
-    }));
+      ...(options.missingChecksum ? {} : { checksum: options.tamperChecksum ? "0".repeat(64) : checksum }),
+    };
+    writeFileSync(join(directory, "manifest.json"), JSON.stringify(manifest));
   }
   return directory;
 }
@@ -146,6 +149,21 @@ describe("skill catalog", () => {
     database.close();
   });
 
+  it("maps a manifest with no checksum to invalid_manifest rather than checksum_mismatch", () => {
+    const root = tempDirectory();
+    const bundledRoot = join(root, "bundled");
+    mkdirSync(bundledRoot);
+    writeSkill(bundledRoot, "missing-checksum", { missingChecksum: true });
+    const database = db();
+    const catalog = createSkillCatalog({ db: database, bundledRoot, userRoot: null, now: () => NOW });
+
+    const entry = catalog.getByKey("bundled:missing-checksum");
+    expect(entry).toMatchObject({ validation: "invalid", loadable: false });
+    expect(entry?.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "invalid_manifest" })]));
+    expect(entry?.issues.some((current) => current.code === "checksum_mismatch")).toBe(false);
+    database.close();
+  });
+
   it("catches verifier exceptions from malformed manifest fields as stable invalid issues", () => {
     const root = tempDirectory();
     const bundledRoot = join(root, "bundled");
@@ -175,7 +193,20 @@ describe("skill catalog", () => {
     expect(new Set(entries.map((entry) => entry.key)).size).toBe(2);
     expect(entries.every((entry) => entry.validation === "conflict" && !entry.loadable)).toBe(true);
     expect(entries.every((entry) => entry.issues.some((issue) => issue.code === "id_conflict"))).toBe(true);
-    expect(entries.map((entry) => entry.key)).toEqual([...entries].sort((a, b) => a.key.localeCompare(b.key)).map((entry) => entry.key));
+    database.close();
+  });
+
+  it("keeps an invalid declared manifest ID inspectable without rewriting it into a healthy ID", () => {
+    const root = tempDirectory();
+    const bundledRoot = join(root, "bundled");
+    mkdirSync(bundledRoot);
+    writeSkill(bundledRoot, "declared-id-folder", { id: "../declared-id" });
+    const database = db();
+    const catalog = createSkillCatalog({ db: database, bundledRoot, userRoot: null, now: () => NOW });
+
+    const entry = catalog.list()[0];
+    expect(entry).toMatchObject({ id: "../declared-id", key: "bundled:../declared-id", validation: "invalid", loadable: false });
+    expect(entry.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "invalid_manifest" })]));
     database.close();
   });
 
@@ -189,14 +220,111 @@ describe("skill catalog", () => {
     mkdirSync(join(workspace, "skills"), { recursive: true });
     writeSkill(join(workspace, "skills"), "lint");
     const database = db();
+    projectRepository(database).createProject({ id: "p1", name: "P1", workspacePath: workspace, createdAt: NOW });
+    projectRepository(database).createProject({ id: "p2", name: "P2", workspacePath: workspace, createdAt: NOW });
     const catalog = createSkillCatalog({ db: database, bundledRoot, userRoot, now: () => NOW });
 
     expect(() => catalog.list({ workspacePath: workspace })).toThrow();
+    expect(() => catalog.list({ projectId: "p1", workspacePath: root })).toThrow();
     const scope = { projectId: "p1", workspacePath: join(workspace, ".") };
     expect(catalog.getByKey("workspace:p1:lint", scope)).toMatchObject({ enabled: false, loadable: false });
     catalog.setEnabled("workspace:p1:lint", true, scope);
     expect(catalog.getByKey("workspace:p1:lint", { projectId: "p1", workspacePath: workspace })).toMatchObject({ enabled: true, loadable: true });
     expect(catalog.getByKey("workspace:p2:lint", { projectId: "p2", workspacePath: workspace })).toMatchObject({ enabled: false, loadable: false });
+    database.close();
+  });
+
+  it("keeps active learned records visible when their Cortex roots are missing or unreadable", () => {
+    const root = tempDirectory();
+    const bundledRoot = join(root, "bundled");
+    const userRoot = join(root, "skills");
+    const privateRoot = join(root, "projects", "p1", "skills");
+    const missingDirectory = join(privateRoot, "missing-cortex");
+    const blockedParent = join(privateRoot, "blocked");
+    const blockedDirectory = join(blockedParent, "unreadable-cortex");
+    mkdirSync(bundledRoot);
+    mkdirSync(userRoot);
+    mkdirSync(privateRoot, { recursive: true });
+    writeFileSync(blockedParent, "not a directory");
+    const database = db();
+    projectRepository(database).createProject({ id: "p1", name: "P1", workspacePath: root, createdAt: NOW });
+    const learned = learnedSkillsRepository(database);
+    for (const [id, directory] of [["missing-cortex", missingDirectory], ["unreadable-cortex", blockedDirectory]] as const) {
+      learned.create({
+        id,
+        projectId: "p1",
+        version: "1.0.0",
+        triggerConditions: ["run validation"],
+        scope: "repository",
+        steps: ["Run validation."],
+        permissions: { tools: ["command-exec"], filesystemScopes: ["workspace"], networkDomains: [], requiredSecrets: [] },
+        validationRequirements: ["two_distinct_successful_missions", "safe_routine_command", "checksum", "permission_policy"],
+        provenance: [
+          { missionId: "m1", learningId: "l1", evidenceReferences: [{ kind: "command", reference: "pnpm test" }], observedAt: NOW },
+          { missionId: "m2", learningId: "l2", evidenceReferences: [{ kind: "command", reference: "pnpm test" }], observedAt: NOW },
+        ],
+        state: "active",
+        successCount: 2,
+        failureCount: 0,
+        confidence: 0.9,
+        lastVerifiedAt: NOW,
+        rollbackHistory: [],
+        workflowFingerprint: id.padEnd(64, "f"),
+        directory,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+    }
+    const catalog = createSkillCatalog({ db: database, bundledRoot, userRoot, now: () => NOW });
+
+    for (const id of ["missing-cortex", "unreadable-cortex"]) {
+      const entry = catalog.getByKey(`workspace:p1:${id}`, { projectId: "p1" });
+      expect(entry).toMatchObject({ id, source: "workspace", enabled: false, loadable: false });
+      expect(entry?.validation).not.toBe("healthy");
+      expect(entry?.issues.length).toBeGreaterThan(0);
+      expect(JSON.stringify(entry)).not.toContain(root);
+    }
+    expect(catalog.status({ projectId: "p1" }).healthy).toBe(false);
+    database.close();
+  });
+
+  it("orders mixed sources and case-sensitive IDs by explicit bytewise identity", () => {
+    const root = tempDirectory();
+    const bundledRoot = join(root, "bundled");
+    const userRoot = join(root, "user");
+    const workspace = join(root, "workspace");
+    mkdirSync(bundledRoot);
+    mkdirSync(userRoot);
+    mkdirSync(join(workspace, "skills"), { recursive: true });
+    writeSkill(bundledRoot, "zeta", { id: "a" });
+    writeSkill(bundledRoot, "alpha", { id: "A" });
+    writeSkill(bundledRoot, "same-bundled", { id: "same" });
+    writeSkill(userRoot, "same-user", { id: "same" });
+    writeSkill(join(workspace, "skills"), "same-workspace", { id: "same" });
+    const database = db();
+    projectRepository(database).createProject({ id: "p1", name: "P1", workspacePath: workspace, createdAt: NOW });
+    const catalog = createSkillCatalog({ db: database, bundledRoot, userRoot, now: () => NOW });
+
+    const entries = catalog.list({ projectId: "p1", workspacePath: workspace });
+    expect(entries.slice(0, 2).map((entry) => entry.id)).toEqual(["A", "a"]);
+    expect(entries.slice(2).map((entry) => entry.source)).toEqual(["bundled", "user", "workspace"]);
+    expect(entries.slice(2).every((entry) => entry.id === "same" && entry.validation === "conflict" && !entry.loadable)).toBe(true);
+    database.close();
+  });
+
+  it("marks every duplicate ID conflicting regardless of directory creation order", () => {
+    const root = tempDirectory();
+    const bundledRoot = join(root, "bundled");
+    mkdirSync(bundledRoot);
+    writeSkill(bundledRoot, "z-last-created", { id: "same-order" });
+    writeSkill(bundledRoot, "a-first-created", { id: "same-order" });
+    const database = db();
+    const catalog = createSkillCatalog({ db: database, bundledRoot, userRoot: null, now: () => NOW });
+
+    const entries = catalog.list().filter((entry) => entry.id === "same-order");
+    expect(entries).toHaveLength(2);
+    expect(entries.every((entry) => entry.validation === "conflict" && !entry.loadable)).toBe(true);
+    expect(entries.every((entry) => entry.issues.some((current) => current.code === "id_conflict"))).toBe(true);
     database.close();
   });
 
@@ -303,6 +431,20 @@ describe("skill catalog", () => {
     expect(() => catalog.loadInstructions("bundled:calendar")).toThrow();
     writeFileSync(join(directory, "SKILL.md"), "# altered\n");
     expect(() => catalog.loadInstructions("bundled:calendar")).toThrow();
+    database.close();
+  });
+
+  it("refuses an enabled skill when its instruction digest changes", () => {
+    const root = tempDirectory();
+    const bundledRoot = join(root, "bundled");
+    mkdirSync(bundledRoot);
+    const directory = writeSkill(bundledRoot, "digest-check");
+    const database = db();
+    const catalog = createSkillCatalog({ db: database, bundledRoot, userRoot: null, now: () => NOW });
+
+    expect(catalog.getByKey("bundled:digest-check")).toMatchObject({ enabled: true, loadable: true });
+    writeFileSync(join(directory, "SKILL.md"), "# changed while enabled\n");
+    expect(() => catalog.loadInstructions("bundled:digest-check")).toThrow();
     database.close();
   });
 });

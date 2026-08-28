@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import {
@@ -11,8 +11,9 @@ import {
 } from "@morrow/contracts";
 import { resolveMorrowHome } from "../home.js";
 import { learnedSkillsRepository } from "../repositories/learned-skills.js";
+import { projectRepository } from "../repositories/projects.js";
 import { skillActivationsRepository, type SkillActivationRecord, type SkillActivationSource } from "../repositories/skill-activations.js";
-import { isSafeSkillInstructionDirectory, verifySkillDirectory } from "./registry.js";
+import { verifySkillDirectory } from "./registry.js";
 import { skillInstallRoot } from "./install.js";
 
 export interface SkillCatalogScope {
@@ -41,7 +42,7 @@ export class SkillCatalogError extends Error {
 
 interface LearnedRecord {
   id: string;
-  directory: string;
+  directory: string | null;
   state: string;
 }
 
@@ -73,8 +74,15 @@ interface NormalizedScope {
   workspacePath?: string;
 }
 
+interface RootsForScope {
+  roots: RootSpec[];
+  learnedRecords: LearnedRecord[];
+}
+
 const SOURCE_ORDER: Record<InternalEntry["source"], number> = { bundled: 0, user: 1, workspace: 2 };
 const RISK_TO_TIER: Record<string, string> = { low: "core", medium: "controlled", high: "experimental" };
+const MAX_SKILL_INSTRUCTION_BYTES = 512 * 1024;
+const VALID_SKILL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/u;
 
 function canonicalPath(path: string): string {
   const resolved = resolve(path);
@@ -86,7 +94,7 @@ function contained(root: string, path: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-function normalizeScope(scope?: SkillCatalogScope): NormalizedScope {
+function normalizeScope(scope: SkillCatalogScope | undefined, db: Database.Database): NormalizedScope {
   if (!scope) return {};
   const projectId = scope.projectId?.trim();
   if (scope.projectId !== undefined && !projectId) throw new SkillCatalogError("invalid_scope", "A project ID is required for this scope");
@@ -96,9 +104,21 @@ function normalizeScope(scope?: SkillCatalogScope): NormalizedScope {
   if (scope.workspacePath !== undefined && !projectId) {
     throw new SkillCatalogError("invalid_scope", "A project ID is required for workspace skill scope");
   }
+  const workspacePath = scope.workspacePath === undefined ? undefined : canonicalPath(scope.workspacePath);
+  if (projectId && workspacePath) {
+    let projectWorkspace: string | undefined;
+    try {
+      projectWorkspace = projectRepository(db).getProjectById(projectId)?.workspacePath;
+    } catch {
+      throw new SkillCatalogError("invalid_scope", "The project identity could not be verified");
+    }
+    if (!projectWorkspace || canonicalPath(projectWorkspace) !== workspacePath) {
+      throw new SkillCatalogError("invalid_scope", "The workspace path does not match the persisted project");
+    }
+  }
   return {
     ...(projectId ? { projectId } : {}),
-    ...(scope.workspacePath !== undefined ? { workspacePath: canonicalPath(scope.workspacePath) } : {}),
+    ...(workspacePath ? { workspacePath } : {}),
   };
 }
 
@@ -192,6 +212,7 @@ function addIssue(issues: SkillCatalogIssue[], next: SkillCatalogIssue): void {
 function verifierIssue(raw: string): SkillCatalogIssue {
   const normalized = raw.toLowerCase();
   if (normalized.includes("missing skill.md")) return issue("missing_skill_md", "SKILL.md is missing");
+  if (normalized.includes("missing") && normalized.includes("checksum")) return issue("invalid_manifest", "The skill manifest is invalid");
   if (normalized.includes("checksum")) return issue("checksum_mismatch", "SKILL.md checksum does not match the manifest");
   if (normalized.includes("manifest.json") || normalized.includes("lifecycle.json") || normalized.includes("permission")) {
     return issue("invalid_manifest", "The skill manifest or permissions are invalid");
@@ -246,11 +267,47 @@ function safeMarkdown(path: string): { present: boolean; value: string | null; s
   }
 }
 
+function readInstructionSnapshot(directory: string): Buffer | null {
+  let descriptor: number | undefined;
+  try {
+    const directoryStat = lstatSync(directory);
+    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) return null;
+    const canonicalDirectory = realpathSync(directory);
+    const markdownPath = join(canonicalDirectory, "SKILL.md");
+    descriptor = openSync(markdownPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const before = fstatSync(descriptor);
+    if (!before.isFile() || before.size > MAX_SKILL_INSTRUCTION_BYTES) return null;
+    const snapshot = readFileSync(descriptor);
+    const after = fstatSync(descriptor);
+    if (after.size !== before.size || snapshot.byteLength > MAX_SKILL_INSTRUCTION_BYTES) return null;
+    return snapshot;
+  } catch {
+    return null;
+  } finally {
+    if (descriptor !== undefined) {
+      try { closeSync(descriptor); } catch { /* descriptor cleanup is best effort */ }
+    }
+  }
+}
+
 function safeIdentifier(value: unknown, fallback: string): string {
   const candidate = stringValue(value);
   if (!candidate) return fallback;
   const cleaned = candidate.replace(/[\\/\u0000-\u001f\u007f]+/g, "-").replace(/\s+/g, "-").replace(/[^A-Za-z0-9._:-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
   return cleaned.slice(0, 120) || fallback;
+}
+
+function declaredIdentifier(value: unknown, fallback: string): { id: string; invalid: boolean } {
+  if (value === undefined) return { id: fallback, invalid: false };
+  if (typeof value !== "string") return { id: fallback, invalid: true };
+  const candidate = value.trim();
+  if (!candidate || candidate.length > 120) return { id: fallback, invalid: true };
+  const publicId = sanitizedText(candidate, fallback, 120);
+  return { id: publicId, invalid: !VALID_SKILL_ID.test(candidate) || publicId !== candidate };
+}
+
+function compareBytewise(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
 function rootUnavailable(root: RootSpec): SkillCatalogIssue {
@@ -259,6 +316,14 @@ function rootUnavailable(root: RootSpec): SkillCatalogIssue {
 
 function rootUnreadable(root: RootSpec): SkillCatalogIssue {
   return issue("unreadable", `${root.source} skill root is unreadable`);
+}
+
+function missingLearnedIssue(): SkillCatalogIssue {
+  return issue("root_unavailable", "The learned skill root is unavailable");
+}
+
+function unreadableLearnedIssue(): SkillCatalogIssue {
+  return issue("unreadable", "The learned skill files are unreadable");
 }
 
 function baseKey(source: InternalEntry["source"], id: string, projectId?: string): string {
@@ -288,16 +353,20 @@ function activationMatches(record: SkillActivationRecord, entry: InternalEntry, 
 }
 
 function sortEntries(left: InternalEntry, right: InternalEntry): number {
-  return left.id.localeCompare(right.id)
+  return compareBytewise(left.id, right.id)
     || SOURCE_ORDER[left.source] - SOURCE_ORDER[right.source]
-    || left.key.localeCompare(right.key);
+    || compareBytewise(left.key, right.key);
 }
 
 function loadLearnedRecords(db: Database.Database, projectId: string): LearnedRecord[] {
   try {
     return learnedSkillsRepository(db).listByProject(projectId)
-      .filter((record) => record.state === "active" && typeof record.directory === "string" && record.directory.length > 0)
-      .map((record) => ({ id: record.id, directory: canonicalPath(record.directory!), state: record.state }));
+      .filter((record) => record.state === "active")
+      .map((record) => ({
+        id: record.id,
+        directory: typeof record.directory === "string" && record.directory.length > 0 ? canonicalPath(record.directory) : null,
+        state: record.state,
+      }));
   } catch {
     // A malformed learned record must not make the rest of the skill catalog
     // disappear. The private Cortex path is still scanned, but reserved
@@ -311,7 +380,7 @@ function rootsForScope(
   configuredBundledRoot: string | null,
   configuredUserRoot: string | null,
   db: Database.Database,
-): RootSpec[] {
+): RootsForScope {
   const roots: RootSpec[] = [];
   const add = (root: RootSpec): void => {
     if (roots.some((existing) => existing.source === root.source && existing.kind === root.kind && existing.path === root.path)) return;
@@ -320,7 +389,7 @@ function rootsForScope(
   if (configuredBundledRoot) add({ source: "bundled", kind: "bundled", path: canonicalPath(configuredBundledRoot), required: true });
   if (configuredUserRoot) add({ source: "user", kind: "user", path: canonicalPath(configuredUserRoot), required: true });
   if (scope.workspacePath) add({ source: "workspace", kind: "workspace", path: canonicalPath(join(scope.workspacePath, "skills")), required: true });
-  if (!scope.projectId) return roots;
+  if (!scope.projectId) return { roots, learnedRecords: [] };
 
   const projectId = scope.projectId;
   const learnedRecords = loadLearnedRecords(db, projectId);
@@ -333,6 +402,7 @@ function rootsForScope(
   const expectedPrivateRoot = canonicalPath(join(home, "projects", projectId, "skills"));
   privateRoots.add(expectedPrivateRoot);
   for (const record of learnedRecords) {
+    if (!record.directory) continue;
     const candidateRoot = canonicalPath(dirname(record.directory));
     // The learned-record directory is data, not permission to scan an
     // arbitrary parent. Keep the project-private containment boundary even if
@@ -340,11 +410,20 @@ function rootsForScope(
     if (contained(expectedPrivateRoot, candidateRoot)) privateRoots.add(candidateRoot);
   }
   for (const path of privateRoots) {
-    if (!existsSync(path)) continue;
-    const allowed = new Map(learnedRecords.map((record) => [record.directory, record]));
-    add({ source: "workspace", kind: "learned", path, required: false, learnedByDirectory: allowed });
+    const isExpectedPrivateRoot = path === expectedPrivateRoot;
+    if (!existsSync(path) && learnedRecords.length === 0) continue;
+    const allowed = new Map(
+      learnedRecords.flatMap((record) => record.directory ? [[record.directory, record] as const] : []),
+    );
+    add({
+      source: "workspace",
+      kind: "learned",
+      path,
+      required: isExpectedPrivateRoot && learnedRecords.length > 0,
+      learnedByDirectory: allowed,
+    });
   }
-  return roots;
+  return { roots, learnedRecords };
 }
 
 function scanRoot(root: RootSpec, projectId: string | undefined): { entries: InternalEntry[]; issues: SkillCatalogIssue[] } {
@@ -368,7 +447,7 @@ function scanRoot(root: RootSpec, projectId: string | undefined): { entries: Int
 
   let children: string[];
   try {
-    children = readdirSync(root.path).filter((name) => !name.startsWith(".")).sort();
+    children = readdirSync(root.path).filter((name) => !name.startsWith(".")).sort(compareBytewise);
   } catch {
     issues.push(rootUnreadable(root));
     return { entries, issues };
@@ -382,13 +461,16 @@ function scanRoot(root: RootSpec, projectId: string | undefined): { entries: Int
     const manifest = manifestInfo.value ?? {};
     const front = markdownInfo.value ? parseFrontmatter(markdownInfo.value) : {};
     const body = markdownInfo.value ? bodyMetadata(markdownInfo.value) : { name: "", description: "" };
-    const id = safeIdentifier(manifest.id ?? front.id, safeIdentifier(child, "unknown-skill"));
+    const fallbackId = safeIdentifier(child, "unknown-skill");
+    const declaredId = declaredIdentifier(manifest.id ?? front.id, fallbackId);
+    const id = declaredId.id;
     const name = pretty(sanitizedText(manifest.name ?? front.name ?? body.name, pretty(id), 160));
     const description = sanitizedDescription(manifest.description ?? front.description ?? body.description);
     const riskClass = sanitizedText(manifest.riskClass ?? front.riskClass, "", 80).toLowerCase();
     const publisher = sanitizedText(manifest.publisher ?? front.publisher, root.source === "bundled" ? "bundled" : "local", 160);
     const issuesForEntry: SkillCatalogIssue[] = [];
     for (const shapeIssue of manifestInfo.value ? manifestShapeIssues(manifestInfo.value) : []) addIssue(issuesForEntry, shapeIssue);
+    if (declaredId.invalid) addIssue(issuesForEntry, issue("invalid_manifest", "The skill manifest is invalid"));
 
     let isDirectory = false;
     let canonicalDirectory = canonicalPath(directory);
@@ -463,6 +545,61 @@ function scanRoot(root: RootSpec, projectId: string | undefined): { entries: Int
   return { entries, issues };
 }
 
+function validationForIssues(issues: SkillCatalogIssue[]): SkillCatalogEntry["validation"] {
+  if (issues.some((current) => current.code === "id_conflict")) return "conflict";
+  if (issues.some((current) => current.code === "missing_skill_md" || current.code === "root_unavailable")) return "missing";
+  return issues.length ? "invalid" : "healthy";
+}
+
+function learnedRecordIssue(record: LearnedRecord): SkillCatalogIssue {
+  if (!record.directory) return missingLearnedIssue();
+  try {
+    const stat = lstatSync(record.directory);
+    if (stat.isDirectory() && !stat.isSymbolicLink()) return missingLearnedIssue();
+    return unreadableLearnedIssue();
+  } catch {
+    try {
+      const parent = lstatSync(dirname(record.directory));
+      if (!parent.isDirectory() || parent.isSymbolicLink()) return unreadableLearnedIssue();
+    } catch {
+      // A missing parent is a missing learned root, not a process-level error.
+    }
+    return missingLearnedIssue();
+  }
+}
+
+function missingLearnedEntry(record: LearnedRecord, projectId: string): InternalEntry {
+  const id = safeIdentifier(record.id, "unknown-skill");
+  const learnedIssue = learnedRecordIssue(record);
+  const entry = SkillCatalogEntrySchema.parse({
+    key: baseKey("workspace", id, projectId),
+    id,
+    name: pretty(id),
+    description: "",
+    source: "workspace",
+    enabled: false,
+    validation: validationForIssues([learnedIssue]),
+    issues: [learnedIssue],
+    loadable: false,
+    manifestDigest: null,
+    category: categorize(id),
+    trustTier: "core",
+    tools: [],
+    permissions: [],
+    dependencies: [],
+    publisher: "morrow-cortex",
+  });
+  return {
+    key: entry.key,
+    id,
+    source: "workspace",
+    directory: record.directory ?? "",
+    rootKind: "learned",
+    relativePath: id,
+    entry,
+  };
+}
+
 function uniqueIssues(issues: SkillCatalogIssue[]): SkillCatalogIssue[] {
   const seen = new Set<string>();
   return issues.filter((item) => {
@@ -485,13 +622,22 @@ export function createSkillCatalog(deps: {
   const activations = skillActivationsRepository(deps.db);
 
   const collect = (scopeInput?: SkillCatalogScope): CatalogView => {
-    const scope = normalizeScope(scopeInput);
+    const scope = normalizeScope(scopeInput, deps.db);
     const allEntries: InternalEntry[] = [];
     const rootIssues: SkillCatalogIssue[] = [];
-    for (const root of rootsForScope(scope, configuredBundledRoot, configuredUserRoot, deps.db)) {
+    const roots = rootsForScope(scope, configuredBundledRoot, configuredUserRoot, deps.db);
+    for (const root of roots.roots) {
       const scanned = scanRoot(root, scope.projectId);
       allEntries.push(...scanned.entries);
       rootIssues.push(...scanned.issues);
+    }
+    if (scope.projectId) {
+      for (const record of roots.learnedRecords) {
+        const represented = record.directory
+          ? allEntries.some((item) => item.rootKind === "learned" && canonicalPath(item.directory) === record.directory)
+          : false;
+        if (!represented) allEntries.push(missingLearnedEntry(record, scope.projectId));
+      }
     }
 
     const byId = new Map<string, InternalEntry[]>();
@@ -518,10 +664,7 @@ export function createSkillCatalog(deps: {
 
     const persistedActivations = activations.list();
     for (const item of allEntries) {
-      const validation: SkillCatalogEntry["validation"] = item.entry.issues.some((current) => current.code === "id_conflict")
-        ? "conflict"
-        : item.entry.issues.some((current) => current.code === "missing_skill_md") ? "missing"
-          : item.entry.issues.length ? "invalid" : "healthy";
+      const validation = validationForIssues(item.entry.issues);
       const persisted = persistedActivations.find((record) => activationMatches(record, item, scope.projectId));
       const enabled = persisted?.enabled ?? item.source === "bundled";
       item.entry = SkillCatalogEntrySchema.parse({
@@ -568,7 +711,7 @@ export function createSkillCatalog(deps: {
       if (enabled && item.entry.validation !== "healthy") {
         throw new SkillCatalogError("not_loadable", "Only a currently healthy, unambiguous skill can be enabled", item.entry);
       }
-      const normalized = normalizeScope(scope);
+      const normalized = normalizeScope(scope, deps.db);
       activations.set({
         ...sourceForActivation(item, normalized.projectId),
         enabled,
@@ -585,19 +728,15 @@ export function createSkillCatalog(deps: {
         const detail = item.entry.issues[0]?.message ?? "The skill is disabled";
         throw new SkillCatalogError("not_loadable", `Skill is not loadable: ${detail}`, item.entry);
       }
-      const markdownPath = join(item.directory, "SKILL.md");
-      if (!isSafeSkillInstructionDirectory(item.directory)) {
+      const snapshot = readInstructionSnapshot(item.directory);
+      if (!snapshot) {
         throw new SkillCatalogError("not_loadable", "Skill instructions are no longer safe", item.entry);
       }
-      const currentDigest = digestFile(markdownPath);
+      const currentDigest = createHash("sha256").update(snapshot).digest("hex");
       if (!currentDigest || currentDigest !== item.entry.manifestDigest) {
         throw new SkillCatalogError("not_loadable", "Skill instructions changed after catalog validation", item.entry);
       }
-      try {
-        return { entry: item.entry, instructions: readFileSync(markdownPath, "utf8") };
-      } catch {
-        throw new SkillCatalogError("not_loadable", "Skill instructions are unreadable", item.entry);
-      }
+      return { entry: item.entry, instructions: snapshot.toString("utf8") };
     },
 
     removeActivation(key: string): boolean {

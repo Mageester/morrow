@@ -78,6 +78,30 @@ describe("database", () => {
     db.close();
   });
 
+  it("upgrades a database at migration 72 with the skill activation table", () => {
+    const directory = mkdtempSync(join(tmpdir(), "morrow-skill-activation-upgrade-"));
+    const file = join(directory, "morrow.db");
+    const legacy = new Database(file);
+    legacy.pragma("foreign_keys = ON");
+    legacy.function("morrow_redact", { deterministic: true }, (value: unknown) => typeof value === "string" ? redactSecrets(value) : "");
+    legacy.exec("CREATE TABLE schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");
+    const record = legacy.prepare("INSERT INTO schema_migrations VALUES(?,?,?)");
+    for (const migration of migrations.filter(({ id }) => id <= 72)) {
+      legacy.transaction(() => {
+        if (migration.sql) legacy.exec(migration.sql);
+        if (migration.up) migration.up(legacy);
+        record.run(migration.id, migration.name, "2026-08-28T00:00:00.000Z");
+      })();
+    }
+    legacy.close();
+
+    const upgraded = openDatabase(file);
+    expect(upgraded.prepare("SELECT MAX(id) id FROM schema_migrations").get()).toEqual({ id: 73 });
+    expect(upgraded.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='skill_activations'").get()).toEqual({ name: "skill_activations" });
+    upgraded.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
   it("creates the durable recovery lease columns on a fresh database", () => {
     const db = openDatabase(":memory:");
     const columns = (db.prepare("PRAGMA table_info(schedule_runs)").all() as Array<{ name: string }>).map((column) => column.name);
