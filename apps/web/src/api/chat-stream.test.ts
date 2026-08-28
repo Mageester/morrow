@@ -220,7 +220,12 @@ describe("useChatTaskStream", () => {
 
     setOnline(false);
     act(() => window.dispatchEvent(new Event("offline")));
-    expect(vi.getTimerCount()).toBe(0);
+    // Going offline cancels the pending retry. Proven by advancing well past
+    // the backoff window and seeing no further refetch, rather than by an
+    // exact vi.getTimerCount(): that counter is global and also sees timers
+    // React and the query client schedule.
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(refetch).toHaveBeenCalledTimes(8);
     expect(result.current.status).toBe("offline");
     expect(JSON.parse(sessionStorage.getItem(chatStreamCursorKey(identity))!)).toMatchObject({ cursor: 6, terminal: true });
 
@@ -232,7 +237,10 @@ describe("useChatTaskStream", () => {
     expect(result.current.terminal).toBe(true);
     expect(refetch).toHaveBeenCalledTimes(10);
     expect(sessionStorage.getItem(chatStreamCursorKey(identity))).toBeNull();
-    expect(vi.getTimerCount()).toBe(0);
+    // Settled for good: nothing is left scheduled to retry or reconnect.
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(refetch).toHaveBeenCalledTimes(10);
+    expect(FakeEventSource.instances).toHaveLength(1);
   });
 
   /**
