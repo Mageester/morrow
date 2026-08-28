@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -293,6 +293,22 @@ describe("applying and removing", () => {
     applySkillInstall(replacement.handle, { env });
   });
 
+  it("keeps a replacement successful and manages the displaced backup when cleanup fails", async () => {
+    const original = await install("release-notes", "---\nname: Release Notes\ndescription: Original release notes workflow.\n---\n\n# Original\n\nOriginal instructions.\n");
+    const source = join(workspace, "release-notes");
+    writeFileSync(join(source, "SKILL.md"), "---\nname: Release Notes\ndescription: Replacement release notes workflow.\n---\n\n# Replacement\n\nReplacement instructions.\n");
+    const replacement = ready(await planSkillInstall(parseSkillSource(source), { env, overwrite: true }));
+    const applied = applySkillInstall(replacement.handle, {
+      env,
+      cleanupDisplaced: () => { throw new Error("cleanup unavailable"); },
+    });
+
+    expect(applied.directory).toBe(original);
+    expect(readFileSync(join(original, "SKILL.md"), "utf8")).toContain("Replacement instructions");
+    expect(readdirSync(skillInstallRoot(env))).not.toEqual(expect.arrayContaining([expect.stringMatching(/^\.replaced-/)]));
+    expect(existsSync(join(skillInstallRoot(env), ".backups", "release-notes"))).toBe(true);
+  });
+
   it("spends a handle on use, so the same plan cannot be applied twice", async () => {
     const source = writeSkill(join(workspace, "once"), { "SKILL.md": BARE_SKILL_MD });
     const { handle } = ready(await planSkillInstall(parseSkillSource(source), { env }));
@@ -308,6 +324,18 @@ describe("applying and removing", () => {
     const directory = await install("release-notes");
     expect(removeInstalledSkill("release-notes", { env })).toMatchObject({ removed: true, directory });
     expect(() => removeInstalledSkill("release-notes", { env })).toThrow(/No installed skill/);
+  });
+
+  it("restores a user skill when activation removal fails", async () => {
+    const directory = await install("release-notes");
+    expect(() => removeInstalledSkill("release-notes", {
+      env,
+      onRemoved: () => { throw new Error("activation store unavailable"); },
+    })).toThrow(/activation could not be cleared/);
+    expect(existsSync(directory)).toBe(true);
+    expect(readFileSync(join(directory, "SKILL.md"), "utf8")).toBe(BARE_SKILL_MD);
+
+    expect(removeInstalledSkill("release-notes", { env })).toMatchObject({ removed: true, directory });
   });
 
   /**

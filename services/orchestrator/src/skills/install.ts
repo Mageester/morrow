@@ -697,6 +697,8 @@ export function applySkillInstall(handle: string, options: {
   env?: NodeJS.ProcessEnv;
   /** Persist the explicit disabled activation while the previous bundle is still recoverable. */
   persistDisabled?: (id: string) => void;
+  /** Testable cleanup boundary; a failed cleanup is retained in the managed backup root. */
+  cleanupDisplaced?: (directory: string) => void;
 } = {}): { id: string; directory: string } {
   const env = options.env ?? process.env;
   const staging = stagingPathFor(handle, env);
@@ -740,7 +742,19 @@ export function applySkillInstall(handle: string, options: {
       throw error;
     }
     if (displaced) {
-      rmSync(displaced, { recursive: true, force: true });
+      try {
+        (options.cleanupDisplaced ?? ((directory: string) => rmSync(directory, { recursive: true, force: true })))(displaced);
+      } catch {
+        // Activation already succeeded, so cleanup must not turn a successful
+        // install into a false failure. Retain the old bundle under the
+        // catalog-ignored, managed backup root instead of leaving a transient
+        // `.replaced-*` sibling that no lifecycle can account for.
+        if (existsSync(displaced)) {
+          const retained = join(installRoot, ".backups", id, `replaced-${Date.now()}`);
+          mkdirSync(dirname(retained), { recursive: true });
+          renameSync(displaced, retained);
+        }
+      }
       displaced = null;
     }
     return { id, directory: target };
@@ -773,12 +787,24 @@ export function removeInstalledSkill(id: string, options: {
   if (!existsSync(directory)) {
     throw new SkillInstallError(`No installed skill named "${id}". Bundled skills cannot be removed; disable it instead.`);
   }
-  rmSync(directory, { recursive: true, force: true });
+  const installRoot = skillInstallRoot(env);
+  const displaced = join(installRoot, `.removing-${id}-${Date.now()}`);
+  renameSync(directory, displaced);
   try {
     options.onRemoved?.();
   } catch (error) {
+    renameSync(displaced, directory);
     const message = error instanceof Error ? error.message : "activation removal failed";
     throw new SkillInstallError("Skill directory was removed but its activation could not be cleared", [message], "SKILL_INSTALL_FAILED");
+  }
+  try {
+    rmSync(displaced, { recursive: true, force: true });
+  } catch {
+    // Activation is already removed. A hidden managed backup is preferable to
+    // reporting a false failed removal after the user-visible operation won.
+    const retained = join(installRoot, ".backups", id, `removed-${Date.now()}`);
+    mkdirSync(dirname(retained), { recursive: true });
+    renameSync(displaced, retained);
   }
   return { removed: true, directory };
 }

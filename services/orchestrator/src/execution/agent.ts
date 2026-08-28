@@ -334,6 +334,11 @@ function isProviderContextRejection(error: unknown): boolean {
 }
 
 /** Surface relevant entries from the already-authoritative catalog. */
+// Keep the tool boundary in lockstep with the catalog's declared-ID grammar.
+// Catalog IDs are opaque public identifiers: case, dots, underscores, colons,
+// and hyphens are all meaningful and must survive find_skill -> load_skill.
+const SKILL_CATALOG_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/u;
+
 function discoverRelevantSkills(prompt: string, entries: SkillCatalogEntry[]): { id: string; name: string; description: string }[] {
   // A shared word alone is weak evidence of relevance — skill names and
   // one-line descriptions are short, so any prompt easily shares one
@@ -818,6 +823,7 @@ export async function executeAgentChatTask({
     throw new Error("Project not found");
   }
   const projectId = project.id;
+  const persistedWorkspacePath = project.workspacePath;
   const assignedAgentId = (task as { agentId?: string | null }).agentId ?? null;
   const agentRepo = agentsRepository(db);
   const delegationRepo = delegationsRepository(db);
@@ -1072,7 +1078,7 @@ export async function executeAgentChatTask({
   // project-scoped activation to an untrusted checkout. Tool execution keeps
   // using `workspacePath` below, while skill discovery/loading remains on the
   // project's authoritative scope.
-  const skillScope: SkillCatalogScope = { projectId, workspacePath: project.workspacePath };
+  const skillScope: SkillCatalogScope = { projectId, workspacePath: persistedWorkspacePath };
 
   // Find the assistant message associated with this task
   const allMessages = db.prepare("SELECT * FROM conversation_messages WHERE task_id = ?").all(taskId);
@@ -3161,7 +3167,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       }
     } else if (toolName === "load_skill") {
       const skillId = (args.skill_id || "").trim();
-      if (!skillId || !/^[a-z0-9][a-z0-9-]{0,119}$/.test(skillId)) {
+      if (!SKILL_CATALOG_ID_PATTERN.test(skillId)) {
         return JSON.stringify({ error: `Invalid skill ID: ${skillId}` });
       }
       if (!skillCatalog) {
@@ -3218,12 +3224,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       if (issues.length > 0) return JSON.stringify({ created: false, issues });
 
       // ── Determine target directory ──────────────────────────────────────
-      const candidates = [join(workspacePath, "skills")];
-      const morrowHome = resolveMorrowHome(process.env);
-      if (morrowHome) candidates.push(join(morrowHome, "skills"));
-      const skillsDir = process.env.MORROW_SKILLS_DIR;
-      if (skillsDir) candidates.push(skillsDir);
-      const targetRoot = candidates.find(d => existsSync(d)) || candidates[0]!;
+      // A model-created skill is a workspace skill, never a bundled or global
+      // user skill. Keep it inside the current execution checkout so worktree
+      // tasks retain the same isolation as every other workspace write. The
+      // catalog deliberately remains scoped to the persisted project workspace
+      // (see skillScope above), so a worktree-created skill becomes project
+      // visible after that checkout is merged rather than binding activation
+      // to a transient worktree path.
+      const targetRoot = join(workspacePath, "skills");
       const targetDir = join(targetRoot, id);
       const overwrite = args.overwrite === true;
 
@@ -3245,7 +3253,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       const checksum = createHash("sha256").update(skillMd).digest("hex");
 
       const manifest = {
-        id, name, version: "0.1.0", description, publisher: "auto", license: "MIT",
+        id, name, version: "0.1.0", description, publisher: "local", license: "MIT",
         checksum, entrypoint: "src/index.ts", supportedPlatforms: ["win32","linux","darwin"],
         requestedTools: permTools, requestedFilesystemScopes: scopes,
         requestedNetworkDomains: [], requiredSecrets: [], riskClass,
@@ -3264,16 +3272,31 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       writeFileSync(join(targetDir, "src/index.ts"), entrySrc, "utf8");
       writeFileSync(join(targetDir, "test/index.test.ts"), testSrc, "utf8");
 
+      // The generated bundle must enter the same catalog authority used by
+      // find/load. A valid workspace bundle is visible but remains disabled;
+      // never return its absolute path or silently inherit an old activation.
+      const catalogCandidates = skillCatalog
+        ? skillCatalog.list(skillScope).filter((entry) => entry.source === "workspace" && entry.id === id)
+        : [];
+      const catalogEntry = catalogCandidates.length === 1
+        ? skillCatalog!.setEnabled(catalogCandidates[0]!.key, false, skillScope)
+        : catalogCandidates[0];
+      const key = catalogEntry?.key ?? `workspace:${projectId}:${id}`;
+      const catalogState = catalogEntry
+        ? { ...catalogEntry }
+        : { key, enabled: false, loadable: false, validation: "missing" as const };
+      const worktreeOnly = workspacePath !== persistedWorkspacePath;
       return JSON.stringify({
         created: true,
+        ...catalogState,
         id,
-        directory: targetDir,
         riskClass,
         tools: permTools,
         checksum: checksum.slice(0, 16) + "...",
         overwritten: overwrite && existsSync(targetDir),
-        note: `Skill "${id}" created. Enable it with: morrow skills enable ${id}`,
-        skillsDirectory: targetRoot,
+        note: worktreeOnly
+          ? `Skill "${id}" created in the execution worktree and remains disabled; merge the worktree before enabling it.`
+          : `Skill "${id}" created and switched off. Enable it through the skill catalog before use.`,
       });
     } else {
       throw new Error(`Forbidden tool: ${toolName}`);

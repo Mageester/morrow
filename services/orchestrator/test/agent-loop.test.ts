@@ -18,6 +18,8 @@ import { CortexService } from "../src/cortex/service.js";
 import { intelligenceRepository } from "../src/repositories/intelligence.js";
 import { skillUsageRepository } from "../src/repositories/skill-usage.js";
 import { createSkillCatalog } from "../src/skills/catalog.js";
+import { verifySkillDirectory } from "../src/skills/registry.js";
+import { agentsRepository } from "../src/repositories/agents.js";
 import { MAX_PLAN_REVISIONS } from "@morrow/contracts";
 
 describe("agent loop advisory", () => {
@@ -78,7 +80,7 @@ function seed(missionLinked = false, prompt = "go") {
     }));
   }
 
-  function skillTool(id: string, name: "find_skill" | "load_skill", args: unknown): ProviderChunk[] {
+  function skillTool(id: string, name: "find_skill" | "load_skill" | "create_skill", args: unknown): ProviderChunk[] {
     return [{
       type: "tool_call",
       toolCalls: [{ id, index: 0, type: "function", function: { name, arguments: JSON.stringify(args) } }],
@@ -193,6 +195,158 @@ function seed(missionLinked = false, prompt = "go") {
     expect(skillUsageRepository(db).listByProject("p1")).toEqual(expect.arrayContaining([
       expect.objectContaining({ skillId: "exact-demo" }),
     ]));
+  });
+
+  it("round-trips every catalog-valid skill ID through find_skill and load_skill", async () => {
+    seed(false, "Inspect the project and report the result.");
+    const userRoot = join(tempDir, "user-skills");
+    const id = "Upper._:skill-1";
+    const markdown = "# Grammar Demo\n\nThese instructions use the catalog ID grammar.\n";
+    mkdirSync(userRoot, { recursive: true });
+    writeCatalogSkill(userRoot, id, markdown);
+    const catalog = createSkillCatalog({ db, bundledRoot: null, userRoot });
+    expect(catalog.list()).toEqual(expect.arrayContaining([expect.objectContaining({ id, key: `user:${id}` })]));
+    catalog.setEnabled(`user:${id}`, true);
+    const provider = new MockProvider({ chunks: [
+      skillTool("find-grammar", "find_skill", { query: id }),
+      skillTool("load-grammar", "load_skill", { skill_id: id }),
+      [{ type: "text", text: "done" }, { type: "done" }],
+    ] });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 3, skillCatalog: catalog });
+
+    const calls = conversationsRepository(db).listToolCallsForTask("task-1");
+    expect(JSON.parse(calls.find((item) => item.id === "find-grammar")?.resultJson ?? "{}")).toEqual({
+      skills: [{ id, name: catalog.getByKey(`user:${id}`)?.name, description: `${id} instructions` }],
+    });
+    expect(calls.find((item) => item.id === "load-grammar")?.resultJson).toBe(markdown);
+    expect(skillUsageRepository(db).get("p1", id)?.count).toBe(1);
+  });
+
+  it("creates a catalog-compatible disabled workspace skill", async () => {
+    seed(false, "Create a reusable skill for validating repository changes.");
+    const id = "generated-workflow";
+    const catalog = createSkillCatalog({ db, bundledRoot: null, userRoot: null });
+    const provider = new MockProvider({ chunks: [
+      skillTool("create-generated", "create_skill", {
+        id,
+        name: "Generated Workflow",
+        description: "Validate repository changes with the established checks.",
+        instructions: "Run the repository validation checks and preserve their evidence.",
+        requestedTools: ["command-exec"],
+        riskClass: "low",
+      }),
+      [{ type: "text", text: "done" }, { type: "done" }],
+    ] });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 2, skillCatalog: catalog });
+
+    const call = conversationsRepository(db).listToolCallsForTask("task-1").find((item) => item.id === "create-generated");
+    const result = JSON.parse(call?.resultJson ?? "{}");
+    expect(result).toMatchObject({
+      created: true,
+      key: `workspace:p1:${id}`,
+      id,
+      enabled: false,
+      loadable: false,
+    });
+    expect(result).not.toHaveProperty("directory");
+    const entry = catalog.getByKey(`workspace:p1:${id}`, { projectId: "p1", workspacePath: tempDir });
+    expect(entry).toMatchObject({
+      source: "workspace",
+      publisher: "local",
+      validation: "healthy",
+      enabled: false,
+      loadable: false,
+    });
+  });
+
+  it("keeps a worktree-created skill isolated until the checkout is merged", async () => {
+    seed(false, "Create a reusable skill for validating worktree changes.");
+    const worktreePath = join(tempDir, "execution-worktree");
+    const id = "generated-worktree";
+    mkdirSync(worktreePath, { recursive: true });
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO worktrees (id,project_id,task_id,agent_id,branch,path,base_ref,status,detail,created_at,removed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+    ).run("wt-create", "p1", "task-1", null, "feature/generated-skill", worktreePath, "main", "active", null, now, null);
+    db.prepare("UPDATE tasks SET worktree_id=? WHERE id=?").run("wt-create", "task-1");
+    const catalog = createSkillCatalog({ db, bundledRoot: null, userRoot: null });
+    const provider = new MockProvider({ chunks: [
+      skillTool("create-worktree", "create_skill", {
+        id,
+        name: "Generated Worktree",
+        description: "Validate changes in the isolated execution checkout.",
+        instructions: "Run the worktree validation checks before merging the checkout.",
+        requestedTools: ["command-exec"],
+        riskClass: "low",
+      }),
+      [{ type: "text", text: "done" }, { type: "done" }],
+    ] });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 2, skillCatalog: catalog });
+
+    const call = conversationsRepository(db).listToolCallsForTask("task-1").find((item) => item.id === "create-worktree");
+    const result = JSON.parse(call?.resultJson ?? "{}");
+    const generatedDirectory = join(worktreePath, "skills", id);
+    expect(result).toMatchObject({
+      key: `workspace:p1:${id}`,
+      id,
+      enabled: false,
+      loadable: false,
+    });
+    expect(result.note).toMatch(/execution worktree/i);
+    expect(verifySkillDirectory(generatedDirectory).ok).toBe(true);
+    expect(catalog.getByKey(`workspace:p1:${id}`, { projectId: "p1", workspacePath: tempDir })).toBeUndefined();
+  });
+
+  it("applies agent skill denial after catalog loadability and cannot enable a disabled skill", async () => {
+    seed(false, "Inspect the project and report the result.");
+    const bundledRoot = join(tempDir, "bundled-skills");
+    const userRoot = join(tempDir, "user-skills");
+    const markdown = "# Agent Skill\n\nUse this workflow for the assigned agent.\n";
+    const disabledMarkdown = "# Disabled Agent Skill\n\nThis workflow is not active.\n";
+    const invalidMarkdown = "# Invalid Agent Skill\n\nThis workflow has a stale digest.\n";
+    mkdirSync(bundledRoot, { recursive: true });
+    mkdirSync(userRoot, { recursive: true });
+    writeCatalogSkill(bundledRoot, "agent-skill", markdown);
+    writeCatalogSkill(userRoot, "disabled-agent-skill", disabledMarkdown);
+    writeCatalogSkill(userRoot, "invalid-agent-skill", invalidMarkdown, "0".repeat(64));
+    const catalog = createSkillCatalog({ db, bundledRoot, userRoot });
+    catalog.setEnabled("bundled:agent-skill", true, { projectId: "p1", workspacePath: tempDir });
+    const agent = agentsRepository(db).create({ id: "skill-policy-agent", projectId: "p1", name: "Skill policy", role: "researcher" });
+    db.prepare("UPDATE tasks SET agent_id=? WHERE id=?").run(agent.id, "task-1");
+    agentsRepository(db).upsertSkillAccess(agent.id, { skillId: "agent-skill", allowed: false });
+    agentsRepository(db).upsertSkillAccess(agent.id, { skillId: "disabled-agent-skill", allowed: true });
+    agentsRepository(db).upsertSkillAccess(agent.id, { skillId: "invalid-agent-skill", allowed: true });
+    const provider = new MockProvider({ chunks: [
+      skillTool("find-denied", "find_skill", { query: "agent-skill" }),
+      skillTool("load-denied", "load_skill", { skill_id: "agent-skill" }),
+      skillTool("load-disabled", "load_skill", { skill_id: "disabled-agent-skill" }),
+      skillTool("load-invalid", "load_skill", { skill_id: "invalid-agent-skill" }),
+      [{ type: "text", text: "done" }, { type: "done" }],
+    ] });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 4, skillCatalog: catalog });
+
+    const calls = conversationsRepository(db).listToolCallsForTask("task-1");
+    expect(JSON.parse(calls.find((item) => item.id === "find-denied")?.resultJson ?? "{}")).toEqual({ skills: [] });
+    expect(JSON.parse(calls.find((item) => item.id === "load-denied")?.resultJson ?? "{}")).toMatchObject({
+      code: "SKILL_ACCESS_DENIED",
+    });
+    expect(JSON.parse(calls.find((item) => item.id === "load-disabled")?.resultJson ?? "{}")).toMatchObject({
+      code: "SKILL_NOT_LOADABLE",
+    });
+    expect(JSON.parse(calls.find((item) => item.id === "load-invalid")?.resultJson ?? "{}")).toMatchObject({
+      code: "SKILL_NOT_LOADABLE",
+    });
+    expect(catalog.getByKey("user:disabled-agent-skill", { projectId: "p1", workspacePath: tempDir })?.enabled).toBe(false);
+    expect(catalog.getByKey("user:invalid-agent-skill", { projectId: "p1", workspacePath: tempDir })).toMatchObject({
+      enabled: false,
+      loadable: false,
+      validation: "invalid",
+    });
+    expect(skillUsageRepository(db).listByProject("p1")).toHaveLength(0);
   });
 
   it("does not count a completed command transport with nonzero exit as passed verification", () => {

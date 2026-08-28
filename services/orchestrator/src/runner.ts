@@ -36,6 +36,12 @@ export class TaskRunner {
   private executor: TaskExecutor;
   private teammateSpawner: TeammateSpawner | undefined;
 
+  /**
+   * The shared catalog is forwarded only by the built-in executor. A custom
+   * TaskExecutor owns its dependency wiring and must inject the catalog when
+   * it calls executeAgentChatTask; changing TaskExecutor's public shape would
+   * break existing direct executors and is unnecessary.
+   */
   constructor(private db: Database.Database, executor?: TaskExecutor, supervisor?: ProcessSupervisor, private skillCatalog?: SkillCatalog) {
     this.executor = executor || (async (deps) => {
       const task = taskRepository(db).getTaskById(deps.taskId);
