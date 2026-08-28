@@ -96,8 +96,12 @@
 }
 
 .morrow-chronicle__entry[data-featured="true"] {
-  border-color: #49372e;
-  background: linear-gradient(110deg, #29211b, #191915 65%);
+  border-color: var(--morrow-product-copper-line);
+  background: linear-gradient(
+    110deg,
+    var(--morrow-product-field-strong),
+    var(--morrow-product-field) 65%
+  );
 }
 
 .morrow-chronicle__entry::before {
@@ -109,12 +113,12 @@
   content: "";
   border: 3px solid var(--morrow-product-shell, #151612);
   border-radius: 50%;
-  background: #676a62;
+  background: var(--morrow-product-quiet);
 }
 
 .morrow-chronicle__entry[data-featured="true"]::before {
   background: var(--morrow-product-copper);
-  box-shadow: 0 0 14px rgb(212 133 98 / 0.4);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--morrow-product-copper) 40%, transparent);
 }
 
 .morrow-chronicle__top {
@@ -150,7 +154,7 @@
 .morrow-chronicle__entry p {
   max-width: 680px;
   margin: 0;
-  color: #97948b;
+  color: var(--morrow-product-copy-soft);
   font-size: 12px;
 }
 
@@ -170,7 +174,7 @@
   padding: 7px 10px;
   border: 1px solid var(--morrow-product-line-strong);
   border-radius: 8px;
-  color: #cbc7be;
+  color: var(--morrow-product-copy-soft);
 }
 
 @media (max-width: 700px) {

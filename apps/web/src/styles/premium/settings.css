@@ -18,7 +18,7 @@
   padding: 11px;
   border: 1px solid var(--morrow-product-line);
   border-radius: 17px;
-  background: #171814;
+  background: var(--morrow-product-field);
   gap: 2px;
 }
 
@@ -29,7 +29,7 @@
   border: 0;
   border-radius: 10px;
   background: transparent;
-  color: #85877e;
+  color: var(--morrow-product-copy-quiet);
   cursor: pointer;
   font: inherit;
   gap: 11px;
@@ -46,7 +46,7 @@
 
 .morrow-settings-chapter[aria-current="true"] {
   background: var(--morrow-product-field-strong);
-  color: #eee9df;
+  color: var(--morrow-product-copy);
 }
 
 .morrow-settings-chapter__icon {
@@ -55,14 +55,14 @@
   height: 25px;
   flex: none;
   place-items: center;
-  border: 1px solid #35372f;
+  border: 1px solid var(--morrow-product-line);
   border-radius: 8px;
   color: var(--morrow-product-quiet, var(--morrow-product-copy-quiet));
   font-size: 11px;
 }
 
 .morrow-settings-chapter[aria-current="true"] .morrow-settings-chapter__icon {
-  border-color: #604434;
+  border-color: var(--morrow-product-copper-line);
   color: var(--morrow-product-copper);
 }
 
@@ -102,7 +102,7 @@
 
 .morrow-settings-head p {
   margin: 0;
-  color: #8f8c84;
+  color: var(--morrow-product-muted);
   font-size: 12px;
 }
 
@@ -112,9 +112,9 @@
   align-items: center;
   margin: 19px 25px;
   padding: 15px;
-  border: 1px solid #3a523e;
+  border: 1px solid color-mix(in srgb, var(--morrow-product-success) 45%, var(--morrow-product-line));
   border-radius: 12px;
-  background: linear-gradient(100deg, #1b261d, #1b1c18);
+  background: linear-gradient(100deg, var(--morrow-product-success-soft), var(--morrow-product-field-warm));
   gap: 13px;
 }
 
@@ -125,8 +125,8 @@
   flex: none;
   place-items: center;
   border-radius: 10px;
-  background: #263429;
-  color: #9cbea2;
+  background: var(--morrow-product-success-soft);
+  color: var(--morrow-product-success);
 }
 
 .morrow-settings-assurance b,
@@ -135,7 +135,7 @@
 }
 
 .morrow-settings-assurance span {
-  color: #829185;
+  color: var(--morrow-product-muted);
   font-size: 10px;
 }
 
@@ -166,7 +166,7 @@
 .morrow-setting-row p {
   max-width: 520px;
   margin: 3px 0 0;
-  color: #7d8077;
+  color: var(--morrow-product-muted);
   font-size: 10px;
 }
 
@@ -177,7 +177,7 @@
   border: 1px solid var(--morrow-product-line-strong);
   border-radius: 8px;
   background: var(--morrow-product-field-strong);
-  color: #b4b0a7;
+  color: var(--morrow-product-copy-soft);
   font: inherit;
   font-size: 11px;
 }
@@ -198,7 +198,7 @@
   align-items: center;
   padding: 2px;
   border-radius: 999px;
-  background: #3a3c34;
+  background: var(--morrow-product-line-strong);
   cursor: pointer;
   transition: background-color var(--morrow-premium-status) var(--morrow-product-shift);
 }
@@ -216,16 +216,16 @@
   width: 15px;
   height: 15px;
   border-radius: 50%;
-  background: #8b8d84;
+  background: var(--morrow-product-quiet);
   transition: transform var(--morrow-premium-status) var(--morrow-product-shift);
 }
 
 .morrow-switch:has(input:checked) {
-  background: #70452f;
+  background: var(--morrow-product-copper);
 }
 
 .morrow-switch:has(input:checked) .morrow-switch__thumb {
-  background: #eaded4;
+  background: var(--morrow-on-accent);
   transform: translateX(15px);
 }
 
@@ -341,14 +341,14 @@
   padding: 12px 13px;
   border: 1px solid var(--morrow-product-line);
   border-radius: 11px;
-  background: #1a1b17;
+  background: var(--morrow-product-field);
   cursor: pointer;
   gap: 10px;
 }
 
 .morrow-settings-radio:has(input:checked) {
-  border-color: #664a3a;
-  background: linear-gradient(90deg, #261f1a, #1b1c18);
+  border-color: var(--morrow-product-copper-line);
+  background: linear-gradient(90deg, var(--morrow-product-copper-soft), var(--morrow-product-field-strong));
 }
 
 .morrow-settings-radio input {

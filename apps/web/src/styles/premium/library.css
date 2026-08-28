@@ -42,10 +42,10 @@
 
 .morrow-library__filter {
   padding: 6px 9px;
-  border: 1px solid #353730;
+  border: 1px solid var(--morrow-product-line);
   border-radius: 8px;
   background: transparent;
-  color: #85877e;
+  color: var(--morrow-product-copy-quiet);
   cursor: pointer;
   font: inherit;
   font-size: 11px;
@@ -60,9 +60,9 @@
 }
 
 .morrow-library__filter[aria-pressed="true"] {
-  border-color: #594235;
+  border-color: var(--morrow-product-copper-line);
   background: var(--morrow-product-copper-soft);
-  color: #ddaa91;
+  color: var(--morrow-product-copper-bright);
 }
 
 .morrow-library__group {
@@ -104,7 +104,7 @@
 }
 
 .morrow-library__row[aria-current="true"] {
-  background: linear-gradient(90deg, #27221c, #1b1b17);
+  background: var(--morrow-product-field-inset);
 }
 
 .morrow-library__glyph {
@@ -119,7 +119,7 @@
 
 .morrow-library__row p {
   margin: 4px 0 0;
-  color: #959289;
+  color: var(--morrow-product-muted);
   font-size: 12px;
 }
 
@@ -198,10 +198,10 @@
   display: flex;
   margin-top: 17px;
   padding: 12px;
-  border: 1px solid #35513a;
+  border: 1px solid color-mix(in srgb, var(--morrow-product-success) 45%, var(--morrow-product-line));
   border-radius: 10px;
-  background: var(--morrow-product-success-soft, #19251b);
-  color: #a9bfac;
+  background: var(--morrow-product-success-soft);
+  color: var(--morrow-product-success);
   font-size: 11px;
   gap: 9px;
 }
@@ -245,7 +245,7 @@
 }
 
 .morrow-dossier__metric span {
-  color: #70736a;
+  color: var(--morrow-product-copy-quiet);
   font-size: 9px;
 }
 
@@ -340,8 +340,8 @@
 
 @media (max-width: 700px) {
   .morrow-memory-commandbar {
-    align-items: stretch;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .morrow-memory-commandbar__learning {
@@ -351,5 +351,9 @@
   .morrow-memory-commandbar button,
   .morrow-memory-commandbar .morrow-switch {
     min-height: 44px;
+  }
+
+  .morrow-memory-commandbar button {
+    width: 100%;
   }
 }

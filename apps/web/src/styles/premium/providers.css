@@ -49,9 +49,9 @@
   height: 38px;
   flex: none;
   place-items: center;
-  border: 1px solid #3d3d36;
+  border: 1px solid var(--morrow-product-line-strong);
   border-radius: 11px;
-  background: #11120f;
+  background: var(--morrow-product-field-strong);
   color: var(--morrow-product-copper);
   font: 700 17px var(--morrow-product-display);
 }
@@ -97,9 +97,9 @@
   display: grid;
   margin-top: 12px;
   padding: 23px;
-  border: 1px solid #3a3a33;
+  border: 1px solid var(--morrow-product-line);
   border-radius: var(--morrow-product-radius-lg);
-  background: linear-gradient(135deg, #21221e, #181916);
+  background: linear-gradient(135deg, var(--morrow-product-field-strong), var(--morrow-product-field));
   grid-template-columns: 1.15fr 1fr;
   gap: 26px;
 }
@@ -118,7 +118,7 @@
 .morrow-field-label {
   display: block;
   margin-bottom: 7px;
-  color: #8f8c84;
+  color: var(--morrow-product-muted);
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.12em;
@@ -129,9 +129,9 @@
 .morrow-provider-detail input {
   width: 100%;
   padding: 11px 13px;
-  border: 1px solid #40413a;
+  border: 1px solid var(--morrow-product-line-strong);
   border-radius: 10px;
-  background: #121310;
+  background: var(--morrow-product-field);
   color: var(--morrow-product-copy);
   font: inherit;
 }
@@ -164,7 +164,7 @@
   padding: 16px;
   border: 1px solid var(--morrow-product-line);
   border-radius: 15px;
-  background: #171815;
+  background: var(--morrow-product-field-strong);
   gap: 12px;
 }
 
