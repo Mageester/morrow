@@ -106,12 +106,18 @@ type TokenStore = Partial<Record<OAuthProviderId, StoredOAuthToken>>;
 
 // ── Token persistence ────────────────────────────────────────────────────────
 
-function tokenStorePath(env: NodeJS.ProcessEnv = process.env): string {
+function tokenStorePath(env: NodeJS.ProcessEnv = process.env): string | null {
+  // A caller-provided environment is an isolated configuration snapshot. Do
+  // not silently fill it from the operator's default home; callers that want
+  // persisted OAuth must name the home explicitly. The real process.env keeps
+  // the normal production default-home discovery behavior.
+  if (env !== process.env && !env.MORROW_HOME?.trim()) return null;
   return join(resolveMorrowHome(env), "oauth.json");
 }
 
 function readTokenStore(env: NodeJS.ProcessEnv = process.env): TokenStore {
   const path = tokenStorePath(env);
+  if (!path) return {};
   try {
     if (!existsSync(path)) return {};
     return JSON.parse(readFileSync(path, "utf-8")) as TokenStore;
@@ -122,6 +128,7 @@ function readTokenStore(env: NodeJS.ProcessEnv = process.env): TokenStore {
 
 function writeTokenStore(store: TokenStore, env: NodeJS.ProcessEnv = process.env): void {
   const path = tokenStorePath(env);
+  if (!path) throw new Error("MORROW_HOME must be set when persisting OAuth for an explicit environment.");
   mkdirSync(join(resolveMorrowHome(env)), { recursive: true });
   writeFileSync(path, JSON.stringify(store, null, 2), { mode: 0o600 });
   try {
@@ -359,6 +366,10 @@ export async function getValidAccessToken(
 
 /** Remove stored tokens for a provider. */
 export function signOut(id: OAuthProviderId, env: NodeJS.ProcessEnv = process.env): void {
+  if (!tokenStorePath(env)) {
+    pending.delete(id);
+    return;
+  }
   const store = readTokenStore(env);
   delete store[id];
   writeTokenStore(store, env);
