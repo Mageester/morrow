@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  HealthSchema,
+  RuntimeCapabilityStatusSchema,
   CreateProjectSchema, CreateTaskSchema, TaskEventSchema,
   MissionContractSchema, MissionRequirementNodeSchema, MissionCursorSchema,
   CreateMissionSchema, MissionSchema, MissionEventTypeSchema,
@@ -350,5 +352,36 @@ describe("Advanced Execution Kernel — contract schemas (R1, R2, R16)", () => {
     }
     expect(RequirementCategorySchema.safeParse("prohibited_action").success).toBe(true);
     expect(RequirementNodeStatusSchema.safeParse("invalidated").success).toBe(true);
+  });
+});
+
+/**
+ * Health is the one thing every client reads to decide whether Morrow is
+ * working. A missing runtime block would read as "fine" when it actually means
+ * "this process never said", so the schema requires it.
+ */
+describe("runtime capability status", () => {
+  const runtime = {
+    version: 1 as const,
+    startupReconciled: true,
+    workGraphs: "ready" as const,
+    scheduler: "running" as const,
+    skills: { healthy: true, entries: 3, loadable: 2, issues: 0 },
+  };
+
+  it("requires health to carry a runtime block", () => {
+    const health = {
+      ok: true, service: "morrow-orchestrator" as const, apiVersion: 1, mockProvider: false,
+      migrations: { applied: 1, latest: 1 }, time: new Date().toISOString(),
+    };
+    expect(() => HealthSchema.parse(health)).toThrow();
+    expect(HealthSchema.parse({ ...health, runtime }).runtime.scheduler).toBe("running");
+  });
+
+  it("keeps unknown from readiness", () => {
+    expect(RuntimeCapabilityStatusSchema.parse({ ...runtime, startupReconciled: false, workGraphs: "not_managed", scheduler: "not_managed" }))
+      .toMatchObject({ startupReconciled: false, workGraphs: "not_managed" });
+    expect(() => RuntimeCapabilityStatusSchema.parse({ ...runtime, scheduler: "probably" })).toThrow();
+    expect(() => RuntimeCapabilityStatusSchema.parse({ ...runtime, extra: true })).toThrow();
   });
 });

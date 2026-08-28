@@ -45,39 +45,32 @@ export async function serveForeground(ctx: Context): Promise<number> {
   // provider stack, the database layer, the mission engine — into *every*
   // `morrow` invocation. It cost 0.8s on `morrow --version`, which does not
   // start a server and never touches any of it.
-  const {
-    openDatabase,
-    buildServer,
-    TaskRunner,
-    ProcessSupervisor,
-    processesRepository,
-    createDefaultMissionControllerRunner,
-    reconcileMissionsOnStartup,
-    migrateLegacyDatabase,
-  } = await import("@morrow/orchestrator");
+  const { createMorrowRuntimeHost, resolveRuntimeConfigFromEnv } = await import("@morrow/orchestrator");
   const { loadSecretsIntoEnv } = await import("../config/env.js");
 
   const { applied, shadowed } = loadSecretsIntoEnv({
     secretsFile: ctx.paths.secretsFile,
   });
 
-  const migration = migrateLegacyDatabase(ctx.service.dbPath, ctx.paths.legacyDbPaths);
   mkdirSync(dirname(ctx.service.dbPath), { recursive: true });
-  const db = openDatabase(ctx.service.dbPath);
-  // The foreground service is the normal source-checkout path behind
-  // `morrow start`. Share one supervisor between the runner and HTTP routes so
-  // agent-started processes are visible and cancellable through the same
-  // registry, with one owner for their OS process groups.
-  const supervisor = new ProcessSupervisor(processesRepository(db), join(ctx.paths.home, "process-logs"));
-  const runner = new TaskRunner(db, undefined, supervisor);
-  const missionControllerRunner = createDefaultMissionControllerRunner({ db, taskRunner: runner });
-  const reconciliation = await reconcileMissionsOnStartup({ db, runner, controllerRunner: missionControllerRunner });
-  // A packaged launcher sets MORROW_WEB_ROOT to the bundled web bundle so the
-  // in-process service serves the local app at /app; unset in source dev.
-  const webRoot = process.env.MORROW_WEB_ROOT?.trim();
-  const app = buildServer({ db, runner, missionControllerRunner, supervisor, backgroundModelCatalog: true, secretsFile: ctx.paths.secretsFile, ...(webRoot ? { webRoot } : {}) });
+  // One composition root, shared with the standalone entrypoint. `morrow start`
+  // used to assemble a shorter list of its own — no scheduler, no work graphs,
+  // no shared skill catalog — so the same install behaved differently depending
+  // on how it was launched, which is not something a user can see or reason
+  // about.
+  const host = await createMorrowRuntimeHost({
+    ...resolveRuntimeConfigFromEnv(process.env),
+    dbPath: ctx.service.dbPath,
+    homeDir: ctx.paths.home,
+    secretsFile: ctx.paths.secretsFile,
+    host: ctx.service.host,
+    port: ctx.service.port,
+    legacyDbPaths: ctx.paths.legacyDbPaths,
+  });
+  const migration = { migratedFrom: host.startup.migratedFrom };
+  const reconciliation = host.startup;
 
-  await app.listen({ host: ctx.service.host, port: ctx.service.port });
+  await host.listen();
 
   mkdirSync(ctx.paths.home, { recursive: true });
   writeFileSync(ctx.paths.pidFile, String(process.pid));
@@ -110,9 +103,7 @@ export async function serveForeground(ctx: Context): Promise<number> {
     ctx.out.diag("");
     ctx.out.info("Shutting down…");
     try {
-      await supervisor.stopAllAndWait();
-      await app.close();
-      db.close();
+      await host.close();
     } catch {
       /* ignore */
     }

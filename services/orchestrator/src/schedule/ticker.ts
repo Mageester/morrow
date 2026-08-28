@@ -4,11 +4,23 @@ import type { Schedule, ScheduleNotificationEvent, ScheduleRun } from "@morrow/c
 import type { TaskRunner } from "../runner.js";
 import { schedulesRepository } from "../repositories/schedules.js";
 import { taskRepository } from "../repositories/tasks.js";
+import { taskRecordsRepository } from "../repositories/task-records.js";
 import { routinesRepository } from "../repositories/routines.js";
 import { nextRun } from "./cron.js";
 import type { OutgoingMessage, MessageAdapter } from "../messaging/adapter.js";
 import { AgentTaskDispatchError } from "../mission/task-dispatcher.js";
 import { assertRoutineTarget, dispatchRoutineTask } from "../routines/dispatch.js";
+
+/**
+ * A dispatch error can carry a path, a command line, or a provider response.
+ * The event it lands in is durable and readable from the API, so keep it to a
+ * bounded single line rather than whatever the thrower happened to include.
+ */
+function safeScheduleError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const single = raw.replace(/\s+/g, " ").trim();
+  return single.length > 1000 ? `${single.slice(0, 997)}...` : (single || "Scheduled task dispatch failed");
+}
 
 export interface FiredSchedule {
   scheduleId: string;
@@ -284,7 +296,20 @@ export class SchedulerTicker {
       } catch (error) {
         // The legacy path has no durable run row; leaving next_run_at due makes
         // the next tick retry rather than silently losing the occurrence.
-        try { tasks.updateTaskStatus(taskId, { status: "failed", updatedAt: nowIso, completedAt: nowIso }); } catch { /* best effort */ }
+        //
+        // Go through the canonical transition so the failure leaves an event
+        // behind. A raw status write made the task read as failed with nothing
+        // anywhere saying why, which is the same as no answer at all.
+        try {
+          const created = tasks.getTaskById(taskId);
+          if (created && (created.status === "queued" || created.status === "running")) {
+            taskRecordsRepository(this.deps.db).transitionTask(taskId, "failed", {
+              id: randomUUID(),
+              createdAt: nowIso,
+              payload: { scheduleId: schedule.id, message: safeScheduleError(error) },
+            });
+          }
+        } catch { /* best effort: the schedule still retries on the next tick */ }
         console.error("Scheduled task dispatch failed", error);
       }
     }

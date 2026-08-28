@@ -1,3 +1,4 @@
+import { HealthSchema } from "@morrow/contracts";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { openDatabase } from "../src/database.js";
 import { buildServer } from "../src/server.js";
@@ -308,6 +309,15 @@ describe("REST API and Task Runner Vertical Slice", () => {
     expect(health.json().ok).toBe(true);
     expect(health.json()).not.toHaveProperty("ui");
     expect(health.json()).not.toHaveProperty("uiServed");
+    // Nobody composed this server, so it says so. Claiming a reconciled
+    // startup or a running scheduler here would be a readiness the process
+    // never established.
+    expect(HealthSchema.parse(health.json()).runtime).toMatchObject({
+      version: 1,
+      startupReconciled: false,
+      workGraphs: "not_managed",
+      scheduler: "not_managed",
+    });
   });
 
   it("lists discoverable skills from MORROW_SKILLS_DIR (manifest and frontmatter formats)", async () => {

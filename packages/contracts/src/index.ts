@@ -1167,11 +1167,37 @@ export const ProviderTestResultSchema=z.object({
 }).strict();
 export type ProviderTestResult=z.infer<typeof ProviderTestResultSchema>;
 
+/**
+ * What this running service actually composed.
+ *
+ * Every field distinguishes "measured" from "not managed": a server built
+ * directly by a test owns none of these components and says so, rather than
+ * reporting a readiness it never established. `not_managed` is not a failure —
+ * it means nobody in this process is responsible for that component — while
+ * `degraded` means something that should be running is not.
+ */
+export const RuntimeCapabilityStatusSchema=z.object({
+  version:z.literal(1),
+  startupReconciled:z.boolean(),
+  workGraphs:z.enum(["ready","degraded","not_managed"]),
+  scheduler:z.enum(["running","disabled","degraded","not_managed"]),
+  skills:z.object({
+    healthy:z.boolean(),
+    entries:z.number().int().nonnegative(),
+    loadable:z.number().int().nonnegative(),
+    issues:z.number().int().nonnegative(),
+  }).strict(),
+}).strict();
+export type RuntimeCapabilityStatus=z.infer<typeof RuntimeCapabilityStatusSchema>;
+
 export const HealthSchema=z.object({
   ok:z.boolean(),
   service:z.literal("morrow-orchestrator"),
   apiVersion:z.number().int(),
   mockProvider:z.boolean(),
+  /** What this process composed. Required: an absent runtime block would read
+   * as "fine" when it actually means "unknown". */
+  runtime:RuntimeCapabilityStatusSchema,
   // The CLI uses this only for a local service to recover an interrupted or
   // deleted pid file. It is intentionally not a credential or user identifier.
   ownerPid:z.number().int().positive().optional(),

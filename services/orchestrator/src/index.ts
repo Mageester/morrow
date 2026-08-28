@@ -1,113 +1,40 @@
-import { openDatabase } from "./database.js";
-import { buildServer } from "./server.js";
-import { legacyDatabaseCandidatesForRepo, migrateLegacyDatabase, resolveDefaultDatabasePath, resolveMorrowDevelopmentRoot, resolveMorrowHome } from "./home.js";
-import { join } from "node:path";
-import { existsSync } from "node:fs";
-import { TaskRunner } from "./runner.js";
-import { reconcileMissionsOnStartup } from "./recovery.js";
-import { createDefaultMissionControllerRunner } from "./mission/controller-runner.js";
-import { createWorkGraphIntegration } from "./mission/work-graph-integration.js";
-import { SchedulerTicker } from "./schedule/ticker.js";
-import { loadAdaptersFromEnv } from "./messaging/adapter.js";
-import { ProcessSupervisor } from "./processes/supervisor.js";
-import { processesRepository } from "./repositories/processes.js";
-import { EntitlementPoller } from "./hosted/entitlement-poller.js";
-import { resolveHostedApiUrl } from "./hosted/hosted-api-url.js";
-import { hydrateProviderEnvFromSecrets } from "./provider/secrets.js";
-import { EXACT_TOKENIZER_PROVIDER_IDS, warmExactTokenizer } from "./execution/context-budget.js";
-import { isProviderConfigured } from "./provider/registry.js";
-import type { ProviderId } from "@morrow/contracts";
+import { createMorrowRuntimeHost, resolveRuntimeConfigFromEnv } from "./runtime/host.js";
 
-// In a packaged install the launcher sets MORROW_SKILLS_DIR to the bundled
-// skills directory. When running from source (pnpm dev) fall back to the repo's
-// skills/ so the agent's find_skill / load_skill tools work in development too.
-if (!process.env.MORROW_SKILLS_DIR) {
-  const devRoot = resolveMorrowDevelopmentRoot();
-  const devSkills = devRoot ? join(devRoot, "skills") : null;
-  if (devSkills && existsSync(devSkills)) process.env.MORROW_SKILLS_DIR = devSkills;
-}
+/**
+ * Standalone service entrypoint.
+ *
+ * Everything about what a running Morrow *is* lives in the runtime host, which
+ * the CLI's in-process `morrow start` uses too. This file owns only what a
+ * process owns: reading the environment, logging, and signals.
+ */
+const config = resolveRuntimeConfigFromEnv(process.env);
+const host = await createMorrowRuntimeHost(config);
 
-const dbPath = resolveDefaultDatabasePath(process.env);
-const secretsFile = join(resolveMorrowHome(process.env), "secrets.env");
-hydrateProviderEnvFromSecrets(secretsFile, process.env);
-migrateLegacyDatabase(dbPath, legacyDatabaseCandidatesForRepo(resolveMorrowDevelopmentRoot()));
-const db = openDatabase(dbPath);
-
-// Shared with buildServer below so a process the agent starts in the
-// background (a dev server, a watcher) and one started through the REST
-// process routes both live in the same registry — either side can observe or
-// stop what the other started.
-const supervisor = new ProcessSupervisor(processesRepository(db), join(resolveMorrowHome(process.env), "process-logs"));
-const runner = new TaskRunner(db, undefined, supervisor);
-const missionControllerRunner = createDefaultMissionControllerRunner({ db, taskRunner: runner });
-// The durable work-graph seam shares this process's runner and mission
-// controller: children start through the same fenced runner path, and a
-// completed fan-in wakes the controller that owns the mission.
-const workGraphs = createWorkGraphIntegration({
-  db,
-  runner,
-  wakeMission: (missionId) => missionControllerRunner.wake(missionId),
-});
-
-// Reclaim durable missions first, then reconcile their checkpoint-aware tasks,
-// then replay unfinished work graphs. Both standalone and packaged startup use
-// this exact path.
-const reconciliation = await reconcileMissionsOnStartup({ db, runner, controllerRunner: missionControllerRunner, workGraphs });
-if (reconciliation.missionsResumed || reconciliation.interrupted || reconciliation.requeued
-  || reconciliation.cancelledOrphans || reconciliation.workGraphsReconciled) {
+const { missionsResumed, interrupted, requeued, cancelledOrphans, workGraphsReconciled } = host.startup;
+if (missionsResumed || interrupted || requeued || cancelledOrphans || workGraphsReconciled) {
   console.log(
-    `Startup reconciliation: ${reconciliation.missionsResumed} mission(s) resumed, ` +
-    `${reconciliation.interrupted} interrupted, ` +
-    `${reconciliation.requeued} re-dispatched, ${reconciliation.cancelledOrphans} orphan(s) cancelled, ` +
-    `${reconciliation.workGraphsReconciled} work graph(s) reconciled`
+    `Startup reconciliation: ${missionsResumed} mission(s) resumed, ` +
+    `${interrupted} interrupted, ` +
+    `${requeued} re-dispatched, ${cancelledOrphans} orphan(s) cancelled, ` +
+    `${workGraphsReconciled} work graph(s) reconciled`
   );
 }
-// In a packaged install the launcher points MORROW_WEB_ROOT at the bundled web
-// bundle so the orchestrator serves the local app at /app. When unset (source
-// development), Vite serves the app on its own port and no /app surface is
-// registered here.
-const webRoot = process.env.MORROW_WEB_ROOT?.trim();
-// Defaults to Morrow's hosted account service (MORROW_HOSTED_API_URL still
-// overrides for self-hosters). An install with no stored pairing never calls
-// out — the poller short-circuits before any fetch — so this only decides
-// where a user who *chose* to pair actually gets verified.
-const entitlementPoller = new EntitlementPoller(secretsFile, resolveHostedApiUrl(process.env));
-entitlementPoller.start(5 * 60 * 1000);
 
-const app = buildServer({
-  db,
-  runner,
-  missionControllerRunner,
-  supervisor,
-  backgroundModelCatalog: true,
-  secretsFile,
-  entitlementPoller,
-  ...(webRoot ? { webRoot } : {}),
-});
+let shuttingDown = false;
+const shutdown = async (): Promise<void> => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try { await host.close(); } catch { /* a failed teardown must not block exit */ }
+  process.exit(0);
+};
+process.on("SIGINT", () => { void shutdown(); });
+process.on("SIGTERM", () => { void shutdown(); });
 
-// Fire due cron schedules unattended. The interval is short; the actual cadence
-// is governed by each schedule's next_run_at, so a missed minute simply runs at
-// the next tick. Disabled when MORROW_DISABLE_SCHEDULER is set.
-if (process.env.MORROW_DISABLE_SCHEDULER !== "true") {
-  new SchedulerTicker({ db, runner, adapters: loadAdaptersFromEnv(process.env) }).start(30000);
-}
-
-const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 4317;
-const host = process.env.MORROW_BIND_HOST?.trim() || "127.0.0.1";
-
-app.listen({ host, port }).then((address) => {
+try {
+  const address = await host.listen();
   console.log(`Server listening at ${address}`);
-  // Pay the exact tokenizer's one-time build cost here, on an idle process,
-  // rather than inside the user's first turn. Gated on an OpenAI-family
-  // provider being configured because the encoder costs ~66MB of heap that a
-  // local-only or Anthropic-only install would never read.
-  if (process.env.MORROW_DISABLE_TOKENIZER_WARMUP !== "true"
-    && EXACT_TOKENIZER_PROVIDER_IDS.some((id) => isProviderConfigured(id as ProviderId, process.env))) {
-    setTimeout(() => {
-      try { warmExactTokenizer(); } catch { /* counting falls back to the estimator */ }
-    }, 0).unref();
-  }
-}).catch(err => {
-  console.error(err);
+} catch (error) {
+  console.error(error);
+  await host.close().catch(() => {});
   process.exit(1);
-});
+}

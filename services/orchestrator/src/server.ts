@@ -47,6 +47,7 @@ import {
   ScheduleRunSchema,
   ScheduleNotificationOptionsSchema,
   SetSkillActivationSchema,
+  type RuntimeCapabilityStatus,
   type PresetId,
   type ProviderId,
   type ProviderAuthMode,
@@ -380,6 +381,12 @@ export type ServerDependencies = {
   folderPicker?: FolderPicker;
   /** Shared authority for skill discovery, activation, and instruction loading. */
   skillCatalog?: SkillCatalog;
+  /**
+   * What the surrounding runtime actually composed. Absent when nobody owns the
+   * runtime — a directly constructed server in a test — in which case health
+   * reports `not_managed` rather than inventing a readiness it cannot observe.
+   */
+  runtimeStatus?: () => RuntimeCapabilityStatus;
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
@@ -823,6 +830,28 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     health: "/api/health",
   }));
 
+  /**
+   * Runtime truth for a server nobody composed: every component reads as
+   * unowned, and startup reconciliation as not performed. A test harness that
+   * builds this server directly really has not reconciled anything, and saying
+   * otherwise would put a false readiness in front of whoever reads health.
+   */
+  const unmanagedRuntimeStatus = (): RuntimeCapabilityStatus => {
+    const catalogStatus = skillCatalog.status();
+    return {
+      version: 1,
+      startupReconciled: false,
+      workGraphs: "not_managed",
+      scheduler: "not_managed",
+      skills: {
+        healthy: catalogStatus.healthy,
+        entries: catalogStatus.entries,
+        loadable: catalogStatus.loadable,
+        issues: catalogStatus.issues.length,
+      },
+    };
+  };
+
   app.get("/api/health", async () => {
     const row = deps.db.prepare("SELECT MAX(id) AS latest, COUNT(*) AS applied FROM schema_migrations").get() as { latest: number | null; applied: number };
     return {
@@ -830,6 +859,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       service: "morrow-orchestrator",
       apiVersion: 1,
       mockProvider: process.env.MOCK_PROVIDER === "true",
+      runtime: (deps.runtimeStatus ?? unmanagedRuntimeStatus)(),
       ownerPid: process.pid,
       // Which install this service belongs to. A packaged launcher checks this
       // before adopting an already-healthy service on its port: without it,
