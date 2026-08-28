@@ -6,9 +6,22 @@ import { TaskRunner } from "../src/runner.js";
 import { ModelCatalog } from "../src/routing/model-catalog.js";
 import { BUILT_IN_MODELS, installModelCatalog, resolveModelMetadata } from "../src/routing/models.js";
 import type { FastifyInstance } from "fastify";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { testProviderConnectivity } from "../src/provider/connectivity.js";
+
+function randomCredential(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+function seedOAuthToken(home: string, provider: "openai" | "anthropic"): void {
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, "oauth.json"), JSON.stringify({
+    [provider]: { accessToken: randomCredential(), obtainedAt: Date.now() },
+  }));
+}
 
 describe("Provider / preset / memory API", () => {
   let db: Database.Database;
@@ -245,11 +258,59 @@ describe("Provider / preset / memory API", () => {
           authMode: "openai-api-key",
         });
       });
-      expect(connectivity).toHaveBeenCalledWith("openai", process.env);
+      expect(connectivity).toHaveBeenCalledWith("openai", expect.objectContaining({ MORROW_HOME: expect.any(String) }));
     } finally {
       await backgroundApp.close();
       backgroundDb.close();
       if (previousKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousKey;
+    }
+  });
+
+  it("preserves default-home OAuth when background discovery snapshots process.env", async () => {
+    const ambientHome = mkdtempSync(join(tmpdir(), "morrow-background-oauth-"));
+    seedOAuthToken(join(ambientHome, ".morrow"), "openai");
+    const previousHome = process.env.HOME;
+    const previousMorrowHome = process.env.MORROW_HOME;
+    const previousOpenAiKey = process.env.OPENAI_API_KEY;
+    process.env.HOME = ambientHome;
+    delete process.env.MORROW_HOME;
+    delete process.env.OPENAI_API_KEY;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toBe("https://chatgpt.com/backend-api/codex/models?client_version=1.0.0");
+      return new Response(JSON.stringify({ data: [{ id: "gpt-5.5" }] }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const localDb = openDatabase(":memory:");
+    let localApp: FastifyInstance | undefined;
+    const connectivity = vi.fn(async (id: any, env: NodeJS.ProcessEnv = {}) => {
+      expect(id).toBe("openai");
+      expect(env.MORROW_HOME).toBe(join(ambientHome, ".morrow"));
+      return testProviderConnectivity(id, env);
+    });
+    try {
+      localApp = buildServer({
+        db: localDb,
+        runner: new TaskRunner(localDb, async () => {}),
+        providerConnectivityTest: connectivity,
+        backgroundModelDiscovery: true,
+        backgroundModelCatalog: false,
+      });
+      await localApp.ready();
+      await vi.waitFor(() => expect(connectivity).toHaveBeenCalledOnce());
+      const result = await connectivity.mock.results[0]!.value;
+      expect(result).toMatchObject({ ok: true, configured: true });
+      expect(fetchMock).toHaveBeenCalled();
+    } finally {
+      if (localApp) await localApp.close();
+      localDb.close();
+      vi.unstubAllGlobals();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousMorrowHome === undefined) delete process.env.MORROW_HOME;
+      else process.env.MORROW_HOME = previousMorrowHome;
+      if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousOpenAiKey;
+      rmSync(ambientHome, { recursive: true, force: true });
     }
   });
 

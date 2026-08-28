@@ -119,13 +119,20 @@ describe("Provider registry", () => {
   it("isolates an explicit environment from ambient OAuth while honoring an explicit Morrow home", () => {
     const ambientHome = mkdtempSync(join(tmpdir(), "morrow-provider-ambient-"));
     const previousHome = process.env.HOME;
-    seedOAuthTokens(join(ambientHome, ".morrow"), ["openai"]);
+    const previousMorrowHome = process.env.MORROW_HOME;
+    seedOAuthTokens(join(ambientHome, ".morrow"), ["openai", "anthropic"]);
     process.env.HOME = ambientHome;
+    delete process.env.MORROW_HOME;
     try {
       expect(listProviderStatuses(process.env).find((provider) => provider.id === "openai")).toMatchObject({
         configured: true,
         available: true,
         authMode: "codex-oauth",
+      });
+      expect(listProviderStatuses(process.env).find((provider) => provider.id === "anthropic")).toMatchObject({
+        configured: true,
+        available: true,
+        authMode: "anthropic-oauth",
       });
       expect(listProviderStatuses({}).find((provider) => provider.id === "openai")).toMatchObject({
         configured: false,
@@ -133,16 +140,30 @@ describe("Provider registry", () => {
         authStatus: "missing",
         authMode: "openai-api-key",
       });
+      expect(listProviderStatuses({}).find((provider) => provider.id === "anthropic")).toMatchObject({
+        configured: false,
+        available: false,
+        authStatus: "missing",
+        authMode: "anthropic-api-key",
+      });
       expect(() => createProvider("openai", {})).toThrow(ProviderError);
+      expect(() => createProvider("anthropic", {})).toThrow(ProviderError);
 
       expect(listProviderStatuses({ MORROW_HOME: join(ambientHome, ".morrow") }).find((provider) => provider.id === "openai")).toMatchObject({
         configured: true,
         available: true,
         authMode: "codex-oauth",
       });
+      expect(listProviderStatuses({ MORROW_HOME: join(ambientHome, ".morrow") }).find((provider) => provider.id === "anthropic")).toMatchObject({
+        configured: true,
+        available: true,
+        authMode: "anthropic-oauth",
+      });
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      if (previousMorrowHome === undefined) delete process.env.MORROW_HOME;
+      else process.env.MORROW_HOME = previousMorrowHome;
       rmSync(ambientHome, { recursive: true, force: true });
     }
   });

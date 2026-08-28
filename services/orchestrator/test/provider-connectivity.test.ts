@@ -1,5 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { testProviderConnectivity } from "../src/provider/connectivity.js";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+function randomCredential(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+function seedOAuthTokens(home: string, providers: readonly ("openai" | "anthropic")[]): void {
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, "oauth.json"), JSON.stringify({
+    ...Object.fromEntries(providers.map((provider) => [provider, { accessToken: randomCredential(), obtainedAt: Date.now() }])),
+  }));
+}
 
 describe("provider connectivity", () => {
   afterEach(() => {
@@ -23,6 +38,30 @@ describe("provider connectivity", () => {
     // repeat that decides whether the endpoint enforces the key.
     expect(cancel).toHaveBeenCalled();
     expect(result.modelsSample).toEqual([]);
+  });
+
+  it.each([
+    ["openai", "OPENAI_API_KEY", "https://api.openai.com/v1/models"],
+    ["anthropic", "ANTHROPIC_API_KEY", "https://api.anthropic.com/v1/models"],
+  ] as const)("uses the explicit %s API key for connectivity even when OAuth is stored", async (id, keyEnv, expectedUrl) => {
+    const morrowHome = mkdtempSync(join(tmpdir(), "morrow-connectivity-keys-"));
+    seedOAuthTokens(morrowHome, [id]);
+    const env = { MORROW_HOME: morrowHome, [keyEnv]: randomCredential() } as NodeJS.ProcessEnv;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
+      data: [{ id: "account-model" }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const result = await testProviderConnectivity(id, env);
+      expect(result).toMatchObject({ ok: true, configured: true });
+      expect(String(fetchMock.mock.calls[0]?.[0])).toBe(expectedUrl);
+      const headers = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>;
+      expect("Authorization" in headers).toBe(id === "openai");
+      expect("x-api-key" in headers).toBe(id === "anthropic");
+      expect("anthropic-beta" in headers).toBe(false);
+    } finally {
+      rmSync(morrowHome, { recursive: true, force: true });
+    }
   });
 
   it("returns normalized provider-reported metadata without truncating to the display sample", async () => {

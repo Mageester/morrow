@@ -535,7 +535,10 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const providerConnectivityTest = deps.providerConnectivityTest ?? testProviderConnectivity;
   const discoveryExpiresAt = (fetchedAt: string, ok: boolean) => new Date(Date.parse(fetchedAt) + (ok ? 15 * 60_000 : 60_000)).toISOString();
   const refreshProviderModelDiscovery = async (providerId: ProviderId, knownAuthMode?: ProviderAuthMode) => {
-    const envSnapshot = { ...process.env };
+    // Keep the effective home in the isolated snapshot. OAuth lookup treats a
+    // caller-provided environment without MORROW_HOME as intentionally hermetic;
+    // background discovery still needs the production default-home behavior.
+    const envSnapshot = { ...process.env, MORROW_HOME: resolveMorrowHome(process.env) };
     const credentialIdentity = providerCredentialIdentity(providerId, envSnapshot);
     const result = await providerConnectivityTest(providerId, envSnapshot);
     if (providerId === "openrouter" && providerCredentialIdentity(providerId, process.env) !== credentialIdentity) {
