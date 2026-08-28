@@ -115,6 +115,23 @@ describe("skill catalog", () => {
     database.close();
   });
 
+  it("keeps high-risk bundled skills healthy but disabled by default", () => {
+    const root = tempDirectory();
+    const bundledRoot = join(root, "bundled");
+    mkdirSync(bundledRoot);
+    writeSkill(bundledRoot, "high-risk", { riskClass: "high" });
+    const database = db();
+    const catalog = createSkillCatalog({ db: database, bundledRoot, userRoot: null, now: () => NOW });
+
+    expect(catalog.getByKey("bundled:high-risk")).toMatchObject({
+      validation: "healthy",
+      trustTier: "experimental",
+      enabled: false,
+      loadable: false,
+    });
+    database.close();
+  });
+
   it("accepts frontmatter-only skills from the bundled root but keeps writable roots fail-closed", () => {
     const root = tempDirectory();
     const bundledRoot = join(root, "bundled");
@@ -415,6 +432,25 @@ describe("skill catalog", () => {
     const secondCatalog = createSkillCatalog({ db: reopened, bundledRoot, userRoot, now: () => NOW });
     expect(secondCatalog.getByKey("bundled:calendar")).toMatchObject({ enabled: false, loadable: false });
     expect(secondCatalog.getByKey("user:notes")).toMatchObject({ enabled: true, loadable: true });
+    reopened.close();
+  });
+
+  it("persists an explicit activation for a high-risk bundled skill", () => {
+    const root = tempDirectory();
+    const bundledRoot = join(root, "bundled");
+    const databaseFile = join(root, "morrow.db");
+    mkdirSync(bundledRoot);
+    writeSkill(bundledRoot, "high-risk", { riskClass: "high" });
+    const first = openDatabase(databaseFile);
+    const firstCatalog = createSkillCatalog({ db: first, bundledRoot, userRoot: null, now: () => NOW });
+
+    firstCatalog.setEnabled("bundled:high-risk", true);
+    expect(firstCatalog.getByKey("bundled:high-risk")).toMatchObject({ enabled: true, loadable: true });
+    first.close();
+
+    const reopened = openDatabase(databaseFile);
+    const secondCatalog = createSkillCatalog({ db: reopened, bundledRoot, userRoot: null, now: () => NOW });
+    expect(secondCatalog.getByKey("bundled:high-risk")).toMatchObject({ enabled: true, loadable: true });
     reopened.close();
   });
 

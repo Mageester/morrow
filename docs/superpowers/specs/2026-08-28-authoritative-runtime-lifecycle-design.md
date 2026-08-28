@@ -202,7 +202,9 @@ project and avoids ambiguous `NULL` behavior in a composite primary key.
 
 Defaults are explicit:
 
-- bundled skills default enabled unless a persisted override disables them;
+- bundled skills default enabled unless they declare the experimental/high-risk
+  tier, which remains visible but defaults disabled until a persisted explicit
+  activation enables it;
 - newly installed user skills receive `enabled = 0` in the same successful
   install operation;
 - workspace skills default disabled until explicitly enabled;
@@ -308,9 +310,10 @@ execution composition. Implementation requires an independent Luna Max review.
 
 ## Compatibility and migration
 
-- Existing databases migrate with bundled skills effectively enabled and
-  user/workspace skills disabled until explicitly enabled. This is a deliberate
-  fail-closed correction; the UI and CLI must explain it.
+- Existing databases migrate with ordinary bundled skills effectively enabled;
+  experimental bundled skills and all user/workspace skills remain disabled
+  until explicitly enabled. This is a deliberate fail-closed correction; the
+  UI and CLI must explain it.
 - Existing installed directories are retained. They become catalog entries and
   are not deleted during migration.
 - Existing API consumers continue receiving the current skill fields plus the

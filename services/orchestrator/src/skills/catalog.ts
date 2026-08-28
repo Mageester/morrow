@@ -467,6 +467,7 @@ function scanRoot(root: RootSpec, projectId: string | undefined): { entries: Int
     const name = pretty(sanitizedText(manifest.name ?? front.name ?? body.name, pretty(id), 160));
     const description = sanitizedDescription(manifest.description ?? front.description ?? body.description);
     const riskClass = sanitizedText(manifest.riskClass ?? front.riskClass, "", 80).toLowerCase();
+    const trustTier = RISK_TO_TIER[riskClass] ?? "controlled";
     const publisher = sanitizedText(manifest.publisher ?? front.publisher, root.source === "bundled" ? "bundled" : "local", 160);
     const issuesForEntry: SkillCatalogIssue[] = [];
     for (const shapeIssue of manifestInfo.value ? manifestShapeIssues(manifestInfo.value) : []) addIssue(issuesForEntry, shapeIssue);
@@ -519,13 +520,13 @@ function scanRoot(root: RootSpec, projectId: string | undefined): { entries: Int
       name,
       description,
       source: root.source,
-      enabled: root.source === "bundled",
+      enabled: root.source === "bundled" && trustTier !== "experimental",
       validation,
       issues: issuesForEntry,
-      loadable: root.source === "bundled" && validation === "healthy",
+      loadable: root.source === "bundled" && trustTier !== "experimental" && validation === "healthy",
       manifestDigest: digest,
       category: sanitizedText(manifest.category ?? front.category, categorize(id), 160),
-      trustTier: RISK_TO_TIER[riskClass] ?? "controlled",
+      trustTier,
       tools: stringArray(manifest.requestedTools),
       permissions: stringArray(manifest.requestedFilesystemScopes),
       dependencies: stringArray(manifest.dependencies ?? manifest.requiredDependencies),
@@ -666,7 +667,7 @@ export function createSkillCatalog(deps: {
     for (const item of allEntries) {
       const validation = validationForIssues(item.entry.issues);
       const persisted = persistedActivations.find((record) => activationMatches(record, item, scope.projectId));
-      const enabled = persisted?.enabled ?? item.source === "bundled";
+      const enabled = persisted?.enabled ?? item.entry.enabled;
       item.entry = SkillCatalogEntrySchema.parse({
         ...item.entry,
         key: item.key,

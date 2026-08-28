@@ -171,7 +171,7 @@ export function createSkillCatalog(deps: {
 }): SkillCatalog;
 ```
 
-Use source-qualified keys, sort by `(id, source, key)`, default bundled to enabled and user/workspace to disabled, include invalid entries with stable issue codes, and mark all duplicate declared IDs in the current scope as `conflict`. Never expose absolute directories in `SkillCatalogEntry`; keep them in a private internal record used only by `loadInstructions`. Catalog status returns sanitized root issues without absolute paths so an unavailable empty root is distinguishable from an empty healthy catalog.
+Use source-qualified keys, sort by `(id, source, key)`, default ordinary bundled skills to enabled, default experimental/high-risk bundled skills and user/workspace skills to disabled, include invalid entries with stable issue codes, and mark all duplicate declared IDs in the current scope as `conflict`. Never expose absolute directories in `SkillCatalogEntry`; keep them in a private internal record used only by `loadInstructions`. Catalog status returns sanitized root issues without absolute paths so an unavailable empty root is distinguishable from an empty healthy catalog.
 
 - [ ] **Step 7: Cover restart, conflict, malformed, and root failures**
 
