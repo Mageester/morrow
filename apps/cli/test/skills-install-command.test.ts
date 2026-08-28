@@ -6,6 +6,7 @@ import { Context } from "../src/cli/context.js";
 import { ConfigStore } from "../src/config/config.js";
 import { Output } from "../src/cli/output.js";
 import { skillsCommand } from "../src/commands/skills.js";
+import type { SkillCatalogEntry } from "@morrow/contracts";
 import type { SkillInstallPlan, SkillInstallPreview } from "../src/client/api.js";
 import * as common from "../src/commands/common.js";
 
@@ -23,6 +24,7 @@ describe("morrow skills install", () => {
     applySkillInstall: ReturnType<typeof vi.fn>;
     discardSkillInstall: ReturnType<typeof vi.fn>;
     removeSkill: ReturnType<typeof vi.fn>;
+    listSkills: ReturnType<typeof vi.fn>;
   };
   let printed: string[];
 
@@ -44,6 +46,15 @@ describe("morrow skills install", () => {
 
   const readyPreview: SkillInstallPreview = { kind: "ready", plan: PLAN, handle: "handle-1" };
 
+  /** What the service reports after an install: a disabled catalog entry. */
+  const INSTALLED: SkillCatalogEntry = {
+    key: "user:release-notes", id: "release-notes", name: "Release Notes",
+    description: "Draft release notes from a changelog.", source: "user",
+    enabled: false, validation: "healthy", issues: [], loadable: false,
+    manifestDigest: "a".repeat(64), category: "writing", trustTier: "controlled",
+    tools: ["command-exec"], permissions: [], dependencies: [], publisher: "github:acme",
+  };
+
   function contextWith(flags: Record<string, unknown>): Context {
     const config = ConfigStore.load({ MORROW_HOME: home }, home);
     const context = new Context({
@@ -63,9 +74,10 @@ describe("morrow skills install", () => {
     home = mkdtempSync(join(tmpdir(), "morrow-install-cli-"));
     api = {
       previewSkillInstall: vi.fn(async () => readyPreview),
-      applySkillInstall: vi.fn(async () => ({ id: "release-notes", directory: join(home, "skills", "release-notes"), enabled: false })),
+      applySkillInstall: vi.fn(async () => INSTALLED),
       discardSkillInstall: vi.fn(async () => undefined),
       removeSkill: vi.fn(async () => undefined),
+      listSkills: vi.fn(async () => [INSTALLED]),
     };
     ctx = contextWith({});
   });
@@ -119,7 +131,7 @@ describe("morrow skills install", () => {
   it("says the skill is installed but not yet enabled", async () => {
     const yes = contextWith({ yes: true });
     await skillsCommand(yes, "install", ["acme/skills"]);
-    expect(output()).toMatch(/morrow skills enable release-notes/);
+    expect(output()).toMatch(/morrow skills enable user:release-notes/);
   });
 
   it("lists the skills in a source that holds several instead of picking one", async () => {
@@ -163,9 +175,9 @@ describe("morrow skills install", () => {
     await expect(skillsCommand(ctx, "install", [])).rejects.toThrow(/Usage: morrow skills install/);
   });
 
-  it("removes an installed skill by id", async () => {
+  it("removes an installed skill by its catalog key", async () => {
     expect(await skillsCommand(ctx, "remove", ["release-notes"])).toBe(0);
-    expect(api.removeSkill).toHaveBeenCalledWith("release-notes");
+    expect(api.removeSkill).toHaveBeenCalledWith("user:release-notes");
     await expect(skillsCommand(ctx, "remove", [])).rejects.toThrow(/Usage: morrow skills remove/);
   });
 });

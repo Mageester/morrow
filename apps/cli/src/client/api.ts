@@ -1,4 +1,6 @@
 import type {
+  SkillCatalogEntry,
+  SkillCatalogStatus,
   Project,
   Agent,
   Task,
@@ -769,13 +771,33 @@ export class MorrowApi {
     }, { timeoutMs: 60_000 });
   }
   applySkillInstall(handle: string) {
-    return this.req<{ id: string; directory: string; enabled: boolean }>("POST", "/api/skills/install", { handle });
+    return this.req<SkillCatalogEntry>("POST", "/api/skills/install", { handle });
   }
   discardSkillInstall(handle: string) {
     return this.req<void>("POST", "/api/skills/install/discard", { handle });
   }
-  removeSkill(id: string) {
-    return this.req<void>("DELETE", `/api/skills/${encodeURIComponent(id)}`);
+
+  /**
+   * The service's catalog is the only authority on which skills exist and which
+   * ones the agent can actually load. The CLI reads and writes that state
+   * rather than keeping its own opinion in local config, so `morrow skills
+   * list` and the running agent can never disagree.
+   */
+  listSkills(projectId?: string) {
+    return this.req<SkillCatalogEntry[]>("GET", `/api/skills${this.skillScope(projectId)}`);
+  }
+  getSkillStatus(projectId?: string) {
+    return this.req<SkillCatalogStatus>("GET", `/api/skills/status${this.skillScope(projectId)}`);
+  }
+  setSkillEnabled(key: string, enabled: boolean, projectId?: string) {
+    return this.req<SkillCatalogEntry>("PATCH", `/api/skills/${encodeURIComponent(key)}${this.skillScope(projectId)}`, { enabled });
+  }
+  removeSkill(key: string) {
+    return this.req<void>("DELETE", `/api/skills/${encodeURIComponent(key)}`);
+  }
+
+  private skillScope(projectId?: string): string {
+    return projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
   }
 }
 

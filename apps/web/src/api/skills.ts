@@ -1,27 +1,42 @@
-import { LearnedSkillSchema, SkillUsageSchema } from "@morrow/contracts";
+import {
+  LearnedSkillSchema,
+  SkillCatalogEntrySchema,
+  SkillCatalogStatusSchema,
+  SkillUsageSchema,
+  type SkillCatalogEntry,
+  type SkillCatalogStatus,
+} from "@morrow/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { z } from "zod";
 import { api } from "./client.js";
 
-export const InstalledSkillSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  description: z.string(),
-  category: z.string(),
-  trustTier: z.string(),
-  enabled: z.boolean(),
-  validation: z.string(),
-  tools: z.array(z.string()),
-  permissions: z.array(z.string()),
-  dependencies: z.array(z.string()),
-  source: z.string(),
-}).strict();
+/**
+ * The service's skill catalog is the only authority on what exists and what is
+ * loadable. The page renders that answer rather than a local approximation of
+ * it, so a skill that reads as enabled here is one the agent can actually load.
+ */
+export type InstalledSkill = SkillCatalogEntry;
+
+function skillsPath(base: string, projectId?: string): string {
+  return projectId ? `${base}?projectId=${encodeURIComponent(projectId)}` : base;
+}
 
 export const skillQueries = {
-  installed() {
+  installed(projectId?: string) {
     return queryOptions({
-      queryKey: ["skills", "installed"] as const,
-      queryFn: () => api.get("/api/skills", InstalledSkillSchema.array()),
+      queryKey: ["skills", "installed", projectId ?? null] as const,
+      queryFn: () => api.get(skillsPath("/api/skills", projectId), SkillCatalogEntrySchema.array()),
+    });
+  },
+  /**
+   * Root diagnostics, queried alongside the list. An empty list means one of
+   * two very different things — nothing installed, or a root Morrow could not
+   * read — and only this tells them apart.
+   */
+  status(projectId?: string) {
+    return queryOptions({
+      queryKey: ["skills", "status", projectId ?? null] as const,
+      queryFn: () => api.get(skillsPath("/api/skills/status", projectId), SkillCatalogStatusSchema),
     });
   },
   learned(projectId: string) {
@@ -40,7 +55,7 @@ export const skillQueries = {
   },
 };
 
-export type InstalledSkill = z.infer<typeof InstalledSkillSchema>;
+export type { SkillCatalogEntry, SkillCatalogStatus };
 
 /* ── Installing ──────────────────────────────────────────────────────────── */
 
@@ -83,7 +98,12 @@ export const SkillInstallPreviewSchema = z.discriminatedUnion("kind", [
   }).strict(),
 ]);
 
-const InstalledResultSchema = z.object({ id: z.string(), directory: z.string(), enabled: z.boolean() }).strict();
+/**
+ * An install returns the catalog entry it produced — disabled, with the key
+ * needed to enable it. The service never reports a directory, so the browser
+ * never learns where on disk anything lives.
+ */
+const InstalledResultSchema = SkillCatalogEntrySchema;
 
 export type SkillInstallPlan = z.infer<typeof SkillInstallPlanSchema>;
 export type SkillInstallPreview = z.infer<typeof SkillInstallPreviewSchema>;
@@ -108,7 +128,19 @@ export const skillApi = {
   discard(handle: string) {
     return api.post("/api/skills/install/discard", { handle }, z.unknown());
   },
-  remove(id: string) {
-    return api.delete(`/api/skills/${encodeURIComponent(id)}`, z.unknown());
+  /**
+   * Activation is a server decision: the catalog refuses to enable an entry it
+   * cannot load, and the entry it returns is the state that actually took
+   * effect. Nothing here optimistically flips a switch.
+   */
+  setEnabled(key: string, enabled: boolean, projectId?: string) {
+    return api.patch(
+      skillsPath(`/api/skills/${encodeURIComponent(key)}`, projectId),
+      { enabled },
+      SkillCatalogEntrySchema,
+    );
+  },
+  remove(key: string) {
+    return api.delete(`/api/skills/${encodeURIComponent(key)}`, z.unknown());
   },
 };

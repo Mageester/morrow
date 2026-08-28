@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { SkillCatalogEntry } from "@morrow/contracts";
 import type { Context } from "../cli/context.js";
 import { EXIT, notFound, usageError } from "../cli/errors.js";
-import { discoverSkills, verifySkill, type LocalSkill } from "../skills/registry.js";
+import { discoverSkills, type LocalSkill } from "../skills/registry.js";
 import { validateSkillSpec, generateSkillFiles, installSkill, KNOWN_SKILL_TOOLS, type SkillSpec } from "../skills/creator.js";
 import { findDuplicates, backupSkill, listBackups, rollbackSkill, archiveSkill, restoreArchived, listArchived } from "../skills/curator.js";
 import { ask, confirm, isInteractive } from "./common.js";
@@ -12,48 +13,96 @@ import { flagString, flagBool } from "../cli/args.js";
 const builtInRoot = resolve(fileURLToPath(new URL("../../../../skills", import.meta.url)));
 export function localSkillsRoot(): string { return process.env.MORROW_SKILLS_DIR ?? (existsSync(resolve(process.cwd(), "skills")) ? resolve(process.cwd(), "skills") : builtInRoot); }
 
-/** Lightweight index for /skill-search: { name, description } only, no filesystem reads beyond discovery. */
-export function localSkillsIndex(): Array<{ name: string; description: string }> {
-  return discoverSkills(localSkillsRoot()).map((skill) => ({
-    name: skill.id,
-    description: skill.manifest.name + " — " + skill.manifest.description,
-  }));
-}
-
 function findSkill(id: string): LocalSkill {
   const skill = discoverSkills(localSkillsRoot()).find((item) => item.id === id);
   if (!skill) throw notFound(`No local skill named "${id}".`);
   return skill;
 }
 
+/**
+ * Resolve one catalog entry from an id or a source-qualified key.
+ *
+ * Ids are what people type and what the rest of the CLI has always used; keys
+ * are what the service needs, because the same id can exist in more than one
+ * source. An ambiguous id is refused rather than guessed at — silently picking
+ * one of two skills with the same name is exactly the sort of quiet wrong
+ * answer this whole path exists to remove.
+ */
+async function resolveCatalogEntry(ctx: Context, idOrKey: string): Promise<SkillCatalogEntry> {
+  const entries = await ctx.api().listSkills();
+  const exact = entries.find((entry) => entry.key === idOrKey);
+  if (exact) return exact;
+  const byId = entries.filter((entry) => entry.id === idOrKey);
+  if (byId.length === 1) return byId[0]!;
+  if (byId.length > 1) {
+    throw usageError(
+      `"${idOrKey}" matches ${byId.length} skills.`,
+      `Name one of: ${byId.map((entry) => entry.key).join(", ")}`,
+    );
+  }
+  throw notFound(`No skill named "${idOrKey}".`);
+}
+
+function activationState(entry: SkillCatalogEntry): string {
+  if (entry.validation === "conflict") return "conflict";
+  if (entry.validation !== "healthy") return entry.validation;
+  return entry.enabled ? "enabled" : "disabled";
+}
+
 export async function skillsCommand(ctx: Context, sub: string | undefined, args: string[]): Promise<number> {
   const verb = sub ?? "list";
   if (verb === "list" || verb === "search") {
     const query = verb === "search" ? (args.join(" ").toLowerCase()) : "";
-    const skills = discoverSkills(localSkillsRoot()).filter((skill) => !query || `${skill.id} ${skill.manifest.name} ${skill.manifest.description}`.toLowerCase().includes(query));
-    if (ctx.out.json) ctx.out.data(skills.map((skill) => ({ id: skill.id, name: skill.manifest.name, version: skill.manifest.version, risk: skill.manifest.riskClass, enabled: ctx.config.get(`skills.${skill.id}.enabled`) === "true" })));
-    else if (!skills.length) ctx.out.info("No local skills found.");
-    else ctx.out.table(["id", "version", "risk", "enabled", "description"], skills.map((skill) => [skill.id, skill.manifest.version, skill.manifest.riskClass, String(ctx.config.get(`skills.${skill.id}.enabled`) === "true"), skill.manifest.description]));
+    // The running service owns this answer. A local config value must never be
+    // able to show a skill as enabled that the agent would refuse to load.
+    const entries = (await ctx.api().listSkills()).filter((entry) => !query || `${entry.id} ${entry.name} ${entry.description}`.toLowerCase().includes(query));
+    if (ctx.out.json) ctx.out.data(entries);
+    else if (!entries.length) {
+      const status = await ctx.api().getSkillStatus().catch(() => null);
+      if (status && status.issues.length > 0) {
+        ctx.out.error(`Skills could not be read: ${status.issues.map((issue) => issue.message).join("; ")}`);
+        return EXIT.ERROR;
+      }
+      ctx.out.info("No skills found.");
+    } else {
+      ctx.out.table(
+        ["key", "source", "state", "loadable", "description"],
+        entries.map((entry) => [entry.key, entry.source, activationState(entry), String(entry.loadable), entry.description]),
+      );
+    }
     return EXIT.OK;
   }
   if (verb === "inspect" || verb === "verify" || verb === "enable" || verb === "disable") {
     const id = args[0]; if (!id) throw usageError(`Usage: morrow skills ${verb} <id>`);
-    const skill = findSkill(id);
+    const entry = await resolveCatalogEntry(ctx, id);
     if (verb === "verify") {
-      const result = verifySkill(skill.directory);
-      if (ctx.out.json) ctx.out.data({ id, ...result });
-      else result.ok ? ctx.out.success(`${id} verified.`) : ctx.out.error(`${id} failed verification: ${result.issues.join("; ")}`);
-      return result.ok ? EXIT.OK : EXIT.ERROR;
+      const ok = entry.validation === "healthy";
+      if (ctx.out.json) ctx.out.data({ key: entry.key, id: entry.id, ok, validation: entry.validation, issues: entry.issues });
+      else ok ? ctx.out.success(`${entry.key} verified.`) : ctx.out.error(`${entry.key} failed verification: ${entry.issues.map((issue) => issue.message).join("; ")}`);
+      return ok ? EXIT.OK : EXIT.ERROR;
     }
     if (verb === "enable" || verb === "disable") {
-      if (verb === "enable" && !verifySkill(skill.directory).ok) throw usageError(`Skill "${id}" did not pass verification and cannot be enabled.`);
-      ctx.config.set(`skills.${id}.enabled`, String(verb === "enable"), "user");
-      if (ctx.out.json) ctx.out.data({ id, enabled: verb === "enable" }); else ctx.out.success(`${id} ${verb === "enable" ? "enabled" : "disabled"}.`);
+      // The service refuses to enable an entry it cannot load, so the result
+      // printed here is the state that actually took effect.
+      const updated = await ctx.api().setSkillEnabled(entry.key, verb === "enable");
+      if (ctx.out.json) ctx.out.data(updated);
+      else ctx.out.success(`${updated.key} ${updated.enabled ? "enabled" : "disabled"}.`);
       return EXIT.OK;
     }
-    const verification = verifySkill(skill.directory);
-    if (ctx.out.json) ctx.out.data({ ...skill.manifest, directory: skill.directory, verification });
-    else { ctx.out.heading(skill.manifest.name); ctx.out.keyValue([["id", skill.id], ["version", skill.manifest.version], ["risk", skill.manifest.riskClass], ["publisher", skill.manifest.publisher], ["verification", verification.ok ? "passed" : verification.issues.join("; ")]]); }
+    if (ctx.out.json) ctx.out.data(entry);
+    else {
+      ctx.out.heading(entry.name);
+      ctx.out.keyValue([
+        ["key", entry.key],
+        ["id", entry.id],
+        ["source", entry.source],
+        ["state", activationState(entry)],
+        ["loadable", String(entry.loadable)],
+        ["risk", entry.trustTier],
+        ["publisher", entry.publisher],
+        ["verification", entry.validation === "healthy" ? "passed" : entry.issues.map((issue) => issue.message).join("; ")],
+      ]);
+    }
     return EXIT.OK;
   }
   if (verb === "install") return installFromSource(ctx, args);
@@ -140,9 +189,9 @@ async function installFromSource(ctx: Context, args: string[]): Promise<number> 
   const installed = await api.applySkillInstall(handle);
   if (ctx.out.json) ctx.out.data({ ...installed, plan });
   else {
-    ctx.out.success(`Installed ${installed.id} to ${installed.directory}`);
+    ctx.out.success(`Installed ${installed.id}.`);
     // Installing is not enabling, and the next step should not be a surprise.
-    ctx.out.info(`It is disabled until you run: morrow skills enable ${installed.id}`);
+    ctx.out.info(`It is disabled until you run: morrow skills enable ${installed.key}`);
   }
   return EXIT.OK;
 }
@@ -158,9 +207,10 @@ function describePermissions(permissions: { tools: string[]; filesystemScopes: s
 
 async function removeSkill(ctx: Context, id: string | undefined): Promise<number> {
   if (!id) throw usageError("Usage: morrow skills remove <id>");
-  await ctx.api().removeSkill(id);
-  if (ctx.out.json) ctx.out.data({ id, removed: true });
-  else ctx.out.success(`Removed ${id}.`);
+  const entry = await resolveCatalogEntry(ctx, id);
+  await ctx.api().removeSkill(entry.key);
+  if (ctx.out.json) ctx.out.data({ key: entry.key, id: entry.id, removed: true });
+  else ctx.out.success(`Removed ${entry.key}.`);
   return EXIT.OK;
 }
 
@@ -218,7 +268,6 @@ function curateSkill(ctx: Context, verb: string, args: string[]): number {
       if (ctx.config.get(`skills.${id}.pinned`) === "true") throw usageError(`"${id}" is pinned; unpin it before archiving.`);
       findSkill(id);
       archiveSkill(root, id);
-      ctx.config.set(`skills.${id}.enabled`, "false", "user");
       if (ctx.out.json) ctx.out.data({ archived: id }); else ctx.out.success(`Archived "${id}".`);
       return EXIT.OK;
     }

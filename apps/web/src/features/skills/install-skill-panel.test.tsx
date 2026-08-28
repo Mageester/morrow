@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { skillApi, type SkillInstallPlan } from "../../api/skills.js";
+import { skillApi, type SkillCatalogEntry, type SkillInstallPlan } from "../../api/skills.js";
 import { InstallSkillPanel } from "./install-skill-panel.js";
 
 const PLAN: SkillInstallPlan = {
@@ -19,6 +19,25 @@ const PLAN: SkillInstallPlan = {
   generatedMetadata: ["manifest.json", "permissions.json"],
   replaces: null,
   warnings: ['Installed from the moving ref "main"; pin a tag or commit for a reproducible install'],
+};
+
+const INSTALLED: SkillCatalogEntry = {
+  key: "user:release-notes",
+  id: "release-notes",
+  name: "Release Notes",
+  description: "Draft release notes from a changelog.",
+  source: "user",
+  enabled: false,
+  validation: "healthy",
+  issues: [],
+  loadable: false,
+  manifestDigest: "a".repeat(64),
+  category: "writing",
+  trustTier: "controlled",
+  tools: [],
+  permissions: [],
+  dependencies: [],
+  publisher: "github:acme",
 };
 
 function renderPanel() {
@@ -48,7 +67,7 @@ describe("InstallSkillPanel", () => {
 
   it("shows provenance and permissions, and installs nothing until asked", async () => {
     const preview = vi.spyOn(skillApi, "preview").mockResolvedValue({ kind: "ready", plan: PLAN, handle: "handle-1" });
-    const install = vi.spyOn(skillApi, "install").mockResolvedValue({ id: "release-notes", directory: "/home/skills/release-notes", enabled: false });
+    const install = vi.spyOn(skillApi, "install").mockResolvedValue(INSTALLED);
 
     const user = await openAndLookUp();
 
@@ -75,13 +94,34 @@ describe("InstallSkillPanel", () => {
 
   it("does not let installed read as enabled", async () => {
     vi.spyOn(skillApi, "preview").mockResolvedValue({ kind: "ready", plan: PLAN, handle: "handle-1" });
-    vi.spyOn(skillApi, "install").mockResolvedValue({ id: "release-notes", directory: "/home/skills/release-notes", enabled: false });
+    vi.spyOn(skillApi, "install").mockResolvedValue(INSTALLED);
 
     const user = await openAndLookUp();
     await waitFor(() => expect(screen.getByRole("button", { name: /install release-notes/i })).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: /install release-notes/i }));
 
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/stays switched off/i));
+  });
+
+  /**
+   * Enabling is a second deliberate act, and the panel reports the state the
+   * service recorded rather than assuming the switch took.
+   */
+  it("offers enabling after an install without doing it automatically", async () => {
+    vi.spyOn(skillApi, "preview").mockResolvedValue({ kind: "ready", plan: PLAN, handle: "handle-1" });
+    vi.spyOn(skillApi, "install").mockResolvedValue(INSTALLED);
+    const setEnabled = vi.spyOn(skillApi, "setEnabled").mockResolvedValue({ ...INSTALLED, enabled: true, loadable: true });
+
+    const user = await openAndLookUp();
+    await waitFor(() => expect(screen.getByRole("button", { name: /install release-notes/i })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: /install release-notes/i }));
+
+    const enableButton = await screen.findByRole("button", { name: /enable now/i });
+    expect(setEnabled).not.toHaveBeenCalled();
+
+    await user.click(enableButton);
+    await waitFor(() => expect(setEnabled).toHaveBeenCalledWith("user:release-notes", true));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/installed and enabled/i));
   });
 
   it("offers the choice when a source holds several skills", async () => {

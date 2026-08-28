@@ -13,8 +13,13 @@ import {
   validateDirectory,
 } from "./common.js";
 import { pickProvider, setupProvider } from "./provider-setup.js";
-import { discoverSkills, isSafeDefaultSkill } from "../skills/registry.js";
-import { localSkillsRoot } from "./skills.js";
+import { isSafeDefaultSkill } from "../skills/registry.js";
+
+/**
+ * The catalog reports a trust tier; the safe-default rule is written in terms
+ * of the declared risk class it came from.
+ */
+const TIER_TO_RISK: Record<string, string> = { core: "low", controlled: "medium", experimental: "high" };
 import { chatCommand } from "./chat.js";
 import {
   shouldUseInteractive,
@@ -47,10 +52,11 @@ export async function onboardCommand(
     ctx.config.unset("defaults.autoApprove", "user");
     ctx.config.unset("defaults.project", "user");
 
+    // Activation lives in the service now; clear any legacy CLI-side keys a
+    // previous version wrote so nothing stale can be read back.
     try {
-      const skills = discoverSkills(localSkillsRoot());
-      for (const skill of skills) {
-        ctx.config.unset(`skills.${skill.id}.enabled`, "user");
+      for (const entry of ctx.config.flat()) {
+        if (entry.key.startsWith("skills.") && entry.key.endsWith(".enabled")) ctx.config.unset(entry.key, "user");
       }
     } catch {
       // ignore
@@ -499,13 +505,13 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
     }
 
     case "skills": {
-      const skills = discoverSkills(localSkillsRoot());
-      const safe = skills.filter((s) =>
-        isSafeDefaultSkill(s.id, s.manifest.riskClass),
-      );
-      const highRisk = skills.filter(
-        (s) => !isSafeDefaultSkill(s.id, s.manifest.riskClass),
-      );
+      // Activation is the service's state, not the CLI's. Onboarding shows the
+      // catalog's own answer and writes back through it, so what someone turns
+      // on here is exactly what the agent will be able to load.
+      await ensureRunning(ctx);
+      const entries = (await ctx.api().listSkills()).filter((entry) => entry.validation === "healthy");
+      const safe = entries.filter((entry) => isSafeDefaultSkill(entry.id, TIER_TO_RISK[entry.trustTier]));
+      const highRisk = entries.filter((entry) => !isSafeDefaultSkill(entry.id, TIER_TO_RISK[entry.trustTier]));
 
       ctx.out.print(
         "Skills are local scripts carrying out task operations on your files.",
@@ -516,11 +522,11 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       ctx.out.print();
 
       ctx.out.print(ctx.out.bold("Safe default skills:"));
-      for (const skill of safe) {
+      for (const entry of safe) {
         ctx.out.print(
-          `  ${ctx.out.cyan(skill.id)} ${ctx.out.gray(`(${skill.manifest.riskClass} risk)`)}`,
+          `  ${ctx.out.cyan(entry.id)} ${ctx.out.gray(`(${TIER_TO_RISK[entry.trustTier] ?? entry.trustTier} risk)`)}`,
         );
-        ctx.out.print(`    ${ctx.out.gray(skill.manifest.description)}`);
+        ctx.out.print(`    ${ctx.out.gray(entry.description)}`);
       }
       ctx.out.print();
 
@@ -557,15 +563,25 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
         (item) => item,
       );
 
+      /** Report what the service recorded, never what was requested. */
+      const applyActivation = async (key: string, enabled: boolean): Promise<boolean> => {
+        try {
+          const updated = await ctx.api().setSkillEnabled(key, enabled);
+          return updated.enabled;
+        } catch {
+          ctx.out.warn(`Could not ${enabled ? "enable" : "disable"} ${key}.`);
+          return false;
+        }
+      };
+
       if (actionIdx === 0) {
         // Recommended path enables ONLY vetted safe-default skills; every
         // high-risk skill is explicitly left disabled.
-        for (const skill of safe)
-          ctx.config.set(`skills.${skill.id}.enabled`, "true", "user");
-        for (const skill of highRisk)
-          ctx.config.set(`skills.${skill.id}.enabled`, "false", "user");
+        let enabledCount = 0;
+        for (const entry of safe) if (await applyActivation(entry.key, true)) enabledCount += 1;
+        for (const entry of highRisk) await applyActivation(entry.key, false);
         ctx.out.success(
-          `Enabled ${safe.length} safe default skill${safe.length === 1 ? "" : "s"}.`,
+          `Enabled ${enabledCount} safe default skill${enabledCount === 1 ? "" : "s"}.`,
         );
         if (highRisk.length > 0) {
           ctx.out.info(
@@ -575,32 +591,27 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       } else if (actionIdx === 1) {
         // Safe skills default to on; high-risk skills default to off and show
         // their risk and requested permissions before the individual prompt.
-        for (const skill of safe) {
+        for (const entry of safe) {
           const enable = await confirm(
-            `Enable safe skill '${skill.manifest.name}'?`,
+            `Enable safe skill '${entry.name}'?`,
             true,
           );
-          ctx.config.set(`skills.${skill.id}.enabled`, String(enable), "user");
+          await applyActivation(entry.key, enable);
         }
-        for (const skill of highRisk) {
+        for (const entry of highRisk) {
           ctx.out.print();
           ctx.out.warn(
-            `${skill.manifest.name} — ${skill.manifest.riskClass} risk`,
+            `${entry.name} — ${TIER_TO_RISK[entry.trustTier] ?? entry.trustTier} risk`,
           );
-          ctx.out.print(`    ${ctx.out.gray(skill.manifest.description)}`);
+          ctx.out.print(`    ${ctx.out.gray(entry.description)}`);
           ctx.out.print(
-            `    ${ctx.out.gray("Requested permissions:")} ${skill.manifest.requestedTools.join(", ")}`,
+            `    ${ctx.out.gray("Requested permissions:")} ${entry.tools.join(", ") || "none"}`,
           );
-          if (skill.manifest.requestedNetworkDomains.length > 0) {
-            ctx.out.print(
-              `    ${ctx.out.gray("Network:")} ${skill.manifest.requestedNetworkDomains.join(", ")}`,
-            );
-          }
           const enable = await confirm(
-            `Enable HIGH-RISK skill '${skill.manifest.name}'?`,
+            `Enable HIGH-RISK skill '${entry.name}'?`,
             false,
           );
-          ctx.config.set(`skills.${skill.id}.enabled`, String(enable), "user");
+          await applyActivation(entry.key, enable);
         }
       }
       return true;

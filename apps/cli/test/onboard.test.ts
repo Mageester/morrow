@@ -55,6 +55,25 @@ import { chatCommand } from "../src/commands/chat.js";
 import { runOnboardingLaunchpad } from "../src/commands/onboard-ink.js";
 import { isRunning } from "../src/service/lifecycle.js";
 
+/**
+ * Onboarding turns skills on through the service, so these are catalog entries
+ * rather than anything the CLI discovered for itself.
+ */
+const SAFE_SKILL = {
+  key: "bundled:writing", id: "writing", name: "Writing", description: "Draft prose.", source: "bundled" as const,
+  enabled: false, validation: "healthy" as const, issues: [], loadable: false, manifestDigest: "a".repeat(64),
+  category: "writing", trustTier: "core", tools: [], permissions: [], dependencies: [], publisher: "morrow",
+};
+const RISKY_SKILL = { ...SAFE_SKILL, key: "bundled:godmode", id: "godmode", name: "Godmode", trustTier: "experimental" };
+const skillActivations: Array<{ key: string; enabled: boolean }> = [];
+const skillCatalogApi = () => ({
+  listSkills: vi.fn().mockResolvedValue([SAFE_SKILL, RISKY_SKILL]),
+  setSkillEnabled: vi.fn(async (key: string, enabled: boolean) => {
+    skillActivations.push({ key, enabled });
+    return { ...(key === RISKY_SKILL.key ? RISKY_SKILL : SAFE_SKILL), enabled, loadable: enabled };
+  }),
+});
+
 describe("CLI Onboarding Command", () => {
   const tempRoots: string[] = [];
   let config: ConfigStore;
@@ -79,6 +98,7 @@ describe("CLI Onboarding Command", () => {
       listProjects: vi.fn().mockResolvedValue([]),
       getProject: vi.fn().mockResolvedValue({ id: "p1", name: "Test Project", workspacePath: "/test" }),
       createProject: vi.fn().mockResolvedValue({ id: "p1", name: "Test Project", workspacePath: "/test" }),
+      ...skillCatalogApi(),
       listProviders: vi.fn().mockResolvedValue([
         { id: "openai", label: "OpenAI", configured: false, capabilities: {}, authStatus: "missing", models: [] }
       ]),
@@ -138,6 +158,7 @@ describe("CLI Onboarding Command", () => {
   it("a connected model goes straight from the Ink launchpad to completion", async () => {
     const saveOnboardingState = vi.fn().mockResolvedValue({ success: true });
     ctx.api = () => ({
+      ...skillCatalogApi(),
       listProviders: vi.fn().mockResolvedValue([{ id: "openai", label: "OpenAI", configured: true }]),
       saveOnboardingState,
     } as any);
@@ -204,6 +225,7 @@ describe("CLI Onboarding Command", () => {
     const createProjectMock = vi.fn().mockResolvedValue({ id: "invoice-project", name: "Invoice", workspacePath: "C:/work/invoice" });
     const getProjectMock = vi.fn().mockResolvedValue({ id: "invoice-project", name: "Invoice", workspacePath: "C:/work/invoice" });
     ctx.api = () => ({
+      ...skillCatalogApi(),
       health: vi.fn().mockResolvedValue({ ok: true }),
       listProjects: vi.fn().mockResolvedValue([]),
       createProject: createProjectMock,
@@ -264,6 +286,7 @@ describe("CLI Onboarding Command", () => {
     const testMock = vi.fn().mockResolvedValue({ ok: false, detail: "API key invalid", errorKind: "auth", models: [] });
     const removeMock = vi.fn().mockResolvedValue({ removed: ["OPENAI_API_KEY"] });
     ctx.api = () => ({
+      ...skillCatalogApi(),
       listProviders: vi.fn().mockResolvedValue([
         { id: "openai", label: "OpenAI", configured: false, capabilities: {}, authStatus: "missing", models: [] }
       ]),
@@ -342,6 +365,7 @@ describe("CLI Onboarding Command", () => {
       listProjects: vi.fn().mockResolvedValue([]),
       getProject: vi.fn().mockResolvedValue({ id: "p1", name: "Test Project", workspacePath: "/test" }),
       createProject: vi.fn().mockResolvedValue({ id: "p1", name: "Test Project", workspacePath: "/test" }),
+      ...skillCatalogApi(),
       listProviders: vi.fn().mockResolvedValue([
         { id: "openai", label: "OpenAI", configured: false, capabilities: {}, authStatus: "missing", models: [] }
       ]),
@@ -380,6 +404,7 @@ describe("CLI Onboarding Command", () => {
 
     const createProjectMock = vi.fn().mockResolvedValue({ id: "cwd-proj", name: "mock-cwd", workspacePath: process.cwd() });
     ctx.api = () => ({
+      ...skillCatalogApi(),
       health: vi.fn().mockResolvedValue({ ok: true }),
       listProjects: vi.fn().mockResolvedValue([]),
       createProject: createProjectMock,
@@ -406,6 +431,7 @@ describe("CLI Onboarding Command", () => {
 
     const createProjectMock = vi.fn().mockResolvedValue({ id: "fallback-cwd-proj", name: "mock-cwd", workspacePath: process.cwd() });
     ctx.api = () => ({
+      ...skillCatalogApi(),
       health: vi.fn().mockResolvedValue({ ok: true }),
       listProjects: vi.fn().mockResolvedValue([]),
       createProject: createProjectMock,
