@@ -2,6 +2,7 @@ import type { PresetId, Preset, PresetStatus, RoutingDecision, RoutingCandidate,
 import type { ProviderEnv } from "../provider/credentials.js";
 import { getProviderStatus, isProviderConfigured, getProviderDefaultModel, providerCapabilities, PROVIDER_IDS } from "../provider/registry.js";
 import { getPreset, listPresets } from "./presets.js";
+import { resolveReasoningCapability } from "./models.js";
 
 export interface RouteOverride {
   providerId?: ProviderId;
@@ -194,7 +195,21 @@ export function listPresetStatuses(env: ProviderEnv = process.env): PresetStatus
   return listPresets().map((preset) => {
     const res = routePreset(preset.id, env);
     if (res.ok) {
-      return { preset, available: true, unavailableReason: null, resolved: { providerId: res.decision.providerId, model: res.decision.model } };
+      return {
+        preset,
+        available: true,
+        unavailableReason: null,
+        resolved: {
+          providerId: res.decision.providerId,
+          model: res.decision.model,
+          // Without this, every preset-routed conversation (the default —
+          // DEFAULT_ROUTE in the web composer is a preset, not an explicit
+          // model) reported no reasoning capability at all, so the reasoning
+          // control had nothing to show until the user manually picked a
+          // concrete model from the catalogue instead of a preset.
+          reasoning: resolveReasoningCapability(res.decision.providerId, res.decision.model),
+        },
+      };
     }
     return { preset, available: false, unavailableReason: res.reason, resolved: null };
   });

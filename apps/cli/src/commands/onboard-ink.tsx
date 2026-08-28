@@ -1,6 +1,7 @@
 import { Box, Text, render, useInput, useStdout } from "ink";
 import { useMemo, useReducer, useRef } from "react";
 import { glyphs, theme } from "../terminal/ink/theme.js";
+import { Wordmark } from "../terminal/ink/wordmark.js";
 
 export type OnboardingChoice =
   "connect" | "explore" | "classic" | "start" | "finish" | "cancel";
@@ -85,9 +86,7 @@ export function OnboardingLaunchpad({
   return (
     <Box flexDirection="column" width={width} paddingX={1}>
       <Box marginTop={1}>
-        <Text bold color={theme.accent}>
-          MORROW
-        </Text>
+        <Wordmark />
         <Text color={theme.faint}> private · local-first · yours</Text>
       </Box>
 

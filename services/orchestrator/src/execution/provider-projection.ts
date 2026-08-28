@@ -42,6 +42,39 @@ const COMPACTED_BATCH_PREFIX = "Morrow compacted the latest completed execution 
 const HISTORICAL_ARGUMENT_BYTE_LIMIT = 8 * 1024;
 
 /**
+ * What used to happen here: an oversized `content`/`patch` was dropped
+ * entirely and replaced with a sibling `durable_context` object, so the
+ * reconstructed call read as `{ path, durable_context }` — no `content` key
+ * at all. A model that later needed to retry the same write saw its own
+ * historical call in that exact shape and imitated it structurally,
+ * emitting `content: { durable_context: {...} }` for a *new* call. That is
+ * not a string, so `create_file` validation rejected it every time with
+ * "Invalid argument \"content\"" — an unrecoverable loop with zero forward
+ * progress, observed in production against deepseek-v4-flash (see
+ * agent-file-creation.test.ts).
+ *
+ * The fix keeps the body field present as a string — satisfying the schema
+ * shape a model would learn from imitation — while still refusing to
+ * re-inject the actual oversized payload. Even a model that copies this
+ * verbatim into a new call now produces a *valid* call (a wasted write of
+ * placeholder text, trivially caught and corrected) instead of a validation
+ * error with no path forward.
+ */
+function bodyPlaceholder(fieldLabel: string, payloadSha256?: string, payloadBytes?: number): string {
+  const detail = payloadSha256 && payloadBytes !== undefined
+    ? ` (${payloadBytes} bytes, sha256 ${payloadSha256.slice(0, 12)}…)`
+    : "";
+  return `[${fieldLabel} omitted from history — already applied${detail}. This is a placeholder, not real ${fieldLabel}: never copy it into a new call, and never let its shape become the template for one. Write fresh ${fieldLabel} instead.]`;
+}
+
+/** The field a tool's oversized body lives in, or null when this tool has none. */
+function bodyFieldFor(toolName: string): "patch" | "content" | null {
+  if (toolName === "propose_patch") return "patch";
+  if (toolName === "create_file" || toolName === "append_file") return "content";
+  return null;
+}
+
+/**
  * Bound a successful workspace-write argument for a provider request without
  * inventing an executable payload. The complete arguments remain in the
  * durable provider-turn row; this projection keeps the tool identity and
@@ -67,8 +100,10 @@ export function boundCompletedToolArguments(toolName: string, rawArguments: stri
   const legacyMarker = parsed._morrowAppliedWrite;
   if (legacyMarker && typeof legacyMarker === "object") {
     const { _morrowAppliedWrite: _legacy, content: _content, patch: _patch, ...rest } = parsed;
+    const bodyKey = bodyFieldFor(toolName);
     return JSON.stringify({
       ...rest,
+      ...(bodyKey ? { [bodyKey]: bodyPlaceholder(bodyKey) } : {}),
       durable_context: {
         kind: "legacy_applied_write",
         tool: toolName,
@@ -78,20 +113,29 @@ export function boundCompletedToolArguments(toolName: string, rawArguments: stri
   }
   if (originalBytes <= HISTORICAL_ARGUMENT_BYTE_LIMIT) return rawArguments;
 
-  const bodyKey = toolName === "propose_patch" ? "patch" : toolName === "create_file" || toolName === "append_file" ? "content" : null;
+  const bodyKey = bodyFieldFor(toolName);
   const body = bodyKey ? parsed[bodyKey] : undefined;
   if (typeof body !== "string") {
-    return JSON.stringify({ durable_context: { kind: "completed_tool_arguments", tool: toolName, originalBytes } });
+    const rest = { ...parsed };
+    if (bodyKey) delete rest[bodyKey];
+    return JSON.stringify({
+      ...rest,
+      ...(bodyKey ? { [bodyKey]: bodyPlaceholder(bodyKey) } : {}),
+      durable_context: { kind: "completed_tool_arguments", tool: toolName, originalBytes },
+    });
   }
   const { [bodyKey!]: _body, ...rest } = parsed;
+  const payloadBytes = Buffer.byteLength(body, "utf8");
+  const payloadSha256 = createHash("sha256").update(body).digest("hex");
   return JSON.stringify({
     ...rest,
+    [bodyKey!]: bodyPlaceholder(bodyKey!, payloadSha256, payloadBytes),
     durable_context: {
       kind: "completed_tool_arguments",
       tool: toolName,
       originalBytes,
-      payloadBytes: Buffer.byteLength(body, "utf8"),
-      payloadSha256: createHash("sha256").update(body).digest("hex"),
+      payloadBytes,
+      payloadSha256,
       note: "Complete successful arguments remain in durable execution history; inspect the workspace for current content.",
     },
   });
@@ -119,22 +163,18 @@ export function boundTerminalToolArguments(
     const parsed = value as Record<string, unknown>;
     const targetKeys = ["path", "paths", "query", "pattern", "executable", "cwd", "purpose", "expectedOffset", "files"];
     const target = Object.fromEntries(targetKeys.flatMap((key) => key in parsed ? [[key, parsed[key]]] : []));
-    const payloadKey = toolName === "propose_patch"
-      ? "patch"
-      : toolName === "create_file" || toolName === "append_file"
-        ? "content"
-        : undefined;
+    const payloadKey = bodyFieldFor(toolName);
     const payload = payloadKey && typeof parsed[payloadKey] === "string" ? parsed[payloadKey] as string : undefined;
+    const payloadBytes = payload ? Buffer.byteLength(payload, "utf8") : undefined;
+    const payloadSha256 = payload ? createHash("sha256").update(payload).digest("hex") : undefined;
     return JSON.stringify({
       ...target,
+      ...(payloadKey ? { [payloadKey]: bodyPlaceholder(payloadKey, payloadSha256, payloadBytes) } : {}),
       durable_context: {
         kind: "failed_tool_arguments",
         tool: toolName,
         originalBytes,
-        ...(payload ? {
-          payloadBytes: Buffer.byteLength(payload, "utf8"),
-          payloadSha256: createHash("sha256").update(payload).digest("hex"),
-        } : {}),
+        ...(payload ? { payloadBytes, payloadSha256 } : {}),
         note: "The complete failed arguments remain in durable operator history; repair the target using current workspace evidence.",
       },
     });

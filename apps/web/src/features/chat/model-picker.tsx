@@ -114,7 +114,17 @@ function buildModelOptions(models: ReadonlyArray<ModelStatus>): ModelOption[] {
 
 function buildPresetOptions(presets: ReadonlyArray<PresetStatus>): ModelOption[] {
   return presets.map((status) => ({
-    route: { id: presetRouteId(status.preset.id), label: status.preset.label, preset: status.preset.id },
+    route: {
+      id: presetRouteId(status.preset.id),
+      label: status.preset.label,
+      preset: status.preset.id,
+      // A preset resolves to a concrete model with its own reasoning
+      // capability (status.resolved.reasoning, populated server-side from
+      // the same registry lookup buildModelOptions uses below) — without
+      // forwarding it here, picking a preset — the default route — left the
+      // reasoning control with nothing to show at all.
+      ...(status.resolved?.reasoning ? { reasoning: status.resolved.reasoning } : {}),
+    },
     provider: "Preset",
     available: status.available,
     reason: status.unavailableReason,

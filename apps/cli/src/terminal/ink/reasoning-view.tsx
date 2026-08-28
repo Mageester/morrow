@@ -85,7 +85,10 @@ export function ReasoningView({ text, elapsedMs, expanded, unicode, width }: Rea
   if (settled && !expanded) {
     return (
       <Box marginTop={1}>
-        <Text color={theme.faint}>{`${g.think} `}</Text>
+        {/* theme.ts: copper is spent on exactly two things — the assistant's
+            mark, and the active state. This glyph is the mark; it stays
+            accent-coloured whether or not the thought itself has settled. */}
+        <Text color={theme.accent}>{`${g.think} `}</Text>
         <Text color={theme.faint} italic>
           {`Thought for ${formatThinkingTime(elapsedMs)}`}
         </Text>
@@ -101,7 +104,10 @@ export function ReasoningView({ text, elapsedMs, expanded, unicode, width }: Rea
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box>
-        <Text color={theme.faint}>{`${g.think} `}</Text>
+        {/* theme.ts: copper is spent on exactly two things — the assistant's
+            mark, and the active state. This glyph is the mark; it stays
+            accent-coloured whether or not the thought itself has settled. */}
+        <Text color={theme.accent}>{`${g.think} `}</Text>
         <Text color={theme.faint} italic>
           {settled ? `Thought for ${formatThinkingTime(elapsedMs)}` : "Thinking"}
         </Text>

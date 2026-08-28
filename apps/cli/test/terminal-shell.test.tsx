@@ -6,7 +6,7 @@ import { OverlayStore } from "../src/terminal/ink/overlay-store.js";
 import { ApprovalStore } from "../src/terminal/ink/approval-store.js";
 import { builtinRegistry } from "../src/terminal/commands/index.js";
 import { toolLabel, workRows } from "../src/terminal/ink/work-summary.js";
-import { activityLabel, elapsedLabel, tokenLabel } from "../src/terminal/ink/activity-line.js";
+import { activityLabel, elapsedLabel, tokenLabel, tokenRateLabel } from "../src/terminal/ink/activity-line.js";
 import { phrase } from "../src/terminal/ink/tool-verbs.js";
 import { outcomeFor } from "../src/terminal/ink/outcome.js";
 import { planWindow } from "../src/terminal/ink/plan-view.js";
@@ -483,6 +483,20 @@ describe("shell: the live activity line", () => {
     expect(frame).toContain("esc to interrupt");
   });
 
+  it("says it is responding, not thinking, once real prose is visible on screen", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "overhaul the site" });
+    store.apply({ type: "assistant.turn_start", turnId: "t1" });
+    store.apply({ type: "assistant.delta", turnId: "t1", text: "Here's the plan" });
+    await tick();
+    const frame = plain(view.lastFrame());
+    // "Thinking" while the reader can see actual words on screen contradicts
+    // itself — the line has to track what is actually visible, not just
+    // whether a turn is in flight.
+    expect(frame).toContain("Responding");
+    expect(frame).not.toContain("Thinking");
+  });
+
   it("never claims a running turn is finished", async () => {
     const { view, store } = mount();
     store.apply({ type: "user.message", text: "overhaul the site" });
@@ -532,6 +546,28 @@ describe("shell: the live activity line", () => {
         tools: [tool({ id: "t1", name: "read_file", purpose: "Read a.ts", status: "running" })],
       } as never),
     ).toBe("Reading a.ts");
+  });
+
+  it("says Responding instead of Thinking once prose is visible, but a running tool still wins", () => {
+    const base = { activity: [], tools: [], status: "streaming" as const };
+    expect(activityLabel({ ...base } as never, true)).toBe("Responding");
+    expect(
+      activityLabel(
+        { ...base, tools: [tool({ id: "t1", name: "read_file", purpose: "Read a.ts", status: "running" })] } as never,
+        true,
+      ),
+    ).toBe("Reading a.ts");
+  });
+
+  it("reports a tokens-per-second rate only once there is enough elapsed time to mean anything", () => {
+    expect(tokenRateLabel(undefined, 5_000)).toBeNull();
+    expect(tokenRateLabel(0, 5_000)).toBeNull();
+    // Under a second, a count divided by a fraction of a second is noise, not
+    // a rate — no figure beats a wrong one.
+    expect(tokenRateLabel(40, 400)).toBeNull();
+    expect(tokenRateLabel(50, 1_000)).toBe("50 tok/s");
+    expect(tokenRateLabel(220, 4_000)).toBe("55 tok/s");
+    expect(tokenRateLabel(3, 3_000)).toBe("1.0 tok/s");
   });
 
   it("shows only figures it actually has", () => {

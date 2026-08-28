@@ -12,6 +12,14 @@ import {
   providerQueries,
 } from "../../api/providers.js";
 
+/** Maps a provider id to the OAuth finding that documents its ToS/security
+ * caveat (services/orchestrator/src/provider/oauth.ts) — the finding ids
+ * don't match the provider ids they describe. */
+const OAUTH_FINDING_ID: Partial<Record<ProviderId, string>> = {
+  openai: "codex-oauth",
+  anthropic: "claude-oauth",
+};
+
 type Feedback = { tone: "error" | "info" | "success"; text: string } | null;
 
 function failureCopy(error: unknown, isReplacement: boolean, label: string): string {
@@ -169,7 +177,7 @@ function protectionCopy(protection: "windows-user-acl" | "posix-mode", securePer
     : "protected local credential file (owner-only permissions)";
 }
 
-function DisconnectDialog({ label, onCancel, onConfirm }: { label: string; onCancel(): void; onConfirm(): void }) {
+function DisconnectDialog({ label, oauth = false, onCancel, onConfirm }: { label: string; oauth?: boolean; onCancel(): void; onConfirm(): void }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
@@ -193,11 +201,15 @@ function DisconnectDialog({ label, onCancel, onConfirm }: { label: string; onCan
         }}
         role="alertdialog"
       >
-        <h2 id={titleId}>Disconnect {label}?</h2>
-        <p id={descriptionId}>This removes the saved credentials from local Morrow storage. Running work is not changed.</p>
+        <h2 id={titleId}>{oauth ? `Sign out of ${label}?` : `Disconnect ${label}?`}</h2>
+        <p id={descriptionId}>
+          {oauth
+            ? "This removes the saved subscription sign-in tokens from local Morrow storage. Running work is not changed."
+            : "This removes the saved credentials from local Morrow storage. Running work is not changed."}
+        </p>
         <div className="morrow-connection-dialog__actions">
           <Button onClick={onCancel} ref={cancelRef} variant="secondary">Cancel</Button>
-          <Button onClick={onConfirm} ref={confirmRef} variant="danger">Disconnect</Button>
+          <Button onClick={onConfirm} ref={confirmRef} variant="danger">{oauth ? "Sign out" : "Disconnect"}</Button>
         </div>
       </div>
     </div>
@@ -243,12 +255,40 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [focusConnectAfterDisconnect, setFocusConnectAfterDisconnect] = useState(false);
   const [focusAfterEditing, setFocusAfterEditing] = useState<"connect" | "replace" | null>(null);
+  // Which credential path is open, for providers that support both. Not a
+  // preference — an eligible provider always starts at the subscription
+  // option, mirroring the CLI's default-yes prompt (provider-setup.ts).
+  const [authPath, setAuthPath] = useState<"choose" | "key" | "oauth">(provider.supportsOAuth ? "choose" : "key");
+  const [oauthAuthorizeUrl, setOauthAuthorizeUrl] = useState<string | null>(null);
+  const [oauthCode, setOauthCode] = useState("");
+  const [oauthStarting, setOauthStarting] = useState(false);
+  const [oauthSubmitting, setOauthSubmitting] = useState(false);
+  const oauthCodeRef = useRef<HTMLInputElement>(null);
+  const oauthFindings = useQuery(providerQueries.oauthFindings());
+  const oauthFinding = oauthFindings.data?.find((f) => f.id === OAUTH_FINDING_ID[provider.id]) ?? null;
+  // "codex-oauth" / "anthropic-oauth" is the live auth mode only while a
+  // subscription sign-in is the credential actually in use — disconnecting
+  // that must sign out of OAuth, not clear a (nonexistent) API key.
+  const isOAuthConnected = provider.authMode === "codex-oauth" || provider.authMode === "anthropic-oauth";
 
   useEffect(() => () => setApiKey(""), []);
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
+
+  useEffect(() => {
+    if (!editing) return;
+    setAuthPath(provider.supportsOAuth ? "choose" : "key");
+    setOauthAuthorizeUrl(null);
+    setOauthCode("");
+    setOauthStarting(false);
+    setOauthSubmitting(false);
+  }, [editing, provider.supportsOAuth]);
+
+  useEffect(() => {
+    if (authPath === "oauth" && oauthAuthorizeUrl) oauthCodeRef.current?.focus();
+  }, [authPath, oauthAuthorizeUrl]);
 
   useEffect(() => {
     if (!focusConnectAfterDisconnect || provider.configured) return;
@@ -279,6 +319,41 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
   };
   const reconcileStatus = () => {
     void queryClient.invalidateQueries({ queryKey: providerKeys.all });
+  };
+  const beginOAuth = async () => {
+    setOauthStarting(true);
+    setFeedback(null);
+    try {
+      const started = await client.startOAuth();
+      setOauthAuthorizeUrl(started.authorizeUrl);
+      window.open(started.authorizeUrl, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setFeedback({ tone: "error", text: failureCopy(error, provider.configured, label) });
+      setAuthPath("choose");
+    } finally {
+      setOauthStarting(false);
+    }
+  };
+  const completeOAuth = async () => {
+    const code = oauthCode.trim();
+    if (!code) return;
+    setOauthSubmitting(true);
+    setFeedback(null);
+    try {
+      const result = await client.exchangeOAuth(code);
+      reconcileStatus();
+      setOauthCode("");
+      setOauthAuthorizeUrl(null);
+      clearDraft("replace");
+      setFeedback({ tone: "success", text: `Signed in to ${result.label} — connected. ${result.warning}` });
+    } catch (error) {
+      setFeedback({
+        tone: "error",
+        text: error instanceof ApiClientError ? error.message : `Morrow could not complete sign-in to ${label}. Your existing connection was not changed.`,
+      });
+    } finally {
+      setOauthSubmitting(false);
+    }
   };
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -336,8 +411,15 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
     setDisconnecting(true);
     setFeedback(null);
     try {
-      const response = await client.disconnect();
-      applyProviderStatus(response.status);
+      // The credential in use is a subscription sign-in, not an API key —
+      // DELETE /credentials only ever clears the key-based secrets file, so
+      // it would report success while leaving the OAuth token in place.
+      if (isOAuthConnected) {
+        await client.oauthSignOut();
+      } else {
+        const response = await client.disconnect();
+        applyProviderStatus(response.status);
+      }
       setConfirmingDisconnect(false);
       setApiKey("");
       setFocusConnectAfterDisconnect(true);
@@ -346,7 +428,12 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
       // the button the user just activated, dumping keyboard and screen-reader
       // users at the top of the document with no announcement.
       onDisconnected?.(provider.id);
-      setFeedback({ tone: "info", text: `${label} is disconnected. The saved credentials were removed from local Morrow storage.` });
+      setFeedback({
+        tone: "info",
+        text: isOAuthConnected
+          ? `Signed out of ${label}. The saved subscription tokens were removed from local Morrow storage.`
+          : `${label} is disconnected. The saved credentials were removed from local Morrow storage.`,
+      });
       reconcileStatus();
     } catch (error) {
       setFeedback({ tone: "error", text: failureCopy(error, true, label) });
@@ -439,7 +526,7 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
                   <Button disabled={refreshing} onClick={() => void runCheck("refresh")} size="compact" variant="secondary">{refreshing ? "Refreshing…" : "Refresh models"}</Button>
                   {/* Disconnect is destructive, so it is reached only after the
                       row has been deliberately opened, and still confirms. */}
-                  <Button onClick={() => setConfirmingDisconnect(true)} ref={disconnectButtonRef} size="compact" variant="danger">Disconnect</Button>
+                  <Button onClick={() => setConfirmingDisconnect(true)} ref={disconnectButtonRef} size="compact" variant="danger">{isOAuthConnected ? "Sign out" : "Disconnect"}</Button>
                 </>
               ) : (
                 <Button onClick={() => { setEditing(true); setFeedback(null); }} ref={connectButtonRef} size="compact">Connect {label}</Button>
@@ -447,7 +534,66 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
             </div>
           ) : null}
 
-          {editing ? (
+          {editing && authPath === "choose" ? (
+            <div className="morrow-connection__oauth">
+              {oauthFinding ? <p className="morrow-connection__oauth-warning">{oauthFinding.reason}</p> : null}
+              <div className="morrow-connection__form-actions">
+                <Button onClick={() => { setAuthPath("oauth"); void beginOAuth(); }} size="compact">
+                  Sign in with your subscription
+                </Button>
+                <Button onClick={() => setAuthPath("key")} size="compact" type="button" variant="secondary">
+                  Use an API key instead
+                </Button>
+                <Button
+                  onClick={() => clearDraft(provider.configured ? "replace" : "connect")}
+                  size="compact"
+                  type="button"
+                  variant="secondary"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {editing && authPath === "oauth" ? (
+            <div className="morrow-connection__oauth">
+              {oauthFinding ? <p className="morrow-connection__oauth-warning">{oauthFinding.reason}</p> : null}
+              {oauthStarting ? <p aria-live="polite" role="status">Opening {label}&rsquo;s sign-in page…</p> : null}
+              {oauthAuthorizeUrl ? (
+                <>
+                  <p>
+                    We opened a new tab to sign in to {label}. If it didn&rsquo;t open, use this link:{" "}
+                    <a className="morrow-connection__oauth-link" href={oauthAuthorizeUrl} rel="noreferrer noopener" target="_blank">
+                      {oauthAuthorizeUrl}
+                    </a>
+                  </p>
+                  <p>
+                    After signing in, paste the code — or the full page URL, even if that page fails to
+                    load — back here.
+                  </p>
+                  <label htmlFor={`${provider.id}-oauth-code`}>Authorization code or URL</label>
+                  <input
+                    autoComplete="off"
+                    id={`${provider.id}-oauth-code`}
+                    onChange={(event) => setOauthCode(event.target.value)}
+                    ref={oauthCodeRef}
+                    value={oauthCode}
+                  />
+                  <div className="morrow-connection__form-actions">
+                    <Button disabled={oauthSubmitting || !oauthCode.trim()} onClick={() => void completeOAuth()} size="compact">
+                      {oauthSubmitting ? "Signing in…" : "Complete sign-in"}
+                    </Button>
+                    <Button disabled={oauthSubmitting} onClick={() => setAuthPath("choose")} size="compact" type="button" variant="secondary">
+                      Back
+                    </Button>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+
+          {editing && authPath === "key" ? (
         <form className="morrow-connection__form" onSubmit={(event) => void submit(event)}>
           {needsUrl ? (
             <>
@@ -480,7 +626,15 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
           <p>Credentials stay server-side in an owner-restricted local file. Morrow does not claim application-layer encryption.</p>
           <div className="morrow-connection__form-actions">
             <Button disabled={saving} size="compact" type="submit">{saving ? "Saving…" : "Save connection"}</Button>
-            <Button disabled={saving} onClick={() => clearDraft(provider.configured ? "replace" : "connect")} size="compact" type="button" variant="secondary">Cancel</Button>
+            <Button
+              disabled={saving}
+              onClick={() => (provider.supportsOAuth ? setAuthPath("choose") : clearDraft(provider.configured ? "replace" : "connect"))}
+              size="compact"
+              type="button"
+              variant="secondary"
+            >
+              {provider.supportsOAuth ? "Back" : "Cancel"}
+            </Button>
           </div>
         </form>
           ) : null}
@@ -493,6 +647,7 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
       {confirmingDisconnect ? (
         <DisconnectDialog
           label={label}
+          oauth={isOAuthConnected}
           onCancel={() => { setConfirmingDisconnect(false); disconnectButtonRef.current?.focus(); }}
           onConfirm={() => void disconnect()}
         />

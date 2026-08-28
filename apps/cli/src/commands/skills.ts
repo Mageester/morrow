@@ -31,9 +31,16 @@ export async function skillsCommand(ctx: Context, sub: string | undefined, args:
   if (verb === "list" || verb === "search") {
     const query = verb === "search" ? (args.join(" ").toLowerCase()) : "";
     const skills = discoverSkills(localSkillsRoot()).filter((skill) => !query || `${skill.id} ${skill.manifest.name} ${skill.manifest.description}`.toLowerCase().includes(query));
-    if (ctx.out.json) ctx.out.data(skills.map((skill) => ({ id: skill.id, name: skill.manifest.name, version: skill.manifest.version, risk: skill.manifest.riskClass, enabled: ctx.config.get(`skills.${skill.id}.enabled`) === "true" })));
+    // `config.get` returns the coerced native type for `skills.*.enabled`
+    // (config.ts's `coerce()` turns the "true"/"false" written by `set` into a
+    // real boolean before it's ever read back) — comparing that against the
+    // string "true" can never match, so this always reported every skill as
+    // disabled regardless of what onboarding or `skills enable` had actually
+    // stored.
+    const isEnabled = (id: string) => ctx.config.get(`skills.${id}.enabled`) === true;
+    if (ctx.out.json) ctx.out.data(skills.map((skill) => ({ id: skill.id, name: skill.manifest.name, version: skill.manifest.version, risk: skill.manifest.riskClass, enabled: isEnabled(skill.id) })));
     else if (!skills.length) ctx.out.info("No local skills found.");
-    else ctx.out.table(["id", "version", "risk", "enabled", "description"], skills.map((skill) => [skill.id, skill.manifest.version, skill.manifest.riskClass, String(ctx.config.get(`skills.${skill.id}.enabled`) === "true"), skill.manifest.description]));
+    else ctx.out.table(["id", "version", "risk", "enabled", "description"], skills.map((skill) => [skill.id, skill.manifest.version, skill.manifest.riskClass, String(isEnabled(skill.id)), skill.manifest.description]));
     return EXIT.OK;
   }
   if (verb === "inspect" || verb === "verify" || verb === "enable" || verb === "disable") {
