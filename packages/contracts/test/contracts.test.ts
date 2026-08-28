@@ -17,6 +17,10 @@ import {
   ScheduleRunSchema,
   UpdateScheduleSchema,
   CreateMemoryEntrySchema,
+  SkillCatalogEntrySchema,
+  SkillCatalogIssueSchema,
+  SkillCatalogStatusSchema,
+  SetSkillActivationSchema,
 } from "../src/index.js";
 
 function validNode(over: Record<string, unknown> = {}) {
@@ -48,6 +52,38 @@ function validNode(over: Record<string, unknown> = {}) {
 }
 
 describe("contracts", () => {
+  it("accepts strict catalog state and rejects unknown activation fields", () => {
+    expect(SkillCatalogEntrySchema.parse({
+      key: "user:calendar",
+      id: "calendar",
+      name: "Calendar",
+      description: "Manage calendar work.",
+      source: "user",
+      enabled: false,
+      validation: "healthy",
+      issues: [],
+      loadable: false,
+      manifestDigest: "a".repeat(64),
+      category: "productivity",
+      trustTier: "controlled",
+      tools: [],
+      permissions: [],
+      dependencies: [],
+      publisher: "local",
+    })).toMatchObject({ key: "user:calendar", loadable: false });
+    expect(SkillCatalogIssueSchema.parse({ code: "missing_skill_md", message: "missing SKILL.md" })).toEqual({
+      code: "missing_skill_md",
+      message: "missing SKILL.md",
+    });
+    expect(SkillCatalogStatusSchema.parse({ healthy: true, entries: 1, loadable: 0, issues: [] })).toEqual({
+      healthy: true,
+      entries: 1,
+      loadable: 0,
+      issues: [],
+    });
+    expect(() => SetSkillActivationSchema.parse({ enabled: true, extra: true })).toThrow();
+  });
+
   it("rejects a project without a workspace path", () => expect(() => CreateProjectSchema.parse({ name: "x" })).toThrow());
   it("allows only inspect_workspace tasks", () => expect(() => CreateTaskSchema.parse({ projectId: "p", kind: "shell" })).toThrow());
   it("requires a numeric ordered event sequence", () => expect(() => TaskEventSchema.parse({ id: "e", taskId: "t", sequence: "1", type: "task.created", createdAt: "x", payload: {} })).toThrow());

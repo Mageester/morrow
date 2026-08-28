@@ -2079,6 +2079,18 @@ export const migrations:Migration[]=[
     );
     CREATE INDEX task_start_claims_lease_idx ON task_start_claims(lease_expires_at);
   `}
+  ,{id:73,name:"skill_activations",sql:`
+    CREATE TABLE skill_activations (
+      skill_key TEXT PRIMARY KEY,
+      skill_id TEXT NOT NULL,
+      source TEXT NOT NULL CHECK (source IN ('bundled', 'user', 'workspace')),
+      project_id TEXT,
+      enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+      updated_at TEXT NOT NULL,
+      CHECK ((source = 'workspace' AND project_id IS NOT NULL)
+          OR (source <> 'workspace' AND project_id IS NULL))
+    );
+  `}
 ];
 /**
  * Durability mode for committed writes.

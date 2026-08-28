@@ -776,6 +776,48 @@ export type UpsertToolPermissionInput=z.infer<typeof UpsertToolPermissionSchema>
 export type AgentSkillAccess=z.infer<typeof AgentSkillAccessSchema>;
 export type UpsertSkillAccessInput=z.infer<typeof UpsertSkillAccessSchema>;
 
+// ── Authoritative skill catalog ─────────────────────────────────────────────
+// The catalog is the single public view of skill identity, validation, and
+// activation. Absolute skill directories stay inside the orchestrator and are
+// deliberately absent from these schemas.
+export const SkillCatalogIssueSchema=z.object({
+  code:z.enum(["root_unavailable","missing_skill_md","invalid_manifest","checksum_mismatch","id_conflict","unreadable"]),
+  message:z.string().min(1).max(1000),
+}).strict();
+export const SkillCatalogEntrySchema=z.object({
+  key:z.string().min(1).max(512),
+  id:z.string().min(1).max(120),
+  name:z.string().min(1).max(160),
+  description:z.string().max(2000),
+  source:z.enum(["bundled","user","workspace"]),
+  enabled:z.boolean(),
+  validation:z.enum(["healthy","invalid","conflict","missing"]),
+  issues:z.array(SkillCatalogIssueSchema),
+  loadable:z.boolean(),
+  manifestDigest:z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+  category:z.string(),
+  trustTier:z.string(),
+  tools:z.array(z.string()),
+  permissions:z.array(z.string()),
+  dependencies:z.array(z.string()),
+  publisher:z.string(),
+}).strict().superRefine((value,ctx)=>{
+  if(value.loadable!==(value.enabled&&value.validation==="healthy")){
+    ctx.addIssue({code:"custom",message:"loadable must equal enabled && healthy"});
+  }
+});
+export const SetSkillActivationSchema=z.object({enabled:z.boolean()}).strict();
+export const SkillCatalogStatusSchema=z.object({
+  healthy:z.boolean(),
+  entries:z.number().int().nonnegative(),
+  loadable:z.number().int().nonnegative(),
+  issues:z.array(SkillCatalogIssueSchema),
+}).strict();
+export type SkillCatalogIssue=z.infer<typeof SkillCatalogIssueSchema>;
+export type SkillCatalogEntry=z.infer<typeof SkillCatalogEntrySchema>;
+export type SetSkillActivationInput=z.infer<typeof SetSkillActivationSchema>;
+export type SkillCatalogStatus=z.infer<typeof SkillCatalogStatusSchema>;
+
 // ── Full-text session & memory search ────────────────────────────────────────
 // Full-text search over conversations, messages, tasks, and memory. Individual
 // project endpoints preserve hard scope boundaries; the explicit global endpoint

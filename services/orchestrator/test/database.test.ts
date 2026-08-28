@@ -57,6 +57,27 @@ describe("database", () => {
     db.close();
   });
 
+  it("installs migration 73 with source-qualified skill activation constraints", () => {
+    const db = openDatabase(":memory:");
+    expect(migrations.at(-1)).toMatchObject({ id: 73, name: "skill_activations" });
+    expect(db.prepare("PRAGMA table_info(skill_activations)").all()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "skill_key", type: "TEXT", pk: 1 }),
+      expect.objectContaining({ name: "skill_id", type: "TEXT" }),
+      expect.objectContaining({ name: "source", type: "TEXT" }),
+      expect.objectContaining({ name: "project_id", type: "TEXT" }),
+      expect.objectContaining({ name: "enabled", type: "INTEGER" }),
+      expect.objectContaining({ name: "updated_at", type: "TEXT" }),
+    ]));
+
+    const insert = db.prepare("INSERT INTO skill_activations(skill_key,skill_id,source,project_id,enabled,updated_at) VALUES(?,?,?,?,?,?)");
+    insert.run("workspace:p1:lint", "lint", "workspace", "p1", 1, "2026-08-28T00:00:00.000Z");
+    expect(() => insert.run("workspace:p1:bad", "bad", "workspace", null, 1, "2026-08-28T00:00:00.000Z")).toThrow();
+    expect(() => insert.run("user:bad", "bad", "user", "p1", 1, "2026-08-28T00:00:00.000Z")).toThrow();
+    expect(() => insert.run("user:bad-enabled", "bad-enabled", "user", null, 2, "2026-08-28T00:00:00.000Z")).toThrow();
+    expect(() => insert.run("unknown:bad", "bad", "unknown", null, 0, "2026-08-28T00:00:00.000Z")).toThrow();
+    db.close();
+  });
+
   it("creates the durable recovery lease columns on a fresh database", () => {
     const db = openDatabase(":memory:");
     const columns = (db.prepare("PRAGMA table_info(schedule_runs)").all() as Array<{ name: string }>).map((column) => column.name);
