@@ -1,5 +1,12 @@
 # Authoritative Runtime and Lifecycle Implementation Plan
 
+> **Status (2026-08-29): complete and shipped in 0.8.0.** All five tasks landed.
+> The verified outcome, the architecture decisions, and the exact verification
+> commands live in
+> [ADR 0018](../../decisions/0018-authoritative-runtime-and-skill-lifecycle.md)
+> and the 0.8.0 CHANGELOG entry. This file is retained as the original plan; the
+> ADR is the current description of the system.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make every production Morrow startup expose the same runtime and make skill and task lifecycle state authoritative across the agent, CLI, web, and persistence.
