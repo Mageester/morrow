@@ -73,7 +73,7 @@ jobs:
         run: node --test --test-force-exit scripts/package-release.test.mjs scripts/install-integration.test.mjs
         shell: bash
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-windows-x64
           path: |
@@ -121,7 +121,7 @@ jobs:
           MORROW_ARTIFACT: dist/Morrow-v${{ inputs.version }}-${{ matrix.platform }}.tar.gz
         run: node --test scripts/package-release.test.mjs scripts/install-sh.test.mjs
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.platform }}
           path: |
