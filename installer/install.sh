@@ -313,6 +313,13 @@ EOF
 APP="$PREFIX/app"
 MORROW_WEB_ROOT="\${MORROW_WEB_ROOT:-\$APP/web}"
 export MORROW_WEB_ROOT
+# The prebuilt tree bundles its skills at \$APP/skills, and the service reads
+# them from MORROW_SKILLS_DIR. Without this a packaged install shipped 41
+# skills the running Morrow could not see at all: find_skill returned nothing
+# and the Skills page was empty. The source branch above and the Windows
+# launcher have always set it.
+MORROW_SKILLS_DIR="\${MORROW_SKILLS_DIR:-\$APP/skills}"
+export MORROW_SKILLS_DIR
 exec "\$APP/runtime/bin/node" "\$APP/orchestrator/cli/bin/morrow.mjs" "\$@"
 EOF
   fi

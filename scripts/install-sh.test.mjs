@@ -74,13 +74,24 @@ test("the installer is POSIX-shell clean and self-documenting", { skip }, () => 
   assert.match(help.stdout, /is never\s+modified by this installer/i);
 });
 
-test("source launcher exposes its bundled skills to the CLI and service", { skip }, async () => {
+/**
+ * Both launchers, not one.
+ *
+ * This assertion used to accept a single occurrence, which the source-install
+ * branch satisfied — so it passed for months while the prebuilt branch never
+ * exported the variable at all and every packaged Linux/macOS install ran with
+ * a skill catalog it could not see.
+ */
+test("both launchers expose the bundled skills to the CLI and service", { skip }, async () => {
   const installer = readFileSync(INSTALLER, "utf8");
-  assert.match(
-    installer,
-    /MORROW_SKILLS_DIR="\\\$\{MORROW_SKILLS_DIR:-\\\$APP\/skills\}"/,
-    "source installs must point both the CLI and orchestrator at bundled skills",
+  const occurrences = installer.match(/MORROW_SKILLS_DIR="\\\$\{MORROW_SKILLS_DIR:-\\\$APP\/skills\}"/g) ?? [];
+  assert.equal(
+    occurrences.length,
+    2,
+    "the source and prebuilt launchers must each point the CLI and orchestrator at bundled skills",
   );
+  const exports = installer.match(/export MORROW_SKILLS_DIR/g) ?? [];
+  assert.equal(exports.length, 2, "each launcher must export it, not just assign it");
 });
 
 test("an unknown option fails instead of installing something unintended", { skip }, () => {

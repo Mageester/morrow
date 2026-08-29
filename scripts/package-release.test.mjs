@@ -187,3 +187,38 @@ test("packaged externals cover every CLI runtime dependency", () => {
     assert.ok(packaged.has(name), `${name} must be packaged; the terminal UI cannot start without it`);
   }
 });
+
+/**
+ * A packaged manifest must describe the bundle it is in.
+ *
+ * A skill is a workflow written in SKILL.md, so `src/` directories are not
+ * shipped — but the manifests still declared `entrypoint: src/index.ts`, and
+ * skill verification checks that a declared entrypoint exists. Twenty-five of
+ * the forty-one bundled skills therefore arrived invalid and unloadable in
+ * every packaged install while being perfectly healthy in a source checkout.
+ */
+test("no bundled skill manifest declares a file the package does not contain", () => {
+  const bundled = join(dirname(fileURLToPath(import.meta.url)), "..", "dist");
+  // The newest tree, not the first one readdir happens to return: dist/ keeps
+  // older packages around and a stale one would answer for the current build.
+  const trees = existsSync(bundled)
+    ? readdirSync(bundled)
+      .filter((name) => name.startsWith("Morrow-v") && statSync(join(bundled, name)).isDirectory())
+      .map((name) => ({ path: join(bundled, name, "skills"), at: statSync(join(bundled, name)).mtimeMs }))
+      .filter((entry) => existsSync(entry.path))
+      .sort((left, right) => right.at - left.at)
+    : [];
+  const packaged = trees[0]?.path;
+  if (!packaged) return; // Nothing packaged in this working tree; the CI job covers it.
+
+  const missing = [];
+  for (const id of readdirSync(packaged)) {
+    const manifestPath = join(packaged, id, "manifest.json");
+    if (!existsSync(manifestPath)) continue;
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (typeof manifest.entrypoint === "string" && !existsSync(join(packaged, id, manifest.entrypoint))) {
+      missing.push(`${id}: ${manifest.entrypoint}`);
+    }
+  }
+  assert.deepEqual(missing, [], "a declared entrypoint that is not in the bundle makes the skill unloadable");
+});

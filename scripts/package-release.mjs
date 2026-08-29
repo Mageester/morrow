@@ -408,6 +408,21 @@ if (existsSync(skillsSrc)) {
     for (const file of ["SKILL.md", "manifest.json", "permissions.json"]) {
       if (existsSync(join(srcDir, file))) cpSync(join(srcDir, file), join(dstDir, file));
     }
+    // A skill is a workflow written in SKILL.md; `load_skill` reads that file
+    // and nothing else, so the source tree's `src/` directories are not
+    // shipped. Their manifests still declared `entrypoint: src/index.ts`, and
+    // skill verification checks that a declared entrypoint exists — so 25 of
+    // the 41 bundled skills arrived invalid and unloadable in every packaged
+    // install while being healthy in a source checkout. The manifest must
+    // describe what is actually in the bundle.
+    const manifestPath = join(dstDir, "manifest.json");
+    if (existsSync(manifestPath)) {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      if (typeof manifest.entrypoint === "string" && !existsSync(join(dstDir, manifest.entrypoint))) {
+        delete manifest.entrypoint;
+        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      }
+    }
     bundledSkills++;
   }
 }

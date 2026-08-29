@@ -69,6 +69,17 @@ Morrow's state report what it actually did rather than what the code hoped for.
 - A stored subscription OAuth token no longer overrides an explicitly
   configured API key when testing provider connectivity, and background model
   discovery keeps the effective home in its isolated environment snapshot.
+- A packaged Linux or macOS install could not see any of the skills it shipped
+  with. The prebuilt launcher never pointed the service at the bundled skill
+  directory — only the source-install launcher and the Windows launcher did —
+  so `find_skill` found nothing and the Skills page was empty on every
+  prebuilt install. The test that was supposed to catch this accepted one
+  occurrence and the source branch satisfied it.
+- Twenty-five of the forty-one bundled skills arrived invalid and unloadable in
+  every package. A skill's instructions live in SKILL.md and its `src/`
+  directory is not shipped, but the manifests still declared
+  `entrypoint: src/index.ts`, and verification requires a declared entrypoint
+  to exist. The packaged manifest now describes the bundle it is in.
 
 ## [0.7.3] - 2026-08-27
 
