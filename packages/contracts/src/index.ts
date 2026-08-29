@@ -1178,8 +1178,15 @@ export type ProviderTestResult=z.infer<typeof ProviderTestResultSchema>;
  */
 export const RuntimeCapabilityStatusSchema=z.object({
   version:z.literal(1),
+  /** Startup reconciliation ran to completion in this process. */
   startupReconciled:z.boolean(),
+  /**
+   * `ready` asserts that this process manages work graphs and that startup
+   * replay completed without error — not that every graph is healthy, which
+   * nothing here observes.
+   */
   workGraphs:z.enum(["ready","degraded","not_managed"]),
+  /** `running` means the ticker was started, not that a tick has fired. */
   scheduler:z.enum(["running","disabled","degraded","not_managed"]),
   skills:z.object({
     healthy:z.boolean(),
