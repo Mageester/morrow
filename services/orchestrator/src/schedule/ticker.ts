@@ -302,7 +302,10 @@ export class SchedulerTicker {
         // anywhere saying why, which is the same as no answer at all.
         try {
           const created = tasks.getTaskById(taskId);
-          if (created && (created.status === "queued" || created.status === "running")) {
+          // Only a task still sitting in `queued` is ours to fail. Once the
+          // runner has it, the runner owns its terminal transition, and failing
+          // it here would make the runner's own transition invalid.
+          if (created && created.status === "queued") {
             taskRecordsRepository(this.deps.db).transitionTask(taskId, "failed", {
               id: randomUUID(),
               createdAt: nowIso,

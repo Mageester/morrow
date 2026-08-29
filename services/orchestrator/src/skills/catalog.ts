@@ -440,6 +440,20 @@ function scanRoot(root: RootSpec, projectId: string | undefined): { entries: Int
   let rootStat;
   try {
     if (!existsSync(root.path)) {
+      // `existsSync` is false both for a path that is not there and for one
+      // whose parent denies traversal. An optional root that is merely absent
+      // is the normal state of a fresh install; one we are not allowed to look
+      // at is a fault, and conflating them would hide a broken permission
+      // behind an ordinary empty cabinet.
+      try {
+        lstatSync(root.path);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code && code !== "ENOENT" && code !== "ENOTDIR") {
+          issues.push(rootUnreadable(root));
+          return { entries, issues };
+        }
+      }
       if (root.required) issues.push(rootUnavailable(root));
       return { entries, issues };
     }

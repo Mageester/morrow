@@ -70,7 +70,37 @@ export async function serveForeground(ctx: Context): Promise<number> {
   const migration = { migratedFrom: host.startup.migratedFrom };
   const reconciliation = host.startup;
 
-  await host.listen();
+  let shuttingDown = false;
+  const shutdown = async (): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    ctx.out.diag("");
+    ctx.out.info("Shutting down…");
+    try {
+      await host.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      rmSync(ctx.paths.pidFile, { force: true });
+    } catch {
+      /* ignore */
+    }
+    process.exit(0);
+  };
+  // Registered before the bind, matching the standalone entrypoint: a signal
+  // arriving during startup must not leave the runtime running unattended.
+  process.on("SIGINT", () => { void shutdown(); });
+  process.on("SIGTERM", () => { void shutdown(); });
+
+  try {
+    await host.listen();
+  } catch (error) {
+    // The usual case is a port already in use. Everything the host built is
+    // already running, so it has to come down before this throws onwards.
+    await host.close().catch(() => {});
+    throw error;
+  }
 
   mkdirSync(ctx.paths.home, { recursive: true });
   writeFileSync(ctx.paths.pidFile, String(process.pid));
@@ -95,27 +125,6 @@ export async function serveForeground(ctx: Context): Promise<number> {
     );
   }
   ctx.out.info("Press Ctrl+C to stop.");
-
-  let shuttingDown = false;
-  const shutdown = async () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    ctx.out.diag("");
-    ctx.out.info("Shutting down…");
-    try {
-      await host.close();
-    } catch {
-      /* ignore */
-    }
-    try {
-      rmSync(ctx.paths.pidFile, { force: true });
-    } catch {
-      /* ignore */
-    }
-    process.exit(0);
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
 
   // Keep the process alive indefinitely.
   return await new Promise<number>(() => {});

@@ -180,14 +180,22 @@ describe("progress warnings", () => {
   });
 
   it("stays quiet while Morrow is still looking around", () => {
-    expect(warn({ reason: "no_progress_turn", turnsWithoutProgress: 1, threshold: 3 })).toEqual([]);
+    expect(warn({ reason: "no_progress_turn", turnsWithoutProgress: 1, threshold: 3, repeatedActionCount: 1 })).toEqual([]);
   });
 
   it("warns only as the stall threshold approaches, and says what it means", () => {
-    const notices = warn({ reason: "no_progress_turn", turnsWithoutProgress: 2, threshold: 3 });
+    const notices = warn({ reason: "no_progress_turn", turnsWithoutProgress: 2, threshold: 3, repeatedActionCount: 2 });
     expect(notices).toHaveLength(1);
     expect(notices[0]).toMatchObject({ type: "notice", level: "warn" });
-    expect((notices[0] as { text: string }).text).toBe("No files or commands have changed in 2 turns; Morrow stops at 3.");
+    expect((notices[0] as { text: string }).text).toBe("Morrow has repeated the same step 2 times without changing anything; it stops at 3.");
+  });
+
+  /**
+   * The interruption is gated on the repeated-action count. Quoting the turn
+   * count would announce a stop that is not pending.
+   */
+  it("does not threaten a stop the runtime is not about to make", () => {
+    expect(warn({ reason: "no_progress_turn", turnsWithoutProgress: 6, threshold: 3, repeatedActionCount: 1 })).toEqual([]);
   });
 
   it("names the repeated call rather than calling it a lack of progress", () => {
@@ -218,6 +226,11 @@ describe("persisted file evidence", () => {
   it("reports a created file as a change, not a read", () => {
     expect(persisted({ path: "summary.txt", size: 41, action: "create_file_overwrite", changed: true }))
       .toEqual([{ type: "patch.applied", files: ["summary.txt"] }]);
+  });
+
+  it("reports an appended file as a change", () => {
+    expect(persisted({ path: "log.txt", size: 80, appendedBytes: 20, action: "append_file" }))
+      .toEqual([{ type: "patch.applied", files: ["log.txt"] }]);
   });
 
   it("still reports a patch as a change", () => {

@@ -852,6 +852,26 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     };
   };
 
+  /**
+   * Health is what a launcher polls to decide whether the service came up, so
+   * it must answer even when something it describes is broken. A skill root it
+   * cannot read is a fact to report, never a reason to return 500 and have the
+   * launcher kill a service that is working.
+   */
+  const reportRuntimeStatus = (): RuntimeCapabilityStatus => {
+    try {
+      return (deps.runtimeStatus ?? unmanagedRuntimeStatus)();
+    } catch {
+      return {
+        version: 1,
+        startupReconciled: false,
+        workGraphs: "not_managed",
+        scheduler: "not_managed",
+        skills: { healthy: false, entries: 0, loadable: 0, issues: 0 },
+      };
+    }
+  };
+
   app.get("/api/health", async () => {
     const row = deps.db.prepare("SELECT MAX(id) AS latest, COUNT(*) AS applied FROM schema_migrations").get() as { latest: number | null; applied: number };
     return {
@@ -859,7 +879,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       service: "morrow-orchestrator",
       apiVersion: 1,
       mockProvider: process.env.MOCK_PROVIDER === "true",
-      runtime: (deps.runtimeStatus ?? unmanagedRuntimeStatus)(),
+      runtime: reportRuntimeStatus(),
       ownerPid: process.pid,
       // Which install this service belongs to. A packaged launcher checks this
       // before adopting an already-healthy service on its port: without it,
@@ -4817,6 +4837,26 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     try {
       return skillCatalog.status(skillScope(request));
     } catch (error) {
+      return skillCatalogFailure(error);
+    }
+  });
+
+  /**
+   * Drop a stored activation override so the skill returns to its default:
+   * bundled ordinary skills enabled, experimental and user-installed ones not.
+   * This is what "reset my setup" needs — disabling everything instead would
+   * leave a reset install with no skills at all.
+   */
+  app.delete("/api/skills/:skillKey/activation", async (request, reply) => {
+    const { skillKey } = request.params as { skillKey: string };
+    try {
+      const entry = skillCatalog.getByKey(skillKey, skillScope(request));
+      if (!entry) throw new ApiError(404, "Skill catalog entry was not found", "SKILL_NOT_FOUND");
+      skillCatalog.removeActivation(entry.key);
+      reply.status(204);
+      return null;
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
       return skillCatalogFailure(error);
     }
   });

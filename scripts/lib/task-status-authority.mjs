@@ -14,10 +14,19 @@
 
 const RAW_SETTER = ".updateTaskStatus(";
 
-/** Production files allowed to call the raw setter, by repository-relative path. */
+/**
+ * Files allowed to call the raw setter, by repository-relative path.
+ *
+ * The repository owns the column. The sample builds a fake history without
+ * pretending to be a real execution. The durable-autonomy acceptance scenario
+ * injects faults on purpose — forcing a state the runtime would refuse is the
+ * whole point of it, and routing that through the validating facade would make
+ * the fault unreachable.
+ */
 export const ALLOWED_RAW_STATUS_CALLERS = [
   "services/orchestrator/src/repositories/tasks.ts",
   "services/orchestrator/src/mission/readme-summary-sample.ts",
+  "apps/cli/src/acceptance/scenarios/durable-autonomy.ts",
 ];
 
 /**

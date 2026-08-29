@@ -14,18 +14,28 @@ import {
 } from "./common.js";
 import { pickProvider, setupProvider } from "./provider-setup.js";
 import { isSafeDefaultSkill } from "../skills/registry.js";
-
-/**
- * The catalog reports a trust tier; the safe-default rule is written in terms
- * of the declared risk class it came from.
- */
-const TIER_TO_RISK: Record<string, string> = { core: "low", controlled: "medium", experimental: "high" };
 import { chatCommand } from "./chat.js";
 import {
   shouldUseInteractive,
   resolveUnicodeFlag,
 } from "../terminal/capabilities.js";
 import { runOnboardingLaunchpad } from "./onboard-ink.js";
+
+/**
+ * The catalog reports a trust tier, which is derived from the declared risk
+ * class. The safe-default rule is written in terms of that risk class, so map
+ * back only for the three tiers that came from one — anything else keeps the
+ * tier's own name rather than being printed as a risk its author never
+ * declared.
+ */
+const TIER_TO_RISK: Record<string, string> = { core: "low", controlled: "medium", experimental: "high" };
+function riskClassOf(trustTier: string): string | undefined {
+  return TIER_TO_RISK[trustTier];
+}
+function riskLabel(trustTier: string): string {
+  const risk = riskClassOf(trustTier);
+  return risk ? `(${risk} risk)` : `(${trustTier})`;
+}
 
 const STEPS = [
   "welcome",
@@ -65,6 +75,13 @@ export async function onboardCommand(
     try {
       if (await isRunning(ctx)) {
         await ctx.api().resetOnboardingState();
+        // Activation is service state now. Drop the stored overrides so each
+        // skill returns to its shipped default — disabling everything instead
+        // would leave a freshly reset install with no skills at all.
+        const api = ctx.api();
+        for (const entry of await api.listSkills()) {
+          await api.clearSkillActivation(entry.key).catch(() => undefined);
+        }
       }
     } catch {
       // ignore
@@ -537,9 +554,14 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       // catalog's own answer and writes back through it, so what someone turns
       // on here is exactly what the agent will be able to load.
       await ensureRunning(ctx);
-      const entries = (await ctx.api().listSkills()).filter((entry) => entry.validation === "healthy");
-      const safe = entries.filter((entry) => isSafeDefaultSkill(entry.id, TIER_TO_RISK[entry.trustTier]));
-      const highRisk = entries.filter((entry) => !isSafeDefaultSkill(entry.id, TIER_TO_RISK[entry.trustTier]));
+      // Bundled skills only. A user-installed skill was a deliberate act that
+      // deliberately did not enable it, and a later "enable the safe defaults"
+      // must not quietly switch on every third-party skill someone chose to
+      // leave off.
+      const entries = (await ctx.api().listSkills())
+        .filter((entry) => entry.validation === "healthy" && entry.source === "bundled");
+      const safe = entries.filter((entry) => isSafeDefaultSkill(entry.id, riskClassOf(entry.trustTier)));
+      const highRisk = entries.filter((entry) => !isSafeDefaultSkill(entry.id, riskClassOf(entry.trustTier)));
 
       ctx.out.print(
         "Skills are local scripts carrying out task operations on your files.",
@@ -552,7 +574,7 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       ctx.out.print(ctx.out.bold("Safe default skills:"));
       for (const entry of safe) {
         ctx.out.print(
-          `  ${ctx.out.cyan(entry.id)} ${ctx.out.gray(`(${TIER_TO_RISK[entry.trustTier] ?? entry.trustTier} risk)`)}`,
+          `  ${ctx.out.cyan(entry.id)} ${ctx.out.gray(riskLabel(entry.trustTier))}`,
         );
         ctx.out.print(`    ${ctx.out.gray(entry.description)}`);
       }
@@ -629,7 +651,7 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
         for (const entry of highRisk) {
           ctx.out.print();
           ctx.out.warn(
-            `${entry.name} — ${TIER_TO_RISK[entry.trustTier] ?? entry.trustTier} risk`,
+            `${entry.name} — ${riskLabel(entry.trustTier)}`,
           );
           ctx.out.print(`    ${ctx.out.gray(entry.description)}`);
           ctx.out.print(

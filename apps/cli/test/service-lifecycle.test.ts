@@ -150,8 +150,9 @@ describe("service lifecycle", () => {
     await expect(serveForeground(ctx)).rejects.toThrow(/stop foreground test/);
 
     // The host is fully constructed — which is where reconciliation happens —
-    // before anything binds a port.
-    expect(order).toEqual(["host-created", "listen"]);
+    // before anything binds a port, and a failed bind brings down everything it
+    // already started rather than leaving a poller and an open database behind.
+    expect(order).toEqual(["host-created", "listen", "close"]);
     const passed = orchestratorMocks.createMorrowRuntimeHost.mock.calls[0]?.[0] as {
       dbPath: string; homeDir: string; secretsFile: string; host: string; port: number;
     };

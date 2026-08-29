@@ -87,9 +87,21 @@ describe("Morrow runtime host", () => {
     await host.close();
   });
 
-  it("tears the runtime down in reverse, exactly once", async () => {
+  /**
+   * Stop the things that can create work first, then stop accepting requests,
+   * then wait for what is already running. A request accepted after the drain
+   * would create work nothing is waiting for, against a closing database.
+   */
+  it("tears the runtime down in one order, exactly once", async () => {
     const events: string[] = [];
-    const host = await createMorrowRuntimeHost(config(), tracked(events));
+    const host = await createMorrowRuntimeHost(config(), tracked(events, {
+      buildServer: (deps) => {
+        const app = realBuildServer(deps);
+        const close = app.close.bind(app);
+        app.close = (async () => { events.push("app.close"); return close(); }) as typeof app.close;
+        return app;
+      },
+    }));
     await host.listen();
     events.length = 0;
 
@@ -98,9 +110,24 @@ describe("Morrow runtime host", () => {
 
     expect(events).toEqual([
       "scheduler.stop",
-      "entitlement.stop",
+      "app.close",
       "supervisor.stopAllAndWait",
+      "entitlement.stop",
     ]);
+  });
+
+  /**
+   * Startup reconciliation re-dispatches interrupted tasks, and those can spawn
+   * supervised children before it returns. If it then throws, the unwind has to
+   * already know about the supervisor or those children are orphaned.
+   */
+  it("drains the supervisor when startup fails after it was built", async () => {
+    const events: string[] = [];
+    await expect(createMorrowRuntimeHost(config(), tracked(events, {
+      createRunner: () => { throw new Error("reconciliation exploded"); },
+    }))).rejects.toThrow(/reconciliation exploded/);
+
+    expect(events).toContain("supervisor.stopAllAndWait");
   });
 
   /** A process that failed to bind must not be left holding a timer. */
@@ -117,7 +144,7 @@ describe("Morrow runtime host", () => {
     expect(events).not.toContain("scheduler.start");
 
     await host.close();
-    expect(events).toEqual(["entitlement.start", "entitlement.stop", "supervisor.stopAllAndWait", "app.close"]);
+    expect(events).toEqual(["entitlement.start", "app.close", "supervisor.stopAllAndWait", "entitlement.stop"]);
   });
 
   it("starts background work only after the service is actually serving", async () => {
@@ -166,6 +193,45 @@ describe("Morrow runtime host", () => {
       expect(body.runtime.startupReconciled).toBe(true);
       expect(body.runtime.scheduler).toBe("running");
       expect(body.runtime.workGraphs).toBe("ready");
+    } finally {
+      await host.close();
+    }
+  });
+
+  /**
+   * Health is a readiness probe — `morrow start` polls it dozens of times — and
+   * counting the catalog walks every skill root. A skill directory must never
+   * be able to make the service look down, or slow to come up.
+   */
+  it("does not let a broken catalog take health down with it", async () => {
+    const host = await createMorrowRuntimeHost(config(), tracked([], {
+      createSkillCatalog: () => ({
+        status() { throw new Error("skill root exploded"); },
+      }) as never,
+    }));
+    const address = await host.listen();
+    try {
+      const response = await fetch(`${address}/api/health`);
+      expect(response.status).toBe(200);
+      const body = await response.json() as { ok: boolean; runtime: { skills: { healthy: boolean; entries: number } } };
+      expect(body.ok).toBe(true);
+      // Not "no skills" — "we could not say".
+      expect(body.runtime.skills).toEqual({ healthy: false, entries: 0, loadable: 0, issues: 0 });
+    } finally {
+      await host.close();
+    }
+  });
+
+  it("samples the catalog rather than rescanning it for every probe", async () => {
+    let scans = 0;
+    const host = await createMorrowRuntimeHost(config(), tracked([], {
+      createSkillCatalog: () => ({
+        status() { scans += 1; return { healthy: true, entries: 1, loadable: 1, issues: [] }; },
+      }) as never,
+    }));
+    try {
+      for (let i = 0; i < 20; i += 1) host.status();
+      expect(scans).toBe(1);
     } finally {
       await host.close();
     }

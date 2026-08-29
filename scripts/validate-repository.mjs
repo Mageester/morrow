@@ -125,7 +125,7 @@ try {
 // explain. One writer owns the column; everything else transitions through it.
 try {
   const productionFiles = execFileSync("bash", ["-c",
-    "find services/orchestrator/src -type f -name '*.ts' ! -name '*.test.ts' 2>/dev/null",
+    "find services apps packages -type f \\( -name '*.ts' -o -name '*.tsx' \\) ! -name '*.test.ts' ! -name '*.test.tsx' ! -path '*/node_modules/*' ! -path '*/dist/*' 2>/dev/null",
   ]).toString().split("\n").filter(Boolean);
   const sources = await Promise.all(productionFiles.map(async (path) => ({ path, source: await readFile(path, "utf8") })));
   for (const failure of taskStatusAuthorityFailures(sources)) {

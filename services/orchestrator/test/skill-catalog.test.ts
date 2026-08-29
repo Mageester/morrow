@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -429,6 +429,35 @@ describe("skill catalog", () => {
 
     expect(catalog.status()).toMatchObject({ healthy: true, entries: 1, loadable: 1, issues: [] });
     database.close();
+  });
+
+  /**
+   * `existsSync` is false both for a missing path and for one whose parent
+   * denies traversal. The first is a fresh install; the second is a broken
+   * permission that must not hide behind an ordinary empty cabinet.
+   */
+  it("tells an unreadable user root apart from one that was never used", () => {
+    const root = tempDirectory();
+    const bundledRoot = join(root, "bundled");
+    mkdirSync(bundledRoot);
+    writeSkill(bundledRoot, "healthy");
+    const locked = join(root, "locked");
+    mkdirSync(locked);
+    const userRoot = join(locked, "skills");
+    mkdirSync(userRoot);
+    chmodSync(locked, 0o000);
+    const database = db();
+    try {
+      const catalog = createSkillCatalog({ db: database, bundledRoot, userRoot, now: () => NOW });
+      const status = catalog.status();
+      expect(status.healthy).toBe(false);
+      expect(status.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "unreadable" })]));
+      // The other root's healthy entry stays visible.
+      expect(catalog.getByKey("bundled:healthy")).toMatchObject({ loadable: true });
+    } finally {
+      chmodSync(locked, 0o700);
+      database.close();
+    }
   });
 
   /** A bundled root that vanished means shipped skills are gone. */

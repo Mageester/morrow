@@ -808,6 +808,10 @@ export class MorrowApi {
   removeSkill(key: string) {
     return this.req<void>("DELETE", `/api/skills/${encodeURIComponent(key)}`);
   }
+  /** Drop a stored override so the skill returns to its shipped default. */
+  clearSkillActivation(key: string) {
+    return this.req<void>("DELETE", `/api/skills/${encodeURIComponent(key)}/activation`);
+  }
 
   private skillScope(projectId?: string): string {
     return projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";

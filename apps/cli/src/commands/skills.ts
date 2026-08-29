@@ -7,7 +7,7 @@ import { EXIT, notFound, usageError } from "../cli/errors.js";
 import { discoverSkills, type LocalSkill } from "../skills/registry.js";
 import { validateSkillSpec, generateSkillFiles, installSkill, KNOWN_SKILL_TOOLS, type SkillSpec } from "../skills/creator.js";
 import { findDuplicates, backupSkill, listBackups, rollbackSkill, archiveSkill, restoreArchived, listArchived } from "../skills/curator.js";
-import { ask, confirm, isInteractive } from "./common.js";
+import { ask, confirm, isInteractive, resolveProject } from "./common.js";
 import { flagString, flagBool } from "../cli/args.js";
 
 const builtInRoot = resolve(fileURLToPath(new URL("../../../../skills", import.meta.url)));
@@ -20,6 +20,25 @@ function findSkill(id: string): LocalSkill {
 }
 
 /**
+ * The project whose workspace skills belong in this view, when there is one.
+ *
+ * A workspace skill only exists inside a project scope. Reading the catalog
+ * unscoped here while the interactive session reads it scoped meant a workspace
+ * skill could be offered as a `/skill:<id>` command and still be invisible to
+ * `morrow skills list` — two CLI surfaces disagreeing about the same catalog.
+ */
+async function skillScopeProjectId(ctx: Context): Promise<string | undefined> {
+  try {
+    const project = await resolveProject(ctx, ctx.api(), {});
+    return project?.id;
+  } catch {
+    // No project here is an ordinary state, not an error: Morrow is usable
+    // from any directory, and the bundled and user skills still resolve.
+    return undefined;
+  }
+}
+
+/**
  * Resolve one catalog entry from an id or a source-qualified key.
  *
  * Ids are what people type and what the rest of the CLI has always used; keys
@@ -29,7 +48,8 @@ function findSkill(id: string): LocalSkill {
  * answer this whole path exists to remove.
  */
 async function resolveCatalogEntry(ctx: Context, idOrKey: string): Promise<SkillCatalogEntry> {
-  const entries = await ctx.api().listSkills();
+  const projectId = await skillScopeProjectId(ctx);
+  const entries = await ctx.api().listSkills(projectId);
   const exact = entries.find((entry) => entry.key === idOrKey);
   if (exact) return exact;
   const byId = entries.filter((entry) => entry.id === idOrKey);
@@ -55,10 +75,11 @@ export async function skillsCommand(ctx: Context, sub: string | undefined, args:
     const query = verb === "search" ? (args.join(" ").toLowerCase()) : "";
     // The running service owns this answer. A local config value must never be
     // able to show a skill as enabled that the agent would refuse to load.
-    const entries = (await ctx.api().listSkills()).filter((entry) => !query || `${entry.id} ${entry.name} ${entry.description}`.toLowerCase().includes(query));
+    const projectId = await skillScopeProjectId(ctx);
+    const entries = (await ctx.api().listSkills(projectId)).filter((entry) => !query || `${entry.id} ${entry.name} ${entry.description}`.toLowerCase().includes(query));
     if (ctx.out.json) ctx.out.data(entries);
     else if (!entries.length) {
-      const status = await ctx.api().getSkillStatus().catch(() => null);
+      const status = await ctx.api().getSkillStatus(projectId).catch(() => null);
       if (status && status.issues.length > 0) {
         ctx.out.error(`Skills could not be read: ${status.issues.map((issue) => issue.message).join("; ")}`);
         return EXIT.ERROR;
@@ -84,7 +105,7 @@ export async function skillsCommand(ctx: Context, sub: string | undefined, args:
     if (verb === "enable" || verb === "disable") {
       // The service refuses to enable an entry it cannot load, so the result
       // printed here is the state that actually took effect.
-      const updated = await ctx.api().setSkillEnabled(entry.key, verb === "enable");
+      const updated = await ctx.api().setSkillEnabled(entry.key, verb === "enable", await skillScopeProjectId(ctx));
       if (ctx.out.json) ctx.out.data(updated);
       else ctx.out.success(`${updated.key} ${updated.enabled ? "enabled" : "disabled"}.`);
       return EXIT.OK;

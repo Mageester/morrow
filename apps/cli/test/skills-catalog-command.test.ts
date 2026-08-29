@@ -52,7 +52,7 @@ describe("morrow skills against the runtime catalog", () => {
     api = {
       listSkills: vi.fn(async () => [entry()]),
       getSkillStatus: vi.fn(async () => ({ healthy: true, entries: 1, loadable: 1, issues: [] })),
-      setSkillEnabled: vi.fn(async (key: string, enabled: boolean) => entry({ key, enabled, loadable: enabled })),
+      setSkillEnabled: vi.fn(async (key: string, enabled: boolean, _projectId?: string) => entry({ key, enabled, loadable: enabled })),
       removeSkill: vi.fn(async () => undefined),
     };
   });
@@ -94,14 +94,14 @@ describe("morrow skills against the runtime catalog", () => {
 
     expect(await skillsCommand(ctx, "enable", ["writing"])).toBe(0);
 
-    expect(api.setSkillEnabled).toHaveBeenCalledWith("bundled:writing", true);
+    expect(api.setSkillEnabled).toHaveBeenCalledWith("bundled:writing", true, undefined);
     expect(config.get("skills.writing.enabled")).toBeUndefined();
     expect(output()).toContain("bundled:writing enabled");
   });
 
   it("disables through the service", async () => {
     expect(await skillsCommand(contextWith(), "disable", ["bundled:writing"])).toBe(0);
-    expect(api.setSkillEnabled).toHaveBeenCalledWith("bundled:writing", false);
+    expect(api.setSkillEnabled).toHaveBeenCalledWith("bundled:writing", false, undefined);
   });
 
   /** Two skills can declare one id. Picking one silently is the wrong answer. */
@@ -116,7 +116,7 @@ describe("morrow skills against the runtime catalog", () => {
     api.listSkills.mockResolvedValue([entry(), entry({ key: "user:writing", source: "user" })]);
 
     expect(await skillsCommand(contextWith(), "enable", ["user:writing"])).toBe(0);
-    expect(api.setSkillEnabled).toHaveBeenCalledWith("user:writing", true);
+    expect(api.setSkillEnabled).toHaveBeenCalledWith("user:writing", true, undefined);
   });
 
   it("names a skill the service does not have", async () => {
@@ -146,6 +146,21 @@ describe("morrow skills against the runtime catalog", () => {
 
     expect(await skillsCommand(contextWith(), "verify", ["writing"])).not.toBe(0);
     expect(output()).toContain('Two skills declare the id "writing"');
+  });
+
+  /**
+   * A workspace skill only exists inside a project scope. Reading the catalog
+   * unscoped here while the interactive session reads it scoped meant one CLI
+   * surface could offer a skill another could not even find.
+   */
+  it("reads the catalog in the active project's scope", async () => {
+    const project = { id: "project-1", name: "Repo", workspacePath: process.cwd(), createdAt: "2026-08-28T00:00:00.000Z", version: 1 };
+    (api as Record<string, unknown>).listProjects = vi.fn(async () => [project]);
+    (api as Record<string, unknown>).getProject = vi.fn(async () => project);
+    const ctx = contextWith({ project: "project-1" });
+
+    expect(await skillsCommand(ctx, "list", [])).toBe(0);
+    expect(api.listSkills).toHaveBeenCalledWith("project-1");
   });
 
   it("emits the catalog entry verbatim in JSON mode", async () => {

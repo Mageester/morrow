@@ -62,10 +62,15 @@ function progressWarningNotices(p: Record<string, unknown>): TerminalEvent[] {
     // "No progress" here means no file or command changed this turn — reading
     // and searching do not count. That is normal while Morrow is still looking
     // around, so it is worth saying only as the stall threshold approaches.
-    const turns = num(p.turnsWithoutProgress) ?? 0;
+    //
+    // The counter that actually stops execution is the repeated-action count,
+    // not the raw turn count. Quoting the turn count would announce a stop that
+    // was not pending, which is the same class of untruth this branch exists to
+    // remove.
+    const repeats = num(p.repeatedActionCount) ?? 0;
     const threshold = num(p.threshold) ?? 3;
-    if (turns < threshold - 1) return [];
-    return warn(`No files or commands have changed in ${turns} turn${turns === 1 ? "" : "s"}; Morrow stops at ${threshold}.`);
+    if (repeats < threshold - 1) return [];
+    return warn(`Morrow has repeated the same step ${repeats} time${repeats === 1 ? "" : "s"} without changing anything; it stops at ${threshold}.`);
   }
 
   if (reason === "exact_repeat_advisory") {
@@ -121,7 +126,7 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
         // fell through to the read branch: a file Morrow had just created was
         // reported as one it had read, on a line printed *before* the "Created"
         // line that followed it.
-        if (action === "patched" || action === "create_file_overwrite") {
+        if (action === "patched" || action === "create_file_overwrite" || action === "append_file") {
           return withSource([{ type: "patch.applied", files: [path] }]);
         }
         // A browser artifact is something Morrow saved, not a workspace file it

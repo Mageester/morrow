@@ -148,6 +148,11 @@ export async function createMorrowRuntimeHost(
     const supervisor = overrides.createSupervisor
       ? overrides.createSupervisor(db, join(config.homeDir, "process-logs"))
       : new ProcessSupervisor(processesRepository(db), join(config.homeDir, "process-logs"));
+    // Registered the moment it exists, not after reconciliation. Startup
+    // reconciliation re-dispatches interrupted tasks, and those tasks can spawn
+    // supervised children before it returns — if it then throws, an unwind that
+    // did not yet know about the supervisor would orphan them.
+    closers.push(() => supervisor.stopAllAndWait());
 
     // One catalog for the API and the agent. Without this the server built its
     // own and the runner had none, so what the Skills page listed and what the
@@ -167,8 +172,14 @@ export async function createMorrowRuntimeHost(
     });
 
     // Reclaim durable missions, then their checkpoint-aware tasks, then replay
-    // unfinished work graphs — in that order, on both startup paths.
+    // unfinished work graphs — in that order, on both startup paths. The flags
+    // below are set from what actually happened, so a runtime that skipped this
+    // step cannot report a reconciled startup.
+    let startupReconciled = false;
+    let workGraphState: RuntimeCapabilityStatus["workGraphs"] = "degraded";
     const reconciliation = await reconcileMissionsOnStartup({ db, runner, controllerRunner: missionControllerRunner, workGraphs });
+    startupReconciled = true;
+    workGraphState = "ready";
 
     // An install with no stored pairing never calls out: the poller
     // short-circuits before any fetch.
@@ -176,8 +187,6 @@ export async function createMorrowRuntimeHost(
       ? overrides.createEntitlementPoller(config.secretsFile, resolveHostedApiUrl(config.env))
       : new EntitlementPoller(config.secretsFile, resolveHostedApiUrl(config.env));
     entitlementPoller.start(5 * 60 * 1000);
-    closers.push(() => entitlementPoller.stop());
-    closers.push(() => supervisor.stopAllAndWait());
 
     let schedulerRunning = false;
     const scheduler = config.schedulerEnabled
@@ -186,21 +195,45 @@ export async function createMorrowRuntimeHost(
         : new SchedulerTicker({ db, runner, adapters: loadAdaptersFromEnv(config.env) }))
       : null;
 
-    const status = (): RuntimeCapabilityStatus => {
-      const catalogStatus = catalog.status();
-      return {
-        version: 1,
-        startupReconciled: true,
-        workGraphs: "ready",
-        scheduler: config.schedulerEnabled ? (schedulerRunning ? "running" : "degraded") : "disabled",
-        skills: {
-          healthy: catalogStatus.healthy,
-          entries: catalogStatus.entries,
-          loadable: catalogStatus.loadable,
-          issues: catalogStatus.issues.length,
-        },
-      };
+    /**
+     * Counting the catalog walks every skill root and hashes every SKILL.md.
+     * Health is a readiness probe — `morrow start` polls it up to fifty times
+     * before it reports success — so answering it with a fresh filesystem scan
+     * each time made starting the service a few thousand file reads. The
+     * numbers are a summary, not a live control, so a short cache is honest.
+     */
+    let skillsSample: { at: number; value: RuntimeCapabilityStatus["skills"] | null } = { at: 0, value: null };
+    const SKILL_SAMPLE_TTL_MS = 5_000;
+    const sampleSkills = (): RuntimeCapabilityStatus["skills"] | null => {
+      const now = Date.now();
+      if (skillsSample.value && now - skillsSample.at < SKILL_SAMPLE_TTL_MS) return skillsSample.value;
+      try {
+        const catalogStatus = catalog.status();
+        skillsSample = {
+          at: now,
+          value: {
+            healthy: catalogStatus.healthy,
+            entries: catalogStatus.entries,
+            loadable: catalogStatus.loadable,
+            issues: catalogStatus.issues.length,
+          },
+        };
+      } catch {
+        // A skill directory must never be able to make the service look down.
+        skillsSample = { at: now, value: null };
+      }
+      return skillsSample.value;
     };
+
+    const status = (): RuntimeCapabilityStatus => ({
+      version: 1,
+      startupReconciled,
+      workGraphs: workGraphState,
+      scheduler: config.schedulerEnabled ? (schedulerRunning ? "running" : "degraded") : "disabled",
+      // A catalog that could not be read reports zero entries and unhealthy,
+      // which is the truth available: not "no skills", but "we could not say".
+      skills: sampleSkills() ?? { healthy: false, entries: 0, loadable: 0, issues: 0 },
+    });
 
     const app = (overrides.buildServer ?? buildServer)({
       db,
@@ -214,7 +247,11 @@ export async function createMorrowRuntimeHost(
       runtimeStatus: status,
       ...(config.webRoot ? { webRoot: config.webRoot } : {}),
     });
-    closers.push(() => app.close());
+    // Closed before the supervisor drains and before the poller: an HTTP
+    // request accepted mid-shutdown would create work the drain has already
+    // walked past, and then meet a closing database.
+    closers.unshift(() => app.close());
+    closers.push(() => entitlementPoller.stop());
 
     let closed = false;
     return {
