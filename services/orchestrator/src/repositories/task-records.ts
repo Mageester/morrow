@@ -240,6 +240,14 @@ export function taskRecordsRepository(db: Database.Database) {
      * clears the assistant message so the runner re-executes from the start. A
      * `cancelled`/`completed`/`verified`/`running` task is never retryable.
      * Task events are preserved as an audit trail of the prior attempt.
+     *
+     * The prior attempt's durable execution segments go too. A process killed
+     * mid-command leaves a tool call with no terminal observation, and the
+     * agent rightly refuses to guess whether a mutating command ran — but that
+     * check reads the recorded provider turns, so leaving them behind made
+     * every retry replay the same unresolved call and land back in the same
+     * interruption. Retry was a dead end for exactly the tasks that most needed
+     * it. A fresh attempt cannot inherit the ambiguity it exists to escape.
      */
     retryTask(id: string): Task {
       return db.transaction(() => {
@@ -253,7 +261,14 @@ export function taskRecordsRepository(db: Database.Database) {
         db.prepare("UPDATE tasks SET status='queued', started_at=NULL, completed_at=NULL, updated_at=? WHERE id=?").run(ts, id);
         db.prepare("DELETE FROM task_continuations WHERE task_id=?").run(id);
         db.prepare("DELETE FROM agent_state_transitions WHERE task_id=?").run(id);
+        // Segments cascade to provider turns, continuations and checkpoints.
+        db.prepare("DELETE FROM agent_execution_segments WHERE task_id=?").run(id);
+        db.prepare("DELETE FROM canonical_task_answers WHERE task_id=?").run(id);
         db.prepare("UPDATE conversation_messages SET content='', streaming_state='queued', updated_at=? WHERE task_id=?").run(ts, id);
+        // Tool calls belong to the discarded attempt. Their durable evidence
+        // stays in task_events; keeping the rows themselves would leave the
+        // fresh attempt reasoning about calls it never made.
+        db.prepare("DELETE FROM message_tool_calls WHERE task_id=?").run(id);
         return mapTask(db.prepare("SELECT * FROM tasks WHERE id = ?").get(id));
       })();
     },

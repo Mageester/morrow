@@ -25,6 +25,32 @@ describe("retryTask repository", () => {
   beforeEach(() => (db = openDatabase(":memory:")));
   afterEach(() => db.close());
 
+  /**
+   * A process killed mid-command leaves a tool call with no terminal
+   * observation, and the agent rightly refuses to guess whether a mutating
+   * command ran. That check reads the recorded provider turns — so a retry that
+   * left them behind replayed the same unresolved call and landed straight back
+   * in the same interruption. Retry was a dead end for exactly the tasks that
+   * needed it most.
+   */
+  it("discards the prior attempt's execution history so a retry cannot inherit its ambiguity", () => {
+    seedTask(db, "interrupted");
+    const ts = new Date().toISOString();
+    db.prepare("INSERT INTO agent_execution_segments (id,task_id,mission_id,sequence,status,provider_id,model,route_json,owner_id,started_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .run("seg-1", "t1", null, 1, "failed", "deepseek", "deepseek-v4-flash", "{}", "owner-1", ts);
+    db.prepare("INSERT INTO agent_provider_turns (id,task_id,segment_id,turn_key,ordinal,assistant_text,tool_calls_json,created_at) VALUES (?,?,?,?,?,?,?,?)")
+      .run("turn-1", "t1", "seg-1", "key-1", 1, "", JSON.stringify([{ id: "call-1", name: "run_command", arguments: "{}" }]), ts);
+    db.prepare("INSERT INTO message_tool_calls (id,message_id,task_id,tool_name,args_json,status,created_at) VALUES (?,?,?,?,?,?,?)")
+      .run("call-1", "ma", "t1", "run_command", "{}", "running", ts);
+
+    taskRecordsRepository(db).retryTask("t1");
+
+    expect(db.prepare("SELECT COUNT(*) AS n FROM agent_execution_segments WHERE task_id=?").get("t1")).toMatchObject({ n: 0 });
+    // Turns cascade with their segment, so nothing replays the unresolved call.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM agent_provider_turns WHERE task_id=?").get("t1")).toMatchObject({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM message_tool_calls WHERE task_id=?").get("t1")).toMatchObject({ n: 0 });
+  });
+
   it("resets a failed task to a clean queued state and clears continuation + message", () => {
     seedTask(db, "failed");
     db.prepare("INSERT INTO task_continuations (task_id, tool_call_id, tool_name, args_json, created_at) VALUES (?, ?, ?, ?, ?)").run("t1", "call-1", "run_command", "{}", new Date().toISOString());

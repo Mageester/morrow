@@ -69,6 +69,14 @@ Morrow's state report what it actually did rather than what the code hoped for.
 - A stored subscription OAuth token no longer overrides an explicitly
   configured API key when testing provider connectivity, and background model
   discovery keeps the effective home in its isolated environment snapshot.
+- Retrying an interrupted task was a dead end. A process killed mid-command
+  leaves a tool call with no terminal observation, and Morrow correctly refuses
+  to guess whether a mutating command ran — but that check reads the recorded
+  provider turns, and retry did not discard them. Every retry replayed the same
+  unresolved call and landed back in the same interruption, forever. A retry
+  now discards the prior attempt's execution segments and tool calls, so a
+  fresh attempt cannot inherit the ambiguity it exists to escape. Task events
+  remain as the audit trail of the prior attempt.
 - A packaged Linux or macOS install could not see any of the skills it shipped
   with. The prebuilt launcher never pointed the service at the bundled skill
   directory — only the source-install launcher and the Windows launcher did —
