@@ -6,12 +6,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const orchestratorMocks = vi.hoisted(() => ({
-  migrateLegacyDatabase: vi.fn(() => ({ migratedFrom: undefined })),
-  openDatabase: vi.fn(() => ({ close: vi.fn() })),
-  TaskRunner: vi.fn(),
-  createDefaultMissionControllerRunner: vi.fn(() => ({})),
-  reconcileMissionsOnStartup: vi.fn(),
-  buildServer: vi.fn(),
+  createMorrowRuntimeHost: vi.fn(),
 }));
 
 vi.mock("@morrow/orchestrator", async (importOriginal) => ({
@@ -127,45 +122,44 @@ describe("service lifecycle", () => {
     }
   });
 
-  it("waits for startup reconciliation before binding the foreground service", async () => {
-    let resolveReconciliation!: (summary: { missionsResumed: number; interrupted: number; requeued: number; cancelledOrphans: number }) => void;
-    const reconciliation = new Promise<{ missionsResumed: number; interrupted: number; requeued: number; cancelledOrphans: number }>((resolve) => {
-      resolveReconciliation = resolve;
-    });
+  /**
+   * `morrow start` and the standalone service must be the same runtime. The
+   * CLI's job here is to hand the shared host its paths and then get out of the
+   * way — not to assemble a second, shorter component list of its own.
+   */
+  it("runs the foreground service through the shared runtime host", async () => {
     const order: string[] = [];
-    orchestratorMocks.reconcileMissionsOnStartup.mockImplementation(async () => {
-      order.push("reconciliation-start");
-      const summary = await reconciliation;
-      order.push("reconciliation-complete");
-      return summary;
-    });
     const listen = vi.fn(async () => {
       order.push("listen");
       throw new Error("stop foreground test");
     });
-    orchestratorMocks.buildServer.mockReturnValue({ listen, close: vi.fn() });
+    orchestratorMocks.createMorrowRuntimeHost.mockImplementation(async (config: unknown) => {
+      order.push("host-created");
+      return {
+        listen,
+        close: vi.fn(async () => { order.push("close"); }),
+        status: () => ({ version: 1, startupReconciled: true, workGraphs: "ready", scheduler: "running", skills: { healthy: true, entries: 0, loadable: 0, issues: 0 } }),
+        startup: { migratedFrom: null, missionsResumed: 1, interrupted: 0, requeued: 0, cancelledOrphans: 0, workGraphsReconciled: 0 },
+        db: { close: vi.fn() },
+        skillCatalog: {},
+        config,
+      };
+    });
 
-    const foreground = serveForeground(makeContext("http://127.0.0.1:0")).catch((error: unknown) => error);
-    // The mock factory calls importOriginal(), which loads the whole
-    // orchestrator runtime — the very cost serveForeground's lazy import
-    // exists to avoid. On a cold module graph that outlives waitFor's 1s
-    // default, and the assertion failed on module load time rather than on
-    // anything this test is about.
-    await vi.waitFor(() => expect(order).toContain("reconciliation-start"), { timeout: 15_000 });
-    expect(order).toEqual(["reconciliation-start"]);
+    const ctx = makeContext("http://127.0.0.1:0");
+    await expect(serveForeground(ctx)).rejects.toThrow(/stop foreground test/);
 
-    resolveReconciliation({ missionsResumed: 1, interrupted: 0, requeued: 0, cancelledOrphans: 0 });
-    await expect(foreground).resolves.toMatchObject({ message: "stop foreground test" });
-    expect(order).toEqual(["reconciliation-start", "reconciliation-complete", "listen"]);
-
-    const serverDependencies = orchestratorMocks.buildServer.mock.calls[0]?.[0] as {
-      supervisor?: unknown;
-    } | undefined;
-    expect(serverDependencies?.supervisor).toBeDefined();
-    expect(orchestratorMocks.TaskRunner).toHaveBeenCalledWith(
-      expect.anything(),
-      undefined,
-      serverDependencies?.supervisor,
-    );
+    // The host is fully constructed — which is where reconciliation happens —
+    // before anything binds a port, and a failed bind brings down everything it
+    // already started rather than leaving a poller and an open database behind.
+    expect(order).toEqual(["host-created", "listen", "close"]);
+    const passed = orchestratorMocks.createMorrowRuntimeHost.mock.calls[0]?.[0] as {
+      dbPath: string; homeDir: string; secretsFile: string; host: string; port: number;
+    };
+    expect(passed.dbPath).toBe(ctx.service.dbPath);
+    expect(passed.homeDir).toBe(ctx.paths.home);
+    expect(passed.secretsFile).toBe(ctx.paths.secretsFile);
+    expect(passed.host).toBe(ctx.service.host);
+    expect(passed.port).toBe(ctx.service.port);
   });
 });

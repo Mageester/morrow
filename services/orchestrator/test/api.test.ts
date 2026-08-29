@@ -1,3 +1,4 @@
+import { HealthSchema } from "@morrow/contracts";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { openDatabase } from "../src/database.js";
 import { buildServer } from "../src/server.js";
@@ -8,6 +9,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { FolderPickerUnavailableError } from "../src/system/folder-picker.js";
+import { createSkillCatalog } from "../src/skills/catalog.js";
 
 describe("REST API and Task Runner Vertical Slice", () => {
   let db: any;
@@ -81,16 +83,114 @@ describe("REST API and Task Runner Vertical Slice", () => {
   it("keeps high-risk bundled skills out of the default executable catalog", async () => {
     const skillsRoot = resolve(process.cwd(), "../../skills");
     const previous = process.env.MORROW_SKILLS_DIR;
+    const skillApp = buildServer({
+      db,
+      runner,
+      skillCatalog: createSkillCatalog({ db, bundledRoot: skillsRoot, userRoot: null }),
+    });
     try {
       process.env.MORROW_SKILLS_DIR = skillsRoot;
 
-      const response = await app.inject({ method: "GET", url: "/api/skills" });
+      const response = await skillApp.inject({ method: "GET", url: "/api/skills" });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toContainEqual(expect.objectContaining({ id: "accessibility", trustTier: "core" }));
-      expect(response.body).not.toContain("dan-jailbreak");
+      expect(response.json()).toContainEqual(expect.objectContaining({
+        id: "dan-jailbreak",
+        trustTier: "experimental",
+        enabled: false,
+        loadable: false,
+      }));
     } finally {
+      await skillApp.close();
       if (previous === undefined) delete process.env.MORROW_SKILLS_DIR;
       else process.env.MORROW_SKILLS_DIR = previous;
+    }
+  });
+
+  it("projects authoritative skill state and activation through the API", async () => {
+    const root = join(tempDir, "skill-roots");
+    const bundledRoot = join(root, "bundled");
+    const userRoot = join(root, "user");
+    mkdirSync(join(bundledRoot, "bundled-demo"), { recursive: true });
+    mkdirSync(join(userRoot, "user-demo"), { recursive: true });
+    mkdirSync(join(userRoot, "broken"), { recursive: true });
+    const bundledMarkdown = "# Bundled Demo\n\nBundled instructions.\n";
+    const userMarkdown = "# User Demo\n\nUser instructions.\n";
+    writeFileSync(join(bundledRoot, "bundled-demo", "SKILL.md"), bundledMarkdown);
+    writeFileSync(join(userRoot, "user-demo", "SKILL.md"), userMarkdown);
+    writeFileSync(join(userRoot, "broken", "SKILL.md"), "# Broken\n\nInvalid instructions.\n");
+    const permissions = JSON.stringify({ tools: [], filesystemScopes: [], networkDomains: [], requiredSecrets: [] });
+    writeFileSync(join(bundledRoot, "bundled-demo", "permissions.json"), permissions);
+    writeFileSync(join(userRoot, "user-demo", "permissions.json"), permissions);
+    writeFileSync(join(userRoot, "broken", "permissions.json"), permissions);
+    writeFileSync(join(bundledRoot, "bundled-demo", "manifest.json"), JSON.stringify({
+      id: "bundled-demo", name: "Bundled Demo", description: "Bundled instructions.", publisher: "Morrow",
+      checksum: createHash("sha256").update(bundledMarkdown).digest("hex"),
+    }));
+    writeFileSync(join(userRoot, "user-demo", "manifest.json"), JSON.stringify({
+      id: "user-demo", name: "User Demo", description: "User instructions.", publisher: "Local",
+      checksum: createHash("sha256").update(userMarkdown).digest("hex"),
+    }));
+    writeFileSync(join(userRoot, "broken", "manifest.json"), JSON.stringify({
+      id: "broken", name: "Broken", description: "Invalid instructions.", publisher: "Local", checksum: "0".repeat(64),
+    }));
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p-skills", 1, "Skills", tempDir, now, now);
+    const previousSkillsRoot = process.env.MORROW_SKILLS_DIR;
+    try {
+      process.env.MORROW_SKILLS_DIR = bundledRoot;
+      const server = buildServer({
+        db,
+        runner,
+        skillCatalog: createSkillCatalog({ db, bundledRoot, userRoot }),
+      });
+      try {
+        const listed = await server.inject({ method: "GET", url: "/api/skills" });
+        expect(listed.statusCode).toBe(200);
+        expect(listed.json()).toEqual(expect.arrayContaining([
+          expect.objectContaining({ key: "bundled:bundled-demo", enabled: true, loadable: true }),
+          expect.objectContaining({ key: "user:user-demo", enabled: false, loadable: false }),
+          expect.objectContaining({ key: "user:broken", enabled: false, loadable: false, validation: "invalid" }),
+        ]));
+        expect(listed.body).not.toContain("directory");
+
+        const enabled = await server.inject({
+          method: "PATCH",
+          url: "/api/skills/user%3Auser-demo",
+          payload: { enabled: true },
+        });
+        expect(enabled.statusCode).toBe(200);
+        expect(enabled.json()).toMatchObject({ key: "user:user-demo", enabled: true, loadable: true });
+        expect(enabled.body).not.toContain("directory");
+
+        const invalidEnable = await server.inject({
+          method: "PATCH",
+          url: "/api/skills/user%3Abroken",
+          payload: { enabled: true },
+        });
+        expect(invalidEnable.statusCode).toBe(409);
+        expect(invalidEnable.json().error.code).toBe("SKILL_NOT_LOADABLE");
+
+        const unknown = await server.inject({
+          method: "PATCH",
+          url: "/api/skills/user%3Aunknown",
+          payload: { enabled: true },
+        });
+        expect(unknown.statusCode).toBe(404);
+
+        const projectScoped = await server.inject({ method: "GET", url: "/api/skills?projectId=p-skills" });
+        expect(projectScoped.statusCode).toBe(200);
+        expect(projectScoped.body).not.toContain("directory");
+        const status = await server.inject({ method: "GET", url: "/api/skills/status" });
+        expect(status.statusCode).toBe(200);
+        expect(status.json()).toMatchObject({ healthy: false, entries: 3 });
+        expect(status.body).not.toContain("directory");
+      } finally {
+        await server.close();
+      }
+    } finally {
+      if (previousSkillsRoot === undefined) delete process.env.MORROW_SKILLS_DIR;
+      else process.env.MORROW_SKILLS_DIR = previousSkillsRoot;
     }
   });
 
@@ -209,6 +309,15 @@ describe("REST API and Task Runner Vertical Slice", () => {
     expect(health.json().ok).toBe(true);
     expect(health.json()).not.toHaveProperty("ui");
     expect(health.json()).not.toHaveProperty("uiServed");
+    // Nobody composed this server, so it says so. Claiming a reconciled
+    // startup or a running scheduler here would be a readiness the process
+    // never established.
+    expect(HealthSchema.parse(health.json()).runtime).toMatchObject({
+      version: 1,
+      startupReconciled: false,
+      workGraphs: "not_managed",
+      scheduler: "not_managed",
+    });
   });
 
   it("lists discoverable skills from MORROW_SKILLS_DIR (manifest and frontmatter formats)", async () => {

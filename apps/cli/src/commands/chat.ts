@@ -12,11 +12,9 @@ import { readLineWithCompletion, PROMPT_EXIT } from "../terminal/prompt.js";
 import type { SendOptions, SessionBackend } from "../terminal/session-types.js";
 import { startShell } from "../terminal/ink/shell.js";
 import { buildFileIndex, completeFile } from "../terminal/ink/file-index.js";
-import { discoverSkills } from "../skills/registry.js";
 import { MORROW_VERSION } from "../service/update.js";
 import { builtinRegistry } from "../terminal/commands/index.js";
 import { createLineSurface } from "../terminal/commands/line-surface.js";
-import { localSkillsRoot } from "./skills.js";
 import { loadHistory, appendHistory } from "../terminal/history.js";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -314,11 +312,12 @@ function buildBackend(
       return { taskId: task.id };
     },
 
+    // Only what the service says it can actually load. Offering a slash command
+    // for a skill the agent would refuse is a promise the runtime cannot keep.
     listSkills: async () =>
-      discoverSkills(localSkillsRoot()).map((skill) => ({
-        id: skill.id,
-        description: skill.manifest.description ?? "",
-      })),
+      (await api.listSkills(project.id))
+        .filter((entry) => entry.loadable)
+        .map((entry) => ({ id: entry.id, description: entry.description })),
   };
 
   return backend;
@@ -395,10 +394,9 @@ async function runInteractiveSession(
   // Verified local skills become namespaced /skill:<id> commands, registered in
   // the same registry as everything else so they autocomplete and appear in
   // /help rather than existing as a parallel naming convention.
-  const localSkills = discoverSkills(localSkillsRoot()).map((skill) => ({
-    id: skill.id,
-    description: skill.manifest.description ?? "",
-  }));
+  const localSkills = (await api.listSkills(project.id).catch(() => []))
+    .filter((entry) => entry.loadable)
+    .map((entry) => ({ id: entry.id, description: entry.description }));
 
   const historyFile = join(ctx.paths.home, "history");
 

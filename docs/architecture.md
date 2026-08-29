@@ -44,6 +44,24 @@ Native packaging and operating-system integration. It must not become a second i
 
 Owns tasks, plans, named agents, checkpoints, retries, schedules, budgets, approvals, and event coordination.
 
+`src/runtime/host.ts` is the single composition root for a running Morrow.
+Both ways to start the service — the standalone `services/orchestrator`
+entrypoint and the CLI's in-process `morrow start` — build the same component
+list in the same order and tear it down through one idempotent shutdown. They
+had drifted before this existed, and a packaged install ran a shorter runtime
+than the standalone one with no way for a user to tell (see
+[ADR 0018](decisions/0018-authoritative-runtime-and-skill-lifecycle.md)).
+
+`src/skills/catalog.ts` is the only authority on which skills exist, which are
+valid, and which are loadable. The HTTP server, the task runner, and through it
+the agent share one instance; the CLI and the web app read and write that state
+over the API rather than keeping their own. Skill directories never leave the
+service.
+
+`GET /api/health` carries a required `runtime` block describing what this
+process actually composed. A server nobody composed reports `not_managed`
+rather than a readiness it never established.
+
 ### `services/runtime`
 
 Owns model execution and tool invocation behind explicit contracts. Provider credentials and tool authority do not belong in the web client.

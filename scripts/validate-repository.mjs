@@ -3,6 +3,7 @@ import process from "node:process";
 import { installerSafetyFailures, posixInstallerSafetyFailures } from "./lib/installer-safety.mjs";
 import { versionDriftFailures } from "./lib/version-consistency.mjs";
 import { apiReachabilityFailures } from "./lib/api-reachability.mjs";
+import { taskStatusAuthorityFailures } from "./lib/task-status-authority.mjs";
 import { execFileSync } from "node:child_process";
 
 const requiredFiles = [
@@ -118,6 +119,20 @@ try {
   }
 } catch (error) {
   failures.push(`Could not run the API reachability check: ${error.message}`);
+}
+
+// A task whose status changed without an event is a status nothing can
+// explain. One writer owns the column; everything else transitions through it.
+try {
+  const productionFiles = execFileSync("bash", ["-c",
+    "find services apps packages -type f \\( -name '*.ts' -o -name '*.tsx' \\) ! -name '*.test.ts' ! -name '*.test.tsx' ! -path '*/node_modules/*' ! -path '*/dist/*' 2>/dev/null",
+  ]).toString().split("\n").filter(Boolean);
+  const sources = await Promise.all(productionFiles.map(async (path) => ({ path, source: await readFile(path, "utf8") })));
+  for (const failure of taskStatusAuthorityFailures(sources)) {
+    failures.push(`Task status authority: ${failure}`);
+  }
+} catch (error) {
+  failures.push(`Could not run the task status authority check: ${error.message}`);
 }
 
 for (const path of requiredFiles) {

@@ -1,4 +1,6 @@
 import type {
+  SkillCatalogEntry,
+  SkillCatalogStatus,
   Project,
   Agent,
   Task,
@@ -769,13 +771,50 @@ export class MorrowApi {
     }, { timeoutMs: 60_000 });
   }
   applySkillInstall(handle: string) {
-    return this.req<{ id: string; directory: string; enabled: boolean }>("POST", "/api/skills/install", { handle });
+    return this.req<SkillCatalogEntry>("POST", "/api/skills/install", { handle });
   }
   discardSkillInstall(handle: string) {
     return this.req<void>("POST", "/api/skills/install/discard", { handle });
   }
-  removeSkill(id: string) {
-    return this.req<void>("DELETE", `/api/skills/${encodeURIComponent(id)}`);
+
+  /**
+   * The privacy mode is a hard gate in the service: `local_only` refuses every
+   * remote provider outright. It lived only behind the web settings page, so a
+   * terminal-first user who connected a cloud provider hit a wall with no way
+   * to move it from the terminal.
+   */
+  getAssistantProfile() {
+    return this.req<{ defaultPrivacyMode: "local_only" | "controlled_cloud" | "custom" }>("GET", "/api/assistant-profile");
+  }
+  setPrivacyMode(mode: "local_only" | "controlled_cloud" | "custom") {
+    return this.req<{ defaultPrivacyMode: "local_only" | "controlled_cloud" | "custom" }>("PATCH", "/api/assistant-profile", { defaultPrivacyMode: mode });
+  }
+
+  /**
+   * The service's catalog is the only authority on which skills exist and which
+   * ones the agent can actually load. The CLI reads and writes that state
+   * rather than keeping its own opinion in local config, so `morrow skills
+   * list` and the running agent can never disagree.
+   */
+  listSkills(projectId?: string) {
+    return this.req<SkillCatalogEntry[]>("GET", `/api/skills${this.skillScope(projectId)}`);
+  }
+  getSkillStatus(projectId?: string) {
+    return this.req<SkillCatalogStatus>("GET", `/api/skills/status${this.skillScope(projectId)}`);
+  }
+  setSkillEnabled(key: string, enabled: boolean, projectId?: string) {
+    return this.req<SkillCatalogEntry>("PATCH", `/api/skills/${encodeURIComponent(key)}${this.skillScope(projectId)}`, { enabled });
+  }
+  removeSkill(key: string) {
+    return this.req<void>("DELETE", `/api/skills/${encodeURIComponent(key)}`);
+  }
+  /** Drop a stored override so the skill returns to its shipped default. */
+  clearSkillActivation(key: string) {
+    return this.req<void>("DELETE", `/api/skills/${encodeURIComponent(key)}/activation`);
+  }
+
+  private skillScope(projectId?: string): string {
+    return projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
   }
 }
 

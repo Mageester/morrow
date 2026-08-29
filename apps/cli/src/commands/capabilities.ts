@@ -11,7 +11,6 @@
 import type { Context } from "../cli/context.js";
 import type { MorrowApi } from "../client/api.js";
 import { EXIT } from "../cli/errors.js";
-import { localSkillsIndex } from "./skills.js";
 
 export interface CapabilityItem {
   label: string;
@@ -140,11 +139,14 @@ export async function probeCapabilitiesWith(api: MorrowApi): Promise<CapabilityP
       /* leave 0 */
     }
   }
+  // Count what the runtime can actually load, not what happens to be on disk.
   let skillCount = 0;
-  try {
-    skillCount = localSkillsIndex().length;
-  } catch {
-    /* leave 0 */
+  if (serviceUp) {
+    try {
+      skillCount = (await api.listSkills()).filter((entry) => entry.loadable).length;
+    } catch {
+      /* leave 0 */
+    }
   }
   return { serviceUp, providerConfigured, toolCount, skillCount };
 }

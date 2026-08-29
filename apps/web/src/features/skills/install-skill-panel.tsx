@@ -54,7 +54,7 @@ export function InstallSkillPanel() {
   const [source, setSource] = useState("");
   const [preview, setPreview] = useState<SkillInstallPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [installed, setInstalled] = useState<string | null>(null);
+  const [installed, setInstalled] = useState<{ key: string; id: string; enabled: boolean } | null>(null);
 
   const reset = (): void => {
     setPreview(null);
@@ -77,12 +77,28 @@ export function InstallSkillPanel() {
     onSuccess: (result) => {
       setPreview(null);
       setError(null);
-      setInstalled(result.id);
+      setInstalled({ key: result.key, id: result.id, enabled: result.enabled });
       setSource("");
       void queryClient.invalidateQueries({ queryKey: ["skills", "installed"] });
     },
     onError: (cause: unknown) => {
       setError(cause instanceof ApiClientError ? cause.message : "That skill could not be installed.");
+    },
+  });
+
+  /**
+   * Enabling is offered, never assumed. The button is a second deliberate act
+   * and reports the state the service actually recorded.
+   */
+  const enable = useMutation({
+    mutationFn: (key: string) => skillApi.setEnabled(key, true),
+    onSuccess: (result) => {
+      setInstalled({ key: result.key, id: result.id, enabled: result.enabled });
+      void queryClient.invalidateQueries({ queryKey: ["skills", "installed"] });
+      void queryClient.invalidateQueries({ queryKey: ["skills", "status"] });
+    },
+    onError: (cause: unknown) => {
+      setError(cause instanceof ApiClientError ? cause.message : "That skill could not be enabled.");
     },
   });
 
@@ -140,9 +156,25 @@ export function InstallSkillPanel() {
 
       {error ? <p role="alert">{error}</p> : null}
       {installed ? (
-        <p role="status">
-          Installed <strong>{installed}</strong>. It stays switched off until you enable it.
-        </p>
+        installed.enabled ? (
+          <p role="status">
+            <strong>{installed.id}</strong> is installed and enabled.
+          </p>
+        ) : (
+          <div role="status">
+            <p>
+              Installed <strong>{installed.id}</strong>. It stays switched off until you enable it.
+            </p>
+            <button
+              className="morrow-button"
+              disabled={enable.isPending}
+              onClick={() => enable.mutate(installed.key)}
+              type="button"
+            >
+              {enable.isPending ? "Enabling…" : "Enable now"}
+            </button>
+          </div>
+        )
       ) : null}
 
       {preview?.kind === "choices" ? (

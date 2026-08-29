@@ -363,6 +363,15 @@ export async function run(argv: string[]): Promise<number> {
         }
       }
       if (!onboarded) {
+        // Guided setup asks questions. With no terminal to answer them there is
+        // nobody to ask, and starting the interview anyway left the process
+        // waiting on a prompt that could never arrive — a script or a piped
+        // invocation simply hung. Say what to run instead and exit.
+        if (!process.stdin.isTTY) {
+          out.error("Morrow has not been set up on this machine yet.");
+          out.info("Run `morrow onboard` from a terminal once, then re-run this command.");
+          return EXIT.USAGE;
+        }
         out.print(
           out.bold(
             "Welcome to Morrow! Let's complete the quick setup guide first.",
@@ -1226,6 +1235,38 @@ async function configCommand(
         ["key", "value", "source"],
         values.map((value) => [value.key, value.value, value.source]),
       );
+    return EXIT.OK;
+  }
+  /**
+   * Privacy lives in the service, not in CLI config, because it is a hard gate
+   * the runtime enforces: under `local_only` every remote provider is refused
+   * outright. It used to be reachable only from the web settings page, so a
+   * terminal-first person who connected a cloud provider was told their request
+   * was blocked with no way to unblock it from the terminal.
+   */
+  if (sub === "privacy") {
+    const api = ctx.api();
+    const requested = (args[0] ?? "").trim().toLowerCase().replaceAll("-", "_");
+    if (!requested) {
+      const profile = await api.getAssistantProfile();
+      if (ctx.out.json) ctx.out.data({ privacy: profile.defaultPrivacyMode });
+      else {
+        ctx.out.keyValue([["privacy", profile.defaultPrivacyMode]]);
+        if (profile.defaultPrivacyMode === "local_only") {
+          ctx.out.info("Remote providers are refused. Allow them with: morrow settings privacy controlled-cloud");
+        }
+      }
+      return EXIT.OK;
+    }
+    if (requested !== "local_only" && requested !== "controlled_cloud" && requested !== "custom") {
+      throw usageError(
+        "Usage: morrow settings privacy [local-only|controlled-cloud|custom]",
+        "local-only refuses every remote provider; controlled-cloud allows the providers you configured.",
+      );
+    }
+    const updated = await api.setPrivacyMode(requested);
+    if (ctx.out.json) ctx.out.data({ privacy: updated.defaultPrivacyMode });
+    else ctx.out.success(`Privacy set to ${updated.defaultPrivacyMode}.`);
     return EXIT.OK;
   }
   if (sub === "path") {

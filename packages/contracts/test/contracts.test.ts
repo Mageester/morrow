@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  HealthSchema,
+  RuntimeCapabilityStatusSchema,
   CreateProjectSchema, CreateTaskSchema, TaskEventSchema,
   MissionContractSchema, MissionRequirementNodeSchema, MissionCursorSchema,
   CreateMissionSchema, MissionSchema, MissionEventTypeSchema,
@@ -17,6 +19,10 @@ import {
   ScheduleRunSchema,
   UpdateScheduleSchema,
   CreateMemoryEntrySchema,
+  SkillCatalogEntrySchema,
+  SkillCatalogIssueSchema,
+  SkillCatalogStatusSchema,
+  SetSkillActivationSchema,
 } from "../src/index.js";
 
 function validNode(over: Record<string, unknown> = {}) {
@@ -48,6 +54,38 @@ function validNode(over: Record<string, unknown> = {}) {
 }
 
 describe("contracts", () => {
+  it("accepts strict catalog state and rejects unknown activation fields", () => {
+    expect(SkillCatalogEntrySchema.parse({
+      key: "user:calendar",
+      id: "calendar",
+      name: "Calendar",
+      description: "Manage calendar work.",
+      source: "user",
+      enabled: false,
+      validation: "healthy",
+      issues: [],
+      loadable: false,
+      manifestDigest: "a".repeat(64),
+      category: "productivity",
+      trustTier: "controlled",
+      tools: [],
+      permissions: [],
+      dependencies: [],
+      publisher: "local",
+    })).toMatchObject({ key: "user:calendar", loadable: false });
+    expect(SkillCatalogIssueSchema.parse({ code: "missing_skill_md", message: "missing SKILL.md" })).toEqual({
+      code: "missing_skill_md",
+      message: "missing SKILL.md",
+    });
+    expect(SkillCatalogStatusSchema.parse({ healthy: true, entries: 1, loadable: 0, issues: [] })).toEqual({
+      healthy: true,
+      entries: 1,
+      loadable: 0,
+      issues: [],
+    });
+    expect(() => SetSkillActivationSchema.parse({ enabled: true, extra: true })).toThrow();
+  });
+
   it("rejects a project without a workspace path", () => expect(() => CreateProjectSchema.parse({ name: "x" })).toThrow());
   it("allows only inspect_workspace tasks", () => expect(() => CreateTaskSchema.parse({ projectId: "p", kind: "shell" })).toThrow());
   it("requires a numeric ordered event sequence", () => expect(() => TaskEventSchema.parse({ id: "e", taskId: "t", sequence: "1", type: "task.created", createdAt: "x", payload: {} })).toThrow());
@@ -314,5 +352,36 @@ describe("Advanced Execution Kernel — contract schemas (R1, R2, R16)", () => {
     }
     expect(RequirementCategorySchema.safeParse("prohibited_action").success).toBe(true);
     expect(RequirementNodeStatusSchema.safeParse("invalidated").success).toBe(true);
+  });
+});
+
+/**
+ * Health is the one thing every client reads to decide whether Morrow is
+ * working. A missing runtime block would read as "fine" when it actually means
+ * "this process never said", so the schema requires it.
+ */
+describe("runtime capability status", () => {
+  const runtime = {
+    version: 1 as const,
+    startupReconciled: true,
+    workGraphs: "ready" as const,
+    scheduler: "running" as const,
+    skills: { healthy: true, entries: 3, loadable: 2, issues: 0 },
+  };
+
+  it("requires health to carry a runtime block", () => {
+    const health = {
+      ok: true, service: "morrow-orchestrator" as const, apiVersion: 1, mockProvider: false,
+      migrations: { applied: 1, latest: 1 }, time: new Date().toISOString(),
+    };
+    expect(() => HealthSchema.parse(health)).toThrow();
+    expect(HealthSchema.parse({ ...health, runtime }).runtime.scheduler).toBe("running");
+  });
+
+  it("keeps unknown from readiness", () => {
+    expect(RuntimeCapabilityStatusSchema.parse({ ...runtime, startupReconciled: false, workGraphs: "not_managed", scheduler: "not_managed" }))
+      .toMatchObject({ startupReconciled: false, workGraphs: "not_managed" });
+    expect(() => RuntimeCapabilityStatusSchema.parse({ ...runtime, scheduler: "probably" })).toThrow();
+    expect(() => RuntimeCapabilityStatusSchema.parse({ ...runtime, extra: true })).toThrow();
   });
 });

@@ -1,9 +1,10 @@
 import type { LearnedSkill } from "@morrow/contracts";
 import { EmptyState } from "@morrow/ui";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
-import { skillQueries, type InstalledSkill } from "../../api/skills.js";
+import { ApiClientError } from "../../api/client.js";
+import { skillApi, skillQueries, type InstalledSkill } from "../../api/skills.js";
 import { ProductHeader } from "../../components/product-frame.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 import { RoutinesPanel } from "./routines-panel.js";
@@ -27,6 +28,17 @@ type SkillSelection =
   | { key: string; kind: "learned"; skill: LearnedSkill }
   | { key: string; kind: "installed"; skill: InstalledSkill; used: number };
 
+/**
+ * One word for what the service says about this entry. `validation` is the
+ * catalog's own verdict, so an entry that cannot be loaded says so instead of
+ * showing a category and letting someone assume it is ready.
+ */
+function activationLabel(skill: InstalledSkill): string {
+  if (skill.validation === "conflict") return "Conflict";
+  if (skill.validation !== "healthy") return "Needs attention";
+  return skill.enabled ? "Enabled" : "Disabled";
+}
+
 function SkillRow({ item, selected, onSelect }: { item: SkillSelection; selected: boolean; onSelect: () => void }) {
   const name = item.kind === "learned" ? displayLearnedName(item.skill) : item.skill.name;
   const description = item.kind === "learned"
@@ -34,7 +46,7 @@ function SkillRow({ item, selected, onSelect }: { item: SkillSelection; selected
     : item.skill.description;
   const state = item.kind === "learned"
     ? item.skill.state === "active" ? "Proven" : item.skill.state.replaceAll("_", " ")
-    : item.used > 0 ? `Used ${item.used} time${item.used === 1 ? "" : "s"}` : item.skill.category;
+    : activationLabel(item.skill);
 
   return (
     <li>
@@ -56,19 +68,44 @@ function SkillRow({ item, selected, onSelect }: { item: SkillSelection; selected
   );
 }
 
-function SkillDossier({ item }: { item: SkillSelection }) {
+function SkillDossier({ item, activation }: { item: SkillSelection; activation: SkillActivation }) {
   if (item.kind === "installed") {
+    const skill = item.skill;
+    const healthy = skill.validation === "healthy";
     return (
       <aside aria-live="polite" className="morrow-dossier" data-selected="true">
-        <p className="morrow-dossier__tag">Available skill · {item.skill.trustTier}</p>
-        <h2>{item.skill.name}</h2>
-        <div className="morrow-dossier__quote">{item.skill.description}</div>
+        <p className="morrow-dossier__tag">Available skill · {skill.trustTier}</p>
+        <h2>{skill.name}</h2>
+        <div className="morrow-dossier__quote">{skill.description}</div>
         <dl className="morrow-dossier__facts">
-          <div className="morrow-dossier__fact"><dt>Source</dt><dd>{item.skill.source}</dd></div>
-          <div className="morrow-dossier__fact"><dt>Trust</dt><dd>{item.skill.trustTier}</dd></div>
-          <div className="morrow-dossier__fact"><dt>Tools</dt><dd>{item.skill.tools.length ? item.skill.tools.join(", ") : "No extra tools"}</dd></div>
+          <div className="morrow-dossier__fact"><dt>State</dt><dd>{activationLabel(skill)}</dd></div>
+          <div className="morrow-dossier__fact"><dt>Source</dt><dd>{skill.source}</dd></div>
+          <div className="morrow-dossier__fact"><dt>Trust</dt><dd>{skill.trustTier}</dd></div>
+          <div className="morrow-dossier__fact"><dt>Tools</dt><dd>{skill.tools.length ? skill.tools.join(", ") : "No extra tools"}</dd></div>
           <div className="morrow-dossier__fact"><dt>Used here</dt><dd>{item.used} time{item.used === 1 ? "" : "s"}</dd></div>
         </dl>
+        {/* An unhealthy entry says what is wrong with it. Nothing here offers a
+            switch the service would refuse to honour. */}
+        {skill.issues.length > 0 ? (
+          <ul aria-label="Problems with this skill">
+            {skill.issues.map((issue) => <li key={`${issue.code}:${issue.message}`}>{issue.message}</li>)}
+          </ul>
+        ) : null}
+        {healthy ? (
+          <div className="morrow-actions">
+            <button
+              className="morrow-button"
+              disabled={activation.pendingKey === skill.key}
+              onClick={() => activation.setEnabled(skill.key, !skill.enabled)}
+              type="button"
+            >
+              {skill.enabled ? "Disable" : "Enable"}
+            </button>
+          </div>
+        ) : (
+          <p className="morrow-hint">Morrow will not load this skill until the problem above is fixed.</p>
+        )}
+        {activation.errorKey === skill.key && activation.error ? <p role="alert">{activation.error}</p> : null}
         <div className="morrow-dossier__trust"><span>✓</span><span>Morrow loads this only when a request matches its declared purpose.</span></div>
       </aside>
     );
@@ -96,11 +133,42 @@ function SkillDossier({ item }: { item: SkillSelection }) {
   );
 }
 
+interface SkillActivation {
+  setEnabled: (key: string, enabled: boolean) => void;
+  pendingKey: string | null;
+  errorKey: string | null;
+  error: string | null;
+}
+
 export function SkillsPage() {
   const { activeProject } = useActiveProject();
+  const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const installed = useQuery(skillQueries.installed());
+  const [activationError, setActivationError] = useState<{ key: string; message: string } | null>(null);
+  const projectId = activeProject?.id;
+  const installed = useQuery(skillQueries.installed(projectId));
+  const catalogStatus = useQuery(skillQueries.status(projectId));
+  const activate = useMutation({
+    mutationFn: (input: { key: string; enabled: boolean }) => skillApi.setEnabled(input.key, input.enabled, projectId),
+    onSuccess: () => {
+      setActivationError(null);
+      void queryClient.invalidateQueries({ queryKey: ["skills", "installed"] });
+      void queryClient.invalidateQueries({ queryKey: ["skills", "status"] });
+    },
+    onError: (cause: unknown, input) => {
+      setActivationError({
+        key: input.key,
+        message: cause instanceof ApiClientError ? cause.message : "That skill could not be switched.",
+      });
+    },
+  });
+  const activation: SkillActivation = {
+    setEnabled: (key, enabled) => activate.mutate({ key, enabled }),
+    pendingKey: activate.isPending ? activate.variables?.key ?? null : null,
+    errorKey: activationError?.key ?? null,
+    error: activationError?.message ?? null,
+  };
   const learned = useQuery({ ...skillQueries.learned(activeProject?.id ?? ""), enabled: Boolean(activeProject) });
   const usage = useQuery({ ...skillQueries.usage(activeProject?.id ?? ""), enabled: Boolean(activeProject) });
   const usageById = useMemo(() => new Map((usage.data ?? []).map((item) => [item.skillId, item.count])), [usage.data]);
@@ -109,9 +177,12 @@ export function SkillsPage() {
   const learnedRows = (learned.data ?? []).filter((skill) => !normalizedQuery || `${displayLearnedName(skill)} ${skill.steps.join(" ")} ${skill.triggerConditions.join(" ")}`.toLowerCase().includes(normalizedQuery));
   const items: SkillSelection[] = [
     ...learnedRows.map((skill) => ({ key: `learned:${skill.id}`, kind: "learned" as const, skill })),
-    ...installedRows.map((skill) => ({ key: `installed:${skill.id}`, kind: "installed" as const, skill, used: usageById.get(skill.id) ?? 0 })),
+    // Keyed by the catalog key, not the id: the same id can exist in more than
+    // one source, and that collision is exactly what a conflict entry reports.
+    ...installedRows.map((skill) => ({ key: `installed:${skill.key}`, kind: "installed" as const, skill, used: usageById.get(skill.id) ?? 0 })),
   ];
   const selected = items.find((item) => item.key === selectedKey) ?? items[0] ?? null;
+  const rootIssues = catalogStatus.data?.issues ?? [];
 
   return (
     <section aria-labelledby="skills-heading" className="morrow-page morrow-skills">
@@ -142,7 +213,17 @@ export function SkillsPage() {
       {installed.isError || learned.isError ? <p role="alert">Skills could not be loaded.</p> : null}
 
       {!installed.isPending && !learned.isPending && items.length === 0 ? (
-        <EmptyState description={normalizedQuery ? "No skill matches this search." : "Morrow learns reusable workflows as you complete and verify substantial work."} title={normalizedQuery ? "No matching skills" : "No skills yet"} />
+        rootIssues.length > 0 && !normalizedQuery ? (
+          // An empty cabinet because a root could not be read is a fault, not a
+          // fresh start. Say which, rather than inviting someone to wait for
+          // skills that will never appear.
+          <section aria-labelledby="skills-unavailable-heading" className="morrow-panel" role="alert">
+            <h2 id="skills-unavailable-heading">Skills could not be read</h2>
+            <ul>{rootIssues.map((issue) => <li key={`${issue.code}:${issue.message}`}>{issue.message}</li>)}</ul>
+          </section>
+        ) : (
+          <EmptyState description={normalizedQuery ? "No skill matches this search." : "Morrow learns reusable workflows as you complete and verify substantial work."} title={normalizedQuery ? "No matching skills" : "No skills yet"} />
+        )
       ) : selected ? (
         <>
           <div className="morrow-split-library">
@@ -160,7 +241,7 @@ export function SkillsPage() {
                 </>
               ) : null}
             </section>
-            <SkillDossier item={selected} />
+            <SkillDossier activation={activation} item={selected} />
           </div>
           <aside className="morrow-principle"><b>Skills are craftsmanship, not plugin clutter.</b><span>Each capability carries a method, permission boundary, and visible proof.</span></aside>
         </>

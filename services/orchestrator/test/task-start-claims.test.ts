@@ -23,7 +23,7 @@ describe("task start claims", () => {
   it("migrates a task-keyed lease table with the expected durable columns", () => {
     db = openDatabase(":memory:");
     const columns = (db.prepare("PRAGMA table_info(task_start_claims)").all() as Array<{ name: string }>).map((column) => column.name);
-    expect(migrations.at(-1)?.id).toBe(72);
+    expect(migrations.at(-1)?.id).toBe(73);
     expect(columns).toEqual(["task_id", "claim_id", "owner_id", "claimed_at", "lease_expires_at", "updated_at"]);
   });
 
@@ -145,4 +145,3 @@ describe("task start claims", () => {
     }
   });
 });
-

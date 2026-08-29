@@ -125,9 +125,13 @@ describe("GettingStarted", () => {
   it("names the privacy-mode and team steps, both optional and never blocking retirement", async () => {
     renderChecklist({});
     // Privacy mode is already satisfied by its safe default (local_only) —
-    // it shows as Done, not an action to complete.
+    // it shows as Done, not an action to complete. What it must not do is call
+    // itself advisory: local-only is a hard gate the service enforces, and
+    // saying otherwise sent people hunting for a bug when Morrow declined a
+    // request it was configured to decline.
     expect(await screen.findByText("Review your privacy preference")).toBeVisible();
-    expect(screen.getByText(/does not enforce provider routing/i)).toBeVisible();
+    expect(screen.getByText(/refuses every provider that runs off this machine/i)).toBeVisible();
+    expect(screen.queryByText(/does not enforce provider routing/i)).toBeNull();
     // Team creation genuinely needs action, so it shows a real link.
     expect(await screen.findByRole("link", { name: "Create a team" })).toBeVisible();
     // Both optional steps carry the "Optional" badge, distinguishing them from

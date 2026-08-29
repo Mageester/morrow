@@ -196,7 +196,7 @@ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; r
       // A ChatGPT/Codex subscription OAuth token (OpenAI only) must be checked
       // against the Codex backend with its Cloudflare-safe headers — probing
       // api.openai.com with it returns 403/401.
-      const oauthToken = id === "openai" ? getStoredAccessTokenSync("openai", env) : null;
+      const oauthToken = id === "openai" && !c.configured ? getStoredAccessTokenSync("openai", env) : null;
       if (oauthToken) {
         return { configured: true, request: { url: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0", headers: codexHeaders(oauthToken), host: "chatgpt.com" } };
       }
@@ -217,7 +217,7 @@ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; r
     }
     case "anthropic": {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
-      const oauthToken = getStoredAccessTokenSync("anthropic", env);
+      const oauthToken = !c.configured ? getStoredAccessTokenSync("anthropic", env) : null;
       if (oauthToken) {
         // Subscription transport: Bearer + OAuth beta header, no x-api-key.
         return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/v1/models`, headers: { Authorization: `Bearer ${oauthToken}`, "anthropic-beta": "oauth-2025-04-20", "anthropic-version": "2023-06-01" }, host: c.host } };

@@ -4,7 +4,23 @@ import { routePreset, listPresetStatuses } from "../src/routing/router.js";
 import { listPresets } from "../src/routing/presets.js";
 import { listModels, resolveModelStatuses } from "../src/routing/models.js";
 import { ProviderError } from "../src/provider/base.js";
+import { OpenAiCompatibleProvider } from "../src/provider/openai-compatible.js";
 import { providerCredentialIdentity } from "../src/provider/secrets.js";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+function randomCredential(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+function seedOAuthTokens(home: string, providers: readonly ("openai" | "anthropic")[]): void {
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, "oauth.json"), JSON.stringify({
+    ...Object.fromEntries(providers.map((provider) => [provider, { accessToken: randomCredential(), obtainedAt: Date.now() }])),
+  }));
+}
 
 describe("Model registry currency", () => {
   it("lets live OpenRouter metadata override bundled fallback fields for known model ids", () => {
@@ -98,6 +114,95 @@ describe("Provider registry", () => {
     expect(statuses.length).toBeGreaterThanOrEqual(7);
     expect(statuses.every((s) => !s.configured)).toBe(true);
     expect(statuses.find((s) => s.id === "openai")?.authStatus).toBe("missing");
+  });
+
+  it("isolates an explicit environment from ambient OAuth while honoring an explicit Morrow home", () => {
+    const ambientHome = mkdtempSync(join(tmpdir(), "morrow-provider-ambient-"));
+    const previousHome = process.env.HOME;
+    const previousMorrowHome = process.env.MORROW_HOME;
+    seedOAuthTokens(join(ambientHome, ".morrow"), ["openai", "anthropic"]);
+    process.env.HOME = ambientHome;
+    delete process.env.MORROW_HOME;
+    try {
+      expect(listProviderStatuses(process.env).find((provider) => provider.id === "openai")).toMatchObject({
+        configured: true,
+        available: true,
+        authMode: "codex-oauth",
+      });
+      expect(listProviderStatuses(process.env).find((provider) => provider.id === "anthropic")).toMatchObject({
+        configured: true,
+        available: true,
+        authMode: "anthropic-oauth",
+      });
+      expect(listProviderStatuses({}).find((provider) => provider.id === "openai")).toMatchObject({
+        configured: false,
+        available: false,
+        authStatus: "missing",
+        authMode: "openai-api-key",
+      });
+      expect(listProviderStatuses({}).find((provider) => provider.id === "anthropic")).toMatchObject({
+        configured: false,
+        available: false,
+        authStatus: "missing",
+        authMode: "anthropic-api-key",
+      });
+      expect(() => createProvider("openai", {})).toThrow(ProviderError);
+      expect(() => createProvider("anthropic", {})).toThrow(ProviderError);
+
+      expect(listProviderStatuses({ MORROW_HOME: join(ambientHome, ".morrow") }).find((provider) => provider.id === "openai")).toMatchObject({
+        configured: true,
+        available: true,
+        authMode: "codex-oauth",
+      });
+      expect(listProviderStatuses({ MORROW_HOME: join(ambientHome, ".morrow") }).find((provider) => provider.id === "anthropic")).toMatchObject({
+        configured: true,
+        available: true,
+        authMode: "anthropic-oauth",
+      });
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousMorrowHome === undefined) delete process.env.MORROW_HOME;
+      else process.env.MORROW_HOME = previousMorrowHome;
+      rmSync(ambientHome, { recursive: true, force: true });
+    }
+  });
+
+  it("gives explicit OpenAI and Anthropic API keys precedence over stored OAuth", async () => {
+    const morrowHome = mkdtempSync(join(tmpdir(), "morrow-provider-keys-"));
+    seedOAuthTokens(morrowHome, ["openai", "anthropic"]);
+    const env = {
+      MORROW_HOME: morrowHome,
+      OPENAI_API_KEY: randomCredential(),
+      ANTHROPIC_API_KEY: randomCredential(),
+    };
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("data: [DONE]\n\n", {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      expect(listProviderStatuses(env).find((provider) => provider.id === "openai")).toMatchObject({
+        configured: true,
+        authMode: "openai-api-key",
+        defaultModel: "gpt-5.6-sol",
+      });
+      expect(listProviderStatuses(env).find((provider) => provider.id === "anthropic")).toMatchObject({
+        configured: true,
+        authMode: "anthropic-api-key",
+      });
+      expect(getProviderDefaultModel("openai", env)).toBe("gpt-5.6-sol");
+
+      expect(createProvider("openai", env)).toBeInstanceOf(OpenAiCompatibleProvider);
+      const anthropic = createProvider("anthropic", env);
+      for await (const _chunk of anthropic.streamChat([{ role: "user", content: "hello" }], {})) { /* drain */ }
+      const headers = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
+      expect("x-api-key" in headers).toBe(true);
+      expect("Authorization" in headers).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      rmSync(morrowHome, { recursive: true, force: true });
+    }
   });
 
   it("never serializes secrets into provider status", () => {

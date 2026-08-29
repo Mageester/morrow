@@ -21,7 +21,6 @@ import { conversationContextRefsRepository } from "../repositories/conversation-
 import { taskRoutingRepository } from "../repositories/task-routing.js";
 import { memoryRepository } from "../repositories/memory.js";
 import { skillUsageRepository } from "../repositories/skill-usage.js";
-import { learnedSkillsRepository } from "../repositories/learned-skills.js";
 import { AutomaticUserMemoryService } from "../cortex/automatic-user-memory.js";
 import { approvalsRepository } from "../repositories/approvals.js";
 import { changeSetsRepository } from "../repositories/change-sets.js";
@@ -93,12 +92,13 @@ import { compareBaseline, diagnosticsToolForCommand, parseEslintDiagnostics, par
 import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type CumulativeUsage, type RequestUsage } from "../routing/usage-snapshot.js";
 import { toolArtifactsRepository } from "../repositories/tool-artifacts.js";
 import { collectOfferedArtifactIds, externalizeToolResult, readArtifactRange, renderExternalizedForContext } from "./artifact-externalization.js";
-import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, ReasoningConfiguration, LearnedSkill } from "@morrow/contracts";
+import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, ReasoningConfiguration, SkillCatalogEntry } from "@morrow/contracts";
 import { AskTeammateSchema } from "@morrow/contracts";
 import { browserAuditSink } from "../browser/audit.js";
 import { playwrightController, type PlaywrightControllerOptions } from "../browser/playwright.js";
 import type { BrowserController, BrowserViewport, PageSnapshot } from "../browser/types.js";
-import { isSafeSkillInstructionDirectory, verifySkillDirectory, SKILL_MATCH_STOPWORDS, SKILL_MATCH_MIN_SCORE } from "../skills/registry.js";
+import { SKILL_MATCH_STOPWORDS, SKILL_MATCH_MIN_SCORE } from "../skills/registry.js";
+import { SkillCatalogError, type SkillCatalog, type SkillCatalogScope } from "../skills/catalog.js";
 import { createExecutionPolicy, type ExecutionPolicy } from "./execution-policy.js";
 import { buildAgentExecutionPolicy, type AgentExecutionPolicy } from "../security/agent-execution-policy.js";
 import { buildTeammateBrief, buildTeammateIdentity, buildTeammateRoster, eligibleTeammates } from "./teammate-identity.js";
@@ -333,51 +333,13 @@ function isProviderContextRejection(error: unknown): boolean {
   return isContextOverflowMessage(error.message);
 }
 
-/**
- * Find installed skills relevant to a prompt by scoring each skill's
- * id/name/description against the prompt's keywords. Scans the same directories
- * the find_skill tool uses (workspace, MORROW_HOME, bundled MORROW_SKILLS_DIR)
- * and handles both metadata formats (# heading + body, or YAML frontmatter).
- * Used to deterministically surface skills into the agent prompt so skill use
- * doesn't depend on the model choosing to call find_skill.
- */
-function agentSkillRoots(workspacePath: string, projectId: string, env: NodeJS.ProcessEnv): string[] {
-  const dirs = [join(workspacePath, "skills")];
-  const home = resolveMorrowHome(env);
-  if (home) dirs.push(join(home, "projects", projectId, "skills"), join(home, "skills"));
-  if (env.MORROW_SKILLS_DIR) dirs.push(env.MORROW_SKILLS_DIR);
-  return dirs;
-}
+/** Surface relevant entries from the already-authoritative catalog. */
+// Keep the tool boundary in lockstep with the catalog's declared-ID grammar.
+// Catalog IDs are opaque public identifiers: case, dots, underscores, colons,
+// and hyphens are all meaningful and must survive find_skill -> load_skill.
+const SKILL_CATALOG_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/u;
 
-function isTrustedSkillDirectory(directory: string, env: NodeJS.ProcessEnv, learnedById?: Map<string, LearnedSkill>): boolean {
-  if (!isSafeSkillInstructionDirectory(directory)) return false;
-  const manifest = join(directory, "manifest.json");
-  if (existsSync(manifest)) {
-    if (!verifySkillDirectory(directory).ok) return false;
-    try {
-      const parsed = JSON.parse(readFileSync(manifest, "utf8")) as { id?: string; publisher?: string };
-      if (parsed.publisher !== "morrow-cortex") return true;
-      const lifecycle = JSON.parse(readFileSync(join(directory, "lifecycle.json"), "utf8")) as LearnedSkill;
-      const canonical = parsed.id ? learnedById?.get(parsed.id) : undefined;
-      return Boolean(canonical
-        && canonical.state === "active"
-        && canonical.directory
-        && resolve(canonical.directory) === resolve(directory)
-        && canonical.workflowFingerprint === lifecycle.workflowFingerprint
-        && canonical.version === lifecycle.version
-        && JSON.stringify(canonical.permissions) === JSON.stringify(lifecycle.permissions)
-        && JSON.stringify(canonical.provenance) === JSON.stringify(lifecycle.provenance));
-    } catch { return false; }
-  }
-  // Legacy frontmatter-only skills are accepted only from the packaged bundle,
-  // never from writable workspace or MORROW_HOME roots.
-  if (!env.MORROW_SKILLS_DIR) return false;
-  const rel = relative(resolve(env.MORROW_SKILLS_DIR), resolve(directory));
-  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
-}
-
-function discoverRelevantSkills(prompt: string, workspacePath: string, projectId: string, env: NodeJS.ProcessEnv, learnedById?: Map<string, LearnedSkill>): { id: string; name: string; description: string }[] {
-  const dirs = agentSkillRoots(workspacePath, projectId, env);
+function discoverRelevantSkills(prompt: string, entries: SkillCatalogEntry[]): { id: string; name: string; description: string }[] {
   // A shared word alone is weak evidence of relevance — skill names and
   // one-line descriptions are short, so any prompt easily shares one
   // incidental word with an unrelated skill by chance. Observed live: a
@@ -391,34 +353,13 @@ function discoverRelevantSkills(prompt: string, workspacePath: string, projectId
   // while dropping single-generic-word coincidences.
   const promptTokens = new Set((prompt.toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []).filter((t) => !SKILL_MATCH_STOPWORDS.has(t)));
   if (promptTokens.size === 0) return [];
-  const seen = new Set<string>();
   const scored: { id: string; name: string; description: string; score: number }[] = [];
-  for (const dir of dirs) {
-    if (!existsSync(dir)) continue;
-    let entries: string[] = [];
-    try { entries = readdirSync(dir); } catch { continue; }
-    for (const entry of entries) {
-      const sd = join(dir, entry);
-      const mdPath = join(sd, "SKILL.md");
-      if (seen.has(entry)) continue;
-      try { if (!statSync(sd).isDirectory() || !existsSync(mdPath) || !isTrustedSkillDirectory(sd, env, learnedById)) continue; } catch { continue; }
-      seen.add(entry);
-      const md = readFileSync(mdPath, "utf8");
-      let name = entry, desc = "";
-      if (md.startsWith("---") && md.indexOf("\n---", 3) !== -1) {
-        const fm = md.slice(3, md.indexOf("\n---", 3));
-        name = (fm.match(/^name:\s*(.*)$/m)?.[1] ?? entry).trim().replace(/^["']|["']$/g, "");
-        desc = (fm.match(/^description:\s*(.*)$/m)?.[1] ?? "").trim().replace(/^["']|["']$/g, "");
-      } else {
-        const lines = md.split("\n").filter((l) => l.trim());
-        name = lines[0]?.replace(/^#\s*/, "").trim() || entry;
-        desc = lines.slice(1).find((l) => l.trim() && !l.startsWith("#"))?.trim() || "";
-      }
-      const hayTokens = (`${entry} ${name} ${desc}`.toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []).filter((t) => !SKILL_MATCH_STOPWORDS.has(t));
-      let score = 0;
-      for (const t of new Set(hayTokens)) if (promptTokens.has(t)) score++;
-      if (score >= SKILL_MATCH_MIN_SCORE) scored.push({ id: entry, name, description: desc, score });
-    }
+  for (const entry of entries) {
+    if (!entry.loadable) continue;
+    const hayTokens = ((`${entry.id} ${entry.name} ${entry.description}`).toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []).filter((t) => !SKILL_MATCH_STOPWORDS.has(t));
+    let score = 0;
+    for (const t of new Set(hayTokens)) if (promptTokens.has(t)) score++;
+    if (score >= SKILL_MATCH_MIN_SCORE) scored.push({ id: entry.id, name: entry.name, description: entry.description, score });
   }
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, 5).map(({ id, name, description }) => ({ id, name, description }));
@@ -639,6 +580,8 @@ type Dependencies = {
   supervisor?: ProcessSupervisor;
   /** Server-owned boundary for model-authored teammate requests. */
   teammateSpawner?: TeammateSpawner;
+  /** Shared authority for skill discovery, activation, and instruction loading. */
+  skillCatalog?: SkillCatalog;
 };
 
 /**
@@ -847,6 +790,7 @@ export async function executeAgentChatTask({
   browserFactory,
   supervisor,
   teammateSpawner,
+  skillCatalog,
   executionPolicy: injectedExecutionPolicy,
 }: Dependencies): Promise<void> {
   const projects = projectRepository(db);
@@ -859,7 +803,6 @@ export async function executeAgentChatTask({
   const routingRepo = taskRoutingRepository(db);
   const memoryRepo = memoryRepository(db);
   const skillUsage = skillUsageRepository(db);
-  const learnedSkills = learnedSkillsRepository(db);
   const approvals = approvalsRepository(db);
   const changeSets = changeSetsRepository(db);
   const continuationsRepo = taskContinuationsRepository(db);
@@ -880,6 +823,7 @@ export async function executeAgentChatTask({
     throw new Error("Project not found");
   }
   const projectId = project.id;
+  const persistedWorkspacePath = project.workspacePath;
   const assignedAgentId = (task as { agentId?: string | null }).agentId ?? null;
   const agentRepo = agentsRepository(db);
   const delegationRepo = delegationsRepository(db);
@@ -1112,7 +1056,6 @@ export async function executeAgentChatTask({
       );
     }
   };
-  const learnedById = new Map(learnedSkills.listByProject(projectId).map((skill) => [skill.id, skill]));
   const projectName = project.name;
   // A task assigned to a worktree executes entirely inside it: reads, writes,
   // and commands are scoped to the isolated checkout, never the main tree.
@@ -1129,6 +1072,13 @@ export async function executeAgentChatTask({
     }
     workspacePath = worktreeRow.path;
   }
+  // Skill catalog scope is anchored to the persisted project workspace. A
+  // worktree is an execution checkout, not a new project identity; passing its
+  // path would fail the catalog's project/path invariant and could bind
+  // project-scoped activation to an untrusted checkout. Tool execution keeps
+  // using `workspacePath` below, while skill discovery/loading remains on the
+  // project's authoritative scope.
+  const skillScope: SkillCatalogScope = { projectId, workspacePath: persistedWorkspacePath };
 
   // Find the assistant message associated with this task
   const allMessages = db.prepare("SELECT * FROM conversation_messages WHERE task_id = ?").all(taskId);
@@ -2230,7 +2180,18 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
   // call find_skill. The model is told to load the best match first; that
   // produces a visible load_skill tool call and grounds it in a real workflow.
   if (agentMode !== "plan-only" && activeToolProfile !== "none" && !ablations.has("skills")) {
-    const relevantSkills = discoverRelevantSkills(taskIntentPrompt, workspacePath, projectId, process.env, learnedById);
+    let relevantSkills: { id: string; name: string; description: string }[] = [];
+    if (skillCatalog) {
+      try {
+        const visible = skillCatalog.list(skillScope).filter((entry) =>
+          !assignedAgent || agentRepo.isSkillAllowed(assignedAgent.id, entry.id));
+        relevantSkills = discoverRelevantSkills(taskIntentPrompt, visible);
+      } catch {
+        // Skill discovery is advisory. A root diagnostic or a transient catalog
+        // read failure must not make an otherwise valid agent task crash; the
+        // explicit find/load tools still return actionable catalog errors.
+      }
+    }
     if (relevantSkills.length > 0) {
       const list = relevantSkills.map((s) => `- ${s.id}: ${s.description || s.name}`).join("\n");
       chatMessages.push({
@@ -3188,54 +3149,52 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
     } else if (toolName === "find_skill") {
       const query = (args.query || "").toLowerCase().trim();
       if (!query) return JSON.stringify({ skills: [] });
-      const candidates = agentSkillRoots(workspacePath, projectId, process.env);
-      const results: { id: string; name: string; description: string }[] = [];
-      const seen = new Set<string>();
-      for (const dir of candidates) {
-        if (!existsSync(dir)) continue;
-        for (const entry of readdirSync(dir)) {
-          const skillDir = join(dir, entry);
-          if (!statSync(skillDir).isDirectory() || !existsSync(join(skillDir, "SKILL.md")) || !isTrustedSkillDirectory(skillDir, process.env, learnedById)) continue;
-          if (seen.has(entry)) continue;
-          seen.add(entry);
-          // Read name + description. Skills use either a "# Heading" + body or
-          // YAML frontmatter (--- name: ... description: ... ---); handle both.
-          const md = readFileSync(join(skillDir, "SKILL.md"), "utf8");
-          let name = entry, desc = "";
-          if (md.startsWith("---") && md.indexOf("\n---", 3) !== -1) {
-            const fm = md.slice(3, md.indexOf("\n---", 3));
-            name = (fm.match(/^name:\s*(.*)$/m)?.[1] ?? entry).trim().replace(/^["']|["']$/g, "");
-            desc = (fm.match(/^description:\s*(.*)$/m)?.[1] ?? "").trim().replace(/^["']|["']$/g, "");
-          } else {
-            const lines = md.split("\n").filter(l => l.trim());
-            name = lines[0]?.replace(/^#\s*/, "").trim() || entry;
-            desc = lines.slice(1).find(l => l.trim() && !l.startsWith("#"))?.trim() || "";
-          }
-          // Match against query
-          const searchable = `${entry} ${name} ${desc}`.toLowerCase();
-          if (!query || searchable.includes(query)) {
-            results.push({ id: entry, name, description: desc });
-          }
-          if (results.length >= 10) break;
-        }
-        if (results.length >= 10) break;
+      if (!skillCatalog) {
+        return JSON.stringify({ error: "Skill catalog is unavailable in this execution context", code: "SKILL_CATALOG_UNAVAILABLE" });
       }
-      return JSON.stringify({ skills: results });
+      try {
+        const results = skillCatalog.list(skillScope)
+          .filter((entry) => entry.loadable && (!assignedAgent || agentRepo.isSkillAllowed(assignedAgent.id, entry.id)))
+          .filter((entry) => `${entry.id} ${entry.name} ${entry.description}`.toLowerCase().includes(query))
+          .slice(0, 10)
+          .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description }));
+        return JSON.stringify({ skills: results });
+      } catch (error) {
+        if (error instanceof SkillCatalogError) {
+          return JSON.stringify({ error: error.message, code: "SKILL_CATALOG_UNAVAILABLE", issues: error.entry?.issues ?? [] });
+        }
+        return JSON.stringify({ error: "Skill catalog could not be read", code: "SKILL_CATALOG_UNAVAILABLE" });
+      }
     } else if (toolName === "load_skill") {
       const skillId = (args.skill_id || "").trim();
-      if (!skillId || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(skillId)) {
+      if (!SKILL_CATALOG_ID_PATTERN.test(skillId)) {
         return JSON.stringify({ error: `Invalid skill ID: ${skillId}` });
       }
-      // Try each candidate dir
-      const candidates = agentSkillRoots(workspacePath, projectId, process.env);
-      for (const dir of candidates) {
-        const mdPath = join(dir, skillId, "SKILL.md");
-        if (existsSync(mdPath) && isTrustedSkillDirectory(join(dir, skillId), process.env, learnedById)) {
-          skillUsage.recordUse(projectId, skillId, now());
-          return readFileSync(mdPath, "utf8");
-        }
+      if (!skillCatalog) {
+        return JSON.stringify({ error: "Skill catalog is unavailable in this execution context", code: "SKILL_CATALOG_UNAVAILABLE" });
       }
-      return JSON.stringify({ error: `Skill not found: ${skillId}` });
+      try {
+        const entry = skillCatalog.resolveById(skillId, skillScope);
+        if (assignedAgent && !agentRepo.isSkillAllowed(assignedAgent.id, entry.id)) {
+          return JSON.stringify({ error: `Skill access denied for agent: ${skillId}`, code: "SKILL_ACCESS_DENIED", issues: [] });
+        }
+        const loaded = skillCatalog.loadInstructions(entry.key, skillScope);
+        // Usage is durable evidence of a successful instruction load, never a
+        // record of an attempted, disabled, conflicting, or tampered skill.
+        skillUsage.recordUse(projectId, loaded.entry.id, now());
+        return loaded.instructions;
+      } catch (error) {
+        if (error instanceof SkillCatalogError) {
+          return JSON.stringify({
+            error: error.message,
+            code: error.code === "not_found" ? "SKILL_NOT_FOUND"
+              : error.code === "conflict" ? "SKILL_CONFLICT"
+                : error.code === "invalid_scope" ? "SKILL_INVALID_SCOPE" : "SKILL_NOT_LOADABLE",
+            issues: error.entry?.issues ?? [],
+          });
+        }
+        return JSON.stringify({ error: "Skill instructions could not be loaded", code: "SKILL_NOT_LOADABLE", issues: [] });
+      }
     } else if (toolName === "create_skill") {
       if (!/\b(?:create|make|generate|save)\b.{0,40}\bskill\b|\bskill\b.{0,40}\b(?:create|make|generate|save)\b/i.test(latestUserPrompt)) {
         return JSON.stringify({ created: false, lifecycle: "rejected", issues: ["create_skill requires an explicit user request; routine learning is handled automatically by evidence-backed Cortex validation"] });
@@ -3265,12 +3224,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       if (issues.length > 0) return JSON.stringify({ created: false, issues });
 
       // ── Determine target directory ──────────────────────────────────────
-      const candidates = [join(workspacePath, "skills")];
-      const morrowHome = resolveMorrowHome(process.env);
-      if (morrowHome) candidates.push(join(morrowHome, "skills"));
-      const skillsDir = process.env.MORROW_SKILLS_DIR;
-      if (skillsDir) candidates.push(skillsDir);
-      const targetRoot = candidates.find(d => existsSync(d)) || candidates[0]!;
+      // A model-created skill is a workspace skill, never a bundled or global
+      // user skill. Keep it inside the current execution checkout so worktree
+      // tasks retain the same isolation as every other workspace write. The
+      // catalog deliberately remains scoped to the persisted project workspace
+      // (see skillScope above), so a worktree-created skill becomes project
+      // visible after that checkout is merged rather than binding activation
+      // to a transient worktree path.
+      const targetRoot = join(workspacePath, "skills");
       const targetDir = join(targetRoot, id);
       const overwrite = args.overwrite === true;
 
@@ -3292,7 +3253,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       const checksum = createHash("sha256").update(skillMd).digest("hex");
 
       const manifest = {
-        id, name, version: "0.1.0", description, publisher: "auto", license: "MIT",
+        id, name, version: "0.1.0", description, publisher: "local", license: "MIT",
         checksum, entrypoint: "src/index.ts", supportedPlatforms: ["win32","linux","darwin"],
         requestedTools: permTools, requestedFilesystemScopes: scopes,
         requestedNetworkDomains: [], requiredSecrets: [], riskClass,
@@ -3311,16 +3272,31 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       writeFileSync(join(targetDir, "src/index.ts"), entrySrc, "utf8");
       writeFileSync(join(targetDir, "test/index.test.ts"), testSrc, "utf8");
 
+      // The generated bundle must enter the same catalog authority used by
+      // find/load. A valid workspace bundle is visible but remains disabled;
+      // never return its absolute path or silently inherit an old activation.
+      const catalogCandidates = skillCatalog
+        ? skillCatalog.list(skillScope).filter((entry) => entry.source === "workspace" && entry.id === id)
+        : [];
+      const catalogEntry = catalogCandidates.length === 1
+        ? skillCatalog!.setEnabled(catalogCandidates[0]!.key, false, skillScope)
+        : catalogCandidates[0];
+      const key = catalogEntry?.key ?? `workspace:${projectId}:${id}`;
+      const catalogState = catalogEntry
+        ? { ...catalogEntry }
+        : { key, enabled: false, loadable: false, validation: "missing" as const };
+      const worktreeOnly = workspacePath !== persistedWorkspacePath;
       return JSON.stringify({
         created: true,
+        ...catalogState,
         id,
-        directory: targetDir,
         riskClass,
         tools: permTools,
         checksum: checksum.slice(0, 16) + "...",
         overwritten: overwrite && existsSync(targetDir),
-        note: `Skill "${id}" created. Enable it with: morrow skills enable ${id}`,
-        skillsDirectory: targetRoot,
+        note: worktreeOnly
+          ? `Skill "${id}" created in the execution worktree and remains disabled; merge the worktree before enabling it.`
+          : `Skill "${id}" created and switched off. Enable it through the skill catalog before use.`,
       });
     } else {
       throw new Error(`Forbidden tool: ${toolName}`);
@@ -7138,7 +7114,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
                   throw new Error("Skill install denied by user.");
                 }
               }
-              const installed = applySkillInstall(handle);
+              const installed = applySkillInstall(handle, {
+                ...(skillCatalog
+                  ? { persistDisabled: (id: string) => {
+                      const candidates = skillCatalog.list().filter((entry) => entry.source === "user" && entry.id === id);
+                      const entry = candidates.find((candidate) => candidate.key === `user:${id}`) ?? candidates[0];
+                      if (!entry) throw new SkillInstallError(`Installed skill "${id}" is not present in the authoritative catalog`, [], "SKILL_INSTALL_FAILED");
+                      skillCatalog.setEnabled(entry.key, false);
+                    } }
+                  : {}),
+              });
               // Installed is not enabled, and the model is told so plainly so it
               // does not go on to act as though the skill were now in force.
               resultStr = JSON.stringify({

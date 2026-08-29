@@ -776,6 +776,48 @@ export type UpsertToolPermissionInput=z.infer<typeof UpsertToolPermissionSchema>
 export type AgentSkillAccess=z.infer<typeof AgentSkillAccessSchema>;
 export type UpsertSkillAccessInput=z.infer<typeof UpsertSkillAccessSchema>;
 
+// ── Authoritative skill catalog ─────────────────────────────────────────────
+// The catalog is the single public view of skill identity, validation, and
+// activation. Absolute skill directories stay inside the orchestrator and are
+// deliberately absent from these schemas.
+export const SkillCatalogIssueSchema=z.object({
+  code:z.enum(["root_unavailable","missing_skill_md","invalid_manifest","checksum_mismatch","id_conflict","unreadable"]),
+  message:z.string().min(1).max(1000),
+}).strict();
+export const SkillCatalogEntrySchema=z.object({
+  key:z.string().min(1).max(512),
+  id:z.string().min(1).max(120),
+  name:z.string().min(1).max(160),
+  description:z.string().max(2000),
+  source:z.enum(["bundled","user","workspace"]),
+  enabled:z.boolean(),
+  validation:z.enum(["healthy","invalid","conflict","missing"]),
+  issues:z.array(SkillCatalogIssueSchema),
+  loadable:z.boolean(),
+  manifestDigest:z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+  category:z.string(),
+  trustTier:z.string(),
+  tools:z.array(z.string()),
+  permissions:z.array(z.string()),
+  dependencies:z.array(z.string()),
+  publisher:z.string(),
+}).strict().superRefine((value,ctx)=>{
+  if(value.loadable!==(value.enabled&&value.validation==="healthy")){
+    ctx.addIssue({code:"custom",message:"loadable must equal enabled && healthy"});
+  }
+});
+export const SetSkillActivationSchema=z.object({enabled:z.boolean()}).strict();
+export const SkillCatalogStatusSchema=z.object({
+  healthy:z.boolean(),
+  entries:z.number().int().nonnegative(),
+  loadable:z.number().int().nonnegative(),
+  issues:z.array(SkillCatalogIssueSchema),
+}).strict();
+export type SkillCatalogIssue=z.infer<typeof SkillCatalogIssueSchema>;
+export type SkillCatalogEntry=z.infer<typeof SkillCatalogEntrySchema>;
+export type SetSkillActivationInput=z.infer<typeof SetSkillActivationSchema>;
+export type SkillCatalogStatus=z.infer<typeof SkillCatalogStatusSchema>;
+
 // ── Full-text session & memory search ────────────────────────────────────────
 // Full-text search over conversations, messages, tasks, and memory. Individual
 // project endpoints preserve hard scope boundaries; the explicit global endpoint
@@ -1125,11 +1167,37 @@ export const ProviderTestResultSchema=z.object({
 }).strict();
 export type ProviderTestResult=z.infer<typeof ProviderTestResultSchema>;
 
+/**
+ * What this running service actually composed.
+ *
+ * Every field distinguishes "measured" from "not managed": a server built
+ * directly by a test owns none of these components and says so, rather than
+ * reporting a readiness it never established. `not_managed` is not a failure —
+ * it means nobody in this process is responsible for that component — while
+ * `degraded` means something that should be running is not.
+ */
+export const RuntimeCapabilityStatusSchema=z.object({
+  version:z.literal(1),
+  startupReconciled:z.boolean(),
+  workGraphs:z.enum(["ready","degraded","not_managed"]),
+  scheduler:z.enum(["running","disabled","degraded","not_managed"]),
+  skills:z.object({
+    healthy:z.boolean(),
+    entries:z.number().int().nonnegative(),
+    loadable:z.number().int().nonnegative(),
+    issues:z.number().int().nonnegative(),
+  }).strict(),
+}).strict();
+export type RuntimeCapabilityStatus=z.infer<typeof RuntimeCapabilityStatusSchema>;
+
 export const HealthSchema=z.object({
   ok:z.boolean(),
   service:z.literal("morrow-orchestrator"),
   apiVersion:z.number().int(),
   mockProvider:z.boolean(),
+  /** What this process composed. Required: an absent runtime block would read
+   * as "fine" when it actually means "unknown". */
+  runtime:RuntimeCapabilityStatusSchema,
   // The CLI uses this only for a local service to recover an interrupted or
   // deleted pid file. It is intentionally not a credential or user identifier.
   ownerPid:z.number().int().positive().optional(),

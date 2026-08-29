@@ -63,6 +63,59 @@ describe("SchedulerTicker", () => {
     expect(taskRepository(db).listTasksByProject("p1")).toHaveLength(2);
   });
 
+  /**
+   * A scheduled task that could not be dispatched used to be marked failed by
+   * a raw status write, so the task read as failed with nothing anywhere
+   * saying why. The transition now goes through the canonical facade, which
+   * means the failure leaves a durable, readable event behind.
+   */
+  it("records why a scheduled dispatch failed, and keeps the occurrence due", () => {
+    const repo = schedulesRepository(db);
+    repo.create({ id: "s1", projectId: "p1", cron: "*/15 * * * *", taskKind: "inspect_workspace", nextRunAt: "2026-01-01T00:00:00.000Z", createdAt: "2026-01-01T00:00:00.000Z" });
+    const runner = new TaskRunner(db, async () => {});
+    runner.run = () => { throw new Error("worker pool exhausted\n  at dispatch (/home/someone/secret/path.ts:1:1)"); };
+    const ticker = new SchedulerTicker({ db, runner, now: () => new Date("2026-01-01T00:07:00.000Z") });
+
+    expect(ticker.tick()).toHaveLength(0);
+
+    const tasks = taskRepository(db).listTasksByProject("p1");
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]!.status).toBe("failed");
+
+    const events = taskRecordsRepository(db).listEvents(tasks[0]!.id);
+    const failure = events.filter((event) => event.type === "task.failed");
+    expect(failure).toHaveLength(1);
+    expect(failure[0]!.payload).toMatchObject({ scheduleId: "s1" });
+    const message = (failure[0]!.payload as { message: string }).message;
+    expect(message).toContain("worker pool exhausted");
+    // One bounded line, not a multi-line stack pasted into durable state.
+    expect(message).not.toContain("\n");
+    expect(message.length).toBeLessThanOrEqual(1000);
+
+    // The occurrence was not consumed, so the next tick retries it.
+    expect(repo.get("s1")?.nextRunAt).toBe("2026-01-01T00:00:00.000Z");
+  });
+
+  it("fabricates no task or event when creation itself fails", () => {
+    const repo = schedulesRepository(db);
+    repo.create({ id: "s1", projectId: "p1", cron: "*/15 * * * *", taskKind: "inspect_workspace", nextRunAt: "2026-01-01T00:00:00.000Z", createdAt: "2026-01-01T00:00:00.000Z" });
+    const runner = new TaskRunner(db, async () => {});
+    const original = db.prepare.bind(db);
+    const ticker = new SchedulerTicker({ db, runner, now: () => new Date("2026-01-01T00:07:00.000Z") });
+    // Fail at task creation, before any row exists.
+    const spy = (sql: string) => {
+      if (sql.trimStart().toUpperCase().startsWith("INSERT INTO TASKS")) throw new Error("disk full");
+      return original(sql);
+    };
+    (db as unknown as { prepare: typeof spy }).prepare = spy;
+
+    expect(ticker.tick()).toHaveLength(0);
+
+    (db as unknown as { prepare: typeof original }).prepare = original;
+    expect(taskRepository(db).listTasksByProject("p1")).toHaveLength(0);
+    expect(repo.get("s1")?.nextRunAt).toBe("2026-01-01T00:00:00.000Z");
+  });
+
   it("notifies configured adapters when a schedule fires", async () => {
     const repo = schedulesRepository(db);
     repo.create({ id: "s1", projectId: "p1", cron: "* * * * *", taskKind: "inspect_workspace", nextRunAt: "2026-01-01T00:00:00.000Z", createdAt: "2026-01-01T00:00:00.000Z" });

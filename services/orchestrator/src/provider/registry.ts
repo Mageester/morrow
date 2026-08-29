@@ -258,7 +258,8 @@ const BUILTIN_DESCRIPTORS: ProviderDescriptor[] = [
     status(env) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" });
       const s = apiKeyStatus(this, c, env);
-      if (getStoredAccessTokenSync("openai", env)) {
+      const oauthToken = !c.configured ? getStoredAccessTokenSync("openai", env) : null;
+      if (oauthToken) {
         // Subscription sign-in routes through the Codex backend, which serves its
         // own model slugs (gpt-5.x), not the api.openai.com model ids.
         const override = modelOverride(env, "openai");
@@ -271,7 +272,7 @@ const BUILTIN_DESCRIPTORS: ProviderDescriptor[] = [
       // A ChatGPT/Codex subscription OAuth token only works against the Codex
       // backend (chatgpt.com/backend-api/codex), not api.openai.com — so route it
       // through the CodexProvider. An API key uses the standard endpoint.
-      const oauthToken = getStoredAccessTokenSync("openai", env);
+      const oauthToken = !c.configured ? getStoredAccessTokenSync("openai", env) : null;
       if (oauthToken) {
         return new CodexProvider({ oauthToken, defaultModel: resolveModel(env, this.id, model, "gpt-5.5"), route: routeMetadata({ env, id: this.id, protocol: "openai-responses", endpointKind: "default", endpointHost: "chatgpt.com" }) });
       }
@@ -291,13 +292,13 @@ const BUILTIN_DESCRIPTORS: ProviderDescriptor[] = [
     status(env) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
       const s = apiKeyStatus(this, c, env);
-      return getStoredAccessTokenSync("anthropic", env) ? withOAuth(s, "anthropic-oauth") : s;
+      return !c.configured && getStoredAccessTokenSync("anthropic", env) ? withOAuth(s, "anthropic-oauth") : s;
     },
     build(env, model) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
       // Prefer a Claude subscription OAuth token when present: the adapter sends
       // it as a Bearer token with the OAuth beta header instead of x-api-key.
-      const oauthToken = getStoredAccessTokenSync("anthropic", env);
+      const oauthToken = !c.configured ? getStoredAccessTokenSync("anthropic", env) : null;
       if (!oauthToken && !c.configured) throw new ProviderError("not_configured", "Anthropic is not configured (sign in with OAuth or set ANTHROPIC_API_KEY)", { kind: "auth" });
       return new AnthropicProvider({
         apiKey: c.apiKey ?? "",
