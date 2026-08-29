@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { publicInstallFailures } from "./lib/public-install-verifier.mjs";
+import { looksLikeChecksum, publicInstallFailures } from "./lib/public-install-verifier.mjs";
 
 const REPOSITORY = "Mageester/morrow";
 const BASE_URL = process.env.MORROW_PUBLIC_BASE_URL ?? "https://morrowproject.getaxiom.ca";
@@ -45,6 +45,13 @@ const [liveInstaller, taggedInstaller, checksum] = await Promise.all([
   fetchText(`${BASE_URL}/install.sh.sha256`),
 ]);
 
+// Windows is a supported platform and its installer was never verified here.
+const [livePowershellInstaller, taggedPowershellInstaller, powershellChecksum] = await Promise.all([
+  fetchText(`${BASE_URL}/install.ps1`),
+  fetchText(`https://raw.githubusercontent.com/${REPOSITORY}/${latestTag}/installer/install.ps1`),
+  fetchText(`${BASE_URL}/install.ps1.sha256`),
+]);
+
 const failures = publicInstallFailures({
   liveInstaller,
   taggedInstaller,
@@ -52,6 +59,9 @@ const failures = publicInstallFailures({
   manifest,
   latestTag,
   resolvedTagCommit,
+  livePowershellInstaller,
+  taggedPowershellInstaller,
+  powershellChecksum,
 });
 
 if (failures.length > 0) {
@@ -60,3 +70,9 @@ if (failures.length > 0) {
 }
 
 console.log(`Public install contract verified: ${latestTag} at ${resolvedTagCommit}.`);
+if (!looksLikeChecksum(powershellChecksum)) {
+  // Not a release failure — the shell installer's checksum is published and the
+  // PowerShell installer's content was compared against the tag. Say it plainly
+  // so the asymmetry stays visible instead of reading as a passed check.
+  console.log("Note: install.ps1.sha256 is not published; install.ps1 was verified by content against the tag, not by a published checksum.");
+}
