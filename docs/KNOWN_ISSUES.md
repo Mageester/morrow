@@ -6,6 +6,27 @@ reproductions, hypotheses, and external-source notes.
 
 ## Current status
 
+### Shutdown does not drain in-flight agent work (2026-08-29, 0.8.0)
+
+`MorrowRuntimeHost.close()` stops the scheduler, closes the HTTP server, drains
+supervised processes, stops the entitlement poller, and closes the database. It
+does not wait for a task already executing inside `TaskRunner`, because neither
+the runner nor the mission controller runner exposes a drain. A SIGINT during an
+agent turn can therefore close the database under that turn, and the in-flight
+provider call ends with a "database connection is not open" error rather than a
+clean stop.
+
+The practical impact is bounded: both entrypoints call `process.exit(0)`
+immediately after `close()`, so the task was ending either way, and durable
+state is committed per event rather than at the end of a turn — a restart
+reconciles the task as `interrupted` and it resumes correctly. What is missing
+is the clean stop, not the durability.
+
+Fixing it properly means giving `TaskRunner` and `MissionControllerRunner` a
+bounded drain and adding them to the shutdown list. That is a change to the
+execution core and was deliberately not bundled into the runtime-host
+refactor, which was already broad.
+
 No P1 or P2 issue from the beta.29 acceptance report remains open as of
 2026-08-23. This does not mean Morrow is defect-free; it means each item in that
 specific 17-finding report was reconciled against the current implementation and
