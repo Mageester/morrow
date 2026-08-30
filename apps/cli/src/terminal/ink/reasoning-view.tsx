@@ -28,6 +28,14 @@ export interface ReasoningViewProps {
   elapsedMs?: number | undefined;
   /** Ctrl+R override — show all of it regardless of state. */
   expanded: boolean;
+  /**
+   * Rows the expanded view may occupy. Expanding used to render every row of
+   * the thinking into the frame Ink repaints, so opening a long one pushed the
+   * dynamic region past the viewport and Ink began clearing the whole terminal
+   * once per frame — the flashing. Omitted for a settled turn inside
+   * `<Static>`, which is written once and never repainted.
+   */
+  maxRows?: number | undefined;
   unicode: boolean;
   width: number;
 }
@@ -74,7 +82,7 @@ export function formatThinkingTime(ms: number): string {
   return `${minutes}m ${seconds % 60}s`;
 }
 
-export function ReasoningView({ text, elapsedMs, expanded, unicode, width }: ReasoningViewProps) {
+export function ReasoningView({ text, elapsedMs, expanded, maxRows, unicode, width }: ReasoningViewProps) {
   if (!text.trim()) return null;
   const g = glyphs(unicode);
   const inner = Math.max(20, width - 4);
@@ -95,7 +103,13 @@ export function ReasoningView({ text, elapsedMs, expanded, unicode, width }: Rea
   }
 
   const all = rows(text.trimEnd(), inner);
-  const visible = expanded ? all : all.slice(-LIVE_ROWS);
+  // Expanded still shows a tail, not everything: the whole point of Ctrl+R is
+  // to read the thinking, and a block taller than the terminal cannot be read
+  // anyway — it scrolls the composer off and makes Ink repaint the screen. The
+  // budget comes from the viewport; only a settled turn, drawn once into
+  // scrollback, is allowed to be unbounded.
+  const limit = expanded ? (maxRows !== undefined ? Math.max(1, maxRows) : all.length) : LIVE_ROWS;
+  const visible = all.slice(-limit);
   const hidden = all.length - visible.length;
 
   return (

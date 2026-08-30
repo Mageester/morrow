@@ -12,6 +12,7 @@ import { outcomeFor } from "../src/terminal/ink/outcome.js";
 import { planWindow, planHeading } from "../src/terminal/ink/plan-view.js";
 import { mapTaskEvent } from "../src/terminal/task-event-adapter.js";
 import { rows } from "../src/terminal/ink/reasoning-view.js";
+import { clampMarkdownTail, frameBudget, resolveViewportRows } from "../src/terminal/ink/height-budget.js";
 import { report } from "../src/terminal/report.js";
 import type { PlanEntry, ToolCard } from "../src/terminal/state.js";
 
@@ -1120,5 +1121,83 @@ describe("transcript navigation is separate from input history", () => {
     // The arrow key belongs to the draft; it must not raise a reading surface.
     expect(overlays.active).toBeNull();
     expect(plain(view.lastFrame())).toContain("an earlier message");
+  });
+});
+
+
+/**
+ * Ink repaints everything that is not inside `<Static>` on every frame, and
+ * once that region is taller than the viewport it stops repainting and starts
+ * writing `clearTerminal + fullStaticOutput + output` instead — a full-screen
+ * wipe per frame. That is what made the shell flash while long reasoning was
+ * open, and what left a band of dead space behind when a tall block collapsed.
+ * Two blocks could grow without limit: expanded reasoning and the live answer.
+ */
+describe("the redrawn region stays inside the viewport", () => {
+  it("falls back to a usable height when the terminal reports none", () => {
+    // Same hazard as width: a pty with no winsize reports zero, and a zero
+    // budget would collapse every growable block to nothing.
+    expect(resolveViewportRows(undefined)).toBeGreaterThan(4);
+    expect(resolveViewportRows(0)).toBeGreaterThan(4);
+    expect(resolveViewportRows(40)).toBe(40);
+  });
+
+  it("never hands a block a budget of zero, however short the terminal", () => {
+    for (const height of [1, 5, 12, 20]) {
+      const budget = frameBudget(resolveViewportRows(height), true);
+      expect(budget.reasoning).toBeGreaterThan(0);
+      expect(budget.answer).toBeGreaterThan(0);
+    }
+  });
+
+  it("gives the thinking the larger share once it is deliberately opened", () => {
+    const budget = frameBudget(60, true);
+    expect(budget.reasoning).toBeGreaterThan(budget.answer);
+    expect(budget.reasoning + budget.answer).toBeLessThanOrEqual(60);
+  });
+
+  it("leaves an answer that already fits completely alone", () => {
+    const result = clampMarkdownTail("one\ntwo\nthree", 10, 40);
+    expect(result.hidden).toBe(0);
+    expect(result.text).toBe("one\ntwo\nthree");
+  });
+
+  it("keeps the newest rows of an answer that does not fit", () => {
+    const text = Array.from({ length: 200 }, (_, index) => `line ${index}`).join("\n");
+    const result = clampMarkdownTail(text, 6, 40);
+    expect(result.text).toContain("line 199");
+    expect(result.text).not.toContain("line 0\n");
+    expect(result.hidden).toBeGreaterThan(150);
+    expect(result.text.split("\n").length).toBeLessThanOrEqual(7);
+  });
+
+  it("reopens a code fence the cut landed inside", () => {
+    // Slicing mid-fence would render the tail as prose and lose the styling.
+    const text = ["intro", "```ts", ...Array.from({ length: 30 }, (_, i) => `const x${i} = ${i};`)].join("\n");
+    const result = clampMarkdownTail(text, 5, 40);
+    expect(result.hidden).toBeGreaterThan(0);
+    expect(result.text.startsWith("```")).toBe(true);
+  });
+
+  it("does not draw every line of long reasoning when Ctrl+R opens it", async () => {
+    const { view, store } = mount();
+    store.apply({ type: "user.message", text: "solve it" });
+    store.apply({
+      type: "reasoning.delta",
+      text: Array.from({ length: 400 }, (_, index) => `thought ${index}`).join("\n"),
+    });
+    store.apply({ type: "reasoning.settled" });
+    await tick();
+    view.stdin.write(CTRL_R);
+    await tick();
+
+    const frame = plain(view.lastFrame());
+    // The tail is what a reader wants and what fits; the head is reported as a
+    // count rather than rendered into a frame Ink would then have to clear.
+    expect(frame).toContain("thought 399");
+    expect(frame).not.toContain("thought 0\n");
+    expect(frame).toContain("earlier lines");
+    // The whole point: the frame cannot be hundreds of rows tall.
+    expect(frame.split("\n").length).toBeLessThan(60);
   });
 });

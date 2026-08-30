@@ -16,6 +16,7 @@ import {
   remember,
   type EditorState,
 } from "./editor.js";
+import { clampMarkdownTail, frameBudget, resolveViewportRows } from "./height-budget.js";
 import { Markdown } from "./markdown.js";
 import { ModelPicker } from "./model-picker.js";
 import { Outcome } from "./outcome.js";
@@ -240,6 +241,11 @@ export function App({
   // winsize, a CI capture, some multiplexers) would set the frame width to 0
   // and wrap every character onto its own line.
   const width = Math.max(40, stdout?.columns || 80);
+  // Height matters for the same reason width does, and for a sharper one: a
+  // dynamic region taller than the viewport makes Ink clear and repaint the
+  // whole terminal every frame. See `height-budget.ts`.
+  const viewportRows = resolveViewportRows(stdout?.rows);
+  const budget = frameBudget(viewportRows, reasoningOpen);
   const streaming = state.status === "streaming";
   // `task.progress_warning` is the only transient notice the adapter emits.
   // Rendered as its own amber line it sat directly under the activity line and
@@ -522,6 +528,14 @@ export function App({
     [state.tools, state.settledTools],
   );
 
+  // The streaming answer is the other block with no natural ceiling. Only its
+  // tail is drawn while it streams; the settled turn goes into `<Static>` whole,
+  // so the complete text still reaches scrollback a moment later.
+  const liveAnswer = useMemo(
+    () => clampMarkdownTail(live?.text ?? "", budget.answer, width - 2),
+    [live?.text, budget.answer, width],
+  );
+
   // `<Static>` keys on identity, and a cleared transcript reuses indices. The
   // epoch makes a clear produce genuinely new keys so old rows are not replayed.
   const staticItems = useMemo(
@@ -560,6 +574,7 @@ export function App({
         <ReasoningView
           elapsedMs={state.reasoningMs}
           expanded={reasoningOpen}
+          maxRows={budget.reasoning}
           text={state.reasoning}
           unicode={unicode}
           width={width}
@@ -570,6 +585,7 @@ export function App({
         <ReasoningView
           elapsedMs={state.lastReasoningMs}
           expanded
+          maxRows={budget.reasoning}
           text={state.lastReasoning}
           unicode={unicode}
           width={width}
@@ -582,6 +598,7 @@ export function App({
             <ReasoningView
               elapsedMs={live.reasoningMs}
               expanded={reasoningOpen}
+              maxRows={budget.reasoning}
               text={live.reasoning}
               unicode={unicode}
               width={width}
@@ -590,7 +607,12 @@ export function App({
           <Box marginTop={1} flexDirection="row">
             <Text color={theme.accent}>{g.mark} </Text>
             <Box flexDirection="column" flexGrow={1}>
-              <Markdown text={live.text} unicode={unicode} width={width - 2} />
+              {liveAnswer.hidden > 0 ? (
+                <Text color={theme.faint}>
+                  {`↑ ${liveAnswer.hidden} earlier line${liveAnswer.hidden === 1 ? "" : "s"} — the full answer lands in scrollback when the turn settles`}
+                </Text>
+              ) : null}
+              <Markdown text={liveAnswer.text} unicode={unicode} width={width - 2} />
             </Box>
           </Box>
         </Box>
