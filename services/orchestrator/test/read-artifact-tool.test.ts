@@ -62,7 +62,7 @@ describe("collectOfferedArtifactIds", () => {
       externalizeToolResult(repo, "A".repeat(60_000), { toolName: "run_command", kind: "tool_result" }),
     );
     const other = renderExternalizedForContext(
-      externalizeToolResult(repo, "B".repeat(60_000), { toolName: "read_file", kind: "tool_result" }),
+      externalizeToolResult(repo, "B".repeat(60_000), { toolName: "run_command", kind: "tool_result" }),
     );
     const ids = collectOfferedArtifactIds([rendered, other, "", '{"exitCode":0}']);
     expect(ids.size).toBe(2);

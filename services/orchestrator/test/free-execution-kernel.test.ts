@@ -154,6 +154,9 @@ describe("Free Execution Kernel", () => {
         [tool("fail", "run_command", { executable: "node", args: ["-e", "process.exit(1)"], purpose: "verification" }), done],
         [tool("repair", "create_file", { path: "repair.txt", content: "fixed\n" }), done],
         [text("The failed command was repaired and the requested file is delivered."), done],
+        // v0.8.1 grants one bounded "not finished" continuation before it
+        // accepts a stop that leaves acceptance evidence outstanding.
+        [text("No further verification is available for the repair."), done],
       ],
     });
 
@@ -247,6 +250,9 @@ describe("Free Execution Kernel", () => {
       chunks: [
         [tool("start", "run_command", { executable: "node", args: ["-e", "setInterval(() => {}, 1000)"], purpose: "start background process", background: true }), done],
         [text("The background process is running and available for inspection."), done],
+        // v0.8.1 grants one bounded "not finished" continuation before it
+        // accepts a stop that leaves acceptance evidence outstanding.
+        [text("The process is meant to stay up; there is nothing to close."), done],
       ],
     });
 
@@ -271,6 +277,9 @@ describe("Free Execution Kernel", () => {
       [tool("open", "browser_open", { url: "http://127.0.0.1:4317/" }), done],
       ...Array.from({ length: 6 }, (_, index) => [tool(`snapshot-${index}`, "browser_snapshot", {}), done] as ProviderChunk[]),
       [text("The frontend was inspected and the remaining verification notes are recorded."), done],
+      // v0.8.1 grants one bounded "not finished" continuation before it accepts
+      // a stop that leaves acceptance evidence outstanding.
+      [text("No further browser evidence can be captured here."), done],
     ];
 
     await executeAgentChatTask({ db, taskId: "t", provider: new MockProvider({ chunks: providerChunks }), browserFactory: browserFixture, maxTurns: 16 });
@@ -304,6 +313,9 @@ describe("Free Execution Kernel", () => {
       chunks: [
         [tool("write", "create_file", { path: "incomplete.txt", content: "delivered\n" }), done],
         [text("The change is delivered, but verification is incomplete."), done],
+        // v0.8.1 grants one bounded "not finished" continuation before it
+        // accepts a stop that leaves acceptance evidence outstanding.
+        [text("The change is delivered; verification is incomplete and cannot be finished here."), done],
       ],
     });
 

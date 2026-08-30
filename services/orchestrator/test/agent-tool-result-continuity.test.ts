@@ -184,14 +184,21 @@ describe("durable tool-result continuity", () => {
       });
       expect(storedCall?.status).toBe("completed");
       expect((storedCall?.resultJson ?? "").length).toBeGreaterThan(8_000);
+      // The model-facing projection is bounded, but the DURABLE record must
+      // still hold the whole result. Asserting only the bounded prefix would
+      // let a projection that loses the full result pass this test.
+      expect(storedCall?.resultJson).toContain("x".repeat(19_000));
 
       const immediateRequest = firstRequests.find((request) => request.some((message) => message.role === "tool" && message.toolCallId === storedCall!.id));
       expect(immediateRequest).toBeDefined();
       const immediateResults = immediateRequest!.filter((message) => message.role === "tool" && message.toolCallId === storedCall!.id);
       expect(immediateResults).toHaveLength(1);
-      expect(immediateResults[0]?.content).toContain("artifactId");
-      expect(immediateResults[0]?.content).toContain("read_artifact");
-      expect((immediateResults[0]?.content.length ?? 0)).toBeLessThan(2_000);
+      const immediatePayload = JSON.parse(immediateResults[0]?.content ?? "null") as { read_succeeded?: boolean; content?: string };
+      expect(immediatePayload.read_succeeded).toBe(true);
+      expect(immediatePayload.content).toContain("x".repeat(100));
+      expect(immediateResults[0]?.content).not.toContain("artifactId");
+      expect(immediateResults[0]?.content).not.toContain("read_artifact");
+      expect((immediateResults[0]?.content.length ?? 0)).toBeLessThan(8_192);
       expect(immediateResults[0]?.content).not.toContain("x".repeat(8_000));
 
       db.prepare("UPDATE agent_execution_segments SET owner_id=? WHERE task_id=? AND status='running'")
@@ -227,9 +234,12 @@ describe("durable tool-result continuity", () => {
       expect(calls).toHaveLength(1);
       expect(results).toHaveLength(1);
       expect(results[0]?.content).toBe(immediateResults[0]?.content);
-      expect(results[0]?.content).toContain("artifactId");
-      expect(results[0]?.content).toContain("read_artifact");
-      expect((results[0]?.content.length ?? 0)).toBeLessThan(2_000);
+      const restartedPayload = JSON.parse(results[0]?.content ?? "null") as { read_succeeded?: boolean; content?: string };
+      expect(restartedPayload.read_succeeded).toBe(true);
+      expect(restartedPayload.content).toContain("x".repeat(100));
+      expect(results[0]?.content).not.toContain("artifactId");
+      expect(results[0]?.content).not.toContain("read_artifact");
+      expect((results[0]?.content.length ?? 0)).toBeLessThan(8_192);
       expect(results[0]?.content).not.toContain("x".repeat(8_000));
       expect(JSON.stringify(restarted)).not.toContain("_morrowAppliedWrite");
       expect(executionContinuityRepository(db).listSegments(taskId).length).toBeGreaterThanOrEqual(2);

@@ -744,7 +744,7 @@ describe("agent requirement boundary integration", () => {
         delayMs: 1,
       });
 
-      await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 4 });
+      await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 6 });
 
       expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
       expect(executionContinuityRepository(db).getCanonicalAnswer("t")).toBeNull();
@@ -811,6 +811,9 @@ describe("agent requirement boundary integration", () => {
         chunks: [
           [providerTool("write-server", "create_file", { path: "src/server.ts", content: "export const server = true;\n" }), providerDone],
           [providerText("delivered without running the required verification"), providerDone],
+          // v0.8.1 grants one bounded continuation for the unmet requirement;
+          // the model declines to act, so the requirement block still fires.
+          [providerText("I am not going to run the required verification"), providerDone],
         ],
         delayMs: 1,
       });
@@ -852,6 +855,9 @@ describe("agent requirement boundary integration", () => {
             purpose: "workspace mutation",
           }), providerDone],
           [providerText("backend delivered"), providerDone],
+          // v0.8.1 grants one bounded continuation for the unmet requirement;
+          // the model declines to act, so the requirement block still fires.
+          [providerText("the backend is delivered and nothing else applies"), providerDone],
         ],
         delayMs: 1,
       });

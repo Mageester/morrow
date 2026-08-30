@@ -16,7 +16,7 @@ describe("GET /api/projects/:projectId/search", () => {
     const projects = projectRepository(db);
     const convs = conversationsRepository(db);
     projects.createProject({ id: "p1", name: "P1", workspacePath: process.cwd(), createdAt: ts(0) });
-    projects.createProject({ id: "p2", name: "P2", workspacePath: process.cwd(), createdAt: ts(0) });
+    projects.createProject({ id: "p2", name: "P2", workspacePath: "C:/other", createdAt: ts(0) });
     convs.createConversation({ id: "c1", projectId: "p1", title: "Refactor the database layer", createdAt: ts(1), updatedAt: ts(1) });
     convs.createConversation({ id: "c2", projectId: "p2", title: "Database release notes", createdAt: ts(1), updatedAt: ts(1) });
     convs.appendMessage({ id: "m1", conversationId: "c1", role: "user", content: "please add full text search", createdAt: ts(2), updatedAt: ts(2) });

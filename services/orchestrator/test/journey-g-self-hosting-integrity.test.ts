@@ -193,6 +193,11 @@ describe("Journey G — self-hosting implementation integrity", () => {
         [text(REPEATED_NARRATION), tool("s2", "search_text", { query: "return" }), done],
         [text(REPEATED_NARRATION), tool("s3", "search_text", { query: "module" }), done],
         [text(REPEATED_NARRATION), done],
+        // A task that delivered nothing gets two bounded continuations before
+        // Morrow accepts the stop; the stalled model repeats itself through
+        // both, so the run settles on that text.
+        [text(REPEATED_NARRATION), done],
+        [text(REPEATED_NARRATION), done],
       ],
       delayMs: 1,
     });
@@ -237,6 +242,10 @@ describe("Journey G — self-hosting implementation integrity", () => {
         [tool("r1", "read_file", { path: "big.js" }), done],
         [text("Investigating the reported issue."), tool("s1", "search_text", { query: "add" }), done],
         [text("The add() function looks fine to me on inspection; no change appears necessary."), done],
+        // v0.8.1 grants one bounded continuation for the missing delivery. The
+        // model still declines to write, so the run settles on this answer.
+        [text("I stand by the inspection: no code change is warranted."), done],
+        [text("I still hold that no code change is warranted."), done],
       ],
       delayMs: 1,
     });
@@ -249,7 +258,7 @@ describe("Journey G — self-hosting implementation integrity", () => {
 
     const continuity = executionContinuityRepository(db);
     expect(continuity.getCanonicalAnswer("t")).toMatchObject({
-      content: "The add() function looks fine to me on inspection; no change appears necessary.",
+      content: "I still hold that no code change is warranted.",
       evidenceJson: { completion: { complete: false } },
     });
 

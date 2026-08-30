@@ -416,7 +416,10 @@ function uniqueMatch(fileLines: string[], expected: string[], normalize: (line: 
 function findChunkApplication(fileLines: string[], chunk: PatchChunk): { startIdx: number; removeLines: number; replaceDeletedOnly: boolean } {
   const anchored = chunk.oldStart - 1;
   const oldLines = oldComparableLines(chunk);
-  if (oldLines.length === 0) return { startIdx: anchored, removeLines: chunk.oldLines, replaceDeletedOnly: false };
+  // For an insertion-only hunk, oldStart is the zero-width boundary between
+  // old lines. The non-empty case uses oldStart - 1 as the first line to
+  // match, but subtracting one here inserts before that line instead.
+  if (oldLines.length === 0) return { startIdx: Math.max(0, chunk.oldStart), removeLines: chunk.oldLines, replaceDeletedOnly: false };
   const exact = (line: string) => line;
   const trimRight = (line: string) => line.replace(/[ \t]+$/g, "");
 

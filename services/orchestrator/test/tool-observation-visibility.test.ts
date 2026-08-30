@@ -90,6 +90,9 @@ describe("tool observations are visible and actionable in the next provider requ
       chunks: [
         [tool("bad", "list_files", { path: "/etc" }), done],
         [text("stopping"), done],
+        // v0.8.1 grants one bounded continuation before accepting the stop.
+        [text("there is nothing outside the workspace I can read"), done],
+        [text("there is still nothing outside the workspace to read"), done],
       ],
       delayMs: 1,
     });

@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { ConversationSchema, ConversationMessageSchema, type Conversation, type ConversationMessage } from "@morrow/contracts";
 import { redactJsonText, redactSecrets } from "../provider/credentials.js";
-import { externalizeToolResult, renderExternalizedForContext } from "../execution/artifact-externalization.js";
+import { externalizeToolResult, readFilePresentationFromResult, renderExternalizedForContext, type ReadPresentation } from "../execution/artifact-externalization.js";
 import { toolArtifactsRepository } from "./tool-artifacts.js";
 import { conversationsParticipantsRepository } from "./conversation-participants.js";
 
@@ -13,8 +13,19 @@ const TERMINAL_TOOL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 function deriveContextResult(
   db: Database.Database,
-  input: { taskId: string; toolName: string; resultJson: string; now: string },
+  input: { taskId: string; toolName: string; argsJson?: string; status: string; resultJson: string; now: string },
 ): string {
+  let readPresentation: ReadPresentation | null | undefined;
+  if (input.toolName === "read_file" && input.status === "completed") {
+    try {
+      const args = JSON.parse(input.argsJson ?? "{}") as Record<string, unknown>;
+      const path = typeof args.path === "string" ? args.path : undefined;
+      const offset = typeof args.offset === "number" ? args.offset : undefined;
+      readPresentation = readFilePresentationFromResult(input.resultJson, { path, offset });
+    } catch {
+      readPresentation = readFilePresentationFromResult(input.resultJson);
+    }
+  }
   const externalized = externalizeToolResult(toolArtifactsRepository(db), input.resultJson, {
     taskId: input.taskId,
     toolName: input.toolName,
@@ -23,8 +34,11 @@ function deriveContextResult(
     kind: input.toolName,
     contentType: "application/json",
     now: input.now,
+    ...(input.toolName === "read_file"
+      ? { readPresentation: readPresentation ?? null }
+      : {}),
   });
-  return renderExternalizedForContext(externalized);
+  return renderExternalizedForContext(externalized, readPresentation ? { readPresentation } : undefined);
 }
 
 export interface ToolCallRecord {
@@ -339,6 +353,8 @@ export function conversationsRepository(db: Database.Database) {
             safeContextResultJson = deriveContextResult(db, {
               taskId: input.taskId,
               toolName: input.toolName,
+              argsJson: safeArgsJson,
+              status: input.status,
               resultJson: sourceResult,
               now: input.completedAt ?? input.createdAt,
             });
@@ -383,13 +399,14 @@ export function conversationsRepository(db: Database.Database) {
      */
     materializeToolContextForTask(taskId: string): ToolCallRecord[] {
       db.transaction(() => {
-        const rows = db.prepare(`SELECT id, task_id, tool_name, result_json, context_result_json, status, completed_at, created_at
+        const rows = db.prepare(`SELECT id, task_id, tool_name, args_json, result_json, context_result_json, status, completed_at, created_at
           FROM message_tool_calls
           WHERE task_id=? AND status IN ('completed','failed','cancelled')
             AND result_json IS NOT NULL AND context_result_json IS NULL`).all(taskId) as Array<{
               id: string;
               task_id: string;
               tool_name: string;
+              args_json: string;
               result_json: string;
               context_result_json: string | null;
               status: string;
@@ -400,6 +417,8 @@ export function conversationsRepository(db: Database.Database) {
           const contextResultJson = deriveContextResult(db, {
             taskId: row.task_id,
             toolName: row.tool_name,
+            argsJson: row.args_json,
+            status: row.status,
             resultJson: row.result_json,
             now: row.completed_at ?? row.created_at,
           });

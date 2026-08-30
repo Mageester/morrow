@@ -69,17 +69,20 @@ export function TranscriptOverlay({
   unicode,
   width,
   onClose,
+  start = "bottom",
 }: {
   entries: readonly ConversationEntry[];
   unicode: boolean;
   width: number;
   onClose: () => void;
+  /** "page-up" opens one screen back, for someone reaching for the scrollback. */
+  start?: "bottom" | "page-up";
 }) {
   const g = glyphs(unicode);
   const lines = useMemo(() => transcriptLines(entries, width), [entries, width]);
   const bottom = Math.max(0, lines.length - VISIBLE_ROWS);
 
-  const [offset, setOffset] = useState(bottom);
+  const [offset, setOffset] = useState(start === "page-up" ? Math.max(0, bottom - VISIBLE_ROWS) : bottom);
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [hit, setHit] = useState(0);

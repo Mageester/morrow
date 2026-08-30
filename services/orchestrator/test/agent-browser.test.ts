@@ -151,12 +151,15 @@ describe("agent browser and vision bridge", () => {
       [tool("write", "create_file", { path: "index.html", content: "<main>hello</main>" }), done],
       [tool("verify", "run_command", { executable: "node", args: ["-e", "process.exit(0)"], purpose: "verify frontend" }), done],
       [{ type: "text", text: "The responsive frontend is complete." }, done],
+      // v0.8.1 grants one bounded "not finished" continuation; the model adds
+      // no further responsive evidence, so the run settles with the blockers.
+      [{ type: "text", text: "No further responsive evidence is available here." }, done],
     ]);
 
     await executeAgentChatTask({ db, taskId: "t", provider, browserFactory: () => new FakeBrowser(), maxTurns: 6 });
 
     expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
-    expect(conversationsRepository(db).getMessage("a")?.content).toContain("The responsive frontend is complete.");
+    expect(conversationsRepository(db).getMessage("a")?.content).toContain("No further responsive evidence is available here.");
     expect(taskRecordsRepository(db).listEvents("t").some((event) => event.type === "task.completed")).toBe(true);
     expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({ completion: { complete: false } });
   });

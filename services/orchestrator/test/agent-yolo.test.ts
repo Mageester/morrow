@@ -67,7 +67,16 @@ describe("agent trusted workspace", () => {
     ["a deploy", "vercel", ["deploy", "--prod"]],
   ])("runs %s without asking", async (_label, exec, cmdArgs) => {
     seedYolo(db, ws, true);
-    const provider = new MockProvider({ chunks: [[tool("x1", "run_command", { executable: exec, args: cmdArgs, purpose: "unattended" }), done], [text("done"), done]], delayMs: 1 });
+    const provider = new MockProvider({ chunks: [
+      [tool("x1", "run_command", { executable: exec, args: cmdArgs, purpose: "unattended" }), done],
+      [text("done"), done],
+      // Several of these commands genuinely fail in a test sandbox (no network,
+      // no published package). v0.8.1 grants one bounded continuation for the
+      // failed verification; this case is about approvals, not about the
+      // command succeeding, so the model simply settles.
+      [text("the command is not runnable in this environment"), done],
+      [text("the command remains unrunnable here"), done],
+    ], delayMs: 1 });
     const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
     runner.run("t");
     await runner.waitFor("t");

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/database.js";
@@ -18,8 +18,9 @@ describe("agent automatic user memory", () => {
   beforeEach(() => {
     db = openDatabase(":memory:");
     root = mkdtempSync(join(tmpdir(), "morrow-auto-user-memory-"));
+    mkdirSync(join(root, "other"));
     projectRepository(db).createProject({ id: "p1", name: "One", workspacePath: root, createdAt: "2026-08-12T10:00:00.000Z" });
-    projectRepository(db).createProject({ id: "p2", name: "Two", workspacePath: root, createdAt: "2026-08-12T10:00:00.000Z" });
+    projectRepository(db).createProject({ id: "p2", name: "Two", workspacePath: join(root, "other"), createdAt: "2026-08-12T10:00:00.000Z" });
   });
 
   afterEach(() => {

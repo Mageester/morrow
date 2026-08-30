@@ -258,7 +258,14 @@ describe("durable provider projection", () => {
     expect(args.path).toBe("large.txt");
     expect(args.expectedOffset).toBe(5);
     expect(args).not.toHaveProperty("content");
-    expect(args.durable_context).toMatchObject({ kind: "completed_tool_arguments", tool: "append_file", payloadBytes: body.length });
+    // An append reports what it added, not what the file now holds: the result
+    // says totalBytes is body.length + 5, so claiming the file "holds exactly
+    // these 12,000 bytes" would be wrong by the five pre-existing bytes.
+    expect(args).toMatchObject({ write_succeeded: true, bytes_appended: body.length });
+    expect(args.bytes_written).toBeUndefined();
+    expect(args.note).toContain("completed successfully");
+    expect(args.note).toContain("appended exactly these");
+    expect(args.note).not.toContain("now holds exactly");
     expect(JSON.stringify(messages)).not.toContain(body);
     expect(JSON.stringify(messages)).not.toContain("_morrowAppliedWrite");
     expect(messages.filter((message) => message.role === "tool" && message.toolCallId === "large-append")).toHaveLength(1);
@@ -287,7 +294,8 @@ describe("durable provider projection", () => {
     expect(assistantCall!.function.arguments.length).toBeLessThan(8 * 1024);
     expect(JSON.parse(assistantCall!.function.arguments)).toMatchObject({
       path: "missing.txt",
-      durable_context: { tool: "create_file", originalBytes: expect.any(Number) },
+      write_succeeded: false,
+      bytes_attempted: expect.any(Number),
     });
     expect(toolResult?.content.length).toBeLessThan(8 * 1024);
     expect(toolResult?.content).toContain("invalid_tool_arguments");

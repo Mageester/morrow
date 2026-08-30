@@ -148,6 +148,10 @@ describe("Journey G — /output full consistency with durable repositories", () 
         [toolChunk("r1", "read_file", { path: "big.js" }), done],
         [textChunk("Investigating the reported issue."), toolChunk("s1", "search_text", { query: "add" }), done],
         [textChunk("The add() function looks fine to me on inspection; no change appears necessary."), done],
+        // v0.8.1 grants one bounded continuation when delivery evidence is
+        // missing; the model declines to write, so the run settles here.
+        [textChunk("I stand by the inspection: no code change is warranted."), done],
+        [textChunk("I still hold that no code change is warranted."), done],
       ],
     });
 
@@ -159,7 +163,7 @@ describe("Journey G — /output full consistency with durable repositories", () 
     const status = await waitForTerminal(api, taskId);
     expect(status).toBe("completed");
     const canonical = canonicalAnswerRow(taskId);
-    expect(canonical?.content).toBe("The add() function looks fine to me on inspection; no change appears necessary.");
+    expect(canonical?.content).toBe("I still hold that no code change is warranted.");
     expect(JSON.parse(canonical!.evidence_json)).toMatchObject({ completion: { complete: false } });
 
     const { aggregate, report } = await outputFullReport(taskId, conversation.id);
@@ -179,6 +183,10 @@ describe("Journey G — /output full consistency with durable repositories", () 
         [toolChunk("r1", "read_file", { path: "big.js" }), done],
         [textChunk(REPEATED_NARRATION), toolChunk("s1", "search_text", { query: "add" }), done],
         [textChunk(REPEATED_NARRATION), toolChunk("s2", "search_text", { query: "return" }), done],
+        [textChunk(REPEATED_NARRATION), done],
+        // A task that delivered nothing gets two bounded continuations; the
+        // stalled model repeats itself through both.
+        [textChunk(REPEATED_NARRATION), done],
         [textChunk(REPEATED_NARRATION), done],
       ],
     });

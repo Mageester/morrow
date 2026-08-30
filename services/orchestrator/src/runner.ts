@@ -15,6 +15,16 @@ export interface ExecutionLeaseClaim {
 
 export type TaskCancelReason = "user_cancelled" | "parent_cancelled" | "mission_terminal";
 
+/** How long a shutdown waits for in-flight turns before continuing without them. */
+export const DEFAULT_SHUTDOWN_DRAIN_MS = 10_000;
+
+export interface TaskRunnerShutdownResult {
+  /** Turns that were still running when the drain began. */
+  active: number;
+  /** False when the bounded wait elapsed with work still in flight. */
+  drained: boolean;
+}
+
 export type TaskExecutor = (deps: {
   db: Database.Database;
   taskId: string;
@@ -32,6 +42,11 @@ export class TaskRunner {
    * queued descendant is dispatched before the cancellation sweep sees it.
    */
   private cancellationRoots = new Map<string, TaskCancelReason>();
+  /**
+   * Set by `shutdown()`. Once false the runner refuses new dispatches, which is
+   * stage one of a staged shutdown: nothing new may enter while the drain runs.
+   */
+  private acceptingWork = true;
   private settledListeners = new Set<(taskId: string) => void>();
   private executor: TaskExecutor;
   private teammateSpawner: TeammateSpawner | undefined;
@@ -92,6 +107,10 @@ export class TaskRunner {
     if (this.activeTasks.has(taskId)) {
       throw new Error("Duplicate execution rejected");
     }
+    // A dispatch accepted after the drain has walked past it would run against
+    // a database that is about to close. The task keeps its queued status and
+    // startup reconciliation picks it up on the next boot.
+    if (!this.acceptingWork) return;
 
     const cancellation = this.cancellationFor(taskId);
     if (cancellation) {
@@ -303,6 +322,55 @@ export class TaskRunner {
       if (!this.activePromises.has(taskId)) this.notifySettled(taskId);
     }
 
+  }
+
+  /**
+   * Stage one and two of runtime shutdown: stop accepting work, ask every
+   * active turn to stop, and wait a bounded time for them to settle.
+   *
+   * v0.8.0 had no such stage. The host stopped the scheduler and the server,
+   * then drained the process supervisor and closed the database — while turns
+   * were still running. A turn could therefore have its child processes killed
+   * mid-command and then meet a closed database when it tried to persist what
+   * had happened. Aborting first gives each turn the chance to record its own
+   * interruption through the path it already has, so a restart resumes from
+   * durable state instead of reconstructing it.
+   *
+   * The wait is bounded on purpose. A turn blocked on something that will not
+   * return must not hold the process open forever; the caller continues to the
+   * remaining stages and the unsettled task is reconciled on the next start.
+   *
+   * The residual risk is accepted knowingly: an executor that ignores its abort
+   * signal can still be running when the database closes, and its next write
+   * will throw. There is no way to terminate a JavaScript promise from outside,
+   * so the alternatives are a hang or this. A hang is worse — it strands the
+   * process and denies the user a restart, which is the one action that
+   * reliably recovers the task. Everything durable was written before the
+   * abort; what such a turn loses is at most its final transition, which
+   * startup reconciliation re-derives.
+   */
+  async shutdown(options: { timeoutMs?: number } = {}): Promise<TaskRunnerShutdownResult> {
+    this.acceptingWork = false;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_SHUTDOWN_DRAIN_MS;
+    for (const controller of this.abortControllers.values()) controller.abort();
+
+    const pending = [...this.activePromises.values()];
+    if (pending.length === 0) return { active: 0, drained: true };
+
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+      timer.unref?.();
+    });
+    try {
+      const drained = await Promise.race([
+        Promise.allSettled(pending).then(() => true as const),
+        timedOut,
+      ]);
+      return { active: pending.length, drained };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   // test-only method

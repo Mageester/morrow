@@ -144,6 +144,9 @@ describe("frontend-validation completion gate — vision requirement", () => {
         [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
         frontendValidationTurn(),
         [text("Built and verified the page."), done],
+        // v0.8.1 grants one bounded "not finished" continuation; the model has
+        // no further browser evidence to add, so the run settles here.
+        [text("There is no further browser evidence I can capture."), done],
       ],
       delayMs: 1,
     });
@@ -284,6 +287,9 @@ describe("frontend-validation completion gate — vision requirement", () => {
         [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
         frontendValidationTurn(),
         [text("Built and verified the page."), done],
+        // v0.8.1 grants one bounded "not finished" continuation; the model
+        // has no further browser evidence to add, so the run settles here.
+        [text("The console errors come from the page itself; there is nothing more to capture."), done],
       ],
       delayMs: 1,
     });
@@ -309,6 +315,9 @@ describe("frontend-validation completion gate — vision requirement", () => {
         [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
         frontendValidationTurn(),
         [text("Built and verified the page."), done],
+        // v0.8.1 grants one bounded "not finished" continuation; the model has
+        // no further browser evidence to add, so the run settles here.
+        [text("There is no further browser evidence I can capture."), done],
       ],
       delayMs: 1,
     });
@@ -328,6 +337,9 @@ describe("frontend-validation completion gate — vision requirement", () => {
         [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
         frontendValidationTurn(),
         [text("Built and verified the page."), done],
+        // v0.8.1 grants one bounded "not finished" continuation; the model has
+        // no further browser evidence to add, so the run settles here.
+        [text("There is no further browser evidence I can capture."), done],
       ],
       delayMs: 1,
     });
@@ -346,6 +358,9 @@ describe("frontend-validation completion gate — vision requirement", () => {
         [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
         frontendValidationTurn(),
         [text("Built and verified the page."), done],
+        // v0.8.1 grants one bounded "not finished" continuation; the model has
+        // no further browser evidence to add, so the run settles here.
+        [text("There is no further browser evidence I can capture."), done],
       ],
       delayMs: 1,
     });
@@ -364,6 +379,9 @@ describe("frontend-validation completion gate — vision requirement", () => {
         [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
         frontendValidationTurn(),
         [text("Built and verified the page."), done],
+        // v0.8.1 grants one bounded "not finished" continuation; the model has
+        // no further browser evidence to add, so the run settles here.
+        [text("There is no further browser evidence I can capture."), done],
       ],
       delayMs: 1,
     });

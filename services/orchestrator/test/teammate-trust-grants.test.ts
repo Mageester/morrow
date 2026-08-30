@@ -259,7 +259,7 @@ describe("teammate trust grant API", () => {
   });
 
   it("refuses a target from another project", async () => {
-    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: workspace, createdAt: now() });
+    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: "C:/other", createdAt: now() });
     agentsRepository(db).create({ id: "outsider", projectId: "p2", name: "Outsider", role: "researcher" });
     expect((await grant({ callerAgentId: "caller", targetAgentId: "outsider" })).statusCode).toBe(404);
   });

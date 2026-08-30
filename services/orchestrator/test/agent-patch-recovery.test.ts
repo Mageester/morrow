@@ -233,6 +233,7 @@ describe("agent patch recovery", () => {
       kind: "patch_no_effect",
       targetFile: "index.html",
     });
+    expect(JSON.parse(noop.resultJson!).instruction).toMatch(/different replacement|do not call propose_patch/i);
   });
 
   it("keeps repeated no-op patches as structured model-visible results", async () => {
@@ -243,6 +244,8 @@ describe("agent patch recovery", () => {
         [tool("noop-1", "propose_patch", { patch: noOpPatch, explanation: "claim improvement", files: ["index.html"] }), done],
         [tool("noop-2", "propose_patch", { patch: noOpPatch2, explanation: "claim improvement again", files: ["index.html"] }), done],
         [text("switching to a full rewrite"), done],
+        // v0.8.1 grants one bounded continuation before accepting the stop.
+        [text("The file already holds the intended content."), done],
       ],
       delayMs: 1,
     });
@@ -313,7 +316,9 @@ describe("agent patch recovery", () => {
         // shape — zero addition lines — so every one independently fails.
         [text("Trying again with more detail."), tool("bad-2", "propose_patch", { patch: malformedHunkPatch.replace("<h1>current</h1>", "<h1>currently</h1>"), explanation: "bad hunk 2", files: ["index.html"] }), done],
         [text("One more attempt."), tool("bad-3", "propose_patch", { patch: malformedHunkPatch.replace("<h1>current</h1>", "<h1>curr</h1>"), explanation: "bad hunk 3", files: ["index.html"] }), done],
-        [text("should not reach this turn"), done],
+        [text("The patch shape cannot be repaired from here."), done],
+        // v0.8.1 grants one bounded continuation before accepting the stop.
+        [text("No further patch attempt is worth making."), done],
       ],
       delayMs: 1,
     });

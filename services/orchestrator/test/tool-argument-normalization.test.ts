@@ -263,11 +263,14 @@ describe("a realistic multi-file build history survives persistence, replay and 
       const projectedArgs = JSON.parse(call.function.arguments) as Record<string, any>;
       expect(projectedArgs.path).toBe(file.path);
       expect(projectedArgs.content).toBeUndefined();
-      expect(projectedArgs.durable_context).toMatchObject({
-        kind: "completed_tool_arguments",
-        tool: "create_file",
-        payloadBytes: Buffer.byteLength(file.content, "utf8"),
+      // The omission is stated as an outcome the model can act on, not as a
+      // fact about Morrow's storage layer.
+      expect(projectedArgs).toMatchObject({
+        write_succeeded: true,
+        bytes_written: Buffer.byteLength(file.content, "utf8"),
       });
+      expect(projectedArgs.note).toContain("completed successfully");
+      expect(projectedArgs.note).toContain("Do not rewrite the file to check");
       expect(throughBoundary("create_file", call.function.arguments, ["path", "content"]).stage).toBe("validate");
     });
   });

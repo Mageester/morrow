@@ -94,8 +94,8 @@ export async function resolveProject(
   if (cwdProjects.length === 1) return cwdProjects[0]!;
   if (cwdProjects.length > 1)
     throw usageError(
-      "Multiple registered projects match this directory.",
-      "Pass --project <id> to choose one explicitly.",
+      `Multiple registered projects match this directory: ${cwdProjects.map((p) => `${p.id} (${p.workspacePath})`).join(", ")}.`,
+      "Pass --project <id> to choose one explicitly, or register the current directory as its own project with `morrow projects add .`.",
     );
 
   // 3. When launched from a subdirectory, select the registered project whose
@@ -103,16 +103,16 @@ export async function resolveProject(
   //    while still refusing broad parents such as home or Documents.
   const gitRoot = findNearestGitRoot(cwd);
   if (gitRoot) {
-    const matches = projects.filter(
+    const matches = uniqueProjectsByWorkspacePath(projects.filter(
       (p) =>
         samePath(canonicalProjectPath(p.workspacePath), gitRoot) &&
         isSafeProjectRoot(p.workspacePath).safe,
-    );
+    ));
     if (matches.length === 1) return matches[0]!;
     if (matches.length > 1)
       throw usageError(
-        "Multiple registered projects match this Git repository.",
-        "Pass --project <id> to choose one explicitly.",
+        `Multiple registered projects match this Git repository: ${matches.map((p) => `${p.id} (${p.workspacePath})`).join(", ")}.`,
+        "Pass --project <id> to choose one explicitly, or register the current directory as its own project with `morrow projects add .`.",
       );
   }
 
@@ -488,6 +488,17 @@ function samePath(left: string, right: string): boolean {
   return normalizePath(left) === normalizePath(right);
 }
 
+function uniqueProjectsByWorkspacePath(projects: Project[]): Project[] {
+  const unique: Project[] = [];
+  for (const project of projects) {
+    const path = canonicalProjectPath(project.workspacePath);
+    if (!unique.some((candidate) => samePath(canonicalProjectPath(candidate.workspacePath), path))) {
+      unique.push(project);
+    }
+  }
+  return unique;
+}
+
 function normalizePath(path: string): string {
   const normalized = resolve(path);
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
@@ -501,9 +512,9 @@ function containsPath(parent: string, child: string): boolean {
 }
 
 /** All registered projects whose workspace contains `cwd`, tied for the
- *  deepest (most specific) match — usually one, but more than one means two
- *  projects were registered at the same path and the caller must refuse
- *  rather than arbitrarily pick the first, same as the Git-root fallback below. */
+ *  deepest (most specific) match. Rows that resolve to the same workspace are
+ *  one candidate, not an ambiguity; legacy duplicate rows must not make every
+ *  descendant directory unusable. */
 function nearestContainingProjects(
   projects: Project[],
   cwd: string,
@@ -515,11 +526,19 @@ function nearestContainingProjects(
       safety: isSafeProjectRoot(project.workspacePath),
     }))
     .filter((item) => item.safety.safe && containsPath(item.path, cwd))
-    .sort((a, b) => b.path.length - a.path.length);
+    .sort((a, b) =>
+      b.path.length - a.path.length
+      || a.project.createdAt.localeCompare(b.project.createdAt)
+      || a.project.id.localeCompare(b.project.id),
+    );
   if (matches.length === 0) return [];
   const bestLength = matches[0]!.path.length;
-  return matches
-    .filter((item) => item.path.length === bestLength)
+  const best = matches.filter((item) => item.path.length === bestLength);
+  const uniquePaths: typeof best = [];
+  for (const item of best) {
+    if (!uniquePaths.some((candidate) => samePath(candidate.path, item.path))) uniquePaths.push(item);
+  }
+  return uniquePaths
     .map((item) => item.project);
 }
 

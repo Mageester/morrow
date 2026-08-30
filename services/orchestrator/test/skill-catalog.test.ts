@@ -233,13 +233,16 @@ describe("skill catalog", () => {
     const bundledRoot = join(root, "bundled");
     const userRoot = join(root, "user");
     const workspace = join(root, "workspace");
+    const otherWorkspace = join(root, "other-workspace");
     mkdirSync(bundledRoot);
     mkdirSync(userRoot);
     mkdirSync(join(workspace, "skills"), { recursive: true });
+    mkdirSync(join(otherWorkspace, "skills"), { recursive: true });
     writeSkill(join(workspace, "skills"), "lint");
+    writeSkill(join(otherWorkspace, "skills"), "lint");
     const database = db();
     projectRepository(database).createProject({ id: "p1", name: "P1", workspacePath: workspace, createdAt: NOW });
-    projectRepository(database).createProject({ id: "p2", name: "P2", workspacePath: workspace, createdAt: NOW });
+    projectRepository(database).createProject({ id: "p2", name: "P2", workspacePath: otherWorkspace, createdAt: NOW });
     const catalog = createSkillCatalog({ db: database, bundledRoot, userRoot, now: () => NOW });
 
     expect(() => catalog.list({ workspacePath: workspace })).toThrow();
@@ -248,7 +251,7 @@ describe("skill catalog", () => {
     expect(catalog.getByKey("workspace:p1:lint", scope)).toMatchObject({ enabled: false, loadable: false });
     catalog.setEnabled("workspace:p1:lint", true, scope);
     expect(catalog.getByKey("workspace:p1:lint", { projectId: "p1", workspacePath: workspace })).toMatchObject({ enabled: true, loadable: true });
-    expect(catalog.getByKey("workspace:p2:lint", { projectId: "p2", workspacePath: workspace })).toMatchObject({ enabled: false, loadable: false });
+    expect(catalog.getByKey("workspace:p2:lint", { projectId: "p2", workspacePath: otherWorkspace })).toMatchObject({ enabled: false, loadable: false });
     database.close();
   });
 

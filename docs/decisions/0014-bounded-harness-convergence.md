@@ -43,6 +43,17 @@ Provider fallback is bounded and reports omitted candidates as durable evidence;
 tool-only turns remain valid provider responses, while empty responses retain a
 bounded retry policy and explicit incomplete termination.
 
+### Externalized reads remain authoritative
+
+The artifact store remains the byte-boundary for oversized tool results, but a
+successful externalized `read_file` is projected differently from a generic
+command result. The model receives an exact bounded content prefix, the file's
+range metadata, and an explicit next `read_file` action when more bytes remain.
+It does not need to inspect Morrow's persistence layer to decide whether the
+file read succeeded or whether the displayed content is usable. A bounded
+`read_artifact` page follows the same rule: its content is projected directly
+and cannot recursively turn into another artifact pointer.
+
 ## Consequences
 
 Tasks stop early and explain the reason when they are not converging, rather
@@ -56,3 +67,9 @@ The focused harness regressions and the fresh Pulse acceptance run cover the
 pathological pause, resume projection, direct overwrite, provider cap, source
 verification, real browser interaction, responsive screenshots, and supervised
 server shutdown.
+
+The read projection is reversible without a data migration: reverting the
+projection code restores the previous model-facing representation while the
+complete `result_json` and artifact rows remain intact. The behavioral risk of
+that rollback is renewed model confusion or duplicate inspection, not loss of
+the captured file bytes.

@@ -351,10 +351,14 @@ async function runFreeExecutionObservationPath(fixture: Fixture): Promise<string
       repeatedFailureTurn(),
       repeatedFailureTurn(),
       [{ type: "text", text: "The repeated tool failures were observed; the model owns the next action." }, { type: "done" }],
+      // v0.8.1 grants one bounded continuation before accepting a stop that
+      // leaves acceptance evidence outstanding.
+      [{ type: "text", text: "There is no further action the failures allow." }, { type: "done" }],
+      [{ type: "text", text: "The failures still allow no further action." }, { type: "done" }],
     ],
   });
   await executeAgentChatTask({ db: fixture.db, taskId: task.id, provider, maxTurns: 8 });
-  expect(provider.requests.length).toBe(5);
+  expect(provider.requests.length).toBe(7);
   expect(taskRepository(fixture.db).getTaskById(task.id)?.status).toBe("completed");
   expect(fixture.service.get(fixture.missionId).status).toBe("running");
   expect(terminalKindFromEvents(fixture, task.id)).toBeUndefined();

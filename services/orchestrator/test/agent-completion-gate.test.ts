@@ -69,6 +69,11 @@ describe("agent completion gate", () => {
       chunks: [
         [tool("v1", "run_command", { executable: "node", args: ["-e", "process.exit(1)"], purpose: "verify" }), done],
         [text("all good"), done],
+        // v0.8.1 grants a bounded "you are not finished" continuation. The
+        // model restates its claim without acting, so the run settles here
+        // and the durable blockers below are the honest final evidence.
+        [text("nothing further I can do"), done],
+        [text("and I still have nothing to add"), done],
       ],
       delayMs: 1,
     });
@@ -140,6 +145,11 @@ describe("agent completion gate", () => {
           timeoutMs: 25,
         }), done],
         [text("all good"), done],
+        // v0.8.1 grants a bounded "you are not finished" continuation. The
+        // model restates its claim without acting, so the run settles here
+        // and the durable blockers below are the honest final evidence.
+        [text("nothing further I can do"), done],
+        [text("and I still have nothing to add"), done],
       ],
       delayMs: 1,
     });
@@ -172,6 +182,11 @@ describe("agent completion gate", () => {
       chunks: [
         [tool("npm-guard", "run_command", { executable: "npm", args: ["test"], purpose: "verify" }), done],
         [text("cannot verify with npm here"), done],
+        // v0.8.1 grants a bounded "you are not finished" continuation. The
+        // model restates its claim without acting, so the run settles here
+        // and the durable blockers below are the honest final evidence.
+        [text("npm remains unavailable here"), done],
+        [text("npm is still not usable here"), done],
       ],
       delayMs: 1,
     });
@@ -197,6 +212,11 @@ describe("agent completion gate", () => {
         [tool("repeat-2", "run_command", failedCommand), done],
         [tool("repeat-3", "run_command", failedCommand), done],
         [text("blocked by repeated command"), done],
+        // v0.8.1 grants a bounded "you are not finished" continuation. The
+        // model restates its claim without acting, so the run settles here
+        // and the durable blockers below are the honest final evidence.
+        [text("the command keeps failing the same way"), done],
+        [text("the command still fails identically"), done],
       ],
       delayMs: 1,
     });
@@ -251,6 +271,11 @@ describe("agent completion gate", () => {
         [tool("v1", "run_command", { executable: "node", args: ["-e", "process.exit(1)"], purpose: "verify" }), done],
         [tool("w1", "create_file", { path: "after-failure.txt", content: "changed\n" }), done],
         [text("fixed"), done],
+        // v0.8.1 grants a bounded "you are not finished" continuation. The
+        // model restates its claim without acting, so the run settles here
+        // and the durable blockers below are the honest final evidence.
+        [text("no further change to make"), done],
+        [text("there is still no change to make"), done],
       ],
       delayMs: 1,
     });
@@ -270,6 +295,11 @@ describe("agent completion gate", () => {
         [tool("v1", "run_command", { executable: "node", args: ["-e", "process.exit(0)"], purpose: "verify" }), done],
         [tool("w1", "create_file", { path: "after-pass.txt", content: "changed\n" }), done],
         [text("still verified"), done],
+        // v0.8.1 grants a bounded "you are not finished" continuation. The
+        // model restates its claim without acting, so the run settles here
+        // and the durable blockers below are the honest final evidence.
+        [text("the write did not change behaviour"), done],
+        [text("the write still changes nothing"), done],
       ],
       delayMs: 1,
     });
@@ -287,6 +317,11 @@ describe("agent completion gate", () => {
       chunks: [
         [tool("w1", "create_file", { path: "unverified.txt", content: "changed\n" }), done],
         [text("done without checking"), done],
+        // v0.8.1 grants a bounded "you are not finished" continuation. The
+        // model restates its claim without acting, so the run settles here
+        // and the durable blockers below are the honest final evidence.
+        [text("I have nothing else to check"), done],
+        [text("there is still nothing else to check"), done],
       ],
       delayMs: 1,
     });
@@ -380,6 +415,10 @@ describe("agent completion gate", () => {
         [tool("c1", "create_file", { path: "bad.js", content: "function (\n" }), done],
         [tool("v1", "run_command", { executable: "node", args: ["--check", "bad.js"], purpose: "syntax check" }), done],
         [text("looks good"), done],
+        // v0.8.1 grants a bounded "you are not finished" continuation; the
+        // model restates its claim without acting, so the run settles here.
+        [text("the syntax error is beyond what I can fix"), done],
+        [text("the syntax error still defeats me"), done],
       ],
       delayMs: 1,
     });
@@ -400,6 +439,10 @@ describe("agent completion gate", () => {
         [tool("c1", "create_file", { path: "style.css", content: "body {\n  color: black;\n}\n" }), done],
         [tool("p1", "propose_patch", { patch: malformed, explanation: "restyle", files: ["style.css"] }), done],
         [text("styled"), done],
+        // v0.8.1 grants a bounded "you are not finished" continuation; the
+        // model restates its claim without acting, so the run settles here.
+        [text("the patch cannot be reshaped"), done],
+        [text("the patch still cannot be reshaped"), done],
       ],
       delayMs: 1,
     });
@@ -441,6 +484,11 @@ describe("agent completion gate", () => {
       chunks: [
         [tool("v1", "run_command", { executable: "node", args: ["-e", "process.exit(2)"], purpose: "verify" }), done],
         [text("all good"), done],
+        // v0.8.1 grants a bounded "you are not finished" continuation. The
+        // model restates its claim without acting, so the run settles here
+        // and the durable blockers below are the honest final evidence.
+        [text("nothing further I can do"), done],
+        [text("and I still have nothing to add"), done],
       ],
       delayMs: 1,
     });

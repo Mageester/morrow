@@ -222,7 +222,7 @@ describe("Handoffs inside a thread", () => {
     });
     expect(disabled.statusCode).toBe(409);
 
-    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: process.cwd(), createdAt: ts() });
+    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: "C:/other", createdAt: ts() });
     const foreign = (await app.inject({
       method: "POST", url: "/api/projects/p2/agents", payload: { name: "Foreign", role: "researcher" },
     })).json();

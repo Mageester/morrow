@@ -183,14 +183,14 @@ describe("resolveProject: cwd-first precedence (P1-2)", () => {
     expect(api.created).toEqual([]);
   });
 
-  it("multiple registered projects at the same Git root is ambiguous and refuses rather than guessing", async () => {
+  it("duplicate rows for one workspace collapse to the oldest project", async () => {
     const repo = tempRepo("morrow-ambiguous-");
     const p1 = project("p1", repo);
     const p2 = project("p2", repo);
     process.chdir(repo);
 
     const { ctx } = fakeCtx({});
-    await expect(resolveProject(ctx, fakeApi([p1, p2]))).rejects.toThrow(/Multiple registered projects/);
+    await expect(resolveProject(ctx, fakeApi([p1, p2]))).resolves.toEqual(p1);
   });
 
   it("Windows path casing and separator variants resolve to the same project", async () => {

@@ -457,16 +457,26 @@ describe("evidence-driven task completion contracts", () => {
       seedMissionTask(db, workspace, "task-a", "mission-a", "Inspect the workspace and report findings.");
       seedMissionTask(db, workspace, "task-b", "mission-a", "Inspect the workspace and report findings.");
       seedMissionLineage(db, "mission-a", "task-a", "task-b");
-      const unrelatedProvider = new MockProvider({ chunks: [[{ type: "text", text: "Inspection complete from unrelated task evidence." }, providerDone]] });
-      await executeAgentChatTask({ db, taskId: "task-b", provider: unrelatedProvider, maxTurns: 2 });
+      const unrelatedProvider = new MockProvider({ chunks: [
+        [{ type: "text", text: "Inspection complete from unrelated task evidence." }, providerDone],
+        // v0.8.1 continues once when actionable evidence is missing; this task
+        // owns none, so the model repeats itself and the run settles here.
+        [{ type: "text", text: "I have no evidence of my own to add." }, providerDone],
+        [{ type: "text", text: "I still have no evidence of my own." }, providerDone],
+      ] });
+      await executeAgentChatTask({ db, taskId: "task-b", provider: unrelatedProvider, maxTurns: 4 });
       expect(taskRepository(db).getTaskById("task-b")!.status).toBe("completed");
       expect(executionContinuityRepository(db).getCanonicalAnswer("task-b")?.evidenceJson).toMatchObject({ completion: { complete: false } });
 
       seedMissionTask(db, workspace, "task-d", "mission-b", "Inspect the workspace and report findings.");
       seedMissionTask(db, workspace, "task-c", "mission-b", "Inspect the workspace and report findings.");
       seedMissionLineage(db, "mission-b", "task-d", "task-c", true);
-      const recoveryProvider = new MockProvider({ chunks: [[{ type: "text", text: "Inspection complete from owned recovery evidence." }, providerDone]] });
-      await executeAgentChatTask({ db, taskId: "task-c", provider: recoveryProvider, maxTurns: 2 });
+      const recoveryProvider = new MockProvider({ chunks: [
+        [{ type: "text", text: "Inspection complete from owned recovery evidence." }, providerDone],
+        [{ type: "text", text: "The inherited recovery evidence already covers this." }, providerDone],
+        [{ type: "text", text: "The inherited evidence still covers this." }, providerDone],
+      ] });
+      await executeAgentChatTask({ db, taskId: "task-c", provider: recoveryProvider, maxTurns: 4 });
       expect(taskRepository(db).getTaskById("task-c")!.status).toBe("completed");
     } finally {
       db.close();
@@ -483,16 +493,20 @@ describe("evidence-driven task completion contracts", () => {
         chunks: [
           [providerTool("write", "create_file", { path: "app.mjs", content: "console.log('ok');\n" }), providerDone],
           [{ type: "text", text: "Reviewed and fixed app.mjs; the CLI is complete." }, providerDone],
+          // v0.8.1 continues once when actionable evidence is missing; the
+          // model repeats itself without acting, so the run settles here.
+          [{ type: "text", text: "I cannot run the CLI in this environment." }, providerDone],
         ],
         delayMs: 1,
       });
-      const runner = new TaskRunner(db, async (details) => executeAgentChatTask({ db: details.db, taskId: details.taskId, provider, maxTurns: 4 }));
+      const runner = new TaskRunner(db, async (details) => executeAgentChatTask({ db: details.db, taskId: details.taskId, provider, maxTurns: 6 }));
       runner.run("cli-task");
       await runner.waitFor("cli-task");
 
       expect(taskRepository(db).getTaskById("cli-task")!.status).toBe("completed");
       expect(executionContinuityRepository(db).getCanonicalAnswer("cli-task")?.evidenceJson).toMatchObject({ completion: { complete: false } });
-      expect(provider.requests).toHaveLength(2);
+      // Two model turns plus the single bounded continuation.
+      expect(provider.requests).toHaveLength(3);
     } finally {
       db.close();
       rmSync(workspace, { recursive: true, force: true });

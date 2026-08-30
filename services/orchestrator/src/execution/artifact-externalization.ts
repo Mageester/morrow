@@ -8,8 +8,9 @@ import { redactSecrets } from "../provider/credentials.js";
  * - Inputs at or below `inlineByteLimit` are returned inline as `{kind:"inline", text}`.
  * - Inputs above the limit are stored in the artifact store and the call site
  *   receives `{kind:"artifact", id, …metadata…}` referencing the durable blob.
- *   Full content is never injected into the next provider request — only the
- *   metadata, a small excerpt, and a retrieval hint.
+ *   Ordinary results expose only metadata, a small excerpt, and a retrieval
+ *   hint; successful read results expose a separate bounded exact-content
+ *   projection so the model does not need to reason about storage.
  * - Deduplication is by `(content_hash, kind, contentType)` so identical
  *   artifacts (e.g. the same build log captured twice) share one row and
  *   increment its refcount.
@@ -28,6 +29,25 @@ export const DEFAULT_INLINE_BYTE_LIMIT = 8 * 1024;
 /** Largest slice one `read_artifact` call may return to the model. */
 export const MAX_ARTIFACT_READ_BYTES = 16 * 1024;
 
+/** Bytes of read content reserved for the model-facing bounded projection. */
+const MODEL_READ_CONTENT_BYTES = 6 * 1024;
+
+export interface ReadPresentation {
+  path?: string;
+  offset: number;
+  size: number;
+  eof: boolean;
+  content: string;
+}
+
+interface ArtifactPagePresentation {
+  id: string;
+  offset: number;
+  totalBytes: number;
+  truncated: boolean;
+  content: string;
+}
+
 export type ExternalizedToolResult =
   | { kind: "inline"; text: string; bytes: number }
   | {
@@ -41,6 +61,10 @@ export type ExternalizedToolResult =
       excerpt: string;
       refcount: number;
       retrieval: { kind: "tool_artifacts.get"; id: string };
+      /** Ephemeral source data used only to build a bounded read projection. */
+      readPresentation?: ReadPresentation;
+      /** Ephemeral page data used only to avoid recursive read_artifact externalization. */
+      artifactPagePresentation?: ArtifactPagePresentation;
     };
 
 export interface ExternalizeOptions {
@@ -50,6 +74,186 @@ export interface ExternalizeOptions {
   inlineByteLimit?: number;
   taskId?: string | null;
   now?: string;
+  /** `null` disables the read inference for a known failed read result. */
+  readPresentation?: ReadPresentation | null;
+}
+
+function utf8Prefix(input: string, maxBytes: number): { text: string; bytes: number; truncated: boolean } {
+  const buffer = Buffer.from(input, "utf8");
+  let end = Math.min(buffer.byteLength, maxBytes);
+  while (end > 0 && end < buffer.byteLength && (buffer[end]! & 0xc0) === 0x80) end--;
+  return {
+    text: buffer.subarray(0, end).toString("utf8"),
+    bytes: end,
+    truncated: end < buffer.byteLength,
+  };
+}
+
+function parseJsonObject(input: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(input) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Recover the structured read metadata emitted by `readWorkspaceFile`, while
+ * treating an ordinary file whose contents happen to be JSON as plain text.
+ * The live agent supplies the authoritative metadata directly; this parser is
+ * for legacy rows and direct externalizer callers.
+ */
+export function readFilePresentationFromResult(
+  result: string,
+  input: { path?: unknown; offset?: unknown } = {},
+): ReadPresentation | null {
+  const parsed = parseJsonObject(result);
+  const isStructuredRead = Boolean(parsed)
+    && typeof parsed!.content === "string"
+    && typeof parsed!.path === "string"
+    && typeof parsed!.size === "number"
+    && typeof parsed!.offset === "number"
+    && typeof parsed!.nextOffset === "number"
+    && typeof parsed!.eof === "boolean"
+    && typeof parsed!.truncated === "boolean";
+  if (isStructuredRead) {
+    const content = parsed!.content as string;
+    const offset = typeof parsed!.offset === "number" && Number.isSafeInteger(parsed!.offset) && parsed!.offset >= 0
+      ? parsed!.offset
+      : typeof input.offset === "number" && Number.isSafeInteger(input.offset) && input.offset >= 0 ? input.offset : 0;
+    const size = typeof parsed!.size === "number" && Number.isSafeInteger(parsed!.size) && parsed!.size >= offset
+      ? parsed!.size
+      : offset + Buffer.byteLength(content, "utf8");
+    return {
+      ...(typeof parsed!.path === "string" ? { path: parsed!.path } : typeof input.path === "string" ? { path: input.path } : {}),
+      offset,
+      size,
+      eof: parsed!.eof === true,
+      content,
+    };
+  }
+
+  // A successful `read_file` with no structured envelope is the raw file
+  // content (the common offset=0, non-truncated path). Keep that content
+  // authoritative when reconstructing a legacy durable row as well as when a
+  // caller invokes this helper directly.
+  const content = result;
+  const offset = typeof input.offset === "number" && Number.isSafeInteger(input.offset) && input.offset >= 0 ? input.offset : 0;
+  return {
+    ...(typeof input.path === "string" ? { path: input.path } : {}),
+    offset,
+    size: offset + Buffer.byteLength(content, "utf8"),
+    eof: true,
+    content,
+  };
+}
+
+function parseArtifactPagePresentation(result: string): ArtifactPagePresentation | null {
+  const parsed = parseJsonObject(result);
+  if (!parsed || typeof parsed.artifactId !== "string" || typeof parsed.content !== "string") return null;
+  const offset = typeof parsed.offset === "number" && Number.isSafeInteger(parsed.offset) && parsed.offset >= 0 ? parsed.offset : 0;
+  const totalBytes = typeof parsed.totalBytes === "number" && Number.isSafeInteger(parsed.totalBytes) && parsed.totalBytes >= offset
+    ? parsed.totalBytes
+    : offset + Buffer.byteLength(parsed.content, "utf8");
+  return {
+    id: parsed.artifactId,
+    offset,
+    totalBytes,
+    truncated: parsed.truncated === true,
+    content: parsed.content,
+  };
+}
+
+function readContinuation(
+  tool: "read_file" | "read_artifact",
+  args: Record<string, unknown>,
+): { tool: string; arguments: Record<string, unknown> } {
+  return { tool, arguments: args };
+}
+
+function renderBoundedReadPayload(
+  content: string,
+  build: (visible: { text: string; bytes: number; truncated: boolean }) => Record<string, unknown>,
+): string {
+  const safeContent = redactSecrets(content);
+  const visible = utf8Prefix(safeContent, MODEL_READ_CONTENT_BYTES);
+  const rendered = JSON.stringify(build(visible));
+  if (Buffer.byteLength(rendered, "utf8") <= DEFAULT_INLINE_BYTE_LIMIT) return rendered;
+
+  // Escaping source text for JSON can expand a valid UTF-8 page substantially
+  // (quotes, backslashes, and newlines are all escaped). Find the largest
+  // exact prefix that still fits the context bound instead of assuming raw
+  // content bytes equal serialized JSON bytes.
+  let low = 0;
+  let high = visible.bytes;
+  let best: string | null = null;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = utf8Prefix(safeContent, middle);
+    const candidateRendered = JSON.stringify(build(candidate));
+    if (Buffer.byteLength(candidateRendered, "utf8") <= DEFAULT_INLINE_BYTE_LIMIT) {
+      best = candidateRendered;
+      low = candidate.bytes + 1;
+    } else {
+      high = candidate.bytes - 1;
+    }
+  }
+  return best ?? JSON.stringify(build(utf8Prefix(safeContent, 0)));
+}
+
+function renderReadPresentation(read: ReadPresentation, artifactId?: string): string {
+  const target = typeof read.path === "string" && read.path ? redactSecrets(read.path) : "the requested file";
+  return renderBoundedReadPayload(read.content, (visible) => {
+    const nextOffset = read.offset + visible.bytes;
+    const complete = read.eof && !visible.truncated;
+    const payload: Record<string, unknown> = {
+      read_succeeded: true,
+      ...(read.path ? { path: target } : {}),
+      offset: read.offset,
+      size: read.size,
+      content: visible.text,
+      content_bytes: visible.bytes,
+      content_complete: !visible.truncated,
+      eof: complete,
+      note: complete
+        ? `read_file succeeded. The content field is the exact content of ${target}. Treat it as authoritative; do not rewrite the file to inspect it.`
+        : `read_file succeeded. The content field is the exact content shown for ${target} from byte ${read.offset}; more content remains. Continue at next_offset and do not rewrite the file to inspect it.`,
+    };
+    if (!complete) {
+      payload.next_offset = nextOffset;
+      payload.next_action = read.path
+        ? readContinuation("read_file", { path: target, offset: nextOffset })
+        : readContinuation("read_artifact", { id: artifactId ?? "", offset: nextOffset, length: MAX_ARTIFACT_READ_BYTES });
+    }
+    return payload;
+  });
+}
+
+function renderArtifactPagePresentation(page: ArtifactPagePresentation): string {
+  return renderBoundedReadPayload(page.content, (visible) => {
+    const nextOffset = page.offset + visible.bytes;
+    const complete = !page.truncated && !visible.truncated;
+    const payload: Record<string, unknown> = {
+      read_succeeded: true,
+      offset: page.offset,
+      total_bytes: page.totalBytes,
+      content: visible.text,
+      content_bytes: visible.bytes,
+      content_complete: !visible.truncated,
+      eof: complete,
+      note: complete
+        ? "The content field is the exact content returned for this range and is ready to use."
+        : "The content field is the exact content returned for this range. Use next_action for the next bounded range if more is needed.",
+    };
+    if (!complete) {
+      payload.next_offset = nextOffset;
+      payload.next_action = readContinuation("read_artifact", { id: page.id, offset: nextOffset, length: MAX_ARTIFACT_READ_BYTES });
+    }
+    return payload;
+  });
 }
 
 export function externalizeToolResult(
@@ -63,6 +267,12 @@ export function externalizeToolResult(
   if (bytes <= inlineByteLimit) {
     return { kind: "inline", text: safeText, bytes };
   }
+  const readPresentation = options.readPresentation === null
+    ? undefined
+    : options.readPresentation ?? (options.toolName === "read_file" ? readFilePresentationFromResult(safeText) : undefined);
+  const artifactPagePresentation = options.toolName === "read_artifact"
+    ? parseArtifactPagePresentation(safeText)
+    : null;
   const artifact = repo.create({
     taskId: options.taskId ?? null,
     toolName: options.toolName,
@@ -81,18 +291,27 @@ export function externalizeToolResult(
     excerpt: artifact.excerpt,
     refcount: artifact.refcount,
     retrieval: { kind: "tool_artifacts.get", id: artifact.id },
+    ...(readPresentation ? { readPresentation } : {}),
+    ...(artifactPagePresentation ? { artifactPagePresentation } : {}),
   };
 }
 
 /**
  * Render an externalized result as a JSON-serializable string suitable for
  * embedding in a tool-result message that the model will see on its next
- * turn. The model sees ONLY the metadata + excerpt + retrieval hint — never
- * the full content. This is the new compact output of the agent's
- * `capToolResult` path.
+ * turn. Ordinary oversized results see only metadata + excerpt + retrieval
+ * hint. Successful reads are different: they see a bounded exact content
+ * prefix and an explicit next action, so the model never has to infer whether
+ * a file read succeeded from Morrow's storage vocabulary.
  */
-export function renderExternalizedForContext(result: ExternalizedToolResult): string {
+export function renderExternalizedForContext(
+  result: ExternalizedToolResult,
+  options: { readPresentation?: ReadPresentation } = {},
+): string {
   if (result.kind === "inline") return result.text;
+  if (result.artifactPagePresentation) return renderArtifactPagePresentation(result.artifactPagePresentation);
+  const readPresentation = options.readPresentation ?? result.readPresentation;
+  if (readPresentation) return renderReadPresentation(readPresentation, result.id);
   return JSON.stringify({
     truncatedForContext: true,
     artifactId: result.id,
@@ -103,17 +322,42 @@ export function renderExternalizedForContext(result: ExternalizedToolResult): st
     excerpt: result.excerpt,
     refcount: result.refcount,
     retrieval: result.retrieval,
-    hint: `Full content (${result.bytes} bytes) is stored as artifact ${result.id}. Use read_artifact with id=${result.id} (or a byte range) to fetch specific sections; do not request the full payload unless you genuinely need it.`,
+    hint: `The result is larger than this context window. Call read_artifact with ${JSON.stringify({ id: result.id, offset: 0, length: MAX_ARTIFACT_READ_BYTES })} to fetch the next bounded section; its content field is directly usable.`,
   });
+}
+
+/**
+ * Keep a bounded `read_artifact` page usable when materializing legacy rows or
+ * when a caller has not gone through `externalizeToolResult` first.
+ */
+export function renderReadArtifactPageForContext(result: string): string | null {
+  if (Buffer.byteLength(result, "utf8") <= DEFAULT_INLINE_BYTE_LIMIT) return null;
+  const page = parseArtifactPagePresentation(result);
+  return page ? renderArtifactPagePresentation(page) : null;
 }
 
 /** Every artifact id this run has actually handed to the model. */
 export function collectOfferedArtifactIds(renderedToolResults: Iterable<string>): Set<string> {
   const ids = new Set<string>();
   for (const rendered of renderedToolResults) {
-    if (!rendered || !rendered.includes("artifactId")) continue;
-    for (const match of rendered.matchAll(/"artifactId"\s*:\s*"([^"]+)"/g)) {
-      if (match[1]) ids.add(match[1]);
+    if (!rendered) continue;
+    try {
+      const parsed = JSON.parse(rendered) as Record<string, unknown>;
+      if (typeof parsed.artifactId === "string" && parsed.artifactId) ids.add(parsed.artifactId);
+      const action = parsed.next_action;
+      if (action && typeof action === "object" && !Array.isArray(action)) {
+        const actionRecord = action as Record<string, unknown>;
+        const args = actionRecord.arguments;
+        if (actionRecord.tool === "read_artifact" && args && typeof args === "object" && !Array.isArray(args)) {
+          const id = (args as Record<string, unknown>).id;
+          if (typeof id === "string" && id) ids.add(id);
+        }
+      }
+    } catch {
+      // Non-JSON legacy tool results can still carry the old artifactId marker.
+      for (const match of rendered.matchAll(/"artifactId"\s*:\s*"([^"]+)"/g)) {
+        if (match[1]) ids.add(match[1]);
+      }
     }
   }
   return ids;

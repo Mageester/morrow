@@ -27,4 +27,11 @@ describe("tool catalog", () => {
       description: expect.stringMatching(/shorter.*ceiling/i),
     });
   });
+
+  it("teaches propose_patch not to send an idempotent or identical replacement", () => {
+    const patch = TOOL_CATALOG.find((tool) => tool.name === "propose_patch")!;
+    const parameters = patch.parameters as unknown as { patch: { description: string } };
+    expect(parameters.patch.description).toMatch(/different|no-op|no effect/i);
+    expect(patch.constraints.join(" ")).toMatch(/identical|idempotent|no-op/i);
+  });
 });

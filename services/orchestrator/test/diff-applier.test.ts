@@ -109,6 +109,20 @@ describe("Unified Diff Parser & Applier", () => {
     expect(applyUnifiedPatch(original, patches[0]!.chunks)).toBe("alpha\r\nBETA\r\ngamma\r\n");
   });
 
+  it("inserts an insertion-only hunk at the line boundary named by the header", () => {
+    const original = "one\ntwo\nthree\n";
+    const diff = [
+      "--- a/test.txt",
+      "+++ b/test.txt",
+      "@@ -1,0 +2,1 @@",
+      "+inserted",
+      "",
+    ].join("\n");
+    const patches = parseUnifiedDiff(diff);
+
+    expect(applyUnifiedPatch(original, patches[0]!.chunks)).toBe("one\ninserted\ntwo\nthree\n");
+  });
+
   it("tolerates harmless trailing-whitespace differences only when the target is unique", () => {
     const original = "alpha   \nbeta\t\ngamma\n";
     const diff = [
@@ -123,6 +137,39 @@ describe("Unified Diff Parser & Applier", () => {
     ].join("\n");
     const patches = parseUnifiedDiff(diff);
     expect(applyUnifiedPatch(original, patches[0]!.chunks)).toBe("alpha\nBETA\ngamma\n");
+  });
+
+  it("does not treat changed leading whitespace as harmless context drift", () => {
+    const original = "if ready:\n  run()\n";
+    const diff = [
+      "--- a/test.py",
+      "+++ b/test.py",
+      "@@ -1,2 +1,2 @@",
+      " if ready:",
+      "-   run()",
+      "+  done()",
+      "",
+    ].join("\n");
+    const patches = parseUnifiedDiff(diff);
+
+    expect(() => applyUnifiedPatch(original, patches[0]!.chunks)).toThrow(/Patch conflict/);
+  });
+
+  it("rejects a shifted hunk when its full context occurs in two places", () => {
+    const original = "prefix\nheading\nold target\nfooter\nseparator\nheading\nold target\nfooter\nsuffix\n";
+    const diff = [
+      "--- a/test.txt",
+      "+++ b/test.txt",
+      "@@ -20,3 +20,3 @@",
+      " heading",
+      "-old target",
+      "+new target",
+      " footer",
+      "",
+    ].join("\n");
+    const patches = parseUnifiedDiff(diff);
+
+    expect(() => applyUnifiedPatch(original, patches[0]!.chunks)).toThrow(/ambiguous/);
   });
 
   it("uses a unique changed-context target when the deletion line is unambiguous", () => {

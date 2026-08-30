@@ -12,7 +12,7 @@ describe("skill usage repository", () => {
     db = openDatabase(":memory:");
     const projects = projectRepository(db);
     projects.createProject({ id: "p1", name: "P1", workspacePath: process.cwd(), createdAt: new Date().toISOString() });
-    projects.createProject({ id: "p2", name: "P2", workspacePath: process.cwd(), createdAt: new Date().toISOString() });
+    projects.createProject({ id: "p2", name: "P2", workspacePath: "C:/other", createdAt: new Date().toISOString() });
   });
   afterEach(() => db.close());
 

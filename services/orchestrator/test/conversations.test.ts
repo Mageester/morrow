@@ -197,8 +197,8 @@ describe("project-scoped conversation API", () => {
     const oversized = JSON.stringify({ output: "x".repeat(20_000) });
 
     expect(() => conversations.upsertToolCall({
-      id: "atomic-context-failure", messageId: "missing-assistant-message", taskId: "task-atomic-context", toolName: "read_file",
-      argsJson: JSON.stringify({ path: "large.txt" }), resultJson: oversized,
+      id: "atomic-context-failure", messageId: "missing-assistant-message", taskId: "task-atomic-context", toolName: "run_command",
+      argsJson: JSON.stringify({ executable: "cat", args: ["large.txt"] }), resultJson: oversized,
       status: "completed", createdAt: NOW, completedAt: NOW,
     })).toThrow();
     expect((db.prepare("SELECT COUNT(*) AS count FROM tool_artifacts WHERE task_id=?").get("task-atomic-context") as { count: number }).count).toBe(0);
@@ -208,8 +208,8 @@ describe("project-scoped conversation API", () => {
       taskId: "task-atomic-context", streamingState: "streaming", createdAt: NOW, updatedAt: NOW,
     });
     const persisted = conversations.upsertToolCall({
-      id: "atomic-context-success", messageId: "assistant-atomic-context", taskId: "task-atomic-context", toolName: "read_file",
-      argsJson: JSON.stringify({ path: "large.txt" }), resultJson: oversized,
+      id: "atomic-context-success", messageId: "assistant-atomic-context", taskId: "task-atomic-context", toolName: "run_command",
+      argsJson: JSON.stringify({ executable: "cat", args: ["large.txt"] }), resultJson: oversized,
       status: "completed", createdAt: NOW, completedAt: NOW,
     });
     expect(persisted.contextResultJson).toContain("artifactId");
@@ -233,8 +233,8 @@ describe("project-scoped conversation API", () => {
         "legacy-context-call",
         "assistant-legacy-context",
         "task-legacy-context",
-        "read_file",
-        JSON.stringify({ path: "large.txt" }),
+        "run_command",
+        JSON.stringify({ executable: "cat", args: ["large.txt"] }),
         oversized,
         NOW,
         NOW,
@@ -253,7 +253,7 @@ describe("project-scoped conversation API", () => {
       turns: [{
         turnKey: "legacy-turn",
         assistantText: "Reading the file.",
-        toolCalls: [{ id: "legacy-context-call", name: "read_file", arguments: JSON.stringify({ path: "large.txt" }) }],
+        toolCalls: [{ id: "legacy-context-call", name: "run_command", arguments: JSON.stringify({ executable: "cat", args: ["large.txt"] }) }],
       }],
       toolResults: [{ id: call!.id, toolName: call!.toolName, result: call!.contextResultJson!, status: "completed" }],
     });

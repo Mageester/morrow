@@ -13,6 +13,8 @@ import { approvalsRepository } from "../src/repositories/approvals.js";
 import { teamsRepository } from "../src/repositories/teams.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import { MockProvider } from "../src/provider/mock.js";
+import { missionsRepository } from "../src/repositories/missions.js";
+import { MissionService } from "../src/mission/service.js";
 import { buildServer } from "../src/server.js";
 import { TaskRunner } from "../src/runner.js";
 import { AskTeammateSchema } from "@morrow/contracts";
@@ -40,11 +42,11 @@ describe("model-initiated ask_teammate", () => {
     rmSync(workspace, { recursive: true, force: true });
   });
 
-  function seedParent(agentId?: string, autoApprove = false) {
+  function seedParent(agentId?: string, autoApprove = false, missionId?: string) {
     const conversations = conversationsRepository(db);
     conversations.createConversation({ id: "c1", projectId: "p1", title: "Parent", agentId: agentId ?? null, createdAt: now(), updatedAt: now() });
     conversations.appendMessage({ id: "u1", conversationId: "c1", role: "user", content: "Ask a teammate for help.", createdAt: now(), updatedAt: now() });
-    const task = taskRepository(db).createTask({ id: "parent", projectId: "p1", kind: "agent_chat", status: "queued", ...(agentId ? { agentId } : {}), createdAt: now() });
+    const task = taskRepository(db).createTask({ id: "parent", projectId: "p1", kind: "agent_chat", status: "queued", ...(agentId ? { agentId } : {}), ...(missionId ? { missionId } : {}), createdAt: now() });
     conversations.appendMessage({ id: "a1", conversationId: "c1", role: "assistant", content: "", taskId: task.id, streamingState: "queued", createdAt: now(), updatedAt: now() });
     taskRoutingRepository(db).upsert({
       taskId: task.id,
@@ -72,6 +74,39 @@ describe("model-initiated ask_teammate", () => {
     });
     expect(AskTeammateSchema.safeParse({ agentId: "a", objective: "help" }).success).toBe(true);
     expect(AskTeammateSchema.safeParse({ agentId: "a", objective: "help", providerId: "openai" }).success).toBe(false);
+  });
+
+  /**
+   * Observed live: a `morrow build` worker called ask_teammate, which created a
+   * pending approval in a run with nobody to answer it. The mission then sat
+   * until its 35-minute timeout having written a single file. Delegation needs
+   * somebody to ask AND somebody to approve; a mission worker has neither, and
+   * missions dispatch their own workers anyway.
+   */
+  it("never leaves an unattended mission waiting on an approval nobody can answer", async () => {
+    const target = agentsRepository(db).create({ id: "target-agent", projectId: "p1", name: "Research", role: "researcher" });
+    const missionId = new MissionService({
+      repo: missionsRepository(db),
+      getWorkspacePath: () => workspace,
+      backupDir: join(workspace, ".morrow-checkpoints"),
+    }).create("p1", { objective: "Build the thing end to end" }).id;
+    seedParent(undefined, true, missionId);
+    const provider = new MockProvider({ chunks: [
+      [tool("delegate", "ask_teammate", { agentId: target.id, objective: "do the whole thing" }), done],
+      [{ type: "text", text: "I completed the objective myself." }, done],
+      [{ type: "text", text: "Nothing further remains." }, done],
+    ], delayMs: 1 });
+
+    await executeAgentChatTask({ db, taskId: "parent", provider, maxTurns: 8 });
+
+    // Either the tool was never offered, or the call failed fast. What must
+    // never happen is a pending approval left standing in an unattended run.
+    expect(approvalsRepository(db).listByTask("parent").filter((a) => a.status === "pending")).toHaveLength(0);
+    const call = conversationsRepository(db).listToolCallsForTask("parent").find((c) => c.id === "delegate");
+    if (call) {
+      expect(call.status).toBe("failed");
+      expect(JSON.parse(call.resultJson!).kind).toBe("delegation_unavailable_unattended");
+    }
   });
 
   it("does not expose ask_teammate when the project has no teammates to ask", async () => {
@@ -151,7 +186,7 @@ describe("model-initiated ask_teammate", () => {
     agentsRepository(db).update(disabledAgent.id, "p1", { enabled: false });
     teamsRepository(db).create({ id: "team-1", projectId: "p1", name: "Team", createdAt: now() });
     const teamAgent = agentsRepository(db).create({ id: "team-agent", projectId: "p1", name: "Team member", role: "researcher", teamId: "team-1" });
-    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: workspace, createdAt: now() });
+    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: "C:/other", createdAt: now() });
     const otherProjectAgent = agentsRepository(db).create({ id: "other-project-agent", projectId: "p2", name: "Other project", role: "researcher" });
     agentsRepository(db).update(otherProjectAgent.id, "p2", { enabled: true });
     seedParent(parentAgent.id);

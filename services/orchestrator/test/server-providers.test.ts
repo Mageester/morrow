@@ -26,10 +26,12 @@ function seedOAuthToken(home: string, provider: "openai" | "anthropic"): void {
 describe("Provider / preset / memory API", () => {
   let db: Database.Database;
   let app: FastifyInstance;
+  let extraWorkspaces: string[] = [];
   const savedMock = process.env.MOCK_PROVIDER;
 
   beforeEach(async () => {
     delete process.env.MOCK_PROVIDER;
+    extraWorkspaces = [];
     db = openDatabase(":memory:");
     // No-op executor: we assert persisted routing without running the agent.
     app = buildServer({ db, runner: new TaskRunner(db, async () => {}), backgroundModelDiscovery: false });
@@ -39,6 +41,7 @@ describe("Provider / preset / memory API", () => {
   afterEach(async () => {
     await app.close();
     db.close();
+    for (const workspace of extraWorkspaces) rmSync(workspace, { recursive: true, force: true });
     if (savedMock === undefined) delete process.env.MOCK_PROVIDER;
     else process.env.MOCK_PROVIDER = savedMock;
   });
@@ -622,6 +625,12 @@ describe("Provider / preset / memory API", () => {
     return { project, conv };
   }
 
+  function createOtherWorkspace(): string {
+    const workspace = mkdtempSync(join(tmpdir(), "morrow-provider-project-"));
+    extraWorkspaces.push(workspace);
+    return workspace;
+  }
+
   it("rejects an unavailable preset with a truthful reason", async () => {
     const { conv } = await makeConversation();
     const res = await json("POST", `/api/conversations/${conv.id}/messages`, { content: "hi", preset: "private-local" });
@@ -649,7 +658,7 @@ describe("Provider / preset / memory API", () => {
     const created = await json("POST", `/api/projects/${project.id}/memory`, { scope: "conversation", content: "remember this", conversationId: conv.id });
     expect(created.status).toBe(201);
     const id = created.body.id;
-    const other = (await json("POST", "/api/projects", { name: "Other", workspacePath: process.cwd() })).body;
+    const other = (await json("POST", "/api/projects", { name: "Other", workspacePath: createOtherWorkspace() })).body;
 
     expect((await json("GET", `/api/projects/${project.id}/memory`)).body.length).toBe(1);
     expect((await json("GET", `/api/conversations/${conv.id}/memory`)).body.length).toBe(1);
@@ -682,7 +691,7 @@ describe("Provider / preset / memory API", () => {
 
   it("shows personal memory in every local project without exposing other project memory", async () => {
     const { project } = await makeConversation();
-    const other = (await json("POST", "/api/projects", { name: "Other", workspacePath: process.cwd() })).body;
+    const other = (await json("POST", "/api/projects", { name: "Other", workspacePath: createOtherWorkspace() })).body;
     await json("POST", `/api/projects/${project.id}/memory`, { scope: "user_global", content: "I prefer concise answers" });
     await json("POST", `/api/projects/${project.id}/memory`, { scope: "project", content: "Private project fact" });
 

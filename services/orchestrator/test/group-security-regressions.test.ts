@@ -6,6 +6,7 @@ import { openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
+import { ReadBudget, ReadBudgetExceeded } from "../src/execution/read-budget.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { conversationContextRefsRepository } from "../src/repositories/conversation-context-refs.js";
@@ -56,17 +57,54 @@ describe("group coordination security regressions", () => {
       argsJson: "{}", resultJson: "complete", contextResultJson: renderExternalizedForContext(artifact), status: "completed", createdAt: NOW, completedAt: NOW,
     });
 
-    const pages: ProviderChunk[][] = Array.from({ length: 11 }, (_, index) => [
-      tool(`read-${index + 1}`, "read_artifact", { id: artifact.id, offset: index * 3_000, length: 3_000 }),
+    // Three pages of 12 KB against a 30 KB ceiling: the third does not fit.
+    // Few enough turns that the run reaches the ceiling before a compaction
+    // boundary, which legitimately releases the budget it accounts for.
+    const pages: ProviderChunk[][] = Array.from({ length: 3 }, (_, index) => [
+      tool(`read-${index + 1}`, "read_artifact", { id: artifact.id, offset: index * 12_000, length: 12_000 }),
       done,
     ]);
-    pages.push([{ type: "text" as const, text: "The budget stopped the eleventh page." }, done]);
+    pages.push([{ type: "text" as const, text: "The budget stopped the third page." }, done]);
+    pages.push([{ type: "text" as const, text: "There is no smaller slice worth reading." }, done]);
     const provider = new MockProvider({ chunks: pages });
     await executeAgentChatTask({ db, taskId: "task-1", provider, maxContextBytes: 30_000, maxTurns: 20 });
 
     const calls = conversations.listToolCallsForTask("task-1");
-    expect(calls.find((call) => call.id === "read-1")?.resultJson).toContain('"returnedBytes":3000');
-    expect(calls.find((call) => call.id === "read-11")?.resultJson).toContain("Raw byte budget ceiling");
+    expect(calls.find((call) => call.id === "read-1")?.resultJson).toContain('"returnedBytes":12000');
+    // Paging cannot walk past the ceiling: the third page is refused. The
+    // refusal names the *cumulative* budget rather than implying this page was
+    // oversized, so a model can act on it instead of retrying the same call.
+    const refusal = calls.find((call) => call.id === "read-3")?.resultJson ?? "";
+    expect(refusal).toContain("Read budget exhausted");
+    expect(refusal).toContain("will fail the same way");
+    // Room remains, so the guidance points at the affordable slice rather than
+    // telling the model to give up on reading entirely.
+    expect(refusal).toContain("use offset to read a range");
+  });
+
+  /**
+   * The per-segment budget is released by compaction, because those bytes
+   * genuinely leave the provider request. On its own that is escapable: read
+   * to the ceiling, force a rollover, read again, forever. A second ceiling
+   * bounds the whole task and is never released.
+   */
+  it("cannot page unbounded bytes by repeatedly rolling the segment over", () => {
+    const budget = new ReadBudget(30_000, 90_000);
+    // Three segments' worth is allowed: a long legitimate task does compact.
+    for (let segment = 0; segment < 3; segment++) {
+      expect(() => budget.charge(30_000, "A large sweep")).not.toThrow();
+      budget.releaseForCompaction();
+    }
+    expect(budget.lifetimeConsumedBytes).toBe(90_000);
+    // The fourth is refused even though the per-segment counter is empty.
+    expect(budget.consumedBytes).toBe(0);
+    let message = "";
+    try { budget.charge(1_000, "One more read"); } catch (error) { message = (error as Error).message; }
+    expect(message).toContain("Task read limit reached");
+    expect(message).toContain("compaction does not reset");
+    // And it stays refused: releasing again does not restore it.
+    budget.releaseForCompaction();
+    expect(() => budget.charge(1_000, "One more read")).toThrow(ReadBudgetExceeded);
   });
 
   it("keeps per-task ownership for deduped artifacts and deduplicates context refs", () => {

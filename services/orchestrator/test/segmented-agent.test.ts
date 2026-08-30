@@ -455,11 +455,20 @@ describe("durable agent segments", () => {
     }
   });
 
+  /**
+   * The replay shortcut skips a provider call when a durable final turn was
+   * already recorded. That is only sound when the work it claims is actually
+   * still there. An artifact that changed or vanished since the crash means
+   * acceptance evidence is outstanding, so the resume must go back to work
+   * rather than replay a final answer over a workspace that no longer supports
+   * it — otherwise a crash at the completion transaction launders an unfinished
+   * task into a completed one.
+   */
   it.each([
-    { label: "unchanged", mutate: (_path: string) => undefined, expected: "completed" },
-    { label: "changed", mutate: (path: string) => writeFileSync(path, "console.log('changed');\n"), expected: "completed" },
-    { label: "missing", mutate: (path: string) => unlinkSync(path), expected: "completed" },
-  ])("replays a persisted CLI artifact fingerprint with honest evidence for $label", async ({ label, mutate, expected }) => {
+    { label: "unchanged", mutate: (_path: string) => undefined, expected: "completed", resumes: false },
+    { label: "changed", mutate: (path: string) => writeFileSync(path, "console.log('changed');\n"), expected: "completed", resumes: true },
+    { label: "missing", mutate: (path: string) => unlinkSync(path), expected: "completed", resumes: true },
+  ])("replays a persisted CLI artifact fingerprint with honest evidence for $label", async ({ label, mutate, expected, resumes }) => {
     const workspace = mkdtempSync(join(tmpdir(), `morrow-artifact-replay-${expected}-`));
     const db = openDatabase(":memory:");
     const taskId = `artifact-replay-${expected}`;
@@ -501,19 +510,35 @@ describe("durable agent segments", () => {
 
       mutate(artifactPath);
       let providerCalls = 0;
-      const provider: AiProvider = { id: "mock", async *streamChat(): AsyncIterable<ProviderChunk> { providerCalls++; yield { type: "text", text: "must not run" }; yield { type: "done" }; } };
+      const provider: AiProvider = { id: "mock", async *streamChat(): AsyncIterable<ProviderChunk> { providerCalls++; yield { type: "text", text: "Resumed and reported the artifact state honestly." }; yield { type: "done" }; } };
       const runner = new TaskRunner(db, async (deps) => executeAgentChatTask({ db: deps.db, taskId: deps.taskId, provider, ...(deps.recovery ? { recovery: deps.recovery } : {}) }));
 
       expect(reconcileTasksOnStartup({ db, runner, now: () => new Date(Date.parse(at) + 10 * 60_000).toISOString() }).requeued).toBe(1);
       await runner.waitFor(taskId);
 
-      expect(providerCalls).toBe(0);
       expect(taskRepository(db).getTaskById(taskId)?.status).toBe(expected);
       const canonical = continuity.getCanonicalAnswer(taskId);
-      expect(canonical?.content).toBe("The CLI artifact is complete and verified.");
       const evidence = canonical?.evidenceJson as { completion?: { complete?: boolean; blockers?: unknown[] } } | undefined;
-      expect(evidence?.completion?.complete).toBe(label === "unchanged");
-      if (label !== "unchanged") expect(evidence?.completion?.blockers?.length ?? 0).toBeGreaterThan(0);
+      const resumeEvents = taskRecordsRepository(db).listEvents(taskId)
+        .filter((entry: any) => entry.payload?.reason === "resume_declined_incomplete_replay");
+
+      if (!resumes) {
+        // The artifact is intact, so the recorded final turn still stands and
+        // the replay costs no provider call.
+        expect(providerCalls).toBe(0);
+        expect(canonical?.content).toBe("The CLI artifact is complete and verified.");
+        expect(evidence?.completion?.complete).toBe(true);
+        expect(resumeEvents).toHaveLength(0);
+        return;
+      }
+
+      // The artifact no longer backs the recorded answer. Execution resumes
+      // rather than rubber-stamping it, and the stale final is not committed.
+      expect(providerCalls).toBeGreaterThan(0);
+      expect(resumeEvents.length).toBeGreaterThan(0);
+      expect(canonical?.content).not.toBe("The CLI artifact is complete and verified.");
+      expect(evidence?.completion?.complete).toBe(false);
+      expect(evidence?.completion?.blockers?.length ?? 0).toBeGreaterThan(0);
     } finally {
       db.close();
       rmSync(workspace, { recursive: true, force: true });

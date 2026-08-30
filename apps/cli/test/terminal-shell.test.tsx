@@ -9,11 +9,11 @@ import { toolLabel, workRows } from "../src/terminal/ink/work-summary.js";
 import { activityLabel, elapsedLabel, tokenLabel } from "../src/terminal/ink/activity-line.js";
 import { phrase } from "../src/terminal/ink/tool-verbs.js";
 import { outcomeFor } from "../src/terminal/ink/outcome.js";
-import { planWindow } from "../src/terminal/ink/plan-view.js";
+import { planWindow, planHeading } from "../src/terminal/ink/plan-view.js";
 import { mapTaskEvent } from "../src/terminal/task-event-adapter.js";
 import { rows } from "../src/terminal/ink/reasoning-view.js";
 import { report } from "../src/terminal/report.js";
-import type { ToolCard } from "../src/terminal/state.js";
+import type { PlanEntry, ToolCard } from "../src/terminal/state.js";
 
 /**
  * The shell, driven through the real Ink renderer.
@@ -1039,5 +1039,86 @@ describe("a run reads in the order it happened", () => {
     const frame = plain(view.lastFrame());
     expect(frame).not.toContain("1 tool");
     expect(frame).toContain("It is already correct.");
+  });
+});
+
+/**
+ * Scenario E: the panel must never state progress Morrow has not measured.
+ * A live DropSort run wrote eight steps, built the project, installed
+ * dependencies and ran forty-five tests while the header read "Plan 0/8".
+ */
+describe("plan header truthfulness", () => {
+  const step = (id: string, status: PlanEntry["status"]): PlanEntry => ({ id, title: `step ${id}`, status });
+
+  it("reports the step count, not a zero fraction, before anything is marked", () => {
+    const plan = ["1", "2", "3", "4", "5", "6", "7", "8"].map((id) => step(id, "pending"));
+    expect(planHeading(plan)).toBe("8 steps");
+    expect(planHeading(plan)).not.toContain("0/8");
+  });
+
+  it("says whose count it is once the model starts marking steps", () => {
+    expect(planHeading([step("1", "completed"), step("2", "running"), step("3", "pending")]))
+      .toBe("1/3 marked");
+  });
+
+  it("counts a single-step plan without a plural", () => {
+    expect(planHeading([step("1", "pending")])).toBe("1 step");
+  });
+
+  it("treats a failed or skipped step as evidence the plan is being maintained", () => {
+    expect(planHeading([step("1", "failed"), step("2", "pending")])).toBe("0/2 marked");
+    expect(planHeading([step("1", "skipped"), step("2", "pending")])).toBe("0/2 marked");
+  });
+});
+
+
+/**
+ * Scenario F: reading back through output and recalling a previous message are
+ * two different intentions. Before v0.8.1 only the second was bound, so someone
+ * reaching upward for the transcript got their own input history instead.
+ */
+describe("transcript navigation is separate from input history", () => {
+  const PAGE_UP = "[5~";
+  const PAGE_DOWN = "[6~";
+
+  it("opens the conversation surface on PageUp, scrolled back a screen", async () => {
+    const { view, store, overlays } = mount();
+    store.apply({ type: "user.message", text: "first question" });
+    store.apply({ type: "assistant.turn_start", turnId: "turn-1" });
+    store.apply({ type: "assistant.delta", turnId: "turn-1", text: "an answer" });
+    await tick();
+
+    view.stdin.write(PAGE_UP);
+    await tick();
+
+    const overlay = overlays.active;
+    expect(overlay?.kind).toBe("transcript");
+    if (overlay?.kind === "transcript") expect(overlay.start).toBe("page-up");
+  });
+
+  it("opens at the bottom on PageDown", async () => {
+    const { view, store, overlays } = mount();
+    store.apply({ type: "user.message", text: "first question" });
+    await tick();
+
+    view.stdin.write(PAGE_DOWN);
+    await tick();
+
+    const overlay = overlays.active;
+    if (overlay?.kind === "transcript") expect(overlay.start).toBe("bottom");
+    else throw new Error("PageDown did not open the transcript");
+  });
+
+  it("leaves Up on the composer, where input history lives", async () => {
+    const { view, overlays, store } = mount({ history: ["an earlier message"] });
+    store.apply({ type: "user.message", text: "first question" });
+    await tick();
+
+    view.stdin.write(UP);
+    await tick();
+
+    // The arrow key belongs to the draft; it must not raise a reading surface.
+    expect(overlays.active).toBeNull();
+    expect(plain(view.lastFrame())).toContain("an earlier message");
   });
 });

@@ -59,7 +59,7 @@ describe("database", () => {
 
   it("installs migration 73 with source-qualified skill activation constraints", () => {
     const db = openDatabase(":memory:");
-    expect(migrations.at(-1)).toMatchObject({ id: 73, name: "skill_activations" });
+    expect(migrations.at(-1)).toMatchObject({ id: 74, name: "deduplicate_project_workspace_paths" });
     expect(db.prepare("PRAGMA table_info(skill_activations)").all()).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "skill_key", type: "TEXT", pk: 1 }),
       expect.objectContaining({ name: "skill_id", type: "TEXT" }),
@@ -96,7 +96,7 @@ describe("database", () => {
     legacy.close();
 
     const upgraded = openDatabase(file);
-    expect(upgraded.prepare("SELECT MAX(id) id FROM schema_migrations").get()).toEqual({ id: 73 });
+    expect(upgraded.prepare("SELECT MAX(id) id FROM schema_migrations").get()).toEqual({ id: 74 });
     expect(upgraded.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='skill_activations'").get()).toEqual({ name: "skill_activations" });
     upgraded.close();
     rmSync(directory, { recursive: true, force: true });

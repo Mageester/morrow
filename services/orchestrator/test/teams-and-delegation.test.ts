@@ -49,7 +49,7 @@ describe("teamsRepository", () => {
   });
 
   it("isolates teams by project", () => {
-    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: process.cwd(), createdAt: ts() });
+    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: "C:/other", createdAt: ts() });
     const teams = teamsRepository(db);
     teams.create({ id: "team-p1", projectId: "p1", name: "Team P1", createdAt: ts() });
     teams.create({ id: "team-p2", projectId: "p2", name: "Team P2", createdAt: ts() });
@@ -357,7 +357,7 @@ describe("memoryRepository — scope filtering for the memory vault", () => {
   beforeEach(() => {
     db = openDatabase(":memory:");
     projectRepository(db).createProject({ id: "p1", name: "P1", workspacePath: process.cwd(), createdAt: ts() });
-    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: process.cwd(), createdAt: ts() });
+    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: "C:/other", createdAt: ts() });
   });
   afterEach(() => db.close());
 

@@ -83,7 +83,7 @@ describe("checkpoints repository", () => {
   it("enforces per-project name uniqueness and lists newest first", () => {
     const db = openDatabase(":memory:");
     projectRepository(db).createProject({ id: "p1", name: "P1", workspacePath: process.cwd(), createdAt: new Date().toISOString() });
-    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: process.cwd(), createdAt: new Date().toISOString() });
+    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: "C:/other", createdAt: new Date().toISOString() });
     const repo = checkpointsRepository(db);
     repo.create({ id: "c1", projectId: "p1", name: "alpha", files: { "a.txt": "h1" } }, "2026-01-01T00:00:00.000Z");
     repo.create({ id: "c2", projectId: "p1", name: "beta", files: {} }, "2026-01-02T00:00:00.000Z");

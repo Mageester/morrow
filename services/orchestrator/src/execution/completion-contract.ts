@@ -26,27 +26,35 @@ export type CompletionEvidenceKind =
   | "frontend_interaction"
   | "frontend_viewports";
 
-export type CompletionBlockerCode =
-  | "unknown_task_shape"
-  | "missing_canonical_final_answer"
-  | "duplicate_canonical_narration"
-  | "missing_read_only_observation"
-  | "missing_durable_artifact"
-  | "artifact_not_independently_observed"
-  | "artifact_not_durable"
-  | "missing_independent_verification"
-  | "failed_final_verification"
-  | "requirements_unresolved"
-  | "requirement_failed"
-  | "requirement_unavailable"
-  | "requirement_unevaluated"
-  | "frontend_route_missing"
-  | "frontend_snapshot_missing"
-  | "frontend_console_unclean"
-  | "frontend_interaction_missing"
-  | "frontend_viewports_incomplete"
-  | "frontend_vision_missing"
-  | "background_process_running";
+/**
+ * Enumerable at runtime, not just in the type system, so the continuation
+ * policy can prove it classifies every one of them. A code that exists only in
+ * a union can be added without anyone noticing it defaults to "stop".
+ */
+export const COMPLETION_BLOCKER_CODES = [
+  "unknown_task_shape",
+  "missing_canonical_final_answer",
+  "duplicate_canonical_narration",
+  "missing_read_only_observation",
+  "missing_durable_artifact",
+  "artifact_not_independently_observed",
+  "artifact_not_durable",
+  "missing_independent_verification",
+  "failed_final_verification",
+  "requirements_unresolved",
+  "requirement_failed",
+  "requirement_unavailable",
+  "requirement_unevaluated",
+  "frontend_route_missing",
+  "frontend_snapshot_missing",
+  "frontend_console_unclean",
+  "frontend_interaction_missing",
+  "frontend_viewports_incomplete",
+  "frontend_vision_missing",
+  "background_process_running",
+] as const;
+
+export type CompletionBlockerCode = typeof COMPLETION_BLOCKER_CODES[number];
 
 export interface CompletionBlocker {
   code: CompletionBlockerCode;

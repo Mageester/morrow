@@ -246,7 +246,7 @@ describe("Hermes-style tool-turn finality", () => {
     expect(events.some((event: any) => event.type === "task.progress_warning" && event.payload?.reason === "final_summary_requested")).toBe(false);
   });
 
-  it("records a task-owned running process without forcing cleanup turns", async () => {
+  it("keeps working until the process the user asked to stop is actually stopped", async () => {
     seed(db, ws, "Create the requested file, then stop the background process before finishing.");
     const supervisor = new ProcessSupervisor(processesRepository(db), join(home, "process-logs"));
     const started = await supervisor.start({
@@ -271,14 +271,18 @@ describe("Hermes-style tool-turn finality", () => {
       runner.run("t");
       await runner.waitFor("t");
 
+      // The user asked for the process to be stopped, so a model that narrates
+      // "it is still running" and stops has not finished. v0.8.1 continues and
+      // the cleanup the model already knew how to do actually happens.
       expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
-      expect(processesRepository(db).get(started.id)?.status).toBe("running");
+      expect(processesRepository(db).get(started.id)?.status).not.toBe("running");
       const calls = conversationsRepository(db).listToolCallsForTask("t");
-      expect(calls.map((call) => call.id)).toEqual(["create"]);
-      expect(provider.requests).toHaveLength(2);
-      expect(taskRecordsRepository(db).listEvents("t").filter((event: any) => event.payload?.reason === "completion_contract_recovery")).toHaveLength(0);
+      expect(calls.map((call) => call.id)).toEqual(["create", "stop"]);
+      expect(taskRecordsRepository(db).listEvents("t").some((event: any) =>
+        event.payload?.reason === "unfinished_work_continuation"
+        && event.payload?.blockers?.includes("background_process_running"))).toBe(true);
       expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({
-        completion: { complete: false, blockers: expect.arrayContaining([expect.objectContaining({ code: "background_process_running" })]) },
+        completion: { complete: true },
       });
     } finally {
       await supervisor.terminate(started.id, { force: true });
@@ -300,6 +304,8 @@ describe("Hermes-style tool-turn finality", () => {
       chunks: [
         [tool("create", "create_file", { path: "artifact.txt", content: "delivered\n" }), done],
         [text("The file is ready, but the background process is still running."), done],
+        // The continuation is granted, and the model still declines to act, so
+        // the run settles with the honest blocker rather than looping.
         [text("The file is ready, but the background process is still running."), done],
       ],
       delayMs: 1,
@@ -312,7 +318,7 @@ describe("Hermes-style tool-turn finality", () => {
 
       expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
       expect(processesRepository(db).get(started.id)?.status).toBe("running");
-      expect(provider.requests).toHaveLength(2);
+      expect(provider.requests).toHaveLength(3);
       const events = taskRecordsRepository(db).listEvents("t");
       expect(events.filter((event: any) => event.payload?.reason === "completion_contract_recovery")).toHaveLength(0);
       expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({

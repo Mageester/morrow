@@ -59,6 +59,12 @@ describe("Morrow runtime host", () => {
         supervisor.stopAllAndWait = async () => { events.push("supervisor.stopAllAndWait"); await original(); };
         return supervisor;
       },
+      createRunner: (db, supervisor, catalog) => {
+        const runner = new TaskRunner(db, undefined, supervisor, catalog);
+        const original = runner.shutdown.bind(runner);
+        runner.shutdown = async (options) => { events.push("runner.shutdown"); return original(options); };
+        return runner;
+      },
       ...over,
     };
   }
@@ -91,6 +97,11 @@ describe("Morrow runtime host", () => {
    * Stop the things that can create work first, then stop accepting requests,
    * then wait for what is already running. A request accepted after the drain
    * would create work nothing is waiting for, against a closing database.
+   *
+   * The runner's drain sits between the server and the supervisor on purpose:
+   * the supervisor kills task-owned child processes, so draining it while a
+   * turn is mid-command destroys that turn's work, and the database closes
+   * before the turn can record what happened.
    */
   it("tears the runtime down in one order, exactly once", async () => {
     const events: string[] = [];
@@ -111,6 +122,7 @@ describe("Morrow runtime host", () => {
     expect(events).toEqual([
       "scheduler.stop",
       "app.close",
+      "runner.shutdown",
       "supervisor.stopAllAndWait",
       "entitlement.stop",
     ]);
@@ -144,7 +156,7 @@ describe("Morrow runtime host", () => {
     expect(events).not.toContain("scheduler.start");
 
     await host.close();
-    expect(events).toEqual(["entitlement.start", "app.close", "supervisor.stopAllAndWait", "entitlement.stop"]);
+    expect(events).toEqual(["entitlement.start", "app.close", "runner.shutdown", "supervisor.stopAllAndWait", "entitlement.stop"]);
   });
 
   it("starts background work only after the service is actually serving", async () => {

@@ -41,11 +41,61 @@ const CHECKPOINT_PREFIX = "Morrow durable execution checkpoint.";
 const COMPACTED_BATCH_PREFIX = "Morrow compacted the latest completed execution batch";
 const HISTORICAL_ARGUMENT_BYTE_LIMIT = 8 * 1024;
 
+/** The omission notice a successful, oversized write leaves in the transcript. */
+function completedWriteNotice(toolName: string, path: unknown, bytes: number | null): Record<string, unknown> {
+  const target = typeof path === "string" && path ? path : "the target file";
+  if (bytes === null) {
+    return {
+      write_succeeded: true,
+      note: `This ${toolName} call completed successfully. Its arguments were sent in full; they are omitted from this transcript only to save context.`,
+    };
+  }
+  // An append writes a chunk onto whatever was already there, so the body
+  // length is what was *added*, not what the file now holds. Claiming the
+  // latter would state a size that is wrong by exactly the pre-existing
+  // content — the kind of confident, checkable falsehood that sends a model
+  // back to re-read a file it had every reason to trust.
+  const appends = toolName === "append_file";
+  return {
+    write_succeeded: true,
+    ...(appends ? { bytes_appended: bytes } : { bytes_written: bytes }),
+    note: appends
+      ? `This ${toolName} call completed successfully and appended exactly these ${bytes} bytes to ${target}, after whatever it already contained. The body was sent in full — it is omitted from this transcript only to save context. Do not rewrite the file to check; read it if you need its current contents or total size.`
+      : `This ${toolName} call completed successfully and ${target} now holds exactly these ${bytes} bytes. The body was sent in full — it is omitted from this transcript only to save context. Do not rewrite the file to check; read it if you need its current contents.`,
+  };
+}
+
+/** The equivalent notice for a call that failed with an oversized body. */
+function failedWriteNotice(toolName: string, bytes: number | null): Record<string, unknown> {
+  return {
+    write_succeeded: false,
+    ...(bytes === null ? {} : { bytes_attempted: bytes }),
+    note: `This ${toolName} call failed. Its body is omitted from this transcript to save context; the failure result below says what went wrong. Fix the cause and send the call again with the body included.`,
+  };
+}
+
+
 /**
  * Bound a successful workspace-write argument for a provider request without
- * inventing an executable payload. The complete arguments remain in the
- * durable provider-turn row; this projection keeps the tool identity and
- * useful target metadata while making the large body unavailable to replay.
+ * inventing an executable payload. The complete arguments remain in the durable
+ * provider-turn row; this projection keeps the tool identity and useful target
+ * metadata while making the large body unavailable to replay.
+ *
+ * What the model is told about that omission matters as much as the omission.
+ * v0.8.0 replaced the body with an object named after Morrow's own persistence
+ * layer, whose note said the arguments "remain in durable execution history"
+ * and advised the model to "inspect the workspace for current content". Read
+ * back on the next turn, that is a model discovering that its own successful
+ * write no longer shows a `content` field, explained in vocabulary about
+ * Morrow's storage. A live run did what that invites: it began reasoning about
+ * durable execution history and whether `content` had really been sent, doubted
+ * a 9,923-byte file it had already written and read back cleanly, and
+ * considered rewriting it.
+ *
+ * So the projection now states the outcome in the model's own frame — the write
+ * succeeded, the file holds these bytes, the body was sent in full and is
+ * omitted only from the transcript — and says plainly not to rewrite to check.
+ * How Morrow stores history is not the model's problem.
  *
  * The legacy `_morrowAppliedWrite` shape is accepted only as old input. It is
  * converted to the same non-executable metadata shape and is never emitted by
@@ -61,7 +111,7 @@ export function boundCompletedToolArguments(toolName: string, rawArguments: stri
   } catch {
     return originalBytes <= HISTORICAL_ARGUMENT_BYTE_LIMIT
       ? rawArguments
-      : JSON.stringify({ durable_context: { kind: "completed_tool_arguments", tool: toolName, originalBytes } });
+      : JSON.stringify(completedWriteNotice(toolName, null, null));
   }
 
   const legacyMarker = parsed._morrowAppliedWrite;
@@ -69,11 +119,7 @@ export function boundCompletedToolArguments(toolName: string, rawArguments: stri
     const { _morrowAppliedWrite: _legacy, content: _content, patch: _patch, ...rest } = parsed;
     return JSON.stringify({
       ...rest,
-      durable_context: {
-        kind: "legacy_applied_write",
-        tool: toolName,
-        ...(typeof legacyMarker === "object" ? legacyMarker : {}),
-      },
+      ...completedWriteNotice(toolName, rest.path, null),
     });
   }
   if (originalBytes <= HISTORICAL_ARGUMENT_BYTE_LIMIT) return rawArguments;
@@ -81,19 +127,12 @@ export function boundCompletedToolArguments(toolName: string, rawArguments: stri
   const bodyKey = toolName === "propose_patch" ? "patch" : toolName === "create_file" || toolName === "append_file" ? "content" : null;
   const body = bodyKey ? parsed[bodyKey] : undefined;
   if (typeof body !== "string") {
-    return JSON.stringify({ durable_context: { kind: "completed_tool_arguments", tool: toolName, originalBytes } });
+    return JSON.stringify({ ...parsed, ...completedWriteNotice(toolName, parsed.path, null) });
   }
   const { [bodyKey!]: _body, ...rest } = parsed;
   return JSON.stringify({
     ...rest,
-    durable_context: {
-      kind: "completed_tool_arguments",
-      tool: toolName,
-      originalBytes,
-      payloadBytes: Buffer.byteLength(body, "utf8"),
-      payloadSha256: createHash("sha256").update(body).digest("hex"),
-      note: "Complete successful arguments remain in durable execution history; inspect the workspace for current content.",
-    },
+    ...completedWriteNotice(toolName, rest.path, Buffer.byteLength(body, "utf8")),
   });
 }
 
@@ -114,7 +153,7 @@ export function boundTerminalToolArguments(
   try {
     const value = JSON.parse(rawArguments) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return JSON.stringify({ durable_context: { kind: "failed_tool_arguments", tool: toolName, originalBytes } });
+      return JSON.stringify(failedWriteNotice(toolName, originalBytes));
     }
     const parsed = value as Record<string, unknown>;
     const targetKeys = ["path", "paths", "query", "pattern", "executable", "cwd", "purpose", "expectedOffset", "files"];
@@ -127,19 +166,10 @@ export function boundTerminalToolArguments(
     const payload = payloadKey && typeof parsed[payloadKey] === "string" ? parsed[payloadKey] as string : undefined;
     return JSON.stringify({
       ...target,
-      durable_context: {
-        kind: "failed_tool_arguments",
-        tool: toolName,
-        originalBytes,
-        ...(payload ? {
-          payloadBytes: Buffer.byteLength(payload, "utf8"),
-          payloadSha256: createHash("sha256").update(payload).digest("hex"),
-        } : {}),
-        note: "The complete failed arguments remain in durable operator history; repair the target using current workspace evidence.",
-      },
+      ...failedWriteNotice(toolName, payload ? Buffer.byteLength(payload, "utf8") : originalBytes),
     });
   } catch {
-    return JSON.stringify({ durable_context: { kind: "failed_tool_arguments", tool: toolName, originalBytes } });
+    return JSON.stringify(failedWriteNotice(toolName, originalBytes));
   }
 }
 

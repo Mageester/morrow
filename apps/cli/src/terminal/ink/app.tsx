@@ -405,6 +405,26 @@ export function App({
         return;
       }
 
+      // PageUp/PageDown are what people press to look back through output, and
+      // before v0.8.1 they did nothing here — so the arrow keys got tried
+      // instead, and those belong to input history. Keeping the two separate is
+      // the whole fix: Up/Down stay on the draft and its history, and the page
+      // keys open the conversation surface, already scrolled to where the key
+      // implies. Mouse and trackpad scrolling is untouched and native: settled
+      // turns live in `<Static>`, so the terminal's own scrollback owns them and
+      // new output can never yank the viewport back down.
+      if (key.pageUp || key.pageDown) {
+        if (overlays) {
+          overlays.set({
+            kind: "transcript",
+            entries: store.state.conversation,
+            start: key.pageUp ? "page-up" : "bottom",
+            onChoose: () => {},
+          });
+        }
+        return;
+      }
+
       if (key.ctrl && input === "x" && onExternalEdit) {
         // The draft goes out to the editor and whatever comes back replaces
         // it. A cancelled edit returns null and the composer is left exactly
@@ -618,6 +638,7 @@ export function App({
           onClose={() => overlays?.close(null)}
           unicode={unicode}
           width={width}
+          {...(overlay.start ? { start: overlay.start } : {})}
         />
       ) : null}
 

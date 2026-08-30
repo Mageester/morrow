@@ -142,7 +142,12 @@ export function formatLiveCockpit(state: {
   }
   lines.push(`Agents: ${state.agentCount} · Processes: ${state.processCount}`);
   if (state.planCount > 0) {
-    lines.push(`Plan: ${state.planDone}/${state.planCount} done`);
+    // Same rule as the plan panel: a fraction is only shown once the model has
+    // actually marked something. "0/8 done" reads as measured progress, and a
+    // plan nobody has updated has not measured anything.
+    lines.push(state.planDone > 0
+      ? `Plan: ${state.planDone}/${state.planCount} marked done`
+      : `Plan: ${state.planCount} steps, none marked`);
   }
   return lines;
 }

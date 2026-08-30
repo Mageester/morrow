@@ -152,7 +152,8 @@ export async function createMorrowRuntimeHost(
     // reconciliation re-dispatches interrupted tasks, and those tasks can spawn
     // supervised children before it returns — if it then throws, an unwind that
     // did not yet know about the supervisor would orphan them.
-    closers.push(() => supervisor.stopAllAndWait());
+    const drainSupervisor = () => supervisor.stopAllAndWait();
+    closers.push(drainSupervisor);
 
     // One catalog for the API and the agent. Without this the server built its
     // own and the runner had none, so what the Skills page listed and what the
@@ -251,6 +252,22 @@ export async function createMorrowRuntimeHost(
     // request accepted mid-shutdown would create work the drain has already
     // walked past, and then meet a closing database.
     closers.unshift(() => app.close());
+    // Stage two, and it must sit between the server and the supervisor. The
+    // supervisor's own drain kills task-owned child processes; running it while
+    // a turn is still mid-command kills that turn's work underneath it, and the
+    // database closes moments later before the turn can record what happened.
+    // Aborting and draining the runner first lets each turn persist its own
+    // interruption, so a restart resumes rather than reconstructs. Positioned
+    // by identity against the supervisor's own closer so later registrations
+    // cannot quietly reorder the two.
+    closers.splice(closers.indexOf(drainSupervisor), 0, async () => {
+      const result = await runner.shutdown();
+      if (!result.drained) {
+        // Bounded by design: the remaining turns stay interrupted in the
+        // database and startup reconciliation reclaims them.
+        console.warn(`Morrow shutdown: ${result.active} turn(s) did not settle within the drain window; they will be reconciled on next start.`);
+      }
+    });
     closers.push(() => entitlementPoller.stop());
 
     let closed = false;
@@ -270,10 +287,21 @@ export async function createMorrowRuntimeHost(
         const address = await app.listen({ host: config.host, port: config.port });
         // Background work starts only once the service is actually serving, so
         // a failed bind cannot leave a timer running in a process about to die.
-        if (scheduler) {
+        //
+        // `closeConstructed` snapshots the closer list, so a shutdown that
+        // began while this bind was still pending has already walked past the
+        // point where a scheduler closer could be registered. Starting one now
+        // would leave a timer nothing will ever stop. Check first.
+        if (scheduler && !closed) {
           scheduler.start(30_000);
           schedulerRunning = true;
           closers.unshift(() => { scheduler.stop(); schedulerRunning = false; });
+          // Re-check after registering: `close()` may have run in between, in
+          // which case it took its snapshot without this entry.
+          if (closed) {
+            scheduler.stop();
+            schedulerRunning = false;
+          }
         }
         if (config.tokenizerWarmup
           && EXACT_TOKENIZER_PROVIDER_IDS.some((id) => isProviderConfigured(id as ProviderId, config.env))) {

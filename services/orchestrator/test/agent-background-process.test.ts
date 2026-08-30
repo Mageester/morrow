@@ -291,6 +291,9 @@ describe("agent background processes (full-stack dev-server capability)", () => 
       '{"processId":"owned-process","stream":"stdout","offset":1e999}',
     ), done]);
     chunks.push([text("The background process remains available after the extended diagnosis."), done]);
+    // v0.8.1 grants one bounded "not finished" continuation before accepting
+    // a stop that leaves acceptance evidence outstanding.
+    chunks.push([text("The diagnosis is complete and no further poll is useful."), done]);
 
     const provider = new MockProvider({ chunks });
     await executeAgentChatTask({ db, taskId: "t", provider, supervisor, maxTurns: 32 });
@@ -303,7 +306,7 @@ describe("agent background processes (full-stack dev-server capability)", () => 
     const calls = conversationsRepository(db).listToolCallsForTask("t");
     expect(calls.find((call: any) => call.id === "infinite-offset")?.status).toBe("completed");
     expect(calls.some((call: any) => call.toolName === "stop_process")).toBe(false);
-    expect(provider.requests).toHaveLength(21);
+    expect(provider.requests).toHaveLength(22);
     expect(processRepo.get("owned-process")?.status).not.toBe("running");
     expect(taskRecordsRepository(db).listEvents("t").some((event: any) =>
       event.payload?.signal === "loop_stalled"

@@ -4,7 +4,7 @@
 
 Morrow is a self-hosted, deeply customizable personal AI agent. Local-first, provider-neutral, with visible execution, explicit permissions, and persistent memory.
 
-> **Status:** v0.8.0 beta. Windows 10/11 x64, Linux x64/arm64, and macOS x64/arm64 packages are supported.
+> **Status:** v0.8.1 beta. Windows 10/11 x64, Linux x64/arm64, and macOS x64/arm64 packages are supported.
 
 ## Quick Install (Windows)
 

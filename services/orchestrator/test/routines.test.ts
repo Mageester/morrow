@@ -227,7 +227,7 @@ describe("Routines", () => {
   });
 
   it("refuses a routine bound to an agent from another project", async () => {
-    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: process.cwd(), createdAt: ts() });
+    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: "C:/other", createdAt: ts() });
     const foreign = (await app.inject({
       method: "POST", url: "/api/projects/p2/agents", payload: { name: "Foreign", role: "writer" },
     })).json();
@@ -240,7 +240,7 @@ describe("Routines", () => {
 
   it("deletes a routine only from its own project", async () => {
     const routine = await createRoutine();
-    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: process.cwd(), createdAt: ts() });
+    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: "C:/other", createdAt: ts() });
     const wrongProject = await app.inject({
       method: "DELETE", url: `/api/routines/${routine.id}`, payload: { projectId: "p2" },
     });

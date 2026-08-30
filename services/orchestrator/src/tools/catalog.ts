@@ -117,8 +117,8 @@ export const TOOL_CATALOG: ToolSpec[] = [
     sideEffect: "execute",
     enabled: true,
     parameters: {
-      executable: { type: "string", description: "The executable name or path (e.g. 'pnpm' or 'git')" },
-      args: { type: "array", items: { type: "string" }, description: "Arguments passed to the executable" },
+      executable: { type: "string", description: "The program to run, on its own and with no arguments in it. For `python3 --version` this is exactly \"python3\"." },
+      args: { type: "array", items: { type: "string" }, description: "The arguments, one array element each, without the program name. For `python3 --version` this is exactly [\"--version\"]." },
       cwd: { type: "string", description: "Optional working directory relative to project root" },
       purpose: { type: "string", description: "Explain why this command is being run" },
       timeoutMs: { type: "number", description: "Optional shorter timeout in milliseconds; cannot exceed the command-policy ceiling" },
@@ -220,13 +220,14 @@ export const TOOL_CATALOG: ToolSpec[] = [
     sideEffect: "write",
     enabled: true,
     parameters: {
-      patch: { type: "string", description: "The unified diff content" },
+      patch: { type: "string", description: "Unified diff content. Every requested edit must replace or delete content with a genuinely different result; never send an identical -/+ pair or a patch that leaves the file unchanged." },
       explanation: { type: "string", description: "Explain why this patch is proposed" },
       files: { type: "array", items: { type: "string" }, description: "Paths of files expected to change, relative to the workspace root" }
     },
     constraints: [
       "Rejected if the patch targets a path that does not resolve inside the workspace",
       "Rejected if files change between proposal and approval",
+      "Do not call this tool when the current file already has the intended content; do not send idempotent or context-only edits",
       "Creates backups under MORROW_HOME/backups",
       "Requires explicit user approval"
     ],

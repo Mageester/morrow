@@ -161,5 +161,9 @@ describe("service lifecycle", () => {
     expect(passed.secretsFile).toBe(ctx.paths.secretsFile);
     expect(passed.host).toBe(ctx.service.host);
     expect(passed.port).toBe(ctx.service.port);
-  });
+    // Explicit timeout: this case is fully mocked and fast on its own, but it
+    // shares a file with cases that spawn real child processes and bind real
+    // sockets, so it can lose the 5s default to contention rather than to any
+    // behaviour of its own.
+  }, 20_000);
 });

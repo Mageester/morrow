@@ -66,6 +66,44 @@ describe("externalizeToolResult: inline vs artifact", () => {
     expect(rendered).toContain("read_artifact");
     expect(rendered.length).toBeLessThan(2_000);
   });
+
+  it("renders an externalized file read as bounded authoritative content with a next action", () => {
+    const body = "const ready = true;\n".repeat(900);
+    const out = externalizeToolResult(repo, body, { toolName: "read_file", kind: "tool_result", contentType: "text/plain" });
+    const rendered = JSON.parse(renderExternalizedForContext(out)) as Record<string, any>;
+
+    expect(rendered.read_succeeded).toBe(true);
+    expect(typeof rendered.content).toBe("string");
+    expect(rendered.content).toContain("const ready = true;");
+    expect(rendered.content).not.toBe(body);
+    expect(rendered.truncatedForContext).toBeUndefined();
+    expect(String(rendered.note)).toMatch(/exact|authoritative/i);
+    expect(rendered.next_action).toMatchObject({ tool: "read_artifact", arguments: { id: out.kind === "artifact" ? out.id : "" } });
+  });
+});
+
+describe("read_artifact model projection", () => {
+  it("keeps an oversized artifact page directly usable instead of externalizing it again", () => {
+    const pageContent = "0123456789".repeat(2_000);
+    const rawPage = JSON.stringify({
+      artifactId: "artifact-1",
+      offset: 0,
+      returnedBytes: Buffer.byteLength(pageContent, "utf8"),
+      totalBytes: 40_000,
+      truncated: true,
+      nextOffset: Buffer.byteLength(pageContent, "utf8"),
+      content: pageContent,
+    });
+    const out = externalizeToolResult(repo, rawPage, { toolName: "read_artifact", kind: "tool_result", contentType: "application/json" });
+    const rendered = JSON.parse(renderExternalizedForContext(out)) as Record<string, any>;
+
+    expect(rendered.read_succeeded).toBe(true);
+    expect(rendered.content).toContain("0123456789");
+    expect(rendered.content).not.toContain("artifactId");
+    expect(rendered.truncatedForContext).toBeUndefined();
+    expect(rendered.next_action).toMatchObject({ tool: "read_artifact", arguments: { id: "artifact-1" } });
+    expect(Buffer.byteLength(JSON.stringify(rendered), "utf8")).toBeLessThan(DEFAULT_INLINE_BYTE_LIMIT);
+  });
 });
 
 describe("externalizeToolResult: dedup", () => {

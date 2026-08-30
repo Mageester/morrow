@@ -15,7 +15,27 @@ import { glyphs, theme } from "./theme.js";
  * A long plan is windowed rather than truncated: what is done collapses to a
  * count, what is next stays visible. The running step is always on screen,
  * because it is the row the whole panel exists to show.
+ *
+ * The header never states progress Morrow cannot vouch for. Step status comes
+ * from the model rewriting its own plan, and a model can — and in a live
+ * DropSort run did — write eight steps, build the project, install
+ * dependencies, and run forty-five tests without ever marking one. The panel
+ * said "Plan 0/8" the whole time, which was false in the only sense the reader
+ * cares about. So a fraction appears only once at least one step has actually
+ * moved off pending, and it is labelled `marked` to say what it counts: steps
+ * the model has marked, not work Morrow has measured. Until then the header
+ * reports the one fact that is certain — how many steps the plan has.
  */
+
+/**
+ * The header text for a plan. Exported so the truthfulness rule can be tested
+ * directly rather than through a rendered frame.
+ */
+export function planHeading(plan: readonly PlanEntry[]): string {
+  const anyStepMarked = plan.some((step) => step.status !== "pending");
+  if (!anyStepMarked) return `${plan.length} step${plan.length === 1 ? "" : "s"}`;
+  return `${plan.filter((step) => step.status === "completed").length}/${plan.length} marked`;
+}
 
 /** Steps shown after the running one. Enough to see where this is going. */
 const LOOKAHEAD = 3;
@@ -75,13 +95,15 @@ export function PlanView({
 }) {
   if (plan.length === 0) return null;
   const { doneBefore, visible, moreAfter } = planWindow(plan, expanded);
-  const done = plan.filter((step) => step.status === "completed").length;
+  // "Nothing has been marked yet" and "zero of eight are done" look identical
+  // as a fraction and mean very different things. Only the first is knowable.
+  const heading = `  ${planHeading(plan)}`;
 
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box>
         <Text color={theme.soft}>Plan</Text>
-        <Text color={theme.faint}>{`  ${done}/${plan.length}`}</Text>
+        <Text color={theme.faint}>{heading}</Text>
         {!expanded && (doneBefore > 0 || moreAfter > 0) ? (
           <Text color={theme.faint}>{`  ${glyphs(unicode).chevron} ctrl+o for all`}</Text>
         ) : null}

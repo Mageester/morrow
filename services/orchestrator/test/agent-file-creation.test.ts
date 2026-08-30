@@ -85,7 +85,7 @@ describe("agent file creation under YOLO", () => {
     expect(historicalCall!.function.arguments.length).toBeLessThan(8 * 1024);
     expect(JSON.parse(historicalCall!.function.arguments)).toMatchObject({
       path: "legacy.txt",
-      durable_context: { tool: "create_file", originalBytes: expect.any(Number) },
+      write_succeeded: true,
     });
     expect(JSON.stringify(provider.requests)).not.toContain(legacyContent);
   });

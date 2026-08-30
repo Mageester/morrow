@@ -476,7 +476,7 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(conversationsRepository(db).listToolCallsForTask("task-1").some((call) => ["propose_patch", "create_file", "create_directory"].includes(call.toolName) && call.status === "completed")).toBe(false);
   });
 
-  it("treats the model's first tool-free narration as authoritative without controller recovery", async () => {
+  it("treats the model's tool-free narration as authoritative after one bounded continuation", async () => {
     workspacePath = mkdtempSync(join(tmpdir(), "morrow-task-2-narration-"));
     writeFileSync(join(workspacePath, "README.md"), "fixture\n");
     db = openDatabase(":memory:");
@@ -488,8 +488,10 @@ describe("Task 2 live-loop performance conformance", () => {
     const records = taskRecordsRepository(db);
     const events = records.listEvents("task-1") as Array<{ type: string; payload: Record<string, unknown> }>;
     const providerTurns = events.filter((event) => event.type === "assistant.turn_started");
-    expect(provider.requests).toHaveLength(1);
-    expect(providerTurns).toHaveLength(1);
+    // v0.8.1 grants one bounded continuation when acceptance evidence is
+    // still outstanding; the stalled model repeats itself and the run settles.
+    expect(provider.requests).toHaveLength(3);
+    expect(providerTurns).toHaveLength(3);
     expect(events.some((event) => event.payload.reason === "artifact_delivery_recovery")).toBe(false);
     expect(events.some((event) => event.payload.reason === "artifact_delivery_stalled")).toBe(false);
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
@@ -545,6 +547,7 @@ describe("Task 2 live-loop performance conformance", () => {
         [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
         [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
         [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
         [
           { type: "tool_call", toolCalls: [{ id: "deliver", index: 0, type: "function", function: { name: "create_file", arguments: JSON.stringify({ path: "recovered.txt", content: "recovered\n" }) } }] },
           { type: "done" },
@@ -560,7 +563,7 @@ describe("Task 2 live-loop performance conformance", () => {
     await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 10 });
 
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
-    expect(provider.requests).toHaveLength(4);
+    expect(provider.requests).toHaveLength(6);
     expect(conversationsRepository(db).getMessage("assistant-1")?.content).toContain("POISONED_PROVIDER_NARRATION");
     const durableTurns = executionContinuityRepository(db).listProviderTurns("task-1");
     expect(durableTurns.slice(0, 3).map((turn) => turn.toolCalls.map((call) => (call as { name?: string }).name))).toEqual([
@@ -568,7 +571,7 @@ describe("Task 2 live-loop performance conformance", () => {
       ["list_files"],
       ["git_status"],
     ]);
-    expect(durableTurns).toHaveLength(4);
+    expect(durableTurns).toHaveLength(6);
     expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.reason === "artifact_delivery_recovery")).toBe(false);
     expect(executionContinuityRepository(db).getCanonicalAnswer("task-1")?.evidenceJson).toMatchObject({
       completion: { complete: false },
@@ -643,6 +646,7 @@ describe("Task 2 live-loop performance conformance", () => {
         [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
         [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
         [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
       ],
     });
 
@@ -651,8 +655,8 @@ describe("Task 2 live-loop performance conformance", () => {
     const records = taskRecordsRepository(db);
     const continuity = executionContinuityRepository(db);
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
-    expect(firstProvider.requests).toHaveLength(4);
-    expect(continuity.listProviderTurns("task-1")).toHaveLength(4);
+    expect(firstProvider.requests).toHaveLength(6);
+    expect(continuity.listProviderTurns("task-1")).toHaveLength(6);
     expect(conversationsRepository(db).listToolCallsForTask("task-1")).toHaveLength(3);
     expect(continuity.listProviderContinuationRefs("task-1")).toHaveLength(1);
     expect(records.listEvents("task-1").some((event) => event.payload.reason === "artifact_delivery_recovery")).toBe(false);
@@ -771,6 +775,7 @@ describe("Task 2 live-loop performance conformance", () => {
         [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
         [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
         [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
         [{ type: "done", providerContinuation: { reasoningContent: "The fresh recovery attempt remained reasoning-only." } }],
       ],
     });
@@ -779,8 +784,8 @@ describe("Task 2 live-loop performance conformance", () => {
 
     const records = taskRecordsRepository(db);
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
-    expect(firstProvider.requests).toHaveLength(4);
-    expect(executionContinuityRepository(db).listProviderTurns("task-1")).toHaveLength(4);
+    expect(firstProvider.requests).toHaveLength(6);
+    expect(executionContinuityRepository(db).listProviderTurns("task-1")).toHaveLength(6);
     expect(records.listEvents("task-1").filter((event) => event.payload.reason === "artifact_delivery_recovery")).toHaveLength(0);
   });
 
@@ -838,6 +843,7 @@ describe("Task 2 live-loop performance conformance", () => {
         [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
         [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
         [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
         [{ type: "done", providerContinuation: { reasoningContent: "Still reasoning about whether a task exists." } }],
       ],
     });
@@ -845,7 +851,7 @@ describe("Task 2 live-loop performance conformance", () => {
     await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 12 });
 
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
-    expect(provider.requests).toHaveLength(4);
+    expect(provider.requests).toHaveLength(6);
     const events = taskRecordsRepository(db).listEvents("task-1");
     expect(events.some((event) => event.payload.reason === "artifact_delivery_recovery_reasoning_only")).toBe(false);
     expect(events.filter((event) => event.payload.reason === "empty_provider_response")).toHaveLength(0);

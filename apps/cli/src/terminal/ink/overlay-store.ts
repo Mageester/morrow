@@ -60,6 +60,13 @@ export interface SelectOverlay {
 export interface TranscriptOverlay {
   kind: "transcript";
   entries: readonly import("../state.js").ConversationEntry[];
+  /**
+   * Where to open. The default, the bottom, is right for someone who asked to
+   * read the conversation. PageUp means "show me what scrolled past", so it
+   * opens one screen up instead — pressing a scroll key and landing at the
+   * bottom would be the key not working.
+   */
+  start?: "bottom" | "page-up";
   onChoose: (id: string | null) => void;
 }
 

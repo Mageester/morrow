@@ -197,7 +197,7 @@ describe("Teams API — Research and verify preset", () => {
   });
 
   it("rejects cross-project team assignment during agent create and update", async () => {
-    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: process.cwd(), createdAt: ts() });
+    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: "C:/other", createdAt: ts() });
     const foreignTeam = teamsRepository(db).create({ id: "foreign-team", projectId: "p2", name: "Foreign", createdAt: ts() });
 
     const create = await app.inject({
@@ -691,7 +691,7 @@ describe("Memory vault API — scope filter and export/import", () => {
     db = openDatabase(":memory:");
     app = buildServer({ db, runner: new TaskRunner(db, async () => {}) });
     projectRepository(db).createProject({ id: "p1", name: "P1", workspacePath: process.cwd(), createdAt: ts() });
-    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: process.cwd(), createdAt: ts() });
+    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: "C:/other", createdAt: ts() });
   });
   afterEach(() => { app.close(); db.close(); });
 

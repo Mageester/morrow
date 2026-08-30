@@ -381,7 +381,7 @@ function seed(missionLinked = false, prompt = "go") {
     })).toBe(false);
   });
 
-  it("stops a successful no-progress provider loop after three turns", async () => {
+  it("stops an exact repeated-read loop after the post-progress threshold", async () => {
     seed(false, "Build the requested artifact in the workspace.");
     const readTurn = (id: string): ProviderChunk[] => [
       {
@@ -396,17 +396,166 @@ function seed(missionLinked = false, prompt = "go") {
       { type: "done" },
     ];
     const provider = new MockProvider({
-      chunks: [readTurn("stall-1"), readTurn("stall-2"), readTurn("stall-3"), readTurn("stall-4")],
+      chunks: [readTurn("stall-1"), readTurn("stall-2"), readTurn("stall-3"), readTurn("stall-4"), readTurn("stall-5"), readTurn("stall-6")],
     });
 
     await executeAgentChatTask({ db, taskId: "task-1", provider });
 
-    expect(provider.requests).toHaveLength(3);
+    expect(provider.requests).toHaveLength(6);
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
     const events = taskRecordsRepository(db).listEvents("task-1") as Array<{ type: string; payload: Record<string, unknown> }>;
     expect(events.some((event) => event.type === "task.progress_warning" && event.payload.reason === "no_progress_stall")).toBe(true);
     const terminal = events.find((event) => event.type === "task.interrupted" && event.payload.reason === "no_progress_stall");
     expect(terminal?.payload.terminalEntryKind).toBe("controller_exhausted");
+  });
+
+  it("does not warn while a task makes progress through distinct investigation reads", async () => {
+    seed(false, "Build the requested artifact in the workspace.");
+    taskRoutingRepository(db).upsert({
+      taskId: "task-1",
+      presetId: "best-quality",
+      providerId: "mock",
+      model: "mock-model",
+      useMemory: false,
+      decision: {
+        version: 1,
+        presetId: "best-quality",
+        providerId: "mock",
+        model: "mock-model",
+        reason: "read progress regression",
+        fallbackUsed: false,
+        overridden: false,
+        privacy: "cloud",
+        candidates: [],
+        mode: "agent",
+        autoApprove: true,
+      },
+      createdAt: new Date().toISOString(),
+    });
+    const artifact = "module.exports = 1;\n";
+    const provider = new MockProvider({
+      chunks: [
+        [{
+          type: "tool_call",
+          toolCalls: [{
+            id: "create-artifact",
+            index: 0,
+            type: "function",
+            function: { name: "create_file", arguments: JSON.stringify({ path: "artifact.js", content: artifact }) },
+          }],
+        }, { type: "done" }],
+        [{
+          type: "tool_call",
+          toolCalls: [{
+            id: "verify-artifact",
+            index: 0,
+            type: "function",
+            function: {
+              name: "run_command",
+              arguments: JSON.stringify({ executable: "node", args: ["--check", "artifact.js"], purpose: "verify the artifact" }),
+            },
+          }],
+        }, { type: "done" }],
+        [{
+          type: "tool_call",
+          toolCalls: [{
+            id: "read-artifact",
+            index: 0,
+            type: "function",
+            function: { name: "read_file", arguments: JSON.stringify({ path: "artifact.js" }) },
+          }],
+        }, { type: "done" }],
+        [{
+          type: "tool_call",
+          toolCalls: [{
+            id: "list-root",
+            index: 0,
+            type: "function",
+            function: { name: "list_files", arguments: JSON.stringify({ path: "." }) },
+          }],
+        }, { type: "done" }],
+        [{
+          type: "tool_call",
+          toolCalls: [{
+            id: "search-content",
+            index: 0,
+            type: "function",
+            function: { name: "search_text", arguments: JSON.stringify({ query: "Morrow" }) },
+          }],
+        }, { type: "done" }],
+        [{
+          type: "tool_call",
+          toolCalls: [{
+            id: "search-name",
+            index: 0,
+            type: "function",
+            function: { name: "search_files", arguments: JSON.stringify({ query: "readme" }) },
+          }],
+        }, { type: "done" }],
+        [{ type: "text", text: "The artifact was created, verified, and inspected." }, { type: "done" }],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 10 });
+
+    const warnings = taskRecordsRepository(db).listEvents("task-1").filter((event) =>
+      event.type === "task.progress_warning"
+      && ["no_progress_turn", "no_progress_stall"].includes(event.payload.reason as string),
+    );
+    expect(warnings).toEqual([]);
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+  });
+
+  it("still interrupts a genuine no-progress loop of failed commands", async () => {
+    seed(false, "Build the requested artifact in the workspace.");
+    taskRoutingRepository(db).upsert({
+      taskId: "task-1",
+      presetId: "best-quality",
+      providerId: "mock",
+      model: "mock-model",
+      useMemory: false,
+      decision: {
+        version: 1,
+        presetId: "best-quality",
+        providerId: "mock",
+        model: "mock-model",
+        reason: "failed command loop regression",
+        fallbackUsed: false,
+        overridden: false,
+        privacy: "cloud",
+        candidates: [],
+        mode: "agent",
+        autoApprove: true,
+      },
+      createdAt: new Date().toISOString(),
+    });
+    const failedCommand = { executable: "node", args: ["-e", "process.exit(7)"], purpose: "verify the artifact" };
+    const failedTurn = (id: string): ProviderChunk[] => [{
+      type: "tool_call",
+      toolCalls: [{
+        id,
+        index: 0,
+        type: "function",
+        function: { name: "run_command", arguments: JSON.stringify(failedCommand) },
+      }],
+    }, { type: "done" }];
+    const provider = new MockProvider({
+      chunks: ["1", "2", "3", "4", "5", "6", "7"].map((id) => failedTurn(`failed-${id}`)),
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 10 });
+
+    const calls = conversationsRepository(db).listToolCallsForTask("task-1");
+    expect(provider.requests).toHaveLength(3);
+    expect(calls).toHaveLength(3);
+    expect(calls.every((call) => call.toolName === "run_command" && call.status === "failed")).toBe(true);
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
+    const stall = taskRecordsRepository(db).listEvents("task-1").find((event) =>
+      event.type === "task.progress_warning" && event.payload.reason === "no_progress_stall",
+    );
+    expect(stall?.payload.threshold).toBe(3);
   });
 
   it("bounds repeated timed-out foreground service commands and reaps the process", async () => {
@@ -801,13 +950,18 @@ function seed(missionLinked = false, prompt = "go") {
       },
       { type: "done" },
     ];
-    const provider = new MockProvider({ chunks: [repeatedFailure, repeatedFailure, repeatedFailure, repeatedFailure, repeatedFailure, [{ type: "text", text: "The model repaired the task after observing the repeated tool failures." }, { type: "done" }]] });
+    const provider = new MockProvider({ chunks: [repeatedFailure, repeatedFailure, repeatedFailure, repeatedFailure, repeatedFailure,
+      [{ type: "text", text: "The model repaired the task after observing the repeated tool failures." }, { type: "done" }],
+      // v0.8.1 grants one bounded continuation before accepting the stop.
+      [{ type: "text", text: "No further repair is available for the unknown tool." }, { type: "done" }],
+      [{ type: "text", text: "The unknown tool still cannot be repaired." }, { type: "done" }],
+    ] });
 
     await executeAgentChatTask({ db, taskId: "task-1", provider });
 
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
     expect(db.prepare("SELECT status FROM missions WHERE id='mission-1'").get()).toEqual({ status: "running" });
-    expect(provider.requests).toHaveLength(6);
+    expect(provider.requests).toHaveLength(8);
     const events = taskRecordsRepository(db).listEvents("task-1");
     expect(events.some((event) => event.payload.signal === "loop_detected")).toBe(false);
     expect(events.some((event) => ["loop_stalled", "no_progress", "observation_epoch_exhausted", "strategy_change_required"].includes((event.payload as { reason?: unknown }).reason as string))).toBe(false);
@@ -862,6 +1016,9 @@ function seed(missionLinked = false, prompt = "go") {
         failingCommand("failing-command-3"),
         failingCommand("failing-command-4"),
         [{ type: "text", text: "The repeated command failure was inspected and the task is complete." }, { type: "done" }],
+        // v0.8.1 grants one bounded continuation before accepting the stop.
+        [{ type: "text", text: "The command cannot be made to pass here." }, { type: "done" }],
+        [{ type: "text", text: "The command still cannot be made to pass." }, { type: "done" }],
       ],
     });
 
@@ -897,13 +1054,18 @@ function seed(missionLinked = false, prompt = "go") {
       },
       { type: "done" },
     ];
-    const provider = new MockProvider({ chunks: [repeatedFailure, repeatedFailure, repeatedFailure, [{ type: "text", text: "Finished after the revision observations." }, { type: "done" }]] });
+    const provider = new MockProvider({ chunks: [repeatedFailure, repeatedFailure, repeatedFailure,
+      [{ type: "text", text: "Finished after the revision observations." }, { type: "done" }],
+      // v0.8.1 grants one bounded continuation before accepting the stop.
+      [{ type: "text", text: "There is nothing further the revisions can change." }, { type: "done" }],
+      [{ type: "text", text: "The revisions still change nothing." }, { type: "done" }],
+    ] });
 
     await executeAgentChatTask({ db, taskId: "task-1", provider });
 
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
     expect(db.prepare("SELECT status FROM missions WHERE id='mission-1'").get()).toEqual({ status: "running" });
-    expect(provider.requests).toHaveLength(4);
+    expect(provider.requests).toHaveLength(6);
     expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.signal === "loop_detected")).toBe(false);
   });
 

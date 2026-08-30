@@ -137,7 +137,14 @@ describe("agent security boundaries", () => {
 
   it("preserves a denied inspection action while recording incomplete evidence", async () => {
     seed(db, ws, "read-only", "Inspect the workspace and report what you find.");
-    const provider = new MockProvider({ chunks: [[tool("x1", "run_command", { executable: "node", args: ["-e", "1"], purpose: "inspect" }), done], [text("The inspection is complete."), done]], delayMs: 1 });
+    const provider = new MockProvider({ chunks: [
+      [tool("x1", "run_command", { executable: "node", args: ["-e", "1"], purpose: "inspect" }), done],
+      [text("The inspection is complete."), done],
+      // v0.8.1 grants one bounded continuation; read-only mode denies the only
+      // observation tool the model has, so the run settles with the blocker.
+      [text("Read-only mode leaves me no further way to observe the workspace."), done],
+      [text("Read-only mode still leaves me no way to observe."), done],
+    ], delayMs: 1 });
     const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
     runner.run("t");
     await runner.waitFor("t");
@@ -157,7 +164,13 @@ describe("agent security boundaries", () => {
   it("rejects a non-array run_command args with a clear error instead of crashing", async () => {
     seed(db, ws, "agent");
     const provider = new MockProvider({
-      chunks: [[tool("x1", "run_command", { executable: "node", args: "--check script.js", purpose: "x" }), done], [text("ok"), done]],
+      chunks: [
+        [tool("x1", "run_command", { executable: "node", args: "--check script.js", purpose: "x" }), done],
+        [text("ok"), done],
+        // v0.8.1 grants one bounded continuation before accepting the stop.
+        [text("There is nothing further to run here."), done],
+        [text("There is still nothing to run here."), done],
+      ],
       delayMs: 1,
     });
     const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));

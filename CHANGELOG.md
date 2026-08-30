@@ -6,6 +6,148 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-29
+
+Morrow 0.8.0 worked well enough to be used in earnest, and being used in earnest
+is what found these. Every fix below comes from watching a real session go
+wrong, and each one is smaller than the behaviour it replaces.
+
+The headline is that the agent stopped handing back unfinished work. In a live
+DropSort build it implemented the project, wrote tests, ran forty-five of them,
+found five failures, named the fix for each — and then stopped, waiting for
+someone to type "so are you done". Morrow already knew the task was unfinished;
+it recorded the failed verification as evidence and ended the turn anyway. It
+now acts on what it knows.
+
+### Fixed
+
+- **The agent no longer yields while it still has work it can do.** The
+  completion contract's verdict was being filed as evidence rather than used as
+  a decision. When the model stops and the contract says the goal is unmet, the
+  outstanding evidence is now classified: work this agent can finish unaided
+  continues the turn, work that needs the user stops and says so, and a bounded
+  budget of three continuations means a model that cannot converge stops instead
+  of looping. A continuation that produces no tool call is not granted another.
+  The same change makes Morrow actually stop the background process a user asked
+  it to stop, rather than reporting that it is still running.
+- **A spent read budget no longer bricks every later read.** The per-task
+  raw-bytes ceiling was a counter that only grew, and a refused read was still
+  charged against it — so once a task crossed the line, every subsequent read
+  failed forever, including a 5 KB source file, with a message that read like a
+  complaint about the current request. Refused reads are no longer charged, the
+  budget is released when context is compacted (the bytes it tracks are gone
+  from the request at that point), and the refusal now states that the ceiling
+  is cumulative and names the ways out.
+- **Repeated identical tool failures say so.** The same call failing the same
+  way twice now carries a note in the result the model is reading: retrying it
+  unchanged will produce this same error, so change approach. Previously
+  repetition was recorded only as operator telemetry the model never saw.
+- **A successful write reads as a settled fact.** An oversized write's body is
+  still kept out of replayed context, but the placeholder no longer describes
+  Morrow's persistence layer. A model that looked back at its own successful
+  9,923-byte write, found the `content` field replaced by an object talking
+  about durable execution history, spent minutes reasoning about whether the
+  write had really happened and nearly rewrote a file it had already verified.
+  The transcript now says the write succeeded, what the file holds, that the
+  body was sent in full, and not to rewrite it to check.
+- **`run_command` accepts the shape models reach for.** `args: ["python3",
+  "--version"]` with no `executable` is now read as the obvious single command,
+  and a plain `command: "node"` is accepted too. Genuinely ambiguous input —
+  a leading flag, a full command line with quoting or metacharacters — still
+  fails, with the same clear instruction, because guessing there would turn a
+  clear error into a silently wrong command. Normalized calls run through the
+  identical policy, containment, and approval path. The schema now shows the
+  split with a worked example.
+- **Plan progress no longer states what Morrow has not measured.** Step status
+  comes from the model rewriting its own plan, so a plan nobody updated used to
+  render "Plan 0/8" through an entire build. The header now reports the step
+  count until something is actually marked, and labels the fraction `marked`
+  once it is — the count is of steps the model marked, not work Morrow measured.
+- **Reading back through output no longer recalls your own messages.** PageUp
+  and PageDown open the conversation surface, scrolled to where the key implies;
+  Up and Down stay on the draft and its history. Mouse and trackpad scrolling
+  remains the terminal's own, and new output cannot pull the viewport back down.
+- **`run_command` accepts a JSON-encoded argument array.** A live run failed
+  seven times in a row because the model sent `args` as the *string*
+  `"[\"smoke.js\"]"` and cycled `args`, `argv` and `command` looking for a shape
+  Morrow would take. A string that parses as a JSON array of strings has one
+  reading, so it is decoded; `argv` is accepted as a whole command list, program
+  first. Genuinely ambiguous input — a leading flag, quoting, shell
+  metacharacters — is still refused, now with an instruction rather than a
+  complaint.
+- **Reading a file back is authoritative again.** An oversized read returned an
+  artifact reference, so a model that had just written a file could not confirm
+  its contents and wrote it again — four times, in one observed run. Reads stay
+  durably externalized, but the model now sees `read_succeeded`, the exact
+  bounded content, its range, and the literal next call to make.
+- **Insertion-only patches land in the right place.** A hunk with no removed
+  lines was applied at `oldStart - 1` rather than at its zero-width boundary,
+  inserting one line early. `propose_patch` also now tells the model that a
+  replacement must differ from what is already there.
+- **Registering a workspace twice no longer breaks every directory beneath it.**
+  Nothing deduplicated on workspace path, so ordinary use accumulated duplicate
+  project rows — three for one directory here — and every subdirectory then
+  failed with "Multiple registered projects match this directory", which
+  `--project` could not resolve. Registration reuses the existing row, the
+  resolver collapses identical paths, existing duplicates are reconciled onto
+  the oldest id, and the ambiguity message now names each candidate and its path.
+- **Read budgets cannot be escaped by forcing rollovers.** Releasing the
+  per-segment budget at a compaction boundary is correct — those bytes really do
+  leave the request — but on its own it allowed read-to-ceiling, compact, repeat,
+  forever. A second whole-task ceiling is never released.
+- **A crash at the completion transaction no longer completes unfinished work.**
+  On resume, a durable final turn was replayed and committed without consulting
+  the completion contract, so a task whose artifact was missing came back
+  `completed` with the blocker filed beside it. The resume now applies the same
+  continuation policy as the live loop and goes back to work.
+- **An append no longer reports the wrong file size.** The transcript derived its
+  byte count from the request body, so appending 12,000 bytes to a 5-byte file
+  claimed the file held "exactly 12,000 bytes". It reports what was appended.
+- **Repeated-failure advice distinguishes exit codes.** Masking every digit made
+  "exited with status 1" and "exited with status 2" the same identity, so two
+  materially different failures could be reported as one repeated wall. Exit
+  codes survive; magnitudes are still masked.
+- **A continuation the provider never answered is refunded**, rather than spent
+  against the budget and later reported as exhausted. The budget itself is now
+  restored from the durable event log, so a restart cannot grant a stuck task
+  another three attempts.
+- **A missing frontend screenshot is treated as work, not a wall** — it can
+  simply be taken again. And when both actionable and user-only blockers are
+  outstanding, the directive no longer claims that no user input is required.
+- **`no_progress_turn` means something again.** A successful read did not count
+  as progress, so ordinary investigation fired the warning on every turn — 92 and
+  104 times in two successful runs. Novel reads count; repeats stay bounded by
+  the existing stall threshold, and a genuine loop still interrupts.
+- **A shutdown racing a pending bind cannot leave a scheduler running.** The
+  closer list is snapshotted, and `listen()` registered the scheduler's closer
+  after the bind resolved, so a close that began first walked past it.
+- **Delegation cannot hang an unattended run.** `ask_teammate` is deliberately
+  one-shot — never standing trust — which is right when a person is there to
+  approve it. In a `morrow build` run nobody is, so the call created an approval
+  that could never be answered and the mission sat until its timeout. It is no
+  longer offered to mission workers, and refuses immediately if reached.
+- **A single prose reply no longer ends a task that has produced nothing.** One
+  continuation directive answered with prose was treated as proof the model
+  would not act, and a mission was stopped four seconds later with `.gitignore`
+  as its only changed file. Stopping is defensible when there is work to stop
+  on; with an empty workspace and budget in hand it never is.
+- **Continuation directives ask for delivery before verification of it.** A
+  workspace holding only `.gitignore` was told `frontend_route_missing` was
+  outstanding, and spent both continuations opening a browser against an empty
+  directory instead of writing the module. Evidence has an order: nothing is
+  asked about a route, a snapshot or a console until something exists to serve.
+
+### Added
+
+- A staged runtime shutdown. Between closing the server and draining the process
+  supervisor, the task runner now stops accepting work, cancels in-flight turns,
+  and waits a bounded ten seconds for them to settle. 0.8.0 drained the
+  supervisor and closed the database underneath running turns, so a turn could
+  have its child processes killed mid-command and then meet a closed database
+  when it tried to record what happened. The wait is bounded on purpose: a turn
+  that will not return is left for startup reconciliation rather than holding
+  the process open.
+
 ## [0.8.0] - 2026-08-28
 
 Morrow had two ways to start and they were not the same product. A packaged
