@@ -6123,11 +6123,26 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               // of writing real content. Left with a generic "fix the content"
               // hint it re-copies the placeholder. Name the confusion explicitly
               // so it can break the loop.
+              // Two generations of the same confusion. The projection renders
+              // an already-completed oversized write as a compact record; a
+              // model reading its own history copies that record back as a
+              // fresh call, with no content in it. v0.8.0's record was keyed
+              // by `_morrowAppliedWrite`; v0.8.1 replaced it with
+              // {write_succeeded, bytes_written|bytes_appended, note} and this
+              // guard did not follow, so the new shape fell through to the
+              // generic hint â€” which tells the model to "keep every other
+              // argument exactly as you already sent it", i.e. to send the
+              // record again. Observed live: three tools thrashed and the file
+              // rewritten whole. Both shapes are named here.
+              const echoedRecord = (args as any)._morrowAppliedWrite !== undefined
+                || (args as any).write_succeeded !== undefined
+                || (args as any).bytes_written !== undefined
+                || (args as any).bytes_appended !== undefined;
               const echoedPlaceholderNoContent =
-                tc.name === "create_file"
+                (tc.name === "create_file" || tc.name === "append_file")
                 && problem.field === "content"
                 && problem.problem === "missing"
-                && !!(args as any)._morrowAppliedWrite;
+                && echoedRecord;
               event("tool.arguments_rejected", { toolName: tc.name, reason: `invalid_argument:${problem.problem}` });
               const echoTargetPath = typeof args.path === "string" && args.path.trim() ? args.path : "the file";
               throw new AgentToolFailure(`Invalid argument "${problem.field}" for ${tc.name}`, {
@@ -6139,7 +6154,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 expected: problem.expected,
                 expectedSchema: describeToolSchema(toolDef) ?? undefined,
                 instruction: echoedPlaceholderNoContent
-                  ? `"_morrowAppliedWrite" is a Morrow history marker, NOT file content, and ${echoTargetPath} does not exist yet. Do not copy that marker. Call create_file for ${echoTargetPath} with "content" set to the complete source of the file, and omit "_morrowAppliedWrite" entirely.`
+                  ? ((args as any)._morrowAppliedWrite !== undefined
+                    ? `"_morrowAppliedWrite" is a Morrow history marker, NOT file content, and ${echoTargetPath} does not exist yet. Do not copy that marker. Call ${tc.name} for ${echoTargetPath} with "content" set to the complete source of the file, and omit "_morrowAppliedWrite" entirely.`
+                    : `"write_succeeded", "bytes_written" and "note" are Morrow's record that a write to ${echoTargetPath} already completed â€” they are not file content, and they are not arguments. Do not send them again. If you need the file's current contents, read ${echoTargetPath}. If you genuinely intend to replace it, send ${tc.name} with "path" and "content" only, where "content" is the complete text of the file.`)
                   : tc.name === "create_file" && problem.field === "path" && problem.problem === "missing"
                   ? 'Resend create_file with the identical content you just produced, adding the "path" argument: the workspace-relative path of the file to write (for example "src/index.css"). Do not regenerate or re-derive the content.'
                   : `Fix the "${problem.field}" argument and call the tool once more. Keep every other argument exactly as you already sent it.`,

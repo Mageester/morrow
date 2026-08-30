@@ -158,3 +158,49 @@ describe("an environment check succeeds on the first attempt", () => {
     expect(result.instruction).toContain('"executable"');
   });
 });
+
+/**
+ * v0.8.1 renders an already-completed oversized write as
+ * {path, write_succeeded, bytes_written, note}. A model reading its own
+ * history can echo that record back as a fresh call — observed live on
+ * deepseek-v4-flash, which then concluded its content was "being dropped
+ * intermittently" and thrashed between three tools. The record must name
+ * itself rather than fail as a generic missing argument.
+ */
+describe("an echoed completed-write record is named, not rejected generically", () => {
+  let db: any;
+  let ws: string;
+  beforeEach(() => { ws = realpathSync(mkdtempSync(join(tmpdir(), "morrow-echo-"))); db = openDatabase(":memory:"); });
+  afterEach(() => { try { db.close(); } catch {} rmSync(ws, { recursive: true, force: true }); });
+
+  it("explains that the write already happened", async () => {
+    seed(db, ws, "write the module");
+    const provider = new MockProvider({
+      chunks: [
+        [tool("echo", "create_file", {
+          path: "runs.js",
+          write_succeeded: true,
+          bytes_written: 9254,
+          note: "This create_file call completed successfully and runs.js now holds exactly these 9254 bytes.",
+        }), done],
+        [text("Understood — the file already exists."), done],
+        [text("Nothing further to write."), done],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 8 });
+
+    const call = conversationsRepository(db).listToolCallsForTask("t").find((c: any) => c.id === "echo");
+    expect(call?.status).toBe("failed");
+    const result = JSON.parse(call!.resultJson!);
+    expect(result.invalidField).toBe("content");
+    // The instruction must name what those fields actually are. The generic
+    // hint said "keep every other argument exactly as you already sent it" —
+    // which tells the model to send the record back again.
+    expect(result.instruction).toContain("already completed");
+    expect(result.instruction).toContain("not file content");
+    expect(result.instruction).toContain("Do not send them again");
+    expect(result.instruction).not.toContain("Keep every other argument");
+  });
+});

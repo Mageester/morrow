@@ -6,6 +6,38 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-30
+
+Two failures from the same family: Morrow refusing work that was already
+correct, and then telling the model to try again in exactly the way that had
+just failed. Neither is a crash. Both cost whole minutes of a session and a
+file rewritten from scratch for no reason.
+
+### Fixed
+
+- **A hunk header with no line numbers is no longer a rejected patch.** The
+  diff parser demanded `@@ -N,M +N,M @@`. A bare `@@` — which models emit
+  constantly, and which several diff tools accept — matched nothing, so the
+  file parsed as zero hunks and the entire patch was thrown out with "could not
+  parse any file hunks". A live run spent six turns across two files fighting
+  this before giving up and rewriting a 9 KB file whole. Headerless hunks are
+  now accepted: the line counts come from the body, which is the only thing
+  that ever knew them, and placement comes from context matching, which is what
+  located every hunk anyway. A headerless hunk carrying no context at all is
+  still refused rather than dropped somewhere plausible — there is genuinely
+  nothing to place it against, and guessing would corrupt the file quietly.
+- **A completed write echoed back from history is named for what it is.** When
+  an oversized write has already succeeded, the transcript keeps the record and
+  drops the body. A model reading its own history copied that record back as a
+  fresh call — path, `write_succeeded`, `bytes_written`, and the note, with no
+  content — and got a generic "Invalid argument" whose advice was to keep every
+  other argument exactly as sent, which is to say: send it again. Morrow had a
+  guard for precisely this confusion, written against the marker the previous
+  release used, and it did not follow the record when the shape changed. Both
+  shapes are recognized now, and the correction says the write already
+  completed, that these fields are Morrow's bookkeeping rather than file
+  content, and what to send instead.
+
 ## [0.8.1] - 2026-08-29
 
 Morrow 0.8.0 worked well enough to be used in earnest, and being used in earnest

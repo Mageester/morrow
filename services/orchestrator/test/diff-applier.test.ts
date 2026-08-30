@@ -406,3 +406,36 @@ describe("assertContainedRealPath (symlink-aware containment)", () => {
     expect(() => applyUnifiedPatch(original, patches[0]!.chunks)).toThrow(/Patch conflict/);
   });
 });
+
+/**
+ * A hunk header with no line numbers. Models emit this constantly — several
+ * diff tools accept it — and Morrow rejected the ENTIRE patch with "could not
+ * parse any file hunks", so a live run burned six turns across two files
+ * before giving up and rewriting a 9 KB file whole. Placement never depended
+ * on the header anyway: context matching does the work.
+ */
+describe("headerless @@ hunks", () => {
+  const original = "const a = 1;\nconst dead = null;\nconst b = 2;\n";
+  const expected = "const a = 1;\nconst b = 2;\n";
+
+  it("parses and applies a hunk with no line numbers", () => {
+    const files = parseUnifiedDiff("--- a/runs.js\n+++ b/runs.js\n@@\n const a = 1;\n-const dead = null;\n const b = 2;\n");
+    expect(files[0]!.chunks).toHaveLength(1);
+    expect(applyUnifiedPatch(original, files[0]!.chunks)).toBe(expected);
+  });
+
+  it("accepts a trailing section label after @@", () => {
+    const files = parseUnifiedDiff("--- a/runs.js\n+++ b/runs.js\n@@ cmdShow\n const a = 1;\n-const dead = null;\n const b = 2;\n");
+    expect(applyUnifiedPatch(original, files[0]!.chunks)).toBe(expected);
+  });
+
+  it("leaves numbered headers behaving exactly as before", () => {
+    const files = parseUnifiedDiff("--- a/runs.js\n+++ b/runs.js\n@@ -1,3 +1,2 @@\n const a = 1;\n-const dead = null;\n const b = 2;\n");
+    expect(applyUnifiedPatch(original, files[0]!.chunks)).toBe(expected);
+  });
+
+  it("refuses a headerless hunk with no context rather than guessing where it goes", () => {
+    const files = parseUnifiedDiff("--- a/runs.js\n+++ b/runs.js\n@@\n+const c = 3;\n");
+    expect(() => applyUnifiedPatch(original, files[0]!.chunks)).toThrow(/cannot be placed/);
+  });
+});

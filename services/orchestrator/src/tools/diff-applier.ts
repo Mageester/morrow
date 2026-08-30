@@ -138,31 +138,49 @@ export function parseUnifiedDiff(diffStr: string): PatchFile[] {
       let newPath = newPathRaw;
       if (newPath.startsWith("b/")) newPath = newPath.slice(2);
       currentFile.newPath = newPath;
-    } else if (line.startsWith("@@ ") && currentFile) {
+    } else if (line.startsWith("@@") && currentFile) {
       const match = line.match(/^@@ -(\d+),?(\d+)? \+(\d+),?(\d+)? @@/);
-      if (!match) {
+      if (match) {
+        const m1 = match[1];
+        const m2 = match[2];
+        const m3 = match[3];
+        const m4 = match[4];
+        if (m1 === undefined || m3 === undefined) {
+          throw new Error(`Malformed hunk header values: ${line}`);
+        }
+        currentChunk = {
+          oldStart: parseInt(m1, 10),
+          oldLines: m2 !== undefined ? parseInt(m2, 10) : 1,
+          newStart: parseInt(m3, 10),
+          newLines: m4 !== undefined ? parseInt(m4, 10) : 1,
+          lines: [],
+        };
+        currentFile.chunks.push(currentChunk);
+      } else if (/^@@\s*@?@?\s*$/.test(line.trim()) || /^@@\s+\S/.test(line)) {
+        // A headerless hunk: "@@" with no line numbers, optionally with a
+        // trailing section label. Models emit this constantly — it is the
+        // shorthand several diff tools accept — and rejecting it threw away
+        // the *entire* patch with "could not parse any file hunks", which is
+        // how a live run burned four turns before giving up and rewriting a
+        // 9 KB file whole.
+        //
+        // The counts are unknown, so they are left as sentinels and filled in
+        // from the body once the hunk is complete. Placement never depended on
+        // oldStart anyway: findChunkApplication matches on context and
+        // deletion lines, and only falls back to the anchor when there is no
+        // old content to match. A headerless hunk is therefore located exactly
+        // as reliably as a numbered one — provided it carries context.
+        currentChunk = {
+          oldStart: HEADERLESS_HUNK_ANCHOR,
+          oldLines: 0,
+          newStart: HEADERLESS_HUNK_ANCHOR,
+          newLines: 0,
+          lines: [],
+        };
+        currentFile.chunks.push(currentChunk);
+      } else {
         throw new Error(`Malformed hunk header: ${line}`);
       }
-      const m1 = match[1];
-      const m2 = match[2];
-      const m3 = match[3];
-      const m4 = match[4];
-      if (m1 === undefined || m3 === undefined) {
-        throw new Error(`Malformed hunk header values: ${line}`);
-      }
-      const oldStart = parseInt(m1, 10);
-      const oldLines = m2 !== undefined ? parseInt(m2, 10) : 1;
-      const newStart = parseInt(m3, 10);
-      const newLines = m4 !== undefined ? parseInt(m4, 10) : 1;
-
-      currentChunk = {
-        oldStart,
-        oldLines,
-        newStart,
-        newLines,
-        lines: [],
-      };
-      currentFile.chunks.push(currentChunk);
     } else if (currentChunk) {
       if (line.startsWith(" ") || line.startsWith("-") || line.startsWith("+")) {
         currentChunk.lines.push(line);
@@ -202,6 +220,18 @@ export function parseUnifiedDiff(diffStr: string): PatchFile[] {
         if (prefix === " " || prefix === "-") expectedOld++;
         if (prefix === " " || prefix === "+") expectedNew++;
         if (prefix === "+") additionLines++;
+      }
+      // A headerless hunk declared no counts, so the body is the authority
+      // rather than something to reconcile against. Adopt them and skip the
+      // mismatch machinery below, which exists to catch a *wrong* header —
+      // an absent one cannot be wrong.
+      if (chunk.oldStart === HEADERLESS_HUNK_ANCHOR) {
+        chunk.oldLines = expectedOld;
+        chunk.newLines = expectedNew;
+        if (additionLines === 0 && expectedOld === 0) {
+          throw new Error(`Empty hunk for ${file.newPath}: the patch declared a hunk that neither adds nor removes any line.`);
+        }
+        continue;
       }
       if (expectedOld !== chunk.oldLines || expectedNew !== chunk.newLines) {
         // A well-formed hunk — even a pure deletion with no replacement —
@@ -413,13 +443,34 @@ function uniqueMatch(fileLines: string[], expected: string[], normalize: (line: 
   return null;
 }
 
+/**
+ * Marks a hunk whose header carried no line numbers. Placement comes from
+ * context matching, and the counts are derived from the body.
+ */
+export const HEADERLESS_HUNK_ANCHOR = -1;
+
 function findChunkApplication(fileLines: string[], chunk: PatchChunk): { startIdx: number; removeLines: number; replaceDeletedOnly: boolean } {
-  const anchored = chunk.oldStart - 1;
+  const headerless = chunk.oldStart === HEADERLESS_HUNK_ANCHOR;
+  const anchored = headerless ? -1 : chunk.oldStart - 1;
   const oldLines = oldComparableLines(chunk);
-  // For an insertion-only hunk, oldStart is the zero-width boundary between
-  // old lines. The non-empty case uses oldStart - 1 as the first line to
-  // match, but subtracting one here inserts before that line instead.
-  if (oldLines.length === 0) return { startIdx: Math.max(0, chunk.oldStart), removeLines: chunk.oldLines, replaceDeletedOnly: false };
+  if (oldLines.length === 0) {
+    // Insertion-only. A numbered header names the zero-width boundary to
+    // insert at; a headerless one names nothing, and there is no context to
+    // search for, so there is genuinely no way to place it.
+    if (headerless) {
+      throw new PatchApplicationError(
+        "Patch conflict: a hunk with no line numbers and no context lines cannot be placed",
+        {
+          category: "ambiguous_context",
+          hunk: chunk,
+          expected: "at least one context or removed line",
+          actual: "insertion-only hunk with a headerless @@",
+          line: 0,
+        },
+      );
+    }
+    return { startIdx: Math.max(0, chunk.oldStart), removeLines: chunk.oldLines, replaceDeletedOnly: false };
+  }
   const exact = (line: string) => line;
   const trimRight = (line: string) => line.replace(/[ \t]+$/g, "");
 
