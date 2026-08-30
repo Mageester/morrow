@@ -16,6 +16,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
 const INSTALLER = join(__dirname, "..", "installer", "install.ps1");
 const ENTRYPOINT = join(ROOT, "services", "orchestrator", "src", "index.ts");
+const RUNTIME_HOST = join(ROOT, "services", "orchestrator", "src", "runtime", "host.ts");
 const LAUNCHER = join(ROOT, "installer", "templates", "morrow.mjs");
 const PACKAGE_JSON = join(ROOT, "package.json");
 
@@ -89,14 +90,26 @@ test("installer keeps CLI usage discoverable after launching the app", async () 
 });
 
 test("orchestrator defaults to loopback and honors MORROW_BIND_HOST", async () => {
-  const source = await readFile(ENTRYPOINT, "utf8");
+  // The bind contract used to be written inline in the standalone entrypoint.
+  // It moved into the runtime host so that the in-process `morrow start` and
+  // the packaged service share one definition instead of two that can drift.
+  // These assertions follow the behaviour to where it now lives; reading the
+  // entrypoint kept them green-by-absence and hid the real guarantee.
+  const source = await readFile(RUNTIME_HOST, "utf8");
   assert.match(
     source,
-    /const host = process\.env\.MORROW_BIND_HOST\?\.trim\(\) \|\| "127\.0\.0\.1"/,
-    "entrypoint must default to IPv4 loopback while allowing an explicit override",
+    /host: env\.MORROW_BIND_HOST\?\.trim\(\) \|\| "127\.0\.0\.1"/,
+    "runtime config must default to IPv4 loopback while allowing an explicit override",
   );
-  assert.match(source, /app\.listen\(\{ host, port \}\)/, "resolved bind host must reach Fastify");
-  assert.doesNotMatch(source, /app\.listen\(\{ host: "0\.0\.0\.0"/, "entrypoint must not expose every interface by default");
+  assert.match(
+    source,
+    /app\.listen\(\{ host: config\.host, port: config\.port \}\)/,
+    "resolved bind host must reach Fastify",
+  );
+  assert.doesNotMatch(source, /app\.listen\(\{ host: "0\.0\.0\.0"/, "runtime host must not expose every interface by default");
+
+  const entrypoint = await readFile(ENTRYPOINT, "utf8");
+  assert.doesNotMatch(entrypoint, /app\.listen\(\{ host: "0\.0\.0\.0"/, "entrypoint must not expose every interface by default");
 
   const launcher = await readFile(LAUNCHER, "utf8");
   assert.match(
