@@ -1,1 +1,0 @@
-{"tools": ["filesystem-read", "search", "network"], "filesystemScopes": ["workspace"], "networkDomains": ["api.openai.com", "api.anthropic.com", "openrouter.ai"], "requiredSecrets": ["OPENROUTER_API_KEY"]}
